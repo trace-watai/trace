@@ -1,0 +1,1857 @@
+{
+  "$defs": {
+    "AgentConfig": {
+      "additionalProperties": true,
+      "description": "Provider-agnostic description of the agent under test.\n\nMODEL-AGNOSTIC (team mandate): ``provider`` is a free string. Never couple\nthis schema to a vendor SDK \u2014 the runner maps the string to an adapter.",
+      "properties": {
+        "agent_framework": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "e.g. 'langgraph' | 'react' | 'simple'.",
+          "title": "Agent Framework"
+        },
+        "max_steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Step budget for the run, if enforced.",
+          "title": "Max Steps"
+        },
+        "model": {
+          "description": "Model identifier as the provider names it.",
+          "title": "Model",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "description": "Sampling/config params (temperature, max_tokens, ...).",
+          "title": "Params",
+          "type": "object"
+        },
+        "provider": {
+          "description": "LLM provider id, e.g. 'gemini' | 'openai' | 'anthropic' | 'local'. No SDK coupling.",
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "title": "AgentConfig",
+      "type": "object"
+    },
+    "AttributionEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cost (tokens or $) attributed to this step.",
+          "title": "Cost"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "step_id this event derives from.",
+          "title": "Parent Step Id"
+        },
+        "result": {
+          "$ref": "#/$defs/AttributionResult"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "0-indexed, strictly increasing. Canonical ordering key.",
+          "minimum": 0,
+          "title": "Step Id",
+          "type": "integer"
+        },
+        "step_type": {
+          "const": "attribution",
+          "default": "attribution",
+          "title": "Step Type",
+          "type": "string"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        }
+      },
+      "required": [
+        "run_id",
+        "step_id",
+        "result"
+      ],
+      "title": "AttributionEvent",
+      "type": "object"
+    },
+    "AttributionResult": {
+      "additionalProperties": true,
+      "description": "Judge/attribution output. Runs ONLY after a verifier result exists and never\noverrides it. Step fields use the TRACE attribution vocabulary.\n\nAuthoritative schema: TRA-10. Taxonomy for ``failure_category``: TRA-13.",
+      "properties": {
+        "causal_explanation": {
+          "default": "",
+          "title": "Causal Explanation",
+          "type": "string"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "failure_category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Taxonomy bucket; owned by TRA-13.",
+          "title": "Failure Category"
+        },
+        "first_suspicious_step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "First Suspicious Step"
+        },
+        "first_unrecoverable_step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The critical failure step: earliest point the run became unrecoverable.",
+          "title": "First Unrecoverable Step"
+        },
+        "harmful_action_step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Harmful Action Step"
+        },
+        "missed_recovery_step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Missed Recovery Step"
+        },
+        "regression_test_idea": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Regression Test Idea"
+        },
+        "suggested_guardrail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Suggested Guardrail"
+        },
+        "task_success": {
+          "title": "Task Success",
+          "type": "boolean"
+        },
+        "visible_failure_step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where the failure first became user-visible.",
+          "title": "Visible Failure Step"
+        }
+      },
+      "required": [
+        "task_success"
+      ],
+      "title": "AttributionResult",
+      "type": "object"
+    },
+    "ErrorEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cost (tokens or $) attributed to this step.",
+          "title": "Cost"
+        },
+        "error_type": {
+          "title": "Error Type",
+          "type": "string"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "step_id this event derives from.",
+          "title": "Parent Step Id"
+        },
+        "recoverable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recoverable"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "0-indexed, strictly increasing. Canonical ordering key.",
+          "minimum": 0,
+          "title": "Step Id",
+          "type": "integer"
+        },
+        "step_type": {
+          "const": "error",
+          "default": "error",
+          "title": "Step Type",
+          "type": "string"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        }
+      },
+      "required": [
+        "run_id",
+        "step_id",
+        "error_type",
+        "message"
+      ],
+      "title": "ErrorEvent",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": true,
+      "description": "A renderable evidence unit. Design rule: the dashboard must render evidence\nwithout custom parsing, so keep it to flat, typed pointers + values.",
+      "properties": {
+        "kind": {
+          "description": "e.g. 'step_ref' | 'state_path' | 'doc_span' | 'tool_arg' | 'text'.",
+          "title": "Kind",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "pointer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "JSON-path / document id / arg name the value came from.",
+          "title": "Pointer"
+        },
+        "step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Trajectory step this evidence points at, if any.",
+          "title": "Step Id"
+        },
+        "value": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "FinalAnswerEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cost (tokens or $) attributed to this step.",
+          "title": "Cost"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "step_id this event derives from.",
+          "title": "Parent Step Id"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "0-indexed, strictly increasing. Canonical ordering key.",
+          "minimum": 0,
+          "title": "Step Id",
+          "type": "integer"
+        },
+        "step_type": {
+          "const": "final_answer",
+          "default": "final_answer",
+          "title": "Step Type",
+          "type": "string"
+        },
+        "structured": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Structured"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        }
+      },
+      "required": [
+        "run_id",
+        "step_id",
+        "content"
+      ],
+      "title": "FinalAnswerEvent",
+      "type": "object"
+    },
+    "MessageEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cost (tokens or $) attributed to this step.",
+          "title": "Cost"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "step_id this event derives from.",
+          "title": "Parent Step Id"
+        },
+        "role": {
+          "$ref": "#/$defs/MessageRole"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "0-indexed, strictly increasing. Canonical ordering key.",
+          "minimum": 0,
+          "title": "Step Id",
+          "type": "integer"
+        },
+        "step_type": {
+          "const": "message",
+          "default": "message",
+          "title": "Step Type",
+          "type": "string"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        }
+      },
+      "required": [
+        "run_id",
+        "step_id",
+        "role",
+        "content"
+      ],
+      "title": "MessageEvent",
+      "type": "object"
+    },
+    "MessageRole": {
+      "enum": [
+        "system",
+        "user",
+        "assistant",
+        "tool"
+      ],
+      "title": "MessageRole",
+      "type": "string"
+    },
+    "ReasoningEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cost (tokens or $) attributed to this step.",
+          "title": "Cost"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "step_id this event derives from.",
+          "title": "Parent Step Id"
+        },
+        "raw": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "0-indexed, strictly increasing. Canonical ordering key.",
+          "minimum": 0,
+          "title": "Step Id",
+          "type": "integer"
+        },
+        "step_type": {
+          "const": "reasoning",
+          "default": "reasoning",
+          "title": "Step Type",
+          "type": "string"
+        },
+        "summary": {
+          "description": "Summarized reasoning. Store raw hidden CoT only if exposed and allowed.",
+          "title": "Summary",
+          "type": "string"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        }
+      },
+      "required": [
+        "run_id",
+        "step_id",
+        "summary"
+      ],
+      "title": "ReasoningEvent",
+      "type": "object"
+    },
+    "RetrievalEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cost (tokens or $) attributed to this step.",
+          "title": "Cost"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "step_id this event derives from.",
+          "title": "Parent Step Id"
+        },
+        "query": {
+          "title": "Query",
+          "type": "string"
+        },
+        "retrieved": {
+          "items": {
+            "$ref": "#/$defs/RetrievedDoc"
+          },
+          "title": "Retrieved",
+          "type": "array"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "0-indexed, strictly increasing. Canonical ordering key.",
+          "minimum": 0,
+          "title": "Step Id",
+          "type": "integer"
+        },
+        "step_type": {
+          "const": "retrieval",
+          "default": "retrieval",
+          "title": "Step Type",
+          "type": "string"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        }
+      },
+      "required": [
+        "run_id",
+        "step_id",
+        "query"
+      ],
+      "title": "RetrievalEvent",
+      "type": "object"
+    },
+    "RetrievedDoc": {
+      "additionalProperties": true,
+      "properties": {
+        "doc_id": {
+          "title": "Doc Id",
+          "type": "string"
+        },
+        "is_current": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Current vs deprecated source \u2014 central to stale-policy failures.",
+          "title": "Is Current"
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rank"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score"
+        },
+        "span": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Cited text span used as grounding/evidence.",
+          "title": "Span"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "doc_id"
+      ],
+      "title": "RetrievedDoc",
+      "type": "object"
+    },
+    "RunMetadata": {
+      "additionalProperties": false,
+      "description": "Top-level run descriptor. One per run; carries the schema version.",
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "ended_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ended At"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "0.1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus",
+          "default": "running"
+        },
+        "step_count": {
+          "default": 0,
+          "title": "Step Count",
+          "type": "integer"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "target_agent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human label for the agent under test.",
+          "title": "Target Agent"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "termination_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Why the run ended (e.g. 'completed', 'max_steps', 'tool_error', 'exception').",
+          "title": "Termination Reason"
+        }
+      },
+      "required": [
+        "run_id",
+        "task_id",
+        "created_at"
+      ],
+      "title": "RunMetadata",
+      "type": "object"
+    },
+    "RunStatus": {
+      "description": "Lifecycle of a run. NOTE: this is execution status, NOT task pass/fail \u2014\ncorrectness is decided by the verifier (see verification.py).",
+      "enum": [
+        "running",
+        "completed",
+        "error"
+      ],
+      "title": "RunStatus",
+      "type": "string"
+    },
+    "StateLabel": {
+      "enum": [
+        "initial",
+        "final",
+        "intermediate"
+      ],
+      "title": "StateLabel",
+      "type": "string"
+    },
+    "StateSnapshot": {
+      "additionalProperties": false,
+      "description": "Environment state captured at a point in the run \u2014 the initial/final state\ncontract. ``state`` is the full structured environment (mock CRM, order DB, ...).",
+      "properties": {
+        "digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional stable hash of `state` for quick diffing.",
+          "title": "Digest"
+        },
+        "label": {
+          "$ref": "#/$defs/StateLabel"
+        },
+        "state": {
+          "additionalProperties": true,
+          "title": "State",
+          "type": "object"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "StateSnapshot",
+      "type": "object"
+    },
+    "StateSnapshotEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cost (tokens or $) attributed to this step.",
+          "title": "Cost"
+        },
+        "label": {
+          "description": "'initial' | 'final' | 'intermediate'.",
+          "title": "Label",
+          "type": "string"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "step_id this event derives from.",
+          "title": "Parent Step Id"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "state": {
+          "additionalProperties": true,
+          "title": "State",
+          "type": "object"
+        },
+        "step_id": {
+          "description": "0-indexed, strictly increasing. Canonical ordering key.",
+          "minimum": 0,
+          "title": "Step Id",
+          "type": "integer"
+        },
+        "step_type": {
+          "const": "state_snapshot",
+          "default": "state_snapshot",
+          "title": "Step Type",
+          "type": "string"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        }
+      },
+      "required": [
+        "run_id",
+        "step_id",
+        "label"
+      ],
+      "title": "StateSnapshotEvent",
+      "type": "object"
+    },
+    "TaskSnapshot": {
+      "additionalProperties": true,
+      "description": "Frozen copy of the TaskSpec used for THIS run, so a run stays reproducible\neven if the task definition later changes.\n\nOWNERSHIP: the authoritative ``TaskSpec`` is TRA-6 (Evaluation Core / Emily).\nThis is a forward-compatible snapshot (``extra='allow'``) mirroring the\ncanonical fields in Notion \u2192 \"Trace Schema & Data Formats\".",
+      "properties": {
+        "difficulty": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Difficulty"
+        },
+        "documents_available": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Documents Available",
+          "type": "array"
+        },
+        "expected_outcome": {
+          "additionalProperties": true,
+          "title": "Expected Outcome",
+          "type": "object"
+        },
+        "failure_modes_targeted": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Failure Modes Targeted",
+          "type": "array"
+        },
+        "forbidden_actions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Actions",
+          "type": "array"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "task_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Version"
+        },
+        "tools_available": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools Available",
+          "type": "array"
+        },
+        "verifier_spec": {
+          "additionalProperties": true,
+          "title": "Verifier Spec",
+          "type": "object"
+        },
+        "workflow_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowType"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Workflow Type"
+        }
+      },
+      "required": [
+        "task_id",
+        "workflow_type",
+        "prompt"
+      ],
+      "title": "TaskSnapshot",
+      "type": "object"
+    },
+    "ToolCallEvent": {
+      "additionalProperties": false,
+      "description": "Logged BEFORE the tool executes.",
+      "properties": {
+        "call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Correlates with the matching tool_observation.",
+          "title": "Call Id"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cost (tokens or $) attributed to this step.",
+          "title": "Cost"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "step_id this event derives from.",
+          "title": "Parent Step Id"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "0-indexed, strictly increasing. Canonical ordering key.",
+          "minimum": 0,
+          "title": "Step Id",
+          "type": "integer"
+        },
+        "step_type": {
+          "const": "tool_call",
+          "default": "tool_call",
+          "title": "Step Type",
+          "type": "string"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        },
+        "tool_args": {
+          "additionalProperties": true,
+          "title": "Tool Args",
+          "type": "object"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "step_id",
+        "tool_name"
+      ],
+      "title": "ToolCallEvent",
+      "type": "object"
+    },
+    "ToolObservationEvent": {
+      "additionalProperties": false,
+      "description": "Logged AFTER the tool executes. ``parent_step_id`` points at the ToolCallEvent.",
+      "properties": {
+        "call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Call Id"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cost (tokens or $) attributed to this step.",
+          "title": "Cost"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "observation": {
+          "default": null,
+          "description": "Raw observation from the tool. Keep raw; summary is separate.",
+          "title": "Observation"
+        },
+        "observation_summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observation Summary"
+        },
+        "ok": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ok"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "step_id this event derives from.",
+          "title": "Parent Step Id"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "0-indexed, strictly increasing. Canonical ordering key.",
+          "minimum": 0,
+          "title": "Step Id",
+          "type": "integer"
+        },
+        "step_type": {
+          "const": "tool_observation",
+          "default": "tool_observation",
+          "title": "Step Type",
+          "type": "string"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "step_id",
+        "tool_name"
+      ],
+      "title": "ToolObservationEvent",
+      "type": "object"
+    },
+    "VerifierCheck": {
+      "additionalProperties": true,
+      "description": "One deterministic check within a verifier pack.",
+      "properties": {
+        "check_id": {
+          "title": "Check Id",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "'hard' (release-blocking) | 'warning'.",
+          "title": "Severity"
+        }
+      },
+      "required": [
+        "check_id",
+        "passed"
+      ],
+      "title": "VerifierCheck",
+      "type": "object"
+    },
+    "VerifierEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cost (tokens or $) attributed to this step.",
+          "title": "Cost"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "step_id this event derives from.",
+          "title": "Parent Step Id"
+        },
+        "result": {
+          "$ref": "#/$defs/VerifierResult"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "step_id": {
+          "description": "0-indexed, strictly increasing. Canonical ordering key.",
+          "minimum": 0,
+          "title": "Step Id",
+          "type": "integer"
+        },
+        "step_type": {
+          "const": "verifier",
+          "default": "verifier",
+          "title": "Step Type",
+          "type": "string"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp"
+        }
+      },
+      "required": [
+        "run_id",
+        "step_id",
+        "result"
+      ],
+      "title": "VerifierEvent",
+      "type": "object"
+    },
+    "VerifierResult": {
+      "additionalProperties": true,
+      "description": "Deterministic pass/fail decision. The verifier is the source of truth;\nthe judge only explains (evidence-first diagnosis).",
+      "properties": {
+        "actual": {
+          "additionalProperties": true,
+          "title": "Actual",
+          "type": "object"
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/VerifierCheck"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "expected": {
+          "additionalProperties": true,
+          "title": "Expected",
+          "type": "object"
+        },
+        "failed_checks": {
+          "description": "check_ids that failed (quick index).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Failed Checks",
+          "type": "array"
+        },
+        "verifier_passed": {
+          "title": "Verifier Passed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "verifier_passed"
+      ],
+      "title": "VerifierResult",
+      "type": "object"
+    },
+    "WorkflowType": {
+      "enum": [
+        "tool_api",
+        "rag"
+      ],
+      "title": "WorkflowType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One complete run: metadata + task snapshot + agent config + initial/final\nstate + trajectory + (optional) verifier/attribution results.",
+  "properties": {
+    "agent_config": {
+      "$ref": "#/$defs/AgentConfig"
+    },
+    "attribution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AttributionResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "events": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "attribution": "#/$defs/AttributionEvent",
+            "error": "#/$defs/ErrorEvent",
+            "final_answer": "#/$defs/FinalAnswerEvent",
+            "message": "#/$defs/MessageEvent",
+            "reasoning": "#/$defs/ReasoningEvent",
+            "retrieval": "#/$defs/RetrievalEvent",
+            "state_snapshot": "#/$defs/StateSnapshotEvent",
+            "tool_call": "#/$defs/ToolCallEvent",
+            "tool_observation": "#/$defs/ToolObservationEvent",
+            "verifier": "#/$defs/VerifierEvent"
+          },
+          "propertyName": "step_type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/MessageEvent"
+          },
+          {
+            "$ref": "#/$defs/ReasoningEvent"
+          },
+          {
+            "$ref": "#/$defs/RetrievalEvent"
+          },
+          {
+            "$ref": "#/$defs/ToolCallEvent"
+          },
+          {
+            "$ref": "#/$defs/ToolObservationEvent"
+          },
+          {
+            "$ref": "#/$defs/StateSnapshotEvent"
+          },
+          {
+            "$ref": "#/$defs/VerifierEvent"
+          },
+          {
+            "$ref": "#/$defs/AttributionEvent"
+          },
+          {
+            "$ref": "#/$defs/FinalAnswerEvent"
+          },
+          {
+            "$ref": "#/$defs/ErrorEvent"
+          }
+        ]
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "final_state": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StateSnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "initial_state": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StateSnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "metadata": {
+      "$ref": "#/$defs/RunMetadata"
+    },
+    "task_snapshot": {
+      "$ref": "#/$defs/TaskSnapshot"
+    },
+    "verifier_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VerifierResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "metadata",
+    "task_snapshot",
+    "agent_config"
+  ],
+  "title": "TraceRun",
+  "type": "object"
+}

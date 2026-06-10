@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "WorkflowType": {
+      "enum": [
+        "tool_api",
+        "rag"
+      ],
+      "title": "WorkflowType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": true,
+  "description": "Frozen copy of the TaskSpec used for THIS run, so a run stays reproducible\neven if the task definition later changes.\n\nOWNERSHIP: the authoritative ``TaskSpec`` is TRA-6 (Evaluation Core / Emily).\nThis is a forward-compatible snapshot (``extra='allow'``) mirroring the\ncanonical fields in Notion \u2192 \"Trace Schema & Data Formats\".",
+  "properties": {
+    "difficulty": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Difficulty"
+    },
+    "documents_available": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Documents Available",
+      "type": "array"
+    },
+    "expected_outcome": {
+      "additionalProperties": true,
+      "title": "Expected Outcome",
+      "type": "object"
+    },
+    "failure_modes_targeted": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Failure Modes Targeted",
+      "type": "array"
+    },
+    "forbidden_actions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Forbidden Actions",
+      "type": "array"
+    },
+    "prompt": {
+      "title": "Prompt",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "task_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Task Version"
+    },
+    "tools_available": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tools Available",
+      "type": "array"
+    },
+    "verifier_spec": {
+      "additionalProperties": true,
+      "title": "Verifier Spec",
+      "type": "object"
+    },
+    "workflow_type": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkflowType"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "title": "Workflow Type"
+    }
+  },
+  "required": [
+    "task_id",
+    "workflow_type",
+    "prompt"
+  ],
+  "title": "TaskSnapshot",
+  "type": "object"
+}

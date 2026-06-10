@@ -1,0 +1,29 @@
+{
+  "task_success": false,
+  "failure_category": "rag.stale_source",
+  "first_suspicious_step": 1,
+  "first_unrecoverable_step": 2,
+  "missed_recovery_step": null,
+  "harmful_action_step": 6,
+  "visible_failure_step": 10,
+  "causal_explanation": "The deprecated policy (v1, 90-day) was retrieved above the current policy (v2, 30-day). At step 2 the agent committed to the deprecated source; from there the unauthorized refund and the unsupported outage ticket follow as downstream effects.",
+  "evidence": [
+    {
+      "kind": "doc_span",
+      "step_id": 1,
+      "pointer": "refund_policy_v1",
+      "value": "within 90 days",
+      "note": null
+    },
+    {
+      "kind": "step_ref",
+      "step_id": 2,
+      "pointer": null,
+      "value": null,
+      "note": "commitment to deprecated source"
+    }
+  ],
+  "suggested_guardrail": "Filter retrieval to current sources, or require a current-policy check before issue_refund.",
+  "regression_test_idea": "Stale-policy refund task must end with refund_issued=False and a clean ticket.",
+  "confidence": 0.82
+}

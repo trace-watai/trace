@@ -1,0 +1,54 @@
+{
+  "additionalProperties": true,
+  "description": "Provider-agnostic description of the agent under test.\n\nMODEL-AGNOSTIC (team mandate): ``provider`` is a free string. Never couple\nthis schema to a vendor SDK \u2014 the runner maps the string to an adapter.",
+  "properties": {
+    "agent_framework": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "e.g. 'langgraph' | 'react' | 'simple'.",
+      "title": "Agent Framework"
+    },
+    "max_steps": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Step budget for the run, if enforced.",
+      "title": "Max Steps"
+    },
+    "model": {
+      "description": "Model identifier as the provider names it.",
+      "title": "Model",
+      "type": "string"
+    },
+    "params": {
+      "additionalProperties": true,
+      "description": "Sampling/config params (temperature, max_tokens, ...).",
+      "title": "Params",
+      "type": "object"
+    },
+    "provider": {
+      "description": "LLM provider id, e.g. 'gemini' | 'openai' | 'anthropic' | 'local'. No SDK coupling.",
+      "title": "Provider",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider",
+    "model"
+  ],
+  "title": "AgentConfig",
+  "type": "object"
+}

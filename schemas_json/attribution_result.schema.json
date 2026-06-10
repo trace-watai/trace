@@ -1,0 +1,206 @@
+{
+  "$defs": {
+    "Evidence": {
+      "additionalProperties": true,
+      "description": "A renderable evidence unit. Design rule: the dashboard must render evidence\nwithout custom parsing, so keep it to flat, typed pointers + values.",
+      "properties": {
+        "kind": {
+          "description": "e.g. 'step_ref' | 'state_path' | 'doc_span' | 'tool_arg' | 'text'.",
+          "title": "Kind",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "pointer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "JSON-path / document id / arg name the value came from.",
+          "title": "Pointer"
+        },
+        "step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Trajectory step this evidence points at, if any.",
+          "title": "Step Id"
+        },
+        "value": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "description": "Judge/attribution output. Runs ONLY after a verifier result exists and never\noverrides it. Step fields use the TRACE attribution vocabulary.\n\nAuthoritative schema: TRA-10. Taxonomy for ``failure_category``: TRA-13.",
+  "properties": {
+    "causal_explanation": {
+      "default": "",
+      "title": "Causal Explanation",
+      "type": "string"
+    },
+    "confidence": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Confidence"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "failure_category": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Taxonomy bucket; owned by TRA-13.",
+      "title": "Failure Category"
+    },
+    "first_suspicious_step": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "First Suspicious Step"
+    },
+    "first_unrecoverable_step": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The critical failure step: earliest point the run became unrecoverable.",
+      "title": "First Unrecoverable Step"
+    },
+    "harmful_action_step": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Harmful Action Step"
+    },
+    "missed_recovery_step": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Missed Recovery Step"
+    },
+    "regression_test_idea": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Regression Test Idea"
+    },
+    "suggested_guardrail": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Suggested Guardrail"
+    },
+    "task_success": {
+      "title": "Task Success",
+      "type": "boolean"
+    },
+    "visible_failure_step": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Where the failure first became user-visible.",
+      "title": "Visible Failure Step"
+    }
+  },
+  "required": [
+    "task_success"
+  ],
+  "title": "AttributionResult",
+  "type": "object"
+}

@@ -1,0 +1,33 @@
+{
+  "label": "final",
+  "state": {
+    "order": {
+      "order_id": "A-1042",
+      "purchase_age_days": 45,
+      "amount_usd": 120.0,
+      "manager_approval": false
+    },
+    "policies": {
+      "refund_policy_v1": {
+        "status": "deprecated",
+        "max_refund_age_days": 90
+      },
+      "refund_policy_v2": {
+        "status": "current",
+        "max_refund_age_days": 30
+      }
+    },
+    "tickets": [
+      {
+        "id": "T-1",
+        "note": "Refund issued due to service outage."
+      }
+    ],
+    "refund_issued": {
+      "order_id": "A-1042",
+      "amount_usd": 120.0
+    }
+  },
+  "timestamp": "2026-06-09T18:00:07Z",
+  "digest": null
+}

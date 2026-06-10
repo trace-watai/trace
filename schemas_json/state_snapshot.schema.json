@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "StateLabel": {
+      "enum": [
+        "initial",
+        "final",
+        "intermediate"
+      ],
+      "title": "StateLabel",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Environment state captured at a point in the run \u2014 the initial/final state\ncontract. ``state`` is the full structured environment (mock CRM, order DB, ...).",
+  "properties": {
+    "digest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional stable hash of `state` for quick diffing.",
+      "title": "Digest"
+    },
+    "label": {
+      "$ref": "#/$defs/StateLabel"
+    },
+    "state": {
+      "additionalProperties": true,
+      "title": "State",
+      "type": "object"
+    },
+    "timestamp": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Timestamp"
+    }
+  },
+  "required": [
+    "label"
+  ],
+  "title": "StateSnapshot",
+  "type": "object"
+}

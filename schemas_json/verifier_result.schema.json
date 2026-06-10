@@ -1,0 +1,165 @@
+{
+  "$defs": {
+    "Evidence": {
+      "additionalProperties": true,
+      "description": "A renderable evidence unit. Design rule: the dashboard must render evidence\nwithout custom parsing, so keep it to flat, typed pointers + values.",
+      "properties": {
+        "kind": {
+          "description": "e.g. 'step_ref' | 'state_path' | 'doc_span' | 'tool_arg' | 'text'.",
+          "title": "Kind",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "pointer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "JSON-path / document id / arg name the value came from.",
+          "title": "Pointer"
+        },
+        "step_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Trajectory step this evidence points at, if any.",
+          "title": "Step Id"
+        },
+        "value": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "VerifierCheck": {
+      "additionalProperties": true,
+      "description": "One deterministic check within a verifier pack.",
+      "properties": {
+        "check_id": {
+          "title": "Check Id",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "'hard' (release-blocking) | 'warning'.",
+          "title": "Severity"
+        }
+      },
+      "required": [
+        "check_id",
+        "passed"
+      ],
+      "title": "VerifierCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "description": "Deterministic pass/fail decision. The verifier is the source of truth;\nthe judge only explains (evidence-first diagnosis).",
+  "properties": {
+    "actual": {
+      "additionalProperties": true,
+      "title": "Actual",
+      "type": "object"
+    },
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/VerifierCheck"
+      },
+      "title": "Checks",
+      "type": "array"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "expected": {
+      "additionalProperties": true,
+      "title": "Expected",
+      "type": "object"
+    },
+    "failed_checks": {
+      "description": "check_ids that failed (quick index).",
+      "items": {
+        "type": "string"
+      },
+      "title": "Failed Checks",
+      "type": "array"
+    },
+    "verifier_passed": {
+      "title": "Verifier Passed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "verifier_passed"
+  ],
+  "title": "VerifierResult",
+  "type": "object"
+}

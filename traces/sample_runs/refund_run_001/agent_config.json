@@ -1,0 +1,9 @@
+{
+  "provider": "gemini",
+  "model": "gemini-free-tier",
+  "params": {
+    "temperature": 0.2
+  },
+  "agent_framework": "langgraph",
+  "max_steps": 20
+}
