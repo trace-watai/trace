@@ -12,6 +12,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 
+from .environment import TOOLS
 from .taskspec import TaskSpec
 from .trace import ListTrace, event
 
@@ -60,23 +61,6 @@ class FixtureModel:
             return action
         return {"type": "done", "message": ""}
 
-
-def issue_refund(args: dict, state: dict) -> dict:
-    """Mock refund tool. Mutates ``state``; returns a result dict, never raises.
-
-    Contract: input {order_id, amount} -> {ok, refunded?, error?}.
-    """
-    order = state.get("orders", {}).get(args.get("order_id"))
-    if order is None:
-        return {"ok": False, "error": f"unknown order: {args.get('order_id')!r}"}
-    if order.get("refunded"):
-        return {"ok": False, "error": "order already refunded"}
-    order["refunded"] = True
-    return {"ok": True, "refunded": args.get("amount")}
-
-
-# name -> tool function. A second tool is just another entry.
-TOOLS = {"issue_refund": issue_refund}
 
 
 def run(task: TaskSpec, config: RunConfig, model=None, trace=None) -> RunResult:

@@ -1,0 +1,15 @@
+{
+  "task_id": "ticket_001",
+  "goal": "Look up order_789 and open a support ticket because the item was not received.",
+  "initial_state": {
+    "orders": {
+      "order_789": { "amount": 99.00, "refunded": false }
+    }
+  },
+  "allowed_tools": ["get_order", "create_ticket"],
+  "script": [
+    { "type": "tool", "name": "get_order", "args": { "order_id": "order_789" } },
+    { "type": "tool", "name": "create_ticket", "args": { "order_id": "order_789", "reason": "Item not received" } },
+    { "type": "done", "message": "Support ticket created." }
+  ]
+}

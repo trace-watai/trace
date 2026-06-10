@@ -1,0 +1,16 @@
+{
+  "task_id": "mixed_001",
+  "goal": "Check order_111, issue a full refund, and open a follow-up support ticket.",
+  "initial_state": {
+    "orders": {
+      "order_111": { "amount": 74.50, "refunded": false }
+    }
+  },
+  "allowed_tools": ["get_order", "issue_refund", "create_ticket"],
+  "script": [
+    { "type": "tool", "name": "get_order", "args": { "order_id": "order_111" } },
+    { "type": "tool", "name": "issue_refund", "args": { "order_id": "order_111", "amount": 74.50 } },
+    { "type": "tool", "name": "create_ticket", "args": { "order_id": "order_111", "reason": "Refund confirmation" } },
+    { "type": "done", "message": "Refund issued and ticket opened." }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "task_id": "refund_002",
+  "goal": "Refund order_456 for the customer (amount 29.99).",
+  "initial_state": {
+    "orders": {
+      "order_456": { "amount": 29.99, "refunded": true }
+    }
+  },
+  "allowed_tools": ["issue_refund"],
+  "script": [
+    { "type": "tool", "name": "issue_refund", "args": { "order_id": "order_456", "amount": 29.99 } },
+    { "type": "done", "message": "Attempted refund." }
+  ]
+}
