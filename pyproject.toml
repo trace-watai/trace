@@ -1,0 +1,52 @@
+# trace-harness — the core TRACE Python package.
+#
+# Install (editable, from the repo root):
+#   pip install -e ".[dev]"
+#
+# The package is deliberately light on dependencies: pydantic is the only
+# runtime requirement. Gemini support is an optional extra so that tests and
+# fixture runs never need an API key.
+
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trace-harness"
+version = "0.1.0"
+description = "TRACE agent reliability harness: run agents through realistic workflows, capture traces, verify outcomes, and turn failures into evidence-backed artifacts."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+# Optional: the Gemini adapter scaffold will use the google-genai SDK once it
+# is implemented. Installing this extra does NOT make tests require an API
+# key — the fixture provider stays the default everywhere.
+gemini = [
+    "google-genai>=1.0",
+]
+
+[project.scripts]
+trace-harness = "trace_harness.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trace_harness"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

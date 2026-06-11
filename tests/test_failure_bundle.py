@@ -1,0 +1,127 @@
+"""FailureBundleGenerator: card, repair package, and regression artifact."""
+
+from __future__ import annotations
+
+import pytest
+
+from trace_harness.attribution.heuristic import HeuristicAttributor
+from trace_harness.failure_bundles.generator import FailureBundleGenerator
+from trace_harness.tasks.schemas import Severity
+from trace_harness.verifiers.registry import get_verifier
+
+
+@pytest.fixture
+def bundle_inputs(failure_run):
+    verifier_result = get_verifier(failure_run.task.verifier_ids[0]).verify(
+        failure_run.task, failure_run.trace, failure_run.final_state, failure_run.run_id
+    )
+    attribution = HeuristicAttributor().attribute(
+        failure_run.task, failure_run.trace, verifier_result
+    )
+    return failure_run, verifier_result, attribution
+
+
+def _generate(run, verifier_result, attribution):
+    return FailureBundleGenerator().generate(
+        task=run.task,
+        run_result=run.result,
+        trace=run.trace,
+        verifier_result=verifier_result,
+        attribution=attribution,
+        final_state=run.final_state,
+        initial_state=run.initial_state,
+        task_fixture_path="fixtures/tasks/refund_policy_failure.json",
+    )
+
+
+def test_failure_card_is_complete_and_evidence_backed(bundle_inputs):
+    run, verifier_result, attribution = bundle_inputs
+    card = _generate(run, verifier_result, attribution).failure_card
+
+    assert card.run_id == run.run_id
+    assert card.task_id == "refund_policy_failure"
+    assert card.severity is Severity.CRITICAL
+    assert "FAILED" in card.task_result
+    assert "step 3" in card.root_cause
+    assert len(card.visible_symptoms) == 3
+    assert card.evidence, "a failure card without evidence is an opinion"
+    assert card.causal_explanation == attribution.causal_explanation
+    assert "$432.00" in card.blast_radius
+    assert "1 customer" in card.blast_radius
+
+
+def test_repair_package_controls_are_actionable(bundle_inputs):
+    run, verifier_result, attribution = bundle_inputs
+    package = _generate(run, verifier_result, attribution).repair_package
+
+    names = [control.name for control in package.controls]
+    assert names == [
+        "deterministic_pre_call_refund_guardrail",
+        "ticket_claim_grounding_check",
+        "current_policy_source_precedence",
+        "regression_test_ci_gate",
+    ]
+    failed_ids = {check.check_id for check in verifier_result.failed_checks}
+    for control in package.controls:
+        # Every field must carry real content — empty controls are noise.
+        assert control.installation_point
+        assert control.check
+        assert control.behavior_on_failure
+        assert control.why_it_prevents_recurrence
+        assert control.risk_or_tradeoff
+        assert control.priority in {"P0", "P1", "P2", "P3"}
+        assert control.linked_verifier_checks
+        assert set(control.linked_verifier_checks) <= failed_ids
+    guardrail = package.controls[0]
+    assert guardrail.priority == "P0"
+    assert "SupportEnvironment.execute" in guardrail.installation_point
+
+
+def test_regression_artifact_pins_the_failure(bundle_inputs):
+    run, verifier_result, attribution = bundle_inputs
+    regression = _generate(run, verifier_result, attribution).regression_artifact
+
+    assert regression.test_name == "regression_refund_policy_failure"
+    assert regression.source_run_id == run.run_id
+    assert set(regression.verifier_checks) == {
+        "unauthorized_cash_refund",
+        "deprecated_policy_treated_as_authoritative",
+        "ticket_outage_claim_unsupported",
+    }
+    assert regression.severity is Severity.CRITICAL
+    assert regression.blocks_release is True
+    # Pinned world: docs and state as the failing run saw them.
+    assert {d["doc_id"] for d in regression.pinned_docs} == {
+        "refund_policy_v2",
+        "refund_policy_v4",
+        "export_incident_2025_01",
+    }
+    assert regression.initial_state["orders"][0]["purchase_age_days"] == 47
+    assert regression.expected_behavior == run.task.expected_behavior
+    assert regression.forbidden_actions == run.task.forbidden_actions
+    # Replayable, with an anti-overblocking positive sibling.
+    assert regression.replay_command == (
+        "trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json"
+    )
+    assert len(regression.positive_sibling_tests) == 1
+    sibling = regression.positive_sibling_tests[0]
+    assert sibling.task_fixture == "fixtures/tasks/refund_policy_valid_cash.json"
+
+
+def test_bundle_refuses_passing_runs(valid_run):
+    from trace_harness.attribution.schemas import AttributionResult
+
+    verifier_result = get_verifier(valid_run.task.verifier_ids[0]).verify(
+        valid_run.task, valid_run.trace, valid_run.final_state, valid_run.run_id
+    )
+    assert verifier_result.passed
+    with pytest.raises(ValueError, match="passing run"):
+        FailureBundleGenerator().generate(
+            task=valid_run.task,
+            run_result=valid_run.result,
+            trace=valid_run.trace,
+            verifier_result=verifier_result,
+            attribution=AttributionResult(run_id=valid_run.run_id),
+            final_state=valid_run.final_state,
+            initial_state=valid_run.initial_state,
+        )

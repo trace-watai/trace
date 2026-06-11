@@ -1,0 +1,22 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_policy_failure",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expectations for running the refund_policy verifier on a refund_policy_failure fixture run. Tests compare the live VerifierResult against these fields (set-equality on check ids; exact match on flags). If you change the task, script, docs, or verifier and this file no longer matches, that is the contract telling you to review the change — update this file only deliberately, in the same PR, with a note in the PR body.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": [
+      "unauthorized_cash_refund",
+      "deprecated_policy_treated_as_authoritative",
+      "ticket_outage_claim_unsupported"
+    ],
+    "severity": "critical",
+    "blocks_release": true
+  },
+  "notes": {
+    "unauthorized_cash_refund": "47 days > 30-day cash window, no manager approval; outage status is irrelevant to cash.",
+    "deprecated_policy_treated_as_authoritative": "Scripted reasoning cites refund_policy_v2 at steps 3-5 and the ticket repeats it at step 6, alongside actual policy violations.",
+    "ticket_outage_claim_unsupported": "Ticket claims the January outage affected the customer; order has documented_outage_near_purchase=false.",
+    "final_answer_inconsistent_with_state": "Deliberately NOT expected to fail: the final answer truthfully reports the (unauthorized) refund. Consistency and compliance are separate checks."
+  }
+}

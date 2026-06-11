@@ -1,0 +1,23 @@
+# Run artifacts are regenerable outputs — never committed (keep the README).
+runs/*
+!runs/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environments & secrets
+.venv/
+venv/
+.env
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
