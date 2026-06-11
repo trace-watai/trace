@@ -22,6 +22,80 @@
   "session_metrics": {
     "turn_count": 1
   },
+  "summary": {
+    "intent": "Build and push a clean foundational scaffold for the TRACE agent reliability harness (a WAT.ai project), then restructure it for a 12-person team and push a single squashed base commit to main with Entire.io session context attached.",
+    "outcome": "Successfully shipped the TRACE foundation: a runnable Python harness with 50 passing tests, a full refund-policy vertical slice (failure + valid-cash), all artifact stages, structured docs, and a squashed commit pushed to origin/main. Entire.io was integrated and its metadata branch pushed, though session-level checkpoint linkage to the commit was ambiguous due to mid-session hook installation.",
+    "learnings": {
+      "repo": [
+        "TRACE is a WAT.ai project structured around a canonical loop: TaskSpec → AgentRunner → ToolEnvironment → TraceRecorder → ArtifactStore → Verifier → Attribution → FailureBundle → RegressionArtifact",
+        "Flattened from packages/trace_harness/src/trace_harness/ to src/trace_harness/ — single package, so the extra nesting was pure overhead",
+        "All 11 run artifacts live under runs/{run_id}/: task_spec.json, run_config.json, initial_state.json, trace.jsonl, final_state.json, run_result.json, verifier_result.json, attribution_result.json, failure_card.json, repair_package.json, regression_artifact.json",
+        "Verifier authority is strictly deterministic (rule-based, not LLM); LLMs are attribution/explanation only and never decide pass/fail for release-blocking checks",
+        "Policy boundary: documented_outage_near_purchase=true does NOT authorize cash refund on its own — it only supports store credit under the current policy's specific conditions",
+        "Fixture provider is the default (no API keys); Gemini adapter is an explicit NotImplementedError scaffold, not half-working API code",
+        "Active team branches (evaluation-core, agent-runner, darrelwihandi/tra-13-…) existed on origin before the squash, so force-push on shared history was correctly avoided",
+        "Entire.io hooks are guarded with 'command -v entire || exit 0' in .claude/settings.json so teammates without the CLI are unaffected",
+        "TRACE-native JSONL artifacts are the source of truth; Langfuse/Phoenix/OTel are optional future viewer/export layers, not runtime dependencies"
+      ],
+      "code": [
+        {
+          "path": "src/trace_harness/runner/agent_runner.py",
+          "finding": "PROMPT_VERSION constant was defined here as dead code — the real source was runner/config.py feeding RunConfig.prompt_version. Removed to have a single source."
+        },
+        {
+          "path": "src/trace_harness/cli.py",
+          "finding": "--runs-dir only worked before the subcommand ('run-pipeline TASK --runs-dir X' failed with unrecognized arguments). Fixed with argparse parents + SUPPRESS so trailing flags are accepted in either position."
+        },
+        {
+          "path": "src/trace_harness/cli.py",
+          "finding": "An invalid TRACE_LOG_LEVEL value crashed the CLI instead of falling back to INFO. Fixed with a try/except on logging level parsing."
+        },
+        {
+          "path": "src/trace_harness/verifiers/refund_policy.py",
+          "finding": "Refund policy rules encoded as data: cash_allowed = purchase_age_days <= 30 or manager_approval == True; store_credit_allowed = 31 <= purchase_age_days <= 60 and documented_outage_near_purchase == True. Manager approval cap at day 60 is explicit per pinned fixture."
+        },
+        {
+          "path": "src/trace_harness/tracing/events.py",
+          "finding": "TraceEvent uses typed event_type enum (run_started, tool_call_executed, retrieval_result, etc.) not arbitrary strings. Retrieval events include doc_id, status, score, provenance for verifier consumption."
+        },
+        {
+          "path": "tests/conftest.py",
+          "finding": "After flattening, conftest parents path changed from parents[3] to parents[1] — this was a silent breakage caught during the stale-reference sweep."
+        },
+        {
+          "path": "pyproject.toml",
+          "finding": "Single root pyproject.toml after flattening; pytest testpaths = ['tests'] so bare 'pytest' works from repo root without knowing internal structure."
+        }
+      ],
+      "workflow": [
+        "Entire.io CLI (v0.6.2): 'entire enable --agent claude-code' wires up prepare-commit-msg, post-commit, and pre-push git hooks plus Claude Code hooks. Pre-push automatically pushes entire/checkpoints/v1 orphan branch to origin.",
+        "Entire session lifecycle: session-start → user-prompt-submit/stop per turn → session-end. Hooks installed mid-session cannot retroactively capture earlier turns.",
+        "Git squash approach for existing remote with active team branches: soft-reset to origin/main, re-stage, create new commit — avoids force-push on shared history that would break active branches.",
+        "ruff format + ruff check (not mypy) is the lint standard for this project — minimal overhead, no type annotation requirement",
+        "Scripts/check_repo.sh serves as the pre-push bar: ruff check + format --check + pytest + both smoke pipelines. Should be the CI entry point (GitHub Actions not yet wired).",
+        "Fresh-venv bare install test (pip install -e . with no extras) is the correct pre-push validation — catches dependency omissions that editable installs in the dev venv hide."
+      ]
+    },
+    "friction": [
+      "Entire.io mid-session installation means the squashed base commit's checkpoint linkage is uncertain — hooks fired but the checkpoints branch remained empty; session context lives in the commit message body instead",
+      "Shell state persisted a 'cd docs' between bash tool calls, causing a pytest invocation to collect zero tests and appear to fail — required re-running from repo root",
+      "The git amend + Entire session dance was non-trivial: multiple attempts to trigger trailer injection via amend during an active turn; outcome was ambiguous (Entire reported 'No sessions' after consuming the transcript)",
+      "StrEnum required explicit fixes for Python 3.11 compatibility — the initial scaffold used patterns that needed a ruff auto-fix pass to resolve",
+      "Editable install path confusion during flattening: the old packages/trace_harness/pyproject.toml needed to be replaced by root pyproject.toml and all pip installs re-run, which could silently leave the old package installed in a venv"
+    ],
+    "open_items": [
+      "Entire.io checkpoint linkage to commit 1142a6a is unverified — the metadata branch was pushed but may be empty; proper session capture starts with the next coding session in the repo",
+      "Entire CLI update available: 0.6.2 → 0.7.5 (curl -fsSL https://entire.io/install.sh | bash)",
+      "GitHub Actions CI not yet configured — scripts/check_repo.sh is ready to be the entry point but the workflow file doesn't exist",
+      "Linear ticket IDs are TBD placeholders in docs/team_ownership.md — Sarp to fill in real TRA- IDs",
+      "GeminiModelAdapter is an explicit NotImplementedError scaffold — Rupert owns wiring the live provider",
+      "replay command runs the originating fixture, not the pinned regression artifact — Samir owns the real replay from pinned state",
+      "Keyword claim-matching in verifier can over-flag tickets that merely mention an outage — Karan owns replacing with structured citations",
+      "first_unrecoverable_step in AttributionResult is approximated as first irreversible action — Darrel owns the judge schema and human-labeled dataset",
+      "Typed per-event payloads in TraceEvent are documented as future work — Samrath owns replacing the generic payload dict",
+      "Active team branches (evaluation-core, agent-runner, darrelwihandi/tra-13-…) need to rebase/merge onto new main before opening PRs"
+    ]
+  },
   "initial_attribution": {
     "calculated_at": "2026-06-11T03:52:23.699765Z",
     "agent_lines": 0,
