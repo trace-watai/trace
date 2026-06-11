@@ -1,0 +1,9 @@
+so the whole point/what entires whole schtick is, we did for this, correct? Can you make sure and validate as so for this and it worked out correctly
+
+---
+
+validate entire linkage works end-to-end for the squashed base commit
+
+---
+
+finalize entire checkpoint linkage on the squashed base commit
