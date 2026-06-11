@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.6.2",
+  "checkpoint_id": "1376267d6f4a",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/review-hardening",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/modules.md",
+    "docs/team_ownership.md",
+    "fixtures/README.md",
+    "src/trace_harness/attribution/heuristic.py",
+    "src/trace_harness/cli.py",
+    "src/trace_harness/config.py",
+    "src/trace_harness/environment/state.py",
+    "src/trace_harness/failure_bundles/generator.py",
+    "src/trace_harness/regression/materializer.py",
+    "src/trace_harness/runner/agent_runner.py",
+    "src/trace_harness/tracing/recorder.py",
+    "src/trace_harness/verifiers/base.py",
+    "src/trace_harness/verifiers/refund_policy.py",
+    "tests/test_artifact_store.py",
+    "tests/test_attribution.py",
+    "tests/test_cli.py",
+    "tests/test_config.py",
+    "tests/test_failure_bundle.py",
+    "tests/test_fixture_run.py",
+    "tests/test_refund_verifier.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/13/76267d6f4a/0/metadata.json",
+      "transcript": "/13/76267d6f4a/0/full.jsonl",
+      "content_hash": "/13/76267d6f4a/0/content_hash.txt",
+      "prompt": "/13/76267d6f4a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 24585,
+    "cache_creation_tokens": 1706976,
+    "cache_read_tokens": 42399792,
+    "output_tokens": 115929,
+    "api_call_count": 79
+  }
+}

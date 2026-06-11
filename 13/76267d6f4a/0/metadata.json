@@ -1,0 +1,74 @@
+{
+  "cli_version": "0.6.2",
+  "checkpoint_id": "1376267d6f4a",
+  "session_id": "1a0eb133-4d67-4274-95a7-dc82fb3da4c6",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-11T22:20:15.707161Z",
+  "branch": "trace-harness/review-hardening",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/modules.md",
+    "docs/team_ownership.md",
+    "fixtures/README.md",
+    "src/trace_harness/attribution/heuristic.py",
+    "src/trace_harness/cli.py",
+    "src/trace_harness/config.py",
+    "src/trace_harness/environment/state.py",
+    "src/trace_harness/failure_bundles/generator.py",
+    "src/trace_harness/regression/materializer.py",
+    "src/trace_harness/runner/agent_runner.py",
+    "src/trace_harness/tracing/recorder.py",
+    "src/trace_harness/verifiers/base.py",
+    "src/trace_harness/verifiers/refund_policy.py",
+    "tests/test_artifact_store.py",
+    "tests/test_attribution.py",
+    "tests/test_cli.py",
+    "tests/test_config.py",
+    "tests/test_failure_bundle.py",
+    "tests/test_fixture_run.py",
+    "tests/test_refund_verifier.py"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "9dcd569fbc5c",
+  "checkpoint_transcript_start": 1456,
+  "transcript_lines_at_start": 1456,
+  "token_usage": {
+    "input_tokens": 24585,
+    "cache_creation_tokens": 1706976,
+    "cache_read_tokens": 42399792,
+    "output_tokens": 115929,
+    "api_call_count": 79
+  },
+  "session_metrics": {
+    "turn_count": 11
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-06-11T22:20:15.657866Z",
+    "agent_lines": 822,
+    "agent_removed": 73,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 822,
+    "total_lines_changed": 895,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 822,
+      "agent_lines_removed": 73
+    }
+  ]
+}
