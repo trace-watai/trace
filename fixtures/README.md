@@ -3,6 +3,12 @@
 Version-controlled scenario data — everything a deterministic, offline run
 needs. Code interprets fixtures; fixtures never contain code.
 
+> Like the module guide, this README describes the current setup — it's a
+> starting point, not a rulebook. Evaluation Core owns this folder
+> collectively (see `docs/team_ownership.md`); don't wait for a name to
+> appear next to something before improving it, and rewrite these notes as
+> the fixture conventions evolve.
+
 | Folder | Contents | Validated against |
 |---|---|---|
 | `tasks/` | Task scenarios | `trace_harness.tasks.schemas.TaskSpec` |
@@ -23,9 +29,6 @@ relative to the task file. Nothing is discovered implicitly.
 - `pytest` includes a sweep that loads every fixture here; run it after
   any edit.
 - Run outputs go to `runs/` (gitignored), never here.
-
-Owners: Emily Au (tasks), Evan He (variants/red tasks), Evan Yang (doc
-corpora), Karan Gupta (expected outcomes). See `docs/team_ownership.md`.
 
 ---
 
@@ -58,11 +61,11 @@ tasks name a positive sibling; `pytest -k fixture` passes.
 | `refund_policy_v4` | `current` | the authority: 30-day cash window, manager approval to day 60, store-credit conditions; carries machine-readable `metadata.rules` |
 | `export_incident_2025_01` | `resolved` | the red herring: closed January incident that applies to nothing current |
 
-**The invariant that must never break:** `refund_policy_v4`'s prose and
-its `metadata.rules` must describe the same policy. The agent reads the
-prose; the `RefundPolicyVerifier` evaluates the rules. If they diverge,
-the harness judges agents against a policy they never saw — review both
-in any PR that touches either (Karan + Emily co-own this).
+**One invariant worth protecting:** `refund_policy_v4`'s prose and its
+`metadata.rules` must describe the same policy. The agent reads the prose;
+the `RefundPolicyVerifier` evaluates the rules. If they diverge, the
+harness judges agents against a policy they never saw — review both in any
+PR that touches either.
 
 **Retrieval note:** scoring is deterministic keyword overlap (title ×2,
 content ×1, ties by doc_id). The incident doc's content deliberately

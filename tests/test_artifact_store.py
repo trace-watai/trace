@@ -70,11 +70,28 @@ def test_recorder_without_sink_keeps_events_in_memory():
     assert len(recorder.events) == 1
 
 
-def test_corrupt_trace_line_raises_with_location(tmp_path):
-    path = tmp_path / "trace.jsonl"
-    path.write_text('{"not": "an event"}\n')
+def test_corrupt_middle_line_raises_but_truncated_tail_is_dropped(tmp_path):
+    """Corruption mid-trace raises; a half-written final line (hard kill
+    mid write-through) is dropped so the surviving evidence stays usable."""
+    store = ArtifactStore(tmp_path / "runs")
+    store.create_run_dir("run_x")
+    recorder = TraceRecorder("run_x", jsonl_path=store.trace_path("run_x"))
+    recorder.record(TraceEventType.RUN_STARTED)
+    recorder.record(TraceEventType.MODEL_ACTION, step_id=1)
+
+    # Truncated tail: still readable, malformed line dropped.
+    path = store.trace_path("run_x")
+    path.write_text(path.read_text() + '{"half-writ')
+    events = store.read_trace("run_x")
+    assert [e.event_type for e in events] == [
+        TraceEventType.RUN_STARTED,
+        TraceEventType.MODEL_ACTION,
+    ]
+
+    # Corruption before the end: refuse loudly with the line number.
+    path.write_text('{"not": "an event"}\n' + events[0].model_dump_json() + "\n")
     with pytest.raises(ValueError, match="trace.jsonl:1"):
-        TraceRecorder.read_jsonl(path)
+        store.read_trace("run_x")
 
 
 def test_for_run_path_and_list_runs(tmp_path):

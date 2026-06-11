@@ -29,6 +29,7 @@ Failure behavior
 from __future__ import annotations
 
 import json
+import logging
 import time
 import traceback
 import uuid
@@ -52,6 +53,8 @@ from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEventType, utc_now
 from trace_harness.tracing.recorder import TraceRecorder
+
+logger = logging.getLogger(__name__)
 
 
 class ToolEnvironment(Protocol):
@@ -137,8 +140,19 @@ class AgentRunner:
         self.model_adapter = model_adapter
         self.environment = environment
         self.artifact_store = artifact_store
+        self._consumed = False
 
     def run(self, task: TaskSpec, config: RunConfig) -> RunResult:
+        # Fail loud on reuse: the environment's state and a fixture script's
+        # cursor are mutated by a run, so a second run() on the same instance
+        # would start from a polluted world and an exhausted script.
+        if self._consumed:
+            raise RuntimeError(
+                "AgentRunner instances are single-run: the environment state and "
+                "model adapter are stateful. Construct a fresh adapter, "
+                "environment, and runner for each run."
+            )
+        self._consumed = True
         run_id = new_run_id()
         store = self.artifact_store
         store.create_run_dir(run_id)
@@ -178,9 +192,11 @@ class AgentRunner:
         final_output: str | None = None
         steps_taken = 0
         error_message: str | None = None
+        current_step: int | None = None  # so a crash's error event keeps its step id
 
         try:
             for step_id in range(1, config.max_steps + 1):
+                current_step = step_id
                 if time.monotonic() - started_clock > config.timeout_seconds:
                     status = RunStatus.TERMINATED
                     termination = TerminationReason.TIMEOUT
@@ -313,6 +329,7 @@ class AgentRunner:
         except Exception as exc:  # noqa: BLE001 — partial artifacts beat a lost run
             recorder.record(
                 TraceEventType.ERROR,
+                step_id=current_step,
                 payload={
                     "error": str(exc),
                     "kind": "internal_error",
@@ -323,21 +340,35 @@ class AgentRunner:
             termination = TerminationReason.INTERNAL_ERROR
             error_message = str(exc)
 
-        # Final snapshots and result — written even after errors.
-        final_state = self.environment.snapshot_state()
-        recorder.record(
-            TraceEventType.STATE_SNAPSHOT,
-            payload={"phase": "final", "state": final_state},
-        )
-        recorder.record(
-            TraceEventType.RUN_FINISHED,
-            payload={
-                "status": status.value,
-                "termination_reason": termination.value,
-                "steps_taken": steps_taken,
-            },
-        )
-        store.write_json(run_id, names.FINAL_STATE, final_state)
+        # Final snapshots and result — written even after errors, and guarded
+        # so that a failing snapshot or trace write can't abort the run before
+        # run_result.json lands (the partial-artifacts promise). Only the
+        # run_result write itself is allowed to raise: if that fails, the disk
+        # is gone and there is nothing left to preserve.
+        try:
+            final_state = self.environment.snapshot_state()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("final state snapshot failed for %s", run_id)
+            final_state = {"snapshot_error": str(exc)}
+            status = RunStatus.ERROR
+            termination = TerminationReason.INTERNAL_ERROR
+            error_message = error_message or f"final state snapshot failed: {exc}"
+        try:
+            recorder.record(
+                TraceEventType.STATE_SNAPSHOT,
+                payload={"phase": "final", "state": final_state},
+            )
+            recorder.record(
+                TraceEventType.RUN_FINISHED,
+                payload={
+                    "status": status.value,
+                    "termination_reason": termination.value,
+                    "steps_taken": steps_taken,
+                },
+            )
+            store.write_json(run_id, names.FINAL_STATE, final_state)
+        except Exception:  # noqa: BLE001
+            logger.exception("final bookkeeping failed for %s; writing run_result anyway", run_id)
 
         result = RunResult(
             run_id=run_id,

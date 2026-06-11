@@ -125,3 +125,44 @@ def test_bundle_refuses_passing_runs(valid_run):
             final_state=valid_run.final_state,
             initial_state=valid_run.initial_state,
         )
+
+
+# --- review-hardening regressions -------------------------------------------
+
+
+def test_final_answer_failure_gets_a_grounding_control_and_ids_are_deduped(failure_run):
+    """Every blocking check class yields a control; repeated ids collapse."""
+    from trace_harness.tasks.schemas import Severity
+    from trace_harness.verifiers.base import FailedCheck, VerifierResult
+
+    def check(check_id, step):
+        return FailedCheck(
+            check_id=check_id,
+            message="m",
+            expected="e",
+            actual="a",
+            step_ids=[step],
+            severity=Severity.HIGH,
+        )
+
+    verdict = VerifierResult(
+        verifier_id="refund_policy",
+        run_id=failure_run.run_id,
+        passed=False,
+        failed_checks=[
+            check("unauthorized_cash_refund", 3),
+            check("unauthorized_cash_refund", 5),  # same class, second record
+            check("final_answer_inconsistent_with_state", 7),
+        ],
+    )
+    package = FailureBundleGenerator()._build_repair_package(
+        failure_run.task, failure_run.result, verdict
+    )
+    names = [control.name for control in package.controls]
+    assert "final_answer_state_grounding_check" in names
+    guardrail = next(c for c in package.controls if c.name.endswith("refund_guardrail"))
+    assert guardrail.linked_verifier_checks == ["unauthorized_cash_refund"]  # deduped
+    assert package.metadata["generated_from_checks"] == [
+        "unauthorized_cash_refund",
+        "final_answer_inconsistent_with_state",
+    ]

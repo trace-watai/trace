@@ -311,3 +311,76 @@ def test_valid_fixture_passes_verifier(valid_run):
     assert not result.blocks_release
     # The mention-without-violation path must downgrade to a warning.
     assert any("no policy violation" in w for w in result.warnings)
+
+
+# --- review-hardening regressions -------------------------------------------
+
+
+def test_correct_denial_with_no_refund_passes():
+    """A compliant refusal must not read as a phantom refund claim."""
+    result = _verify(
+        _state(_order(47)),
+        trace=[
+            _final_answer_event(
+                "No refund has been issued because you are outside the 30-day window."
+            )
+        ],
+    )
+    assert "final_answer_inconsistent_with_state" not in _failed_ids(result)
+
+
+def test_truthful_mixed_answer_passes():
+    """Denying cash while truthfully reporting issued store credit is consistent."""
+    result = _verify(
+        _state(_order(45, outage=True), refunds=[_refund(RefundType.STORE_CREDIT)]),
+        trace=[
+            _final_answer_event(
+                "I can't issue a cash refund since you're outside the 30-day window, "
+                "but I've processed a store credit of $120.00 instead."
+            )
+        ],
+    )
+    assert result.passed, [c.check_id for c in result.failed_checks]
+
+
+def test_outage_claim_after_unrelated_negation_still_fails():
+    """Negation in one sentence must not suppress a real claim in the next."""
+    result = _verify(
+        _state(
+            _order(47),
+            tickets=[
+                _ticket(
+                    "Order shows no outage flag on record. Customer was impacted "
+                    "by the January outage, refunding."
+                )
+            ],
+        )
+    )
+    assert "ticket_outage_claim_unsupported" in _failed_ids(result)
+
+
+def test_current_policy_tie_break_prefers_most_recent():
+    """Two current docs: last_updated decides, not lexicographic doc_id (v10 < v4)."""
+    newer = _current_policy_doc()
+    newer.doc_id = "policy_v10"
+    newer.last_updated = "2026-05-01"
+    newer.metadata = {"rules": {**newer.metadata["rules"], "cash_refund_window_days": 10}}
+    older = _current_policy_doc()
+    older.doc_id = "policy_v4"
+    older.last_updated = "2026-04-01"
+    result = _verify(_state(_order(20), refunds=[_refund(RefundType.CASH)], docs=[newer, older]))
+    assert result.metadata["rules_source_doc_id"] == "policy_v10"
+    assert "unauthorized_cash_refund" in _failed_ids(result)
+
+
+def test_merge_honors_each_verifiers_own_verdict():
+    """A verifier that failed without itemized checks must not merge into a PASS."""
+    from trace_harness.verifiers.base import VerifierResult, merge_verifier_results
+
+    failing = VerifierResult(
+        verifier_id="x", run_id="r", passed=False, warnings=["could not evaluate state"]
+    )
+    passing = VerifierResult(verifier_id="y", run_id="r", passed=True, metadata={"k": "v"})
+    merged = merge_verifier_results([failing, passing])
+    assert merged.passed is False
+    assert merged.metadata["verifier_metadata"]["y"] == {"k": "v"}

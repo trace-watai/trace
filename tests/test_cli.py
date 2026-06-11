@@ -113,3 +113,100 @@ def test_input_errors_exit_2_with_clean_message(tmp_path, capsys):
     assert main(["attribute", str(run_dir)]) == 2
     err = capsys.readouterr().err
     assert "verifier_result.json" in err  # message names the missing artifact
+
+
+# --- review-hardening regressions -------------------------------------------
+
+
+def _task_copy_with(tmp_path, source, **overrides):
+    """Write a modified copy of a task fixture with absolute doc/script paths."""
+    task = json.loads(source.read_text())
+    task["docs_fixture"] = str((source.parent / task["docs_fixture"]).resolve())
+    script = task["metadata"].get("fixture_script")
+    if script:
+        task["metadata"]["fixture_script"] = str((source.parent / script).resolve())
+    task.update(overrides)
+    path = tmp_path / f"{task['task_id']}_variant.json"
+    path.write_text(json.dumps(task))
+    return path
+
+
+def test_missing_fixture_script_is_an_input_error_not_a_gate_trip(tmp_path, capsys):
+    """Exit 2 (input error), never 1 — 1 means a verified failure in CI."""
+    from conftest import FAILURE_TASK_PATH
+
+    task_path = _task_copy_with(tmp_path, FAILURE_TASK_PATH)
+    task = json.loads(task_path.read_text())
+    del task["metadata"]["fixture_script"]
+    task_path.write_text(json.dumps(task))
+
+    code = main(["--runs-dir", str(tmp_path / "runs"), "run-fixture", str(task_path)])
+    assert code == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_empty_verifier_ids_is_an_input_error(tmp_path, capsys):
+    from conftest import VALID_TASK_PATH
+
+    task_path = _task_copy_with(tmp_path, VALID_TASK_PATH, verifier_ids=[])
+    runs_dir = tmp_path / "runs"
+    assert main(["--runs-dir", str(runs_dir), "run-fixture", str(task_path)]) == 0
+    run_dir = _only_run_dir(runs_dir)
+    assert main(["verify", str(run_dir), "--fail-on-verifier"]) == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_aborted_run_fails_the_ci_gate_even_with_no_violations(tmp_path, capsys):
+    """An agent that does nothing must not be CI-green."""
+    from conftest import FAILURE_TASK_PATH
+
+    short_script = tmp_path / "short_script.json"
+    short_script.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1.0",
+                "script_id": "short",
+                "task_id": "refund_policy_failure",
+                "actions": [
+                    {
+                        "kind": "tool_call",
+                        "tool_call": {
+                            "tool_name": "search_docs",
+                            "arguments": {"query": "refund"},
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    task_path = _task_copy_with(tmp_path, FAILURE_TASK_PATH)
+    runs_dir = tmp_path / "runs"
+    assert (
+        main(
+            [
+                "--runs-dir",
+                str(runs_dir),
+                "run-fixture",
+                str(task_path),
+                "--script",
+                str(short_script),
+            ]
+        )
+        == 0
+    )
+    run_dir = _only_run_dir(runs_dir)
+
+    # Without the gate flag: informational, exit 0, but the warning is loud.
+    assert main(["verify", str(run_dir)]) == 0
+    assert "run did not complete" in capsys.readouterr().out
+    # With the gate flag: an incomplete run is a failure, violations or not.
+    assert main(["verify", str(run_dir), "--fail-on-verifier"]) == 1
+
+
+def test_bare_run_id_resolves_under_runs_dir(tmp_path):
+    from conftest import VALID_TASK_PATH
+
+    runs_dir = tmp_path / "runs"
+    assert main(["--runs-dir", str(runs_dir), "run-fixture", str(VALID_TASK_PATH)]) == 0
+    run_id = _only_run_dir(runs_dir).name
+    assert main(["--runs-dir", str(runs_dir), "verify", run_id]) == 0

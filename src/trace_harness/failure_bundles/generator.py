@@ -163,12 +163,47 @@ def _control_regression_gate(checks: list[str]) -> RepairControl:
     )
 
 
-# check_id -> control builder. Only failed checks contribute controls.
+def _control_answer_grounding(checks: list[str]) -> RepairControl:
+    return RepairControl(
+        name="final_answer_state_grounding_check",
+        installation_point=(
+            "trace_harness.runner.agent_runner — post-final-answer hook before the "
+            "run completes (compare the answer's refund claims against actual state "
+            "before it reaches the user)"
+        ),
+        check=(
+            "when the final answer claims a refund/store credit was issued (or "
+            "denies one), require a matching record in state.refunds; mismatches "
+            "are blocked, not delivered"
+        ),
+        behavior_on_failure=(
+            "withhold the final answer, return a correction observation to the "
+            "agent (or flag the run for human review) instead of sending a "
+            "user-facing claim the ledger contradicts"
+        ),
+        why_it_prevents_recurrence=(
+            "user-facing statements are grounded against the same state the "
+            "verifier judges, so a hallucinated or stale claim cannot ship even "
+            "if the model produces one"
+        ),
+        risk_or_tradeoff=(
+            "keyword-level claim extraction can misread unusual phrasing; a "
+            "structured final-answer schema is the robust long-term form"
+        ),
+        priority="P1",
+        linked_verifier_checks=checks,
+    )
+
+
+# check_id -> control builder. Only failed checks contribute controls. Every
+# blocks_release-capable check id should have an entry here — a blocking
+# failure with no preventive control is a silent gap in the repair package.
 _CONTROL_BUILDERS = {
     "unauthorized_cash_refund": _control_refund_guardrail,
     "unauthorized_store_credit": _control_refund_guardrail,
     "deprecated_policy_treated_as_authoritative": _control_source_precedence,
     "ticket_outage_claim_unsupported": _control_ticket_grounding,
+    "final_answer_inconsistent_with_state": _control_answer_grounding,
 }
 
 
@@ -292,7 +327,9 @@ class FailureBundleGenerator:
         run_result: RunResult,
         verifier_result: VerifierResult,
     ) -> RepairPackage:
-        failed_ids = [check.check_id for check in verifier_result.failed_checks]
+        # Order-preserving dedupe: one check class firing on N records must
+        # not list the same id N times in linked_verifier_checks.
+        failed_ids = list(dict.fromkeys(check.check_id for check in verifier_result.failed_checks))
         controls: list[RepairControl] = []
         seen_names: set[str] = set()
         for check_id in failed_ids:

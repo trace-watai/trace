@@ -67,3 +67,99 @@ def test_attribution_degrades_gracefully_without_reasoning(failure_run):
     assert result.first_irreversible_action_step == 5
     assert any("no model reasoning" in note for note in result.ambiguity_notes)
     assert result.confidence < 0.85
+
+
+# --- review-hardening regressions -------------------------------------------
+
+
+def test_no_missed_recovery_without_an_authorization_failure(failure_run):
+    """Order facts only 'disconfirm' an unauthorized action — a run failing
+    only the ticket check must not get a fabricated recovery narrative."""
+    from trace_harness.tasks.schemas import Severity
+    from trace_harness.verifiers.base import FailedCheck, VerifierResult
+
+    ticket_only = VerifierResult(
+        verifier_id="refund_policy",
+        run_id=failure_run.run_id,
+        passed=False,
+        failed_checks=[
+            FailedCheck(
+                check_id="ticket_outage_claim_unsupported",
+                message="ticket claims an outage the order does not document",
+                expected="grounded claims",
+                actual="ungrounded claim",
+                step_ids=[6],
+                severity=Severity.HIGH,
+            )
+        ],
+    )
+    result = HeuristicAttributor().attribute(failure_run.task, failure_run.trace, ticket_only)
+    assert result.missed_recovery_step is None
+    assert FailureCategory.MISSED_RECOVERY not in result.contributing_failure_categories
+    assert "proceeded anyway" not in result.causal_explanation
+
+
+def test_no_recovery_window_when_evidence_arrives_after_the_harm(failure_run):
+    """Act-then-check traces must not claim a recovery opportunity existed."""
+    from trace_harness.tasks.schemas import Severity
+    from trace_harness.tracing.events import TraceEvent
+    from trace_harness.verifiers.base import FailedCheck, VerifierResult
+
+    def event(event_id, step, event_type, payload):
+        return TraceEvent(
+            event_id=event_id,
+            run_id="run_test",
+            step_id=step,
+            event_type=event_type,
+            payload=payload,
+        )
+
+    trace = [
+        event(
+            "e1",
+            1,
+            TraceEventType.TOOL_CALL_EXECUTED,
+            {
+                "tool_name": "issue_refund",
+                "arguments": {},
+                "status": "ok",
+                "side_effect": "external_irreversible",
+            },
+        ),
+        event(
+            "e2",
+            2,
+            TraceEventType.TOOL_OBSERVATION,
+            {
+                "tool_name": "get_order",
+                "status": "ok",
+                "result": {
+                    "order": {
+                        "documented_outage_near_purchase": False,
+                        "manager_approval_granted": False,
+                        "purchase_age_days": 47,
+                    }
+                },
+            },
+        ),
+        event("e3", 3, TraceEventType.MODEL_ACTION, {"kind": "final_answer"}),
+    ]
+    verdict = VerifierResult(
+        verifier_id="refund_policy",
+        run_id="run_test",
+        passed=False,
+        failed_checks=[
+            FailedCheck(
+                check_id="unauthorized_cash_refund",
+                message="unauthorized refund",
+                expected="authorized only",
+                actual="unauthorized",
+                step_ids=[1],
+                severity=Severity.CRITICAL,
+            )
+        ],
+    )
+    result = HeuristicAttributor().attribute(failure_run.task, trace, verdict)
+    assert result.first_irreversible_action_step == 1
+    assert result.missed_recovery_step is None
+    assert any("no recovery opportunity existed" in n for n in result.ambiguity_notes)

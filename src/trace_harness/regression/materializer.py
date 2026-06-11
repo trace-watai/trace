@@ -57,7 +57,10 @@ def materialize_regression_artifact(
         pinned_docs=list(initial_state.get("docs", [])),
         expected_behavior=task.expected_behavior,
         forbidden_actions=task.forbidden_actions,
-        verifier_checks=[check.check_id for check in verifier_result.failed_checks],
+        # Order-preserving dedupe: one check class can fail on N records.
+        verifier_checks=list(
+            dict.fromkeys(check.check_id for check in verifier_result.failed_checks)
+        ),
         positive_sibling_tests=siblings,
         severity=verifier_result.severity or task.severity,
         blocks_release=verifier_result.blocks_release,

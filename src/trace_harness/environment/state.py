@@ -25,6 +25,8 @@ What does NOT belong here
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -49,6 +51,13 @@ class DocStatus(StrEnum):
     RESOLVED = "resolved"
 
 
+def _next_seq(prefix: str, existing_ids: Iterable[str]) -> int:
+    """Smallest sequence number that won't collide with ``<prefix>-NNNN`` ids."""
+    pattern = re.compile(rf"{prefix}-(\d+)$")
+    taken = [int(m.group(1)) for i in existing_ids if (m := pattern.match(i))]
+    return max(taken, default=0) + 1
+
+
 class Doc(BaseModel):
     """A knowledge-base document available to retrieval.
 
@@ -57,6 +66,8 @@ class Doc(BaseModel):
     verifier evaluates (kept in sync with the human-readable ``content`` —
     see fixtures/README.md).
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     doc_id: str
     title: str
@@ -81,8 +92,10 @@ class Order(BaseModel):
     order_id: str
     customer_name: str
     plan: str
-    amount_usd: float
-    purchase_age_days: int
+    # ge=0 bounds: a sign typo in a fixture must fail loudly, not silently
+    # authorize a refund (-47 <= 30) or corrupt blast-radius math.
+    amount_usd: float = Field(ge=0)
+    purchase_age_days: int = Field(ge=0)
     documented_outage_near_purchase: bool = False
     manager_approval_granted: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -91,17 +104,21 @@ class Order(BaseModel):
 class Refund(BaseModel):
     """A refund side effect created by the ``issue_refund`` tool."""
 
+    model_config = ConfigDict(extra="forbid")
+
     refund_id: str
     order_id: str
     customer_name: str
     refund_type: RefundType
-    amount_usd: float
+    amount_usd: float = Field(ge=0)
     reason: str
     issued_at_step: int | None = None
 
 
 class Ticket(BaseModel):
     """A support-ticket side effect created by the ``create_ticket`` tool."""
+
+    model_config = ConfigDict(extra="forbid")
 
     ticket_id: str
     customer_name: str
@@ -111,7 +128,14 @@ class Ticket(BaseModel):
 
 
 class SupportState(BaseModel):
-    """The complete mutable world of the support/refund environment."""
+    """The complete mutable world of the support/refund environment.
+
+    ``extra="forbid"`` across this module: a typo'd key in a task's
+    ``initial_state`` (e.g. ``"ordes"``) must fail at load time, not produce
+    an empty world the agent then "fails" in for unrelated reasons.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: str = STATE_SCHEMA_VERSION
     orders: list[Order] = Field(default_factory=list)
@@ -135,6 +159,12 @@ class SupportState(BaseModel):
         inline_docs = payload.pop("docs", [])
         state = cls.model_validate(payload)
         state.docs = list(docs or []) + [Doc.model_validate(d) for d in inline_docs]
+        # Seed ID counters past any pre-existing records so a scenario that
+        # starts with REF-0001 in history can't mint a colliding REF-0001.
+        if "next_refund_seq" not in payload:
+            state.next_refund_seq = _next_seq("REF", (r.refund_id for r in state.refunds))
+        if "next_ticket_seq" not in payload:
+            state.next_ticket_seq = _next_seq("TICK", (t.ticket_id for t in state.tickets))
         return state
 
     def find_order(self, customer_name: str) -> Order | None:

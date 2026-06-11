@@ -33,7 +33,7 @@ from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models import create_model_adapter
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import RunConfig
-from trace_harness.runner.result import RunResult
+from trace_harness.runner.result import RunResult, RunStatus
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
@@ -42,6 +42,16 @@ from trace_harness.verifiers.base import VerifierResult, merge_verifier_results
 from trace_harness.verifiers.registry import get_verifier
 
 logger = logging.getLogger("trace_harness")
+
+
+class CliInputError(ValueError):
+    """A user-input problem (bad path, malformed fixture, missing config).
+
+    Subclasses ValueError so main()'s handler reports it cleanly with exit
+    code 2. Never ``raise SystemExit("message")`` for these: that exits with
+    status 1 — colliding with the --fail-on-verifier CI-gate code — and
+    bypasses the error handler entirely.
+    """
 
 
 def _print(label: str, value: str) -> None:
@@ -55,9 +65,22 @@ def _resolve_script_path(task: TaskSpec, task_path: Path, override: str | None) 
     metadata_script = task.metadata.get("fixture_script")
     if metadata_script:
         return (task_path.parent / metadata_script).resolve()
-    raise SystemExit(
+    raise CliInputError(
         f"task '{task.task_id}' has no metadata.fixture_script and no --script "
         "was given; the fixture provider needs a script to replay"
+    )
+
+
+def _resolve_run_dir(run_path: str, runs_dir: Path) -> Path:
+    """Accept a run-directory path, or a bare run id resolved under --runs-dir."""
+    direct = Path(run_path)
+    if direct.is_dir():
+        return direct
+    candidate = runs_dir / run_path
+    if candidate.is_dir():
+        return candidate
+    raise CliInputError(
+        f"run directory not found: tried {direct.resolve()} and {candidate.resolve()}"
     )
 
 
@@ -102,14 +125,23 @@ def _repo_relative(path: Path) -> str:
         return str(path)
 
 
-def _verify(run_dir: Path) -> tuple[VerifierResult, ArtifactStore, str]:
+def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
+    """Run the task's verifiers; returns (merged result, run_completed).
+
+    ``run_completed`` matters for gating: a run that aborted before acting
+    leaves an empty state with no violations, so a verifier PASS alone must
+    never satisfy the CI gate — a broken agent that does nothing is not a
+    passing agent.
+    """
     store, run_id = ArtifactStore.for_run_path(run_dir)
     task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
     trace = store.read_trace(run_id)
     final_state = store.read_json(run_id, names.FINAL_STATE)
+    run_result = RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT))
+    run_completed = run_result.status is RunStatus.COMPLETED
 
     if not task.verifier_ids:
-        raise SystemExit(f"task '{task.task_id}' declares no verifier_ids; nothing to verify")
+        raise CliInputError(f"task '{task.task_id}' declares no verifier_ids; nothing to verify")
     results = [
         get_verifier(verifier_id).verify(task, trace, final_state, run_id)
         for verifier_id in task.verifier_ids
@@ -129,8 +161,15 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, ArtifactStore, str]:
         print(f"      actual:   {check.actual}")
     for warning in merged.warnings:
         print(f"  ⚠ {warning}")
+    if not run_completed:
+        print(
+            f"  ⚠ run did not complete (status={run_result.status.value}, "
+            f"termination={run_result.termination_reason.value}); a PASS only means "
+            "no violations were recorded — the --fail-on-verifier gate treats "
+            "incomplete runs as failures"
+        )
     _print("written:", str(store.artifact_path(run_id, names.VERIFIER_RESULT)))
-    return merged, store, run_id
+    return merged, run_completed
 
 
 def _attribute(run_dir: Path) -> bool:
@@ -290,25 +329,25 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         _run_fixture(args, store)
         return 0
     if args.command == "verify":
-        merged, _, _ = _verify(Path(args.run_path))
-        return 1 if (args.fail_on_verifier and not merged.passed) else 0
+        merged, run_completed = _verify(_resolve_run_dir(args.run_path, store.runs_dir))
+        return 1 if (args.fail_on_verifier and not (merged.passed and run_completed)) else 0
     if args.command == "attribute":
-        _attribute(Path(args.run_path))
+        _attribute(_resolve_run_dir(args.run_path, store.runs_dir))
         return 0
     if args.command == "bundle":
-        _bundle(Path(args.run_path))
+        _bundle(_resolve_run_dir(args.run_path, store.runs_dir))
         return 0
     if args.command == "run-pipeline":
         result = _run_fixture(args, store)
         run_dir = store.run_dir(result.run_id)
-        merged, _, _ = _verify(run_dir)
+        merged, run_completed = _verify(run_dir)
         if not merged.passed:
             _attribute(run_dir)
             _bundle(run_dir)
         else:
             print("\nVerifier passed: no attribution or failure bundle needed.")
         print(f"\nPipeline complete. Inspect artifacts in: {run_dir}")
-        return 1 if (args.fail_on_verifier and not merged.passed) else 0
+        return 1 if (args.fail_on_verifier and not (merged.passed and run_completed)) else 0
     raise AssertionError(f"unhandled command {args.command}")  # pragma: no cover
 
 

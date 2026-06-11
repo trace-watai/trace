@@ -16,6 +16,7 @@ Why open-per-event
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -63,13 +64,32 @@ class TraceRecorder:
 
     @staticmethod
     def read_jsonl(path: Path) -> list[TraceEvent]:
-        """Load a trace back from JSONL; the inverse of write-through recording."""
+        """Load a trace back from JSONL; the inverse of write-through recording.
+
+        A malformed FINAL line is dropped with a warning instead of raising:
+        a hard kill mid-write leaves exactly that shape, and refusing the
+        whole trace would discard the surviving evidence (the
+        partial-artifacts promise). Malformed lines anywhere else indicate
+        corruption and still raise.
+        """
+        numbered = [
+            (line_number, line)
+            for line_number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            )
+            if line.strip()
+        ]
         events: list[TraceEvent] = []
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if not line.strip():
-                continue
+        for index, (line_number, line) in enumerate(numbered):
             try:
                 events.append(TraceEvent.model_validate_json(line))
             except ValueError as exc:
+                if index == len(numbered) - 1:
+                    logging.getLogger(__name__).warning(
+                        "dropping malformed final trace line %s:%d (truncated write?)",
+                        path,
+                        line_number,
+                    )
+                    break
                 raise ValueError(f"invalid trace event at {path}:{line_number}: {exc}") from exc
         return events

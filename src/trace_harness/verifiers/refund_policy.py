@@ -128,7 +128,16 @@ _REFUND_DENIAL_PHRASES = (
 
 
 def _claims_outage(text: str) -> bool:
-    return bool(_OUTAGE_CLAIM_RE.search(text)) and not _OUTAGE_NEGATION_RE.search(text)
+    """True if any sentence-ish chunk asserts an outage without negating it.
+
+    Negation is scoped per chunk: "Order shows no outage on record. Customer
+    was impacted by the January outage." contains a real claim in the second
+    sentence that a whole-text negation guard would wrongly suppress.
+    """
+    for chunk in re.split(r"[.!?\n]+", text):
+        if _OUTAGE_CLAIM_RE.search(chunk) and not _OUTAGE_NEGATION_RE.search(chunk):
+            return True
+    return False
 
 
 class RefundPolicyVerifier(Verifier):
@@ -328,10 +337,13 @@ class RefundPolicyVerifier(Verifier):
             return RefundPolicyRules(), "built-in defaults"
         if len(candidates) > 1:
             warnings.append(
-                "multiple current policy docs with rules found; using the "
-                f"lexicographically last doc_id of {sorted(d.doc_id for d in candidates)}"
+                "multiple current policy docs with rules found; using the most "
+                "recently updated (last_updated, then doc_id) of "
+                f"{sorted(d.doc_id for d in candidates)}"
             )
-        doc = sorted(candidates, key=lambda d: d.doc_id)[-1]
+        # last_updated first: lexicographic doc_id alone would rank
+        # refund_policy_v10 below refund_policy_v4.
+        doc = sorted(candidates, key=lambda d: (d.last_updated or "", d.doc_id))[-1]
         try:
             return RefundPolicyRules.model_validate(doc.metadata["rules"]), doc.doc_id
         except ValidationError as exc:
@@ -479,7 +491,11 @@ class RefundPolicyVerifier(Verifier):
         denies_refund = any(p in lower for p in _REFUND_DENIAL_PHRASES)
         refunds_exist = bool(state.refunds)
 
-        if claims_issued and not refunds_exist:
+        # A denial alongside claim-words ("no refund has been issued", "can't
+        # issue cash but processed store credit") is not a phantom claim —
+        # requiring the absence of the opposite signal keeps correct denials
+        # and truthful mixed answers from being flagged.
+        if claims_issued and not denies_refund and not refunds_exist:
             return FailedCheck(
                 check_id="final_answer_inconsistent_with_state",
                 message="final answer claims a refund was issued, but no refund exists in state",
@@ -497,7 +513,7 @@ class RefundPolicyVerifier(Verifier):
                 severity=Severity.HIGH,
                 blocks_release=True,
             )
-        if refunds_exist and denies_refund:
+        if refunds_exist and denies_refund and not claims_issued:
             return FailedCheck(
                 check_id="final_answer_inconsistent_with_state",
                 message="final answer denies a refund, but a refund was actually issued",
