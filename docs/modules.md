@@ -1,9 +1,30 @@
-# Module guide — where to work and what the rules are
+# Module guide — where to work and what the current shape is
 
 One section per module under `src/trace_harness/`. Each answers: what
-belongs there, what it exposes, the rules that keep it healthy, and what to
-build next. Owners live in [team_ownership.md](team_ownership.md);
+belongs there, what it exposes, the current design defaults, and ideas for
+what to build next. Owners live in [team_ownership.md](team_ownership.md);
 architecture-level data flow lives in [architecture.md](architecture.md).
+
+> **This guide is a strawman, not law.** It describes how the scaffold was
+> built so you don't have to reverse-engineer it — it is not a list of
+> agreed-upon rules. If you own a section, rewrite it: edit or delete the
+> "Rules" and "Build next" parts for your area as your design evolves,
+> rather than working around them. The "Build next" lists are suggestions
+> to seed your backlog, not commitments.
+>
+> Only a handful of things are actual repo-wide constraints (agreed in the
+> founding spec, enforced by tests/CI):
+> 1. Tests run offline — no API keys, no network, ever.
+> 2. The deterministic verifier decides release-blocking pass/fail; an LLM
+>    never does.
+> 3. Schema changes bump `schema_version` and update consumers + tests in
+>    the same PR.
+> 4. Generated `runs/` output is never committed; scenario content lives in
+>    `fixtures/`, not `src/`.
+>
+> Everything else in this file — naming, heuristics, design boundaries,
+> even "never collapse X and Y" style statements — is the current default,
+> owned by whoever owns the module, and changeable through a normal PR.
 
 ---
 

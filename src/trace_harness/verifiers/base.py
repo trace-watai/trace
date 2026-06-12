@@ -112,13 +112,20 @@ def merge_verifier_results(results: list[VerifierResult]) -> VerifierResult:
     return VerifierResult(
         verifier_id="+".join(result.verifier_id for result in results),
         run_id=results[0].run_id,
-        passed=not failed,
+        # A verifier can fail without itemized checks (e.g. it could not
+        # evaluate at all) — honor each input's own verdict, never recompute
+        # it from the check list alone.
+        passed=all(result.passed for result in results) and not failed,
         failed_checks=failed,
         warnings=[w for result in results for w in result.warnings],
         severity=max_severity(check.severity for check in failed),
         blocks_release=any(check.blocks_release for check in failed),
         evidence=[item for result in results for item in result.evidence],
-        metadata={"merged_from": [result.verifier_id for result in results]},
+        metadata={
+            "merged_from": [result.verifier_id for result in results],
+            # Preserve per-verifier metadata instead of dropping it.
+            "verifier_metadata": {result.verifier_id: result.metadata for result in results},
+        },
     )
 
 

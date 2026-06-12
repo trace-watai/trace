@@ -36,9 +36,11 @@ DEFAULT_LOG_LEVEL = "INFO"
 def load_env_file(path: Path | str = ".env") -> dict[str, str]:
     """Load ``KEY=VALUE`` lines from a dotenv-style file into ``os.environ``.
 
-    Deliberately tiny instead of a ``python-dotenv`` dependency: no quoting,
-    no interpolation, no multi-line values. Existing environment variables
-    are never overridden, so shell exports always win.
+    Deliberately tiny instead of a ``python-dotenv`` dependency, but it
+    handles the dotenv syntax people actually write: ``export KEY=...``
+    prefixes, a UTF-8 BOM, surrounding quotes, and trailing `` # comments``
+    on unquoted values. No interpolation, no multi-line values. Existing
+    environment variables are never overridden, so shell exports always win.
 
     Returns the variables that were actually applied.
     """
@@ -46,12 +48,19 @@ def load_env_file(path: Path | str = ".env") -> dict[str, str]:
     applied: dict[str, str] = {}
     if not env_path.is_file():
         return applied
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+    # utf-8-sig: a BOM would otherwise become part of the first key's name.
+    for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
         key, _, value = line.partition("=")
         key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]  # quoted: keep verbatim, quotes removed
+        else:
+            value = value.split(" #", 1)[0].rstrip()  # unquoted: drop inline comment
         if key and key not in os.environ:
             os.environ[key] = value
             applied[key] = value
@@ -71,9 +80,14 @@ class HarnessConfig(BaseModel):
 
     @classmethod
     def from_env(cls) -> HarnessConfig:
-        """Build config from ``TRACE_*`` environment variables (see .env.example)."""
+        """Build config from ``TRACE_*`` environment variables (see .env.example).
+
+        Empty-string values fall back to defaults: ``TRACE_RUNS_DIR=`` would
+        otherwise become ``Path("")`` (the current directory) and scatter
+        run dirs outside the gitignored ``runs/``.
+        """
         return cls(
-            model_provider=os.environ.get("TRACE_MODEL_PROVIDER", DEFAULT_PROVIDER),
-            runs_dir=Path(os.environ.get("TRACE_RUNS_DIR", DEFAULT_RUNS_DIR)),
-            log_level=os.environ.get("TRACE_LOG_LEVEL", DEFAULT_LOG_LEVEL),
+            model_provider=os.environ.get("TRACE_MODEL_PROVIDER") or DEFAULT_PROVIDER,
+            runs_dir=Path(os.environ.get("TRACE_RUNS_DIR") or DEFAULT_RUNS_DIR),
+            log_level=os.environ.get("TRACE_LOG_LEVEL") or DEFAULT_LOG_LEVEL,
         )

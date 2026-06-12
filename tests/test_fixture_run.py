@@ -175,3 +175,131 @@ def test_failure_and_valid_runs_are_deterministic(tmp_path):
         for run in (first, second)
     ]
     assert stripped[0] == stripped[1]
+
+
+# --- review-hardening regressions -------------------------------------------
+
+
+def test_agent_runner_refuses_reuse(tmp_path):
+    """State and script cursors are stateful; a second run() must fail loudly."""
+    import pytest
+
+    from conftest import FAILURE_TASK_PATH
+    from trace_harness.environment.support_env import SupportEnvironment
+    from trace_harness.models.fixture import FixtureModelAdapter
+    from trace_harness.runner.agent_runner import AgentRunner
+    from trace_harness.runner.config import RunConfig
+    from trace_harness.tracing.artifact_store import ArtifactStore
+
+    task = load_task(FAILURE_TASK_PATH)
+    docs = load_docs_for_task(task, FAILURE_TASK_PATH)
+    script = (FAILURE_TASK_PATH.parent / task.metadata["fixture_script"]).resolve()
+    runner = AgentRunner(
+        FixtureModelAdapter.from_file(script),
+        SupportEnvironment.from_task(task, docs=docs),
+        ArtifactStore(tmp_path / "runs"),
+    )
+    runner.run(task, RunConfig(task_id=task.task_id))
+    with pytest.raises(RuntimeError, match="single-run"):
+        runner.run(task, RunConfig(task_id=task.task_id))
+
+
+def test_typoed_initial_state_keys_fail_loudly():
+    """extra='forbid' across state models: 'ordes' must raise, not vanish."""
+    import pytest
+    from pydantic import ValidationError
+
+    from trace_harness.environment.state import Order, SupportState
+
+    with pytest.raises(ValidationError):
+        SupportState.model_validate({"ordes": []})
+    with pytest.raises(ValidationError):
+        Order(
+            order_id="O1",
+            customer_name="J",
+            plan="p",
+            amount_usd=10.0,
+            purchase_age_days=-47,  # sign typo must not silently authorize refunds
+        )
+
+
+def test_seeded_side_effect_ids_do_not_collide():
+    """Pre-existing REF-0001 in initial_state must bump the generated sequence."""
+    from trace_harness.environment.state import SupportState
+    from trace_harness.tasks.schemas import TaskSpec
+
+    task = TaskSpec(
+        task_id="t",
+        title="t",
+        description="t",
+        goal="t",
+        workflow_type="w",
+        initial_state={
+            "orders": [],
+            "refunds": [
+                {
+                    "refund_id": "REF-0001",
+                    "order_id": "O0",
+                    "customer_name": "J",
+                    "refund_type": "cash",
+                    "amount_usd": 1.0,
+                    "reason": "history",
+                }
+            ],
+            "tickets": [],
+        },
+        available_tools=[],
+        available_docs=[],
+    )
+    state = SupportState.from_task(task)
+    assert state.next_refund_seq == 2
+
+
+def test_run_result_written_even_if_final_snapshot_fails(tmp_path):
+    """The partial-artifacts promise: a dying snapshot must not lose run_result."""
+    from conftest import FAILURE_TASK_PATH
+    from trace_harness.environment.support_env import SupportEnvironment
+    from trace_harness.models.fixture import FixtureModelAdapter
+    from trace_harness.runner.agent_runner import AgentRunner
+    from trace_harness.runner.config import RunConfig
+    from trace_harness.tracing.artifact_store import ArtifactStore
+
+    class FlakySnapshotEnv:
+        """Delegates everything; snapshot_state works once, then dies."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self._snapshots = 0
+
+        def tool_specs(self):
+            return self._inner.tool_specs()
+
+        def validate_call(self, call):
+            return self._inner.validate_call(call)
+
+        def execute(self, call, step_id=None):
+            return self._inner.execute(call, step_id=step_id)
+
+        def side_effect_for(self, tool_name):
+            return self._inner.side_effect_for(tool_name)
+
+        def snapshot_state(self):
+            self._snapshots += 1
+            if self._snapshots > 1:
+                raise RuntimeError("environment exploded during final snapshot")
+            return self._inner.snapshot_state()
+
+    task = load_task(FAILURE_TASK_PATH)
+    docs = load_docs_for_task(task, FAILURE_TASK_PATH)
+    script = (FAILURE_TASK_PATH.parent / task.metadata["fixture_script"]).resolve()
+    store = ArtifactStore(tmp_path / "runs")
+    runner = AgentRunner(
+        FixtureModelAdapter.from_file(script),
+        FlakySnapshotEnv(SupportEnvironment.from_task(task, docs=docs)),
+        store,
+    )
+    result = runner.run(task, RunConfig(task_id=task.task_id))  # must not raise
+    assert result.status is RunStatus.ERROR
+    assert "snapshot failed" in (result.error or "")
+    assert store.exists(result.run_id, names.RUN_RESULT)
+    assert store.read_json(result.run_id, names.FINAL_STATE)["snapshot_error"]

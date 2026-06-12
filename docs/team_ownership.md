@@ -1,8 +1,12 @@
 # Team ownership map
 
-Who owns which part of the repo. "Owner" means: reviews changes there,
-keeps its README/docs truthful, and drives its next-steps list. Everyone
-can contribute anywhere — through the owner's review.
+Who owns which part of the repo. "Owner" here means **steward and first
+reviewer** — the person who knows the area best and keeps its docs
+truthful — not a gatekeeper, and not a claim already staked. Nothing in
+this repo is anyone's territory until they've actually picked it up;
+everyone can contribute anywhere, and this map is expected to be redrawn
+as people discover what they actually want to work on. If a row doesn't
+match reality, change the row.
 
 ## Evaluation Core
 
