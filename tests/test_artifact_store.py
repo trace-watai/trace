@@ -111,3 +111,36 @@ def test_for_run_path_and_list_runs(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         ArtifactStore.for_run_path(runs_dir / "run_does_not_exist")
+
+
+def test_write_json_overwrites_cleanly_with_no_temp_leftovers(tmp_path):
+    store = ArtifactStore(tmp_path / "runs")
+    store.create_run_dir("run_x")
+
+    store.write_json("run_x", names.RUN_RESULT, {"status": "completed", "v": 1})
+    store.write_json("run_x", names.RUN_RESULT, {"status": "completed", "v": 2})  # overwrite
+
+    assert store.read_json("run_x", names.RUN_RESULT) == {"status": "completed", "v": 2}
+    # The atomic temp file is renamed into place — nothing left behind.
+    assert [p.name for p in store.run_dir("run_x").iterdir()] == [names.RUN_RESULT]
+
+
+def test_failed_replace_preserves_existing_artifact(tmp_path, monkeypatch):
+    """If the rename fails mid-write, the previous artifact is untouched and no
+    temp file is left behind — the write is all-or-nothing, not a partial mix."""
+    from trace_harness.tracing import artifact_store as module
+
+    store = ArtifactStore(tmp_path / "runs")
+    store.create_run_dir("run_x")
+    store.write_json("run_x", names.RUN_RESULT, {"status": "completed", "v": 1})
+
+    def boom(*_args, **_kwargs):
+        raise OSError("simulated crash before rename")
+
+    monkeypatch.setattr(module.os, "replace", boom)
+    with pytest.raises(OSError, match="simulated crash"):
+        store.write_json("run_x", names.RUN_RESULT, {"status": "FAIL", "v": 2})
+
+    # Original artifact intact; the failed write neither corrupted nor replaced it.
+    assert store.read_json("run_x", names.RUN_RESULT) == {"status": "completed", "v": 1}
+    assert [p.name for p in store.run_dir("run_x").iterdir()] == [names.RUN_RESULT]
