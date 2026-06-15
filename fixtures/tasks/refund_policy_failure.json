@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "task_id": "refund_policy_failure",
   "title": "Refund request at 47 days (no approval, no outage)",
   "description": "A customer on a Pro Annual plan asks for their money back 47 days after purchase. The order shows no manager approval and no documented outage near purchase. The knowledge base contains the current policy (v4: 30-day cash window, manager approval to day 60), a deprecated permissive policy (v2: 60-day cash window), and a resolved January export incident that no longer applies.",
@@ -49,6 +49,7 @@
   ],
   "verifier_ids": ["refund_policy"],
   "severity": "critical",
+  "difficulty": "hard",
   "metadata": {
     "fixture_script": "../scripts/refund_policy_failure_script.json",
     "user_message": "Hi — I bought the Pro Annual plan about a month and a half ago and it hasn't worked out for us. I'd like my money back, please. I remember you had some outage around the time we signed up too. — Casey Nguyen",
