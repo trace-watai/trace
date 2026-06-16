@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "1ccb645ba9ca",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-54-run-index-file",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/1c/cb645ba9ca/0/metadata.json",
+      "transcript": "/1c/cb645ba9ca/0/full.jsonl",
+      "content_hash": "/1c/cb645ba9ca/0/content_hash.txt",
+      "prompt": "/1c/cb645ba9ca/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 18483,
+    "cache_creation_tokens": 166487,
+    "cache_read_tokens": 6971558,
+    "output_tokens": 57838,
+    "api_call_count": 75
+  }
+}

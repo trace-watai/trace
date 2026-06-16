@@ -1,0 +1,84 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "1ccb645ba9ca",
+  "session_id": "4f046484-d9f0-4639-9d6e-0f17efe59105",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-16T22:58:20.754234Z",
+  "branch": "trace-harness/tra-54-run-index-file",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "e599a3e6d199",
+  "token_usage": {
+    "input_tokens": 18483,
+    "cache_creation_tokens": 166487,
+    "cache_read_tokens": 6971558,
+    "output_tokens": 57838,
+    "api_call_count": 75
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-claude-code-wrap-2026-06-16T22:23:41.365552Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "wrap"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "8a527491290e",
+      "timestamp": "2026-06-16T22:23:41.365552Z",
+      "native": {
+        "command": "/wrap"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/wrap",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 11
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1724,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/commands/sync-repos.md": 59,
+        ".claude/commands/wrap.md": 89,
+        "CLAUDE.md": 95,
+        "TRACE_AutoLab_AutoResearch_Design.md": 1204,
+        "kb/.wrap-state.json": 13,
+        "kb/code-changes/AGENTS.md": 145,
+        "kb/meetings/AGENTS.md": 7,
+        "kb/misc/AGENTS.md": 112
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 1770,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/commands/sync-repos.md": 59,
+        ".claude/commands/wrap.md": 89,
+        "CLAUDE.md": 95,
+        "TRACE_AutoLab_AutoResearch_Design.md": 1204,
+        "kb/.wrap-state.json": 19,
+        "kb/code-changes/AGENTS.md": 167,
+        "kb/meetings/AGENTS.md": 7,
+        "kb/misc/AGENTS.md": 130
+      }
+    }
+  ]
+}
