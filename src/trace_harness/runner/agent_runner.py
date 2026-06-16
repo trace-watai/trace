@@ -55,6 +55,7 @@ from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEventType, utc_now
 from trace_harness.tracing.recorder import TraceRecorder
+from trace_harness.tracing.run_index import RunIndexEntry
 
 logger = logging.getLogger(__name__)
 
@@ -458,4 +459,14 @@ class AgentRunner:
             error=error_message,
         )
         store.write_json(run_id, names.RUN_RESULT, result)
+
+        # Update the runs-dir index. Derived convenience: guarded so an index
+        # failure can never abort a run — run_result.json is the source of truth
+        # and the index is always rebuildable from it.
+        try:
+            store.upsert_index_entry(RunIndexEntry.from_result(result))
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "run index update failed for %s; run_result is the source of truth", run_id
+            )
         return result
