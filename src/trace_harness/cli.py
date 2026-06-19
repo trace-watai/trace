@@ -84,23 +84,52 @@ def _resolve_run_dir(run_path: str, runs_dir: Path) -> Path:
     )
 
 
+def _add_provider_args(parser: argparse.ArgumentParser) -> None:
+    """Provider-selection flags shared by run-fixture and run-pipeline."""
+    parser.add_argument(
+        "--provider",
+        default="fixture",
+        help="model provider: 'fixture' (scripted, default) or 'gemini'",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="model name for real providers (e.g. gemini-2.0-flash); ignored by fixture",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="max wall-clock seconds for the whole run (default: 120)",
+    )
+
+
 def _run_fixture(args: argparse.Namespace, store: ArtifactStore) -> RunResult:
     task_path = Path(args.task_path).resolve()
     task = load_task(task_path)
     docs = load_docs_for_task(task, task_path)
-    script_path = _resolve_script_path(task, task_path, args.script)
 
     environment = SupportEnvironment.from_task(task, docs=docs)
-    adapter = create_model_adapter("fixture", script_path=script_path)
+    metadata: dict[str, str] = {"task_fixture_path": _repo_relative(task_path)}
+
+    # The fixture provider replays a script; real providers (gemini) drive the
+    # agent live and need no script — only the fixture path is required.
+    if args.provider == "fixture":
+        script_path = _resolve_script_path(task, task_path, args.script)
+        adapter = create_model_adapter("fixture", script_path=script_path)
+        model = f"scripted:{script_path.stem}"
+        metadata["fixture_script_path"] = _repo_relative(script_path)
+    else:
+        adapter = create_model_adapter(args.provider, model=args.model)
+        model = args.model
+
     config = RunConfig(
         task_id=task.task_id,
-        provider="fixture",
-        model=f"scripted:{script_path.stem}",
+        provider=args.provider,
+        model=model,
         max_steps=args.max_steps,
-        metadata={
-            "task_fixture_path": _repo_relative(task_path),
-            "fixture_script_path": _repo_relative(script_path),
-        },
+        timeout_seconds=args.timeout,
+        metadata=metadata,
     )
     runner = AgentRunner(adapter, environment, store)
     result = runner.run(task, config)
@@ -270,11 +299,12 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_run = sub.add_parser(
-        "run-fixture", parents=[common], help="run a task with the scripted fixture agent"
+        "run-fixture", parents=[common], help="run a task with a model agent (default: fixture)"
     )
     p_run.add_argument("task_path", help="path to a task fixture JSON")
     p_run.add_argument("--script", default=None, help="override the fixture script path")
     p_run.add_argument("--max-steps", type=int, default=16)
+    _add_provider_args(p_run)
 
     p_verify = sub.add_parser(
         "verify", parents=[common], help="run the task's verifiers on a finished run"
@@ -305,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
     p_pipe.add_argument("--script", default=None)
     p_pipe.add_argument("--max-steps", type=int, default=16)
     p_pipe.add_argument("--fail-on-verifier", action="store_true")
+    _add_provider_args(p_pipe)
 
     args = parser.parse_args(argv)
     runs_dir_arg = getattr(args, "runs_dir", None)

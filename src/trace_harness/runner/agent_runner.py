@@ -21,18 +21,20 @@ Failure behavior
     ``run_finished``, ``run_result.json``); only a hard kill leaves a trace
     truncated mid-stream. Partial evidence beats no evidence.
 
-# TODO(Rupert/runner): retries/backoff policy for real adapters, and a
-# cancellation/timeout that can interrupt a hung provider call (today the
-# timeout is only checked between steps).
+# TODO(Rupert/runner): retries/backoff policy for real adapters. The per-call
+# timeout now bounds a hung provider call so the run terminates on time, but
+# Python can't truly cancel the thread — it runs on as a daemon until process
+# exit; real cancellation needs provider-level request timeouts.
 """
 
 from __future__ import annotations
 
-import json
 import logging
+import threading
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from trace_harness.environment.tools import ToolResult, ToolSideEffect
@@ -55,6 +57,38 @@ from trace_harness.tracing.events import TraceEventType, utc_now
 from trace_harness.tracing.recorder import TraceRecorder
 
 logger = logging.getLogger(__name__)
+
+
+class _ModelCallTimeout(Exception):
+    """The model adapter's next_action exceeded the run's remaining time budget."""
+
+
+def _call_with_timeout(fn: Callable[[], Any], timeout: float) -> Any:
+    """Run ``fn`` in a daemon thread, abandoning it if it exceeds ``timeout``.
+
+    Python can't kill a thread, so a genuinely hung provider call keeps running
+    in the background — but it runs as a *daemon*, so it never blocks process
+    exit, and the run terminates on time instead of hanging forever. Any
+    exception raised inside ``fn`` is re-raised to the caller unchanged.
+    """
+    box: dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 — re-raised in the caller's thread
+            box["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True, name="model-call")
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise _ModelCallTimeout(
+            f"model adapter did not return within {timeout:.1f}s (remaining run budget)"
+        )
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 class ToolEnvironment(Protocol):
@@ -107,25 +141,33 @@ def build_initial_transcript(task: TaskSpec, tools: list[ToolSpec]) -> list[Mess
 
 
 def _action_to_assistant_message(action: AgentAction) -> Message:
-    """Serialize an action into the transcript the way a real model turn would land."""
-    body: dict[str, Any] = {"kind": action.kind.value}
-    if action.reasoning:
-        body["reasoning"] = action.reasoning
+    """Serialize an action into the transcript the way a real model turn would land.
+
+    ``content`` carries only human-readable text (the final answer, or the
+    model's reasoning); the structured fields a real adapter needs — the
+    action kind and the tool call — go in ``metadata`` so the adapter reads
+    them directly instead of re-parsing JSON out of ``content``.
+    """
+    metadata: dict[str, Any] = {"kind": action.kind.value}
     if action.tool_call is not None:
-        body["tool_call"] = action.tool_call.model_dump(mode="json")
-    if action.final_answer is not None:
-        body["final_answer"] = action.final_answer
-    return Message(role=MessageRole.ASSISTANT, content=json.dumps(body))
+        metadata["tool_call"] = action.tool_call.model_dump(mode="json")
+    content = action.final_answer or action.reasoning or ""
+    return Message(role=MessageRole.ASSISTANT, content=content, metadata=metadata)
 
 
 def _observation_to_tool_message(result: ToolResult) -> Message:
-    body = {
-        "tool_name": result.tool_name,
-        "status": result.status,
-        "result": result.result,
-        "error": result.error,
-    }
-    return Message(role=MessageRole.TOOL, content=json.dumps(body))
+    """A tool result back into the transcript: structured fields in ``metadata``,
+    any error string in ``content`` for readability."""
+    return Message(
+        role=MessageRole.TOOL,
+        content=result.error or "",
+        metadata={
+            "tool_name": result.tool_name,
+            "status": result.status,
+            "result": result.result,
+            "error": result.error,
+        },
+    )
 
 
 class AgentRunner:
@@ -216,8 +258,31 @@ class AgentRunner:
                 )
                 last_prompt_len = len(transcript)
 
+                # Bound the model call by the run's *remaining* time budget so a
+                # hung provider call can't blow past timeout_seconds. The call
+                # runs in a daemon thread; if it overruns, we abandon it and
+                # terminate the run on time (the thread can't be killed, but
+                # being a daemon it never blocks process exit).
+                remaining = config.timeout_seconds - (time.monotonic() - started_clock)
+                if remaining <= 0:
+                    status = RunStatus.TERMINATED
+                    termination = TerminationReason.TIMEOUT
+                    break
                 try:
-                    action = self.model_adapter.next_action(transcript, tools)
+                    action = _call_with_timeout(
+                        lambda: self.model_adapter.next_action(transcript, tools),
+                        remaining,
+                    )
+                except _ModelCallTimeout as exc:
+                    recorder.record(
+                        TraceEventType.ERROR,
+                        step_id=step_id,
+                        payload={"error": str(exc), "kind": "model_timeout"},
+                    )
+                    status = RunStatus.TERMINATED
+                    termination = TerminationReason.TIMEOUT
+                    error_message = str(exc)
+                    break
                 except ScriptExhaustedError as exc:
                     recorder.record(
                         TraceEventType.ERROR,
