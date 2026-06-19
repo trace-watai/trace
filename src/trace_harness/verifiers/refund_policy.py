@@ -54,6 +54,7 @@ from trace_harness.verifiers.base import (
     EvidenceItem,
     FailedCheck,
     Verifier,
+    VerifierInput,
     VerifierResult,
     build_result,
 )
@@ -147,17 +148,17 @@ class RefundPolicyVerifier(Verifier):
 
     def verify(
         self,
-        task: TaskSpec,
-        trace: list[TraceEvent],
-        final_state: dict[str, Any],
-        run_id: str,
+        input: VerifierInput,
     ) -> VerifierResult:
+        task = input.task
+        trace = input.trace
+        run_id = input.run_id
         warnings: list[str] = []
         failed: list[FailedCheck] = []
         evidence: list[EvidenceItem] = []
 
         try:
-            state = SupportState.model_validate(final_state)
+            state = SupportState.model_validate(input.final_state)
         except ValidationError as exc:
             raise ValueError(
                 f"final_state is not a valid SupportState; refund verification "
