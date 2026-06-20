@@ -1,0 +1,5 @@
+continue step 4
+
+---
+
+Yes. Do all remaining steps if they are all test case files.
