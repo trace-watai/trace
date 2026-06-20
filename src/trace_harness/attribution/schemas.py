@@ -30,21 +30,29 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-ATTRIBUTION_SCHEMA_VERSION = "0.1.0"
+ATTRIBUTION_SCHEMA_VERSION = "0.2.0"
 
 
 class FailureCategory(StrEnum):
     """Coarse failure taxonomy for the MVP.
 
     Expected to evolve into a curated, human-labeled taxonomy (Darrel +
-    Justin). Add values; do not repurpose existing ones.
+    Justin). Add values; do not repurpose existing ones. See
+    docs/failure_taxonomy.md for the full taxonomy (definitions, the
+    11-category scope these values cover, and worked examples).
     """
 
+    PLANNING_ERROR = "planning_error"
+    QUERY_FORMATION_ERROR = "query_formation_error"
     RETRIEVAL_SELECTION_ERROR = "retrieval_selection_error"
     STALE_SOURCE_AUTHORITY = "stale_source_authority"
     REASONING_COMMITMENT_ERROR = "reasoning_commitment_error"
+    STATE_TRACKING_ERROR = "state_tracking_error"
     MISSED_RECOVERY = "missed_recovery"
     UNSAFE_IRREVERSIBLE_ACTION = "unsafe_irreversible_action"
+    TOOL_IMPLEMENTATION_ERROR = "tool_implementation_error"
+    GROUNDING_CITATION_ERROR = "grounding_citation_error"
+    CONTEXT_MEMORY_LEAKAGE = "context_memory_leakage"
     FALSE_DURABLE_RECORD = "false_durable_record"
     INCONSISTENT_FINAL_ANSWER = "inconsistent_final_answer"
     POLICY_VIOLATION = "policy_violation"

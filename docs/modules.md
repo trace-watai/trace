@@ -166,6 +166,8 @@ first irreversible 5; tested). Heuristic confidence is capped at 0.85.
 When the trace exposes no reasoning, attribution must say evidence was
 limited — and still produce what it can. A judge never overrides a
 verifier's verdict ([attribution_methodology.md](attribution_methodology.md)).
+`FailureCategory` definitions, neighbor boundaries, and primary/contributing
+selection rules live in [failure_taxonomy.md](failure_taxonomy.md).
 
 **Build next:** a judge schema emitting the same `AttributionResult` so
 heuristic and LLM judges are comparable; a human-labeled agreement set
