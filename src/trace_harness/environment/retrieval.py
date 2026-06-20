@@ -19,14 +19,18 @@ Important guarantees
     - Every chunk carries ``status`` metadata (current/deprecated/resolved);
       whether the *agent* respects it is the scenario under test.
 
+Ranking override
+    ``search_docs`` accepts an optional ``ranking_override`` — an ordered
+    list of ``doc_id`` strings supplied by a fixture. When present, matching
+    docs whose ``doc_id`` appears in the list are returned first (in list
+    order), followed by remaining matches sorted by score descending then
+    ``doc_id`` ascending. The relevance floor (score > 0) still applies;
+    the override only changes ordering, never injects irrelevant results.
+
 Intended evolution
     Chunking (today: one doc == one chunk), stemming/synonyms, and pluggable
     scorers — behind this same function signature so the tool layer doesn't
     change.
-
-# TODO(Evan Yang/environment): add a fixture-pinned ranking override
-# (task-supplied doc_id order) for adversarial retrieval scenarios where
-# keyword scoring is too well-behaved.
 """
 
 from __future__ import annotations
@@ -60,8 +64,16 @@ def search_docs(
     query: str,
     status_filter: DocStatus | None = None,
     top_k: int = 5,
+    ranking_override: list[str] | None = None,
 ) -> list[RetrievedChunk]:
-    """Score ``docs`` against ``query`` and return the top matches, best first."""
+    """Score ``docs`` against ``query`` and return the top matches, best first.
+
+    If ``ranking_override`` is provided it is treated as an ordered list of
+    ``doc_id`` strings: matching docs whose id appears in the list come first
+    (in list order), remaining matches follow sorted by score desc then
+    ``doc_id`` asc. Docs with score ≤ 0 are always excluded regardless of
+    whether they appear in the override.
+    """
     query_tokens = _tokens(query)
     scored: list[RetrievedChunk] = []
     for doc in docs:
@@ -84,5 +96,15 @@ def search_docs(
                 source=doc.source,
             )
         )
-    scored.sort(key=lambda c: (-c.score, c.doc_id))
+    if ranking_override:
+        order_index = {doc_id: i for i, doc_id in enumerate(ranking_override)}
+        scored.sort(
+            key=lambda c: (
+                order_index.get(c.doc_id, len(ranking_override)),
+                -c.score,
+                c.doc_id,
+            )
+        )
+    else:
+        scored.sort(key=lambda c: (-c.score, c.doc_id))
     return scored[:top_k]
