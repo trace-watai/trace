@@ -20,14 +20,16 @@ stages run. Partial directories are *valid* — a crashed run keeps whatever
 it managed to write, and every file is independently parseable JSON with a
 ``schema_version`` field.
 
+A runs-dir-level ``index.json`` sits alongside the run directories: one
+summary entry per run for cheap listing without scanning every directory. It
+is a *derived, rebuildable* convenience (see :meth:`ArtifactStore.rebuild_index`),
+not a per-run artifact — so it is deliberately absent from ``ALL_ARTIFACTS``
+and exempt from the per-run partial-artifacts promise.
+
 This local-JSON layout *is* the data contract the future API server and
 dashboard read (see docs/future_api.md and docs/future_dashboard.md).
 Renaming a file here is a breaking
 change for them — coordinate.
-
-# TODO(Samrath/tracing): a run index file for cheap run listing once run
-# volume makes directory scans annoying. (Atomic writes: done — write_json
-# goes through a same-dir temp file + os.replace.)
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from pydantic import BaseModel
 
 from trace_harness.tracing.events import TraceEvent
 from trace_harness.tracing.recorder import TraceRecorder
+from trace_harness.tracing.run_index import RunIndex, RunIndexEntry
 
 # Canonical artifact filenames. Use these constants, never string literals.
 TASK_SPEC = "task_spec.json"
@@ -55,6 +58,9 @@ ATTRIBUTION_RESULT = "attribution_result.json"
 FAILURE_CARD = "failure_card.json"
 REPAIR_PACKAGE = "repair_package.json"
 REGRESSION_ARTIFACT = "regression_artifact.json"
+
+# Runs-dir-level (not per-run): a derived, rebuildable index of all runs.
+RUN_INDEX = "index.json"
 
 ALL_ARTIFACTS = (
     TASK_SPEC,
@@ -178,3 +184,52 @@ class ArtifactStore:
         if not self.runs_dir.is_dir():
             return []
         return sorted(p.name for p in self.runs_dir.iterdir() if p.is_dir())
+
+    # --- run index ---
+
+    def index_path(self) -> Path:
+        return self.runs_dir / RUN_INDEX
+
+    def read_index(self) -> RunIndex:
+        """Load the run index; a missing index is simply empty (rebuildable)."""
+        path = self.index_path()
+        if not path.is_file():
+            return RunIndex()
+        return RunIndex.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def upsert_index_entry(self, entry: RunIndexEntry) -> None:
+        """Add or replace ``entry`` in the index, keyed by ``run_id``.
+
+        The index is read defensively: missing → start empty; unreadable
+        (hand-edited or corrupt) → self-heal by rebuilding from the run
+        directories, so a bad index can't silently drop run history. Entries
+        stay sorted by ``run_id`` (chronological, like :meth:`list_runs`), and
+        the write is atomic (see :func:`_atomic_write_text`).
+        """
+        try:
+            index = self.read_index()
+        except ValueError:
+            index = self.rebuild_index()
+        kept = [e for e in index.entries if e.run_id != entry.run_id]
+        kept.append(entry)
+        index.entries = sorted(kept, key=lambda e: e.run_id)
+        self._write_index(index)
+
+    def rebuild_index(self) -> RunIndex:
+        """Reconstruct the index by scanning run dirs for ``run_result.json``.
+
+        Runs without a result (crashed before finalize) are skipped. The result
+        is written back atomically and returned.
+        """
+        entries: list[RunIndexEntry] = []
+        for run_id in self.list_runs():
+            if not self.exists(run_id, RUN_RESULT):
+                continue
+            entries.append(RunIndexEntry.model_validate(self.read_json(run_id, RUN_RESULT)))
+        index = RunIndex(entries=sorted(entries, key=lambda e: e.run_id))
+        self._write_index(index)
+        return index
+
+    def _write_index(self, index: RunIndex) -> None:
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(self.index_path(), index.model_dump_json(indent=2) + "\n")
