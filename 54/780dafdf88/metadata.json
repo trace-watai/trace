@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "54780dafdf88",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-24-policy-corpus-and-retreival",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/trace_harness/environment/retrieval.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/54/780dafdf88/0/metadata.json",
+      "transcript": "/54/780dafdf88/0/full.jsonl",
+      "content_hash": "/54/780dafdf88/0/content_hash.txt",
+      "prompt": "/54/780dafdf88/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3061,
+    "cache_creation_tokens": 43553,
+    "cache_read_tokens": 464261,
+    "output_tokens": 12676,
+    "api_call_count": 11
+  }
+}

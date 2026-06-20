@@ -1,0 +1,81 @@
+<ide_selection>The user selected the lines 11 to 23 from /Users/evanzyang/.claude/plans/context-the-target-agent-cuddly-lantern.md:
+## What Is Already Done
+
+| Component | File | Status |
+|---|---|---|
+| State model (`SupportState`, `Order`, `Refund`, `Ticket`, `Doc`) | `src/trace_harness/environment/state.py` | Complete |
+| Tool definitions + handlers (all 4 tools) | `src/trace_harness/environment/tools.py` | Complete |
+| Deterministic keyword retrieval | `src/trace_harness/environment/retrieval.py` | Complete |
+| Tool registry | `src/trace_harness/environment/registry.py` | Complete |
+| `SupportEnvironment` (ToolEnvironment protocol) | `src/trace_harness/environment/support_env.py` | Complete |
+| Fixture tasks (failure + valid sibling) | `fixtures/tasks/refund_policy_{failure,valid_cash}.json` | Complete |
+| Docs corpus | `fixtures/docs/refund_docs.json` | Complete |
+| Fixture scripts (both scenarios) | `fixtures/scripts/refund_policy_{failure,valid_cash}_script.json` | Complete |
+| Expected verifier outcome | `fixtures/expected/refund_policy_failure_expected_verifier.json` | Complete |
+
+This may or may not be related to the current task.</ide_selection>
+Context
+
+The canonical failure depends on controlled retrieval of current and deprecated refund policies. TRACE needs a small, pinned corpus with stable provenance before the runner and verifier can produce meaningful evidence.
+
+Objective
+
+Build the Month 1 policy corpus and controlled retrieval layer, including search_docs.
+
+Scope
+
+Include current refund policy, deprecated refund policy, resolved incident document, stable document and section IDs, status metadata, controlled ranking, and retrieval logs.
+
+Deliverables
+
+Pinned policy document corpus.
+
+Retrieval chunk schema with provenance.
+
+search_docs tool implementation.
+
+Configurable retrieval ordering for tests.
+
+Retrieval event data needed by trace logging.
+
+Acceptance Criteria
+
+Current, deprecated, and resolved documents are distinguishable.
+
+Retrieval order can be controlled for tests.
+
+Every returned chunk includes provenance.
+
+Retrieved docs are traceable to the corpus.
+
+No silent truncation.
+
+Suggested Technical Approach
+
+Start with deterministic keyword/BM25 or lightweight local fixtures. Do not add a hosted vector database unless the experiment requires it; FAISS, Chroma, or SQLite-backed fixtures are optional only if they materially help.
+
+Collaborators / Reviewers
+
+Emily Au, Rupert Maiti, Karan Gupta, Skye Haik.
+
+Dependencies
+
+Requires initial task/document requirements from TaskSpec.
+
+Handoff / Blocks
+
+Blocks first task suite execution, verifier source-precedence checks, and full runner/tool integration.
+
+Out of Scope
+
+Hosted vector DB infrastructure and broad production RAG evaluation.
+
+# Instructions
+
+Read through this ticket and identify:
+
+1. Everything that is already implemented
+2. What must be refined/improved
+3. What needs to be implemented to complete the ticket 
+
+Then, break it down into actionable steps to comprehensively and effectively finish the ticketed task.
