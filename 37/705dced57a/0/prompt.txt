@@ -1,0 +1,41 @@
+<ide_selection>The user selected the lines 11 to 23 from /Users/evanzyang/.claude/plans/context-the-target-agent-cuddly-lantern.md:
+## What Is Already Done
+
+| Component | File | Status |
+|---|---|---|
+| State model (`SupportState`, `Order`, `Refund`, `Ticket`, `Doc`) | `src/trace_harness/environment/state.py` | Complete |
+| Tool definitions + handlers (all 4 tools) | `src/trace_harness/environment/tools.py` | Complete |
+| Deterministic keyword retrieval | `src/trace_harness/environment/retrieval.py` | Complete |
+| Tool registry | `src/trace_harness/environment/registry.py` | Complete |
+| `SupportEnvironment` (ToolEnvironment protocol) | `src/trace_harness/environment/support_env.py` | Complete |
+| Fixture tasks (failure + valid sibling) | `fixtures/tasks/refund_policy_{failure,valid_cash}.json` | Complete |
+| Docs corpus | `fixtures/docs/refund_docs.json` | Complete |
+| Fixture scripts (both scenarios) | `fixtures/scripts/refund_policy_{failure,valid_cash}_script.json` | Complete |
+| Expected verifier outcome | `fixtures/expected/refund_policy_failure_expected_verifier.json` | Complete |
+
+This may or may not be related to the current task.</ide_selection>
+I want to attain a full grasp and comprehensive understanding of the trace harness implementation thta is currently available. 
+
+Explain these aspects and anything else that is relevant. I also want a walkthrough of how one vertical slice runs/how the entire system runs in one runthrough.
+
+## What Is Already Done
+
+| Component | File | Status |
+|---|---|---|
+| State model (`SupportState`, `Order`, `Refund`, `Ticket`, `Doc`) | `src/trace_harness/environment/state.py` | Complete |
+| Tool definitions + handlers (all 4 tools) | `src/trace_harness/environment/tools.py` | Complete |
+| Deterministic keyword retrieval | `src/trace_harness/environment/retrieval.py` | Complete |
+| Tool registry | `src/trace_harness/environment/registry.py` | Complete |
+| `SupportEnvironment` (ToolEnvironment protocol) | `src/trace_harness/environment/support_env.py` | Complete |
+| Fixture tasks (failure + valid sibling) | `fixtures/tasks/refund_policy_{failure,valid_cash}.json` | Complete |
+| Docs corpus | `fixtures/docs/refund_docs.json` | Complete |
+| Fixture scripts (both scenarios) | `fixtures/scripts/refund_policy_{failure,valid_cash}_script.json` | Complete |
+| Expected verifier outcome | `fixtures/expected/refund_policy_failure_expected_verifier.json` | Complete |
+
+---
+
+Giev me an overview that is understandable for someone who has not worked on the project before, and explain in slightly more digestible language. Give me a bit of a higher level overview of each component, and explain more theory instead (e.g. what state is for and why/how it is used)
+
+---
+
+So, how does this system run? Everything is predetermined with no LLM involvement. So, do elements like fixtures always run with the same set of steps and reasonings right now? And how does the agentrunner portion work if there is no LLM to perform the tool calls or perform reasoning? Does it just extract predetermined steps from scripted scenarios?

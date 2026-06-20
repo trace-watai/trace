@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "37705dced57a",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-23-mock-environment",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tests/test_support_env.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/37/705dced57a/0/metadata.json",
+      "transcript": "/37/705dced57a/0/full.jsonl",
+      "content_hash": "/37/705dced57a/0/content_hash.txt",
+      "prompt": "/37/705dced57a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 14,
+    "cache_creation_tokens": 63807,
+    "cache_read_tokens": 362299,
+    "output_tokens": 11039,
+    "api_call_count": 8
+  }
+}
