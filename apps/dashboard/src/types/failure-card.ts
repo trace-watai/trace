@@ -2,7 +2,7 @@
  * Failure-card data contract.
  *
  * Mirrors `FailureCard` in `src/trace_harness/failure_bundles/schemas.py`
- * (FAILURE_CARD_SCHEMA_VERSION 0.1.0) 
+ * (FAILURE_CARD_SCHEMA_VERSION 0.1.0)
  * The human-readable artifact: what broke, where, how bad, with evidence
  */
 

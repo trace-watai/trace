@@ -1,8 +1,8 @@
 /**
  * Evidence-item data contract.
  *
- * Mirrors `EvidenceItem` in `src/trace_harness/verifiers/base.py` 
- * One piece of evidence backing a check outcome or failure card 
+ * Mirrors `EvidenceItem` in `src/trace_harness/verifiers/base.py`
+ * One piece of evidence backing a check outcome or failure card
  * Shared by verifier results, failed checks, and failure cards
  */
 
