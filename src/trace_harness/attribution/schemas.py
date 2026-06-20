@@ -30,7 +30,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-ATTRIBUTION_SCHEMA_VERSION = "0.2.0"
+ATTRIBUTION_SCHEMA_VERSION = "0.3.0"
 
 
 class FailureCategory(StrEnum):
@@ -39,9 +39,11 @@ class FailureCategory(StrEnum):
     Expected to evolve into a curated, human-labeled taxonomy (Darrel +
     Justin). Add values; do not repurpose existing ones. See
     docs/failure_taxonomy.md for the full taxonomy (definitions, the
-    11-category scope these values cover, and worked examples).
+    11-category scope these values cover, the additional categories added
+    from published agent-failure research, and worked examples).
     """
 
+    CLARIFICATION_FAILURE = "clarification_failure"
     PLANNING_ERROR = "planning_error"
     QUERY_FORMATION_ERROR = "query_formation_error"
     RETRIEVAL_SELECTION_ERROR = "retrieval_selection_error"
@@ -49,6 +51,7 @@ class FailureCategory(StrEnum):
     REASONING_COMMITMENT_ERROR = "reasoning_commitment_error"
     STATE_TRACKING_ERROR = "state_tracking_error"
     MISSED_RECOVERY = "missed_recovery"
+    TOOL_SELECTION_ERROR = "tool_selection_error"
     UNSAFE_IRREVERSIBLE_ACTION = "unsafe_irreversible_action"
     TOOL_IMPLEMENTATION_ERROR = "tool_implementation_error"
     GROUNDING_CITATION_ERROR = "grounding_citation_error"
@@ -56,6 +59,8 @@ class FailureCategory(StrEnum):
     FALSE_DURABLE_RECORD = "false_durable_record"
     INCONSISTENT_FINAL_ANSWER = "inconsistent_final_answer"
     POLICY_VIOLATION = "policy_violation"
+    PREMATURE_TERMINATION = "premature_termination"
+    UNPRODUCTIVE_LOOP = "unproductive_loop"
     UNKNOWN = "unknown"
 
 

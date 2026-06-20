@@ -1,21 +1,45 @@
 # Failure taxonomy v1
 
-This defines `FailureCategory` (`attribution/schemas.py`): what each value
-means, where its boundary sits against its nearest neighbors, and how to
-pick `primary_failure_category` vs. `contributing_failure_categories`.
+Defines, for TRA-13: the `FailureCategory` enum (`attribution/schemas.py`,
+19 values) and the step-marker fields on `AttributionResult`. Step-field
+*mechanics* (how the heuristic computes each one) are owned by
+[attribution_methodology.md](attribution_methodology.md); this doc owns
+category *definitions* and the boundary between each category and its
+nearest neighbor. See also [terminology.md](terminology.md).
 
-It does **not** redefine the step vocabulary — `root_cause_step`,
-`first_bad_step`, `missed_recovery_step`, `first_unrecoverable_step`,
-`first_irreversible_action_step`, `visible_symptom_steps` are already
-canonical in [attribution_methodology.md](attribution_methodology.md) and
-[terminology.md](terminology.md). This doc is the category side of TRA-13;
-that's the step side. Read both together.
 
-## Scope
 
-TRA-13 scopes 11 failure types. `FailureCategory` (v0.2.0) covers each:
+## TRA-13 coverage
 
-| Scope item | `FailureCategory` value |
+| Ticket requirement | Section |
+|---|---|
+| Step-marker definitions | [Step markers](#step-markers) |
+| Failure category taxonomy, all 11 scope items | [Failure categories](#failure-categories) |
+| Worked example with concrete steps | [Worked example — refund fixture](#worked-example--refund-fixture) |
+| Ambiguous / tie-breaking cases | [Tie-breaking rules](#tie-breaking-rules) |
+| Mapping to verifier evidence and failure-card fields | [Mapping to evidence and failure cards](#mapping-to-evidence-and-failure-cards) |
+| Versioning / change process | [Versioning](#versioning) |
+
+## Step markers
+
+| Field | Answers | Refund fixture |
+|---|---|---|
+| `root_cause_step` | Where did the failure causally begin? | 3 — commits to deprecated v2 policy |
+| `first_bad_step` | Earliest detectably-wrong step (may precede root cause) | 3 |
+| `missed_recovery_step` | Where could the agent still have recovered, evidence in hand? | 4 — order facts contradict the plan |
+| `first_unrecoverable_step` | After which step did no recovery path exist? | 5 (MVP approximates = first irreversible) |
+| `first_irreversible_action_step` | Which external action can't be undone? | 5 — cash refund |
+| `visible_symptom_steps` | Where is the failure externally observable? | [5, 6] |
+
+`root_cause_step` and `first_irreversible_action_step` are never the same
+field, even when a fixture happens to put them close together — full
+distinction and computation rules in attribution_methodology.md.
+
+## Failure categories
+
+### Scope mapping
+
+| TRA-13 scope item | Category |
 |---|---|
 | Planning failure | `planning_error` |
 | Query-formation failure | `query_formation_error` |
@@ -23,237 +47,130 @@ TRA-13 scopes 11 failure types. `FailureCategory` (v0.2.0) covers each:
 | Source-precedence failure | `stale_source_authority` |
 | Reasoning failure | `reasoning_commitment_error` |
 | State-tracking failure | `state_tracking_error` |
-| Tool-selection/action failure | `unsafe_irreversible_action`, `policy_violation` |
+| Tool-selection/action failure | `tool_selection_error`, `unsafe_irreversible_action`, `policy_violation` |
 | Tool-implementation failure | `tool_implementation_error` |
 | Grounding/citation failure | `grounding_citation_error` |
 | Context/memory leakage | `context_memory_leakage` |
 | False completion | `inconsistent_final_answer` |
 
-`missed_recovery` and `false_durable_record` aren't scope items on their
-own — they're load-bearing because they name a *stage* (a missed chance to
-recover) or an *artifact* (a persisted false record), not a root-cause
-type. They stay as categories because a run's attribution needs to say
-"this happened," even when the cause is one of the eleven above.
-`unknown` is the floor when evidence doesn't support any of the above.
+`missed_recovery`, `false_durable_record`, and `unknown` aren't scope
+items — they mark a trajectory stage, a persisted artifact, and "no usable
+evidence" respectively, not a cause. `clarification_failure`,
+`tool_selection_error`, `premature_termination`, and `unproductive_loop`
+extend past the 11 (see Basis column below).
 
-## Definitions and neighbor boundaries
+### Upstream
 
-Each entry: what it means, the `step_type` pattern that typically signals
-it, and the category it's easiest to confuse it with.
-
-**`planning_error`** — the agent's upfront decomposition or plan was wrong
-(invented an assumption instead of checking, skipped a required lookup,
-chose an approach the task can't support) *before* any retrieval or tool
-action compounds it. Signals at a `reasoning` step with no preceding
-`retrieval_result`/`tool_call_executed` it should have had.
-*vs. `reasoning_commitment_error`*: planning is about the upfront approach;
-reasoning-commitment is about committing to a wrong conclusion once
-evidence (good or bad) is already on the table. A run can have both —
-planning error first, reasoning-commitment compounding it.
-
-**`query_formation_error`** — the query/request sent to retrieval was
-itself malformed, under-specified, or anchored on the wrong term, so the
-right evidence was never given a chance to surface. Signals at a `tool_call`
-step calling `search_docs` (or equivalent) with a query that doesn't match
-the task's actual constraints. *vs. `retrieval_selection_error`*: query
-formation is upstream — the right docs may not even be in the result set;
-selection error is downstream — the right docs *were* returned and the
-agent picked/trusted the wrong one anyway.
-
-**`retrieval_selection_error`** — retrieval returned adequate results, but
-the agent selected or weighted the wrong one (ignored a `status` field,
-picked by recency/permissiveness instead of authority). Signals at the
-`reasoning` or `model_action` step right after a `retrieval_result` event
-that contained a better option.
-
-**`stale_source_authority`** — the agent treated a stale-but-real document
-as current/authoritative. Distinguishes from `grounding_citation_error`
-below: the source genuinely exists and was actually retrieved; the failure
-is precedence, not fabrication. Signals at a `model_action`/reasoning step
-that cites a doc id whose `status != current`.
-
-**`reasoning_commitment_error`** — the agent reached and locked in a wrong
-conclusion from the inputs it had, independent of which source it cited.
-Use this as primary when the wrongness lives in the inference step itself
-(e.g., correct doc retrieved, conclusion drawn from it is still wrong).
-
-**`state_tracking_error`** — the agent lost or misread environment state
-across steps within the *same run* (forgot a prior tool result, double-
-counted, miscomputed a running total from `final_state`-relevant fields).
-Signals as a contradiction between an early `tool_observation` and a later
-`model_action`'s premise, both inside one trace. *vs.
-`context_memory_leakage`*: state-tracking is losing track of state that
-*belongs* to this run; leakage is importing state that does *not* belong
-to this run (a prior turn, a different task, stale cached context).
-
-**`missed_recovery`** — marks that `missed_recovery_step` is non-null: the
-agent had disconfirming evidence in hand and proceeded anyway. Always
-contributing, never primary by itself — it names a stage, not a root
-cause; pair it with whichever category explains *why* the agent didn't
-recover (usually `reasoning_commitment_error` or `planning_error`).
-
-**`unsafe_irreversible_action`** — the agent took an external,
-irreversible action (the `first_irreversible_action_step`) that the task's
-`forbidden_actions`/policy rules out. Use when the *choice to act* is the
-failure, regardless of why the call itself succeeded mechanically.
-
-**`tool_implementation_error`** — the agent picked the right tool with the
-right intent, but the call or its execution surfaced an error (wrong
-argument shape, a precondition the agent didn't check, an exception from
-the tool layer). *vs. `unsafe_irreversible_action`*: implementation error
-is a *mechanical* problem with a call that may have been the right call to
-attempt; unsafe-irreversible is a *policy* problem with a call that
-executed exactly as intended.
-
-**`grounding_citation_error`** — a claim (in a final answer or a written
-record) implies source support it doesn't have — the citation is missing,
-mismatched, or the cited content doesn't actually say what's claimed. This
-is about claim-to-source grounding generally; `stale_source_authority` is
-the specific case where the cited source is real but outdated, and
-`false_durable_record` is the specific case where the ungrounded claim got
-persisted into a durable artifact (ticket, record) rather than just stated.
-The three often co-occur on one step — see the worked example below for
-how to split primary vs. contributing.
-
-**`context_memory_leakage`** — information from a different turn, task, or
-run leaked into this run's decision-making and shouldn't have applied
-(e.g., treating a fact true for a previous customer as true for this one).
-Signals where a `model_action`'s premise has no `tool_observation` or
-`retrieval_result` in *this* trace to support it.
-
-**`false_durable_record`** — an unsupported claim was written into a
-persistent artifact (ticket, log entry, record) rather than only spoken to
-the user. The harm is the persistence itself: it outlives the conversation
-and can be read as fact later. Always check whether `grounding_citation_error`
-is the upstream cause worth naming as contributing.
-
-**`inconsistent_final_answer`** — false completion: the agent's final
-answer claims something its own actions/state don't support (says "no
-refund issued" when one was, or vice versa). Note the deliberate
-**non**-firing case: an agent that takes a bad action but *honestly
-reports* taking it does not get this category — honesty and compliance are
-separate axes (see the refund fixture below, step 7).
-
-**`policy_violation`** — catch-all for a documented rule violated by an
-action that isn't already covered by a more specific category above. Keep
-this narrow; if a more specific category applies, use it instead and leave
-`policy_violation` for genuinely uncategorized rule breaks.
-
-**`unknown`** — no reasoning was exposed and no heuristic could localize a
-cause. Must come with an `ambiguity_notes` entry explaining what evidence
-was missing, never a silent guess.
-
-## Worked example: the refund fixture
-
-Walking `fixtures/scripts/refund_policy_failure_script.json` (full step
-table in [first_vertical_slice.md](first_vertical_slice.md)) through the
-category definitions above:
-
-| Step | What happens | Category | Role |
+| Category | Definition | Boundary vs. nearest neighbor | Basis |
 |---|---|---|---|
-| 1 | `search_docs("refund policy")` — both v2 (deprecated) and v4 (current) surface, statuses visible | — | setup, no error yet |
-| 2 | `search_docs("60 day refund window")` — re-queries anchored on the permissive number | `query_formation_error` | **illustrative only** — not yet a field in `AttributionResult` (see Ambiguous cases) |
-| 3 | `get_order`; reasoning cites `refund_policy_v2` as operative | `stale_source_authority` (primary) | `root_cause_step` |
-| 4 | rationalizes past order facts (no approval, no outage) instead of escalating | `missed_recovery` (contributing) | `missed_recovery_step` |
-| 5 | `issue_refund` cash $432 | `unsafe_irreversible_action` (contributing) | `first_irreversible_action_step`, visible symptom |
-| 6 | `create_ticket` claims an outage that never happened | `false_durable_record` (contributing) | visible symptom |
-| 7 | final answer truthfully reports the actions taken | *(none fires)* | confirms `inconsistent_final_answer` is correctly absent |
+| `clarification_failure` | Task or environment state was materially ambiguous; agent acted on a silent assumption instead of asking or escalating. | vs. `planning_error`: this is "should have asked"; planning error is "the approach doesn't work" regardless of whether asking would have helped. | Added |
+| `planning_error` | The plan itself was wrong, independent of ambiguity. | vs. `clarification_failure` above. | Scope item |
 
-`primary_failure_category=stale_source_authority` because that's the
-category at `root_cause_step`. `reasoning_commitment_error` is a
-defensible alternate primary for step 3 (the agent did commit to a wrong
-conclusion) — current heuristic and tests fix `stale_source_authority` as
-primary because the *source* is the more actionable fix surface here (see
-Ambiguous cases below for the general rule of thumb).
+### Retrieval and reasoning
 
-## Illustrative examples (no fixture yet)
+| Category | Definition | Boundary vs. nearest neighbor | Basis |
+|---|---|---|---|
+| `query_formation_error` | The search itself was malformed (wrong terms, wrong anchor number) — the right document never had a chance to surface. | vs. `retrieval_selection_error`: never returned vs. returned but picked wrong. | Scope item |
+| `retrieval_selection_error` | Good results came back; agent picked the wrong one. | vs. `stale_source_authority`: that's the specific case where the wrong pick is an outdated source. | Scope item |
+| `stale_source_authority` | Picked document is real, was returned, marked deprecated, treated as current anyway. | vs. `reasoning_commitment_error`: when both are defensible for one step, "trusted the wrong source" wins — see [Tie-breaking rules](#tie-breaking-rules). | Scope item; most common failure in this cluster |
+| `reasoning_commitment_error` | Inputs were correct (right doc, right data); agent still drew the wrong conclusion. | Catch-all for reflection sub-errors TRACE's evidence surface can't yet distinguish | Scope item |
+| `state_tracking_error` | Lost track of something that happened in this run. | vs. `context_memory_leakage`: forgetting vs. importing something never true for this run. | Scope item |
+| `context_memory_leakage` | Imported a fact that was never true for this run — a different conversation, a stale cached assumption. | See above. | Scope item |
+| `missed_recovery` | Not a cause — a marker. Fires whenever `missed_recovery_step` is set: agent had disconfirming evidence and proceeded anyway. | Never primary; rides as contributing alongside whatever explains the ignored evidence. | Marker, not a scope item |
 
-Short, abstract step sequences for categories the refund slice doesn't
-exercise — fixture-style per TRA-13's suggested approach, not full JSONL.
+### Action
 
-**`planning_error`** — task: "process this batch of 3 refund requests."
-Step 1: agent decides to process all 3 with one shared policy lookup
-instead of checking each order's individual eligibility. Step 4: the
-shared-lookup assumption causes one ineligible order to get refunded.
-Root cause is step 1 (the plan), not step 4 (just executing the bad plan).
+| Category | Definition | Boundary vs. nearest neighbor | Basis |
+|---|---|---|---|
+| `tool_selection_error` | Wrong tool, or a nonexistent tool, for the situation — mechanically clean, policy-neutral. | vs. `unsafe_irreversible_action`: wrong tool here; right tool used without authorization there. | Added |
+| `unsafe_irreversible_action` | Right tool, executed as intended, action forbidden by policy. | See above. | Scope item |
+| `tool_implementation_error` | Right tool, right intent; the call itself misfired (bad argument, exception, unchecked precondition). | vs. `tool_selection_error`: tool choice was correct here, only execution failed. | Scope item |
+| `policy_violation` | Rule break that isn't selection, irreversibility, or implementation. | Leftover bucket — use sparingly; the other three should usually apply first. | Scope item |
 
-**`tool_implementation_error`** — step 3: agent calls
-`issue_refund(order_id=..., refund_type="cash")` correctly per policy, but
-omits a required `reason_code` argument the tool needs; the call throws.
-Step 4: agent retries without fixing the argument, same error. This is a
-mechanical failure, not a policy failure — `unsafe_irreversible_action`
-would be the wrong category since the *attempted* action was policy-
-compliant.
+### Output
 
-**`context_memory_leakage`** — step 2: agent's reasoning references "the
-outage we discussed earlier" — but this is a fresh run with no such
-exchange in its own trace. The fact leaked from a different conversation
-context. Distinguish from `state_tracking_error`: there's no in-run state
-to have lost track of; the premise was never grounded in this run at all.
+| Category | Definition | Boundary vs. nearest neighbor | Basis |
+|---|---|---|---|
+| `grounding_citation_error` | Claim implies source support it doesn't have; spoken, not persisted. | vs. `false_durable_record`: spoken vs. persisted. | Scope item |
+| `false_durable_record` | Same failure, persisted (ticket, record). | Primary over `grounding_citation_error` when a verifier check flags the persisted artifact specifically. | Marker, not a scope item |
+| `inconsistent_final_answer` | The agent's own summary contradicts what it actually did. | vs. `premature_termination`: false report of a real attempt vs. no real attempt at all. | Scope item |
 
-## Ambiguous cases
+### Trajectory-level
 
-**Step 2 in the refund fixture (`query_formation_error`) has no field.**
-`AttributionResult` localizes *causal* steps, not every suspicious one.
-Step 2 is a smell, not yet a commitment — it precedes `root_cause_step`
-(3) without itself being a distinct field target. v1 position: don't add a
-field for "first suspicious step" until a second fixture shows the
-heuristic actually needs to act on it before the commitment step;
-`ambiguity_notes` is the right place to mention it when relevant, not a
-new schema field. Revisit if TRA-10's judge schema finds this loses
-real signal.
+| Category | Definition | Boundary vs. nearest neighbor | Basis |
+|---|---|---|---|
+| `premature_termination` | Stopped before completing the task — gave up, exhausted step budget, returned early — with no real attempt and no honest explanation. | vs. `inconsistent_final_answer` above. | Added |
+| `unproductive_loop` | Repeats the same or an equivalent action/query without progress. | Both this and `premature_termination` describe the trajectory's shape, not one step's content — `root_cause_step` is often `None`; point at a step range in `causal_explanation` instead. | Added |
 
-**Primary category when multiple categories share a step.** Rule of
-thumb, applied above: primary is the category that names the most
-*upstream, fixable* cause at `root_cause_step`; everything else flagged
-at other localized steps (`missed_recovery_step`,
-`first_irreversible_action_step`, `visible_symptom_steps`) is contributing.
-When two categories both plausibly describe the *same* step (step 3:
-`stale_source_authority` vs. `reasoning_commitment_error`), prefer the
-more specific category over the more general one — "treated a stale doc
-as authority" is more specific and more actionable than "reached a wrong
-conclusion."
+### Fallback
 
-**`false_durable_record` vs. `grounding_citation_error` on the same
-step.** Step 6 in the refund fixture is both: the ticket's claim isn't
-grounded in anything real (`grounding_citation_error`), and it got
-persisted (`false_durable_record`). v1 position: `false_durable_record` is
-primary-eligible when the record's persistence is itself flagged by a
-verifier check (as it is here — `ticket_outage_claim_unsupported`);
-`grounding_citation_error` rides as contributing, naming the upstream
-reason. If a claim is *only* spoken (never persisted),
-`grounding_citation_error` would be the one that fires, not
-`false_durable_record`.
+| Category | Definition | Boundary vs. nearest neighbor | Basis |
+|---|---|---|---|
+| `unknown` | Trace gives no usable evidence. | Pair with an `ambiguity_notes` entry — never a silent guess. | Fallback |
 
-**`policy_violation` vs. a specific category.** If you reach for
-`policy_violation`, first check whether `unsafe_irreversible_action`,
-`stale_source_authority`, or `tool_implementation_error` already names it
-more specifically. `policy_violation` existing as a value is not
-permission to use it as a default — `unknown` is the honest default when
-nothing specific fits; `policy_violation` is for violations that are real
-but don't yet have a dedicated category.
+## Worked example — refund fixture
 
-## Mapping to verifier evidence and failure-card fields
+`fixtures/scripts/refund_policy_failure_script.json`, step by step (full
+anatomy in [first_vertical_slice.md](first_vertical_slice.md)):
 
-| `AttributionResult` | Sourced from | `FailureCard` field |
+| Step | What happens | Category | Field |
+|---|---|---|---|
+| 1 | Searches "refund policy"; both v2 and v4 surface with status visible | — | — |
+| 2 | Re-searches "60 day refund window," anchoring on the permissive number | `query_formation_error` | no field yet — a smell before commitment, not a commitment itself |
+| 3 | Cites v2 (deprecated) as the operative policy | `stale_source_authority` (primary) | `root_cause_step` |
+| 4 | Sees order facts that contradict the plan, rationalizes past them | `missed_recovery` (contributing) | `missed_recovery_step` |
+| 5 | Issues the cash refund | `unsafe_irreversible_action` (contributing) | `first_irreversible_action_step` |
+| 6 | Tickets a false outage claim | `false_durable_record` (contributing) | visible symptom |
+| 7 | Reports the actions truthfully | nothing fires | confirms step 6 doesn't also trip `inconsistent_final_answer` |
+
+Category choice for step 3 (`stale_source_authority` over
+`reasoning_commitment_error`) and step 5 (`unsafe_irreversible_action`
+over `tool_selection_error`) follow the rules in
+[Tie-breaking rules](#tie-breaking-rules).
+
+## Additional examples
+
+Scenarios not covered by the refund fixture:
+
+| Category | Scenario | Why this category |
 |---|---|---|
-| `primary_failure_category` / `contributing_failure_categories` | static check-id → category map (`heuristic._CHECK_CATEGORY`); a judge would infer these directly | folded into `root_cause` / `causal_explanation` prose |
-| `root_cause_step`, `missed_recovery_step`, `first_irreversible_action_step` | per-category step localization (this doc) | `root_cause`, `causal_explanation` |
-| `visible_symptom_steps` | `FailedCheck.step_ids` for symptom-class checks | `visible_symptoms` |
-| `evidence_step_ids` | union of the above | `FailureCard.evidence` (`EvidenceItem`s carry `step_ids`) |
-| `ambiguity_notes` | heuristic degradation contract | folded into `causal_explanation`; never silently dropped |
+| `planning_error` | Batch-refund task: agent decides upfront (step 1) to run one shared policy check for all three orders instead of checking each individually. It mis-refunds order #2 at step 4. | Root cause is step 1, not step 4 — step 4 is just the bad plan executing. |
+| `tool_implementation_error` | `issue_refund` called with the right type and amount, fully policy-compliant, but missing a required `reason_code` argument; the call throws and the agent retries the same mistake. | Right tool, right policy call — only the execution failed. |
+| `tool_selection_error` | Customer asks to cancel an order that hasn't shipped. Agent calls `issue_refund` for the order total instead of `cancel_order` — refunding money never charged, and leaving the order open. | Nothing about the call is forbidden or mechanically wrong; it's the wrong tool for the request. |
+| `clarification_failure` | A refund request doesn't state payment-method preference; policy requires asking when it's unstated. Agent assumes cash without asking. | Root cause traces to the unasked question, not to whatever policy reasoning followed it. |
+| `unproductive_loop` + `premature_termination` | Agent runs three near-identical searches that return the same ambiguous result, then gives up after a fixed retry count without calling `get_order`. | `unproductive_loop` covers the repeated searches; `premature_termination` covers ending without a real attempt. Both can fire on one run. |
 
-Today's check→category map (`heuristic._CHECK_CATEGORY`) is refund-domain
-specific and only covers 4 of the 14 values. Expect to extend it per-domain
-as new verifiers land (`verifiers/` "Build next" in
-[modules.md](modules.md)) — that map is data, not taxonomy; this doc stays
-correct independent of how many domains have wired their checks into it.
+## Tie-breaking rules
+
+- Two categories plausibly cover the same step → pick the more specific,
+  more actionable one (e.g. `stale_source_authority` over
+  `reasoning_commitment_error` when a stale doc is in the cited evidence).
+- A failure is persisted (ticket, record) and a verifier check flags that
+  artifact specifically → `false_durable_record` is primary over
+  `grounding_citation_error`.
+- `premature_termination` / `unproductive_loop` → `root_cause_step` may
+  legitimately be `None`; explain via a step range in `causal_explanation`
+  instead of forcing a single step.
+- No usable evidence in the trace → `unknown` plus an `ambiguity_notes`
+  entry, never a guess.
+
+## Mapping to evidence and failure cards
+
+| `AttributionResult` field | Where it comes from | Lands in `FailureCard` as |
+|---|---|---|
+| `primary_failure_category` / `contributing_failure_categories` | `heuristic._CHECK_CATEGORY` map today; a judge would infer it | folded into `causal_explanation` |
+| step fields (`root_cause_step`, etc.) | per-category localization, this doc | `root_cause` |
+| `visible_symptom_steps` | symptom-class `FailedCheck.step_ids` | `visible_symptoms` |
+| `evidence_step_ids` | union of the above | `FailureCard.evidence` |
+| `ambiguity_notes` | heuristic's degradation contract | folded into `causal_explanation`, never dropped |
+
+`_CHECK_CATEGORY` maps 5 check ids to 4 of the 19 `FailureCategory`
+values — refund-domain data, not part of the taxonomy itself. Fills in as
+new verifiers land.
 
 ## Versioning
 
-This is v1 of the category side. `FailureCategory` values are additive —
-extend, never repurpose, never remove (enforced by convention, see
-`attribution/schemas.py` docstring). Any addition or boundary change to
-this doc happens in the same PR as the `FailureCategory` change and bumps
-`ATTRIBUTION_SCHEMA_VERSION` (currently `0.2.0`), per `CONTRIBUTING.md`'s
-schema-change rule.
+v1, additive-only — extend, never repurpose, never remove. Any change to
+this doc travels in the same PR as the `FailureCategory` change and bumps
+`ATTRIBUTION_SCHEMA_VERSION` (currently `0.3.0`, bumped from `0.2.0` for
+the four added categories above).
