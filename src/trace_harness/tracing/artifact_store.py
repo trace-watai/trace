@@ -25,13 +25,16 @@ dashboard read (see docs/future_api.md and docs/future_dashboard.md).
 Renaming a file here is a breaking
 change for them — coordinate.
 
-# TODO(Samrath/tracing): atomic writes (tmp + rename) and an index file for
-# cheap run listing once run volume makes directory scans annoying.
+# TODO(Samrath/tracing): a run index file for cheap run listing once run
+# volume makes directory scans annoying. (Atomic writes: done — write_json
+# goes through a same-dir temp file + os.replace.)
 """
 
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +69,34 @@ ALL_ARTIFACTS = (
     REPAIR_PACKAGE,
     REGRESSION_ARTIFACT,
 )
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` so a reader never sees a partial file.
+
+    A plain ``write_text`` interrupted by a crash, kill, or full disk can leave
+    a truncated, unparseable artifact — and these JSON files are the data
+    contract the verifier, attribution, and dashboard read. Instead we write to
+    a temp file in the *same directory* (so the rename stays on one filesystem
+    and is atomic), fsync it, then ``os.replace`` it onto the target. The result
+    is all-or-nothing: a crash leaves either the previous file or the complete
+    new one, never a half-written mix.
+
+    The append-only ``trace.jsonl`` is intentionally exempt — it is written
+    incrementally for crash-safe partial traces, and its truncated tail is
+    handled on read (see :meth:`TraceRecorder.read_jsonl`).
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 class ArtifactStore:
@@ -108,11 +139,15 @@ class ArtifactStore:
     # --- JSON artifacts ---
 
     def write_json(self, run_id: str, name: str, payload: BaseModel | dict | list) -> Path:
-        """Serialize ``payload`` (model or plain data) as pretty-printed JSON."""
+        """Serialize ``payload`` (model or plain data) as pretty-printed JSON.
+
+        Written atomically (see :func:`_atomic_write_text`) so a crash mid-write
+        never leaves a truncated artifact for the verifier/dashboard to choke on.
+        """
         data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
         path = self.artifact_path(run_id, name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        _atomic_write_text(path, json.dumps(data, indent=2) + "\n")
         return path
 
     def read_json(self, run_id: str, name: str) -> Any:
