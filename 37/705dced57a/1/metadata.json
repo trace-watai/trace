@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "37705dced57a",
+  "session_id": "a8f9c86a-bfbe-46cd-8cee-ab5f6b6fd81d",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-20T19:59:19.981133Z",
+  "branch": "trace-harness/tra-23-mock-environment",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tests/test_support_env.py"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "d752d043034e",
+  "token_usage": {
+    "input_tokens": 3456,
+    "cache_creation_tokens": 87543,
+    "cache_read_tokens": 2521612,
+    "output_tokens": 36227,
+    "api_call_count": 35
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-06-20T19:59:19.971429Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 0,
+    "total_lines_changed": 0,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 754,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "CLAUDE.md": 373,
+        "tests/test_support_env.py": 209,
+        "tests/test_tools.py": 172
+      }
+    }
+  ]
+}

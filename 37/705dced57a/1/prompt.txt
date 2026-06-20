@@ -1,0 +1,78 @@
+<ide_opened_file>The user opened the file /Users/evanzyang/Documents/Projects/TRACE/CLAUDE.md in the IDE. This may or may not be related to the current task.</ide_opened_file>
+Create a new branch under the namespace trace-harness called tra-23-mock-environment and check it out
+
+---
+
+Context
+
+The target agent needs a controlled world to act in. The support/refund environment must be resettable, deterministic, inspectable, and sandboxed so unsafe actions can be observed without external effects.
+
+Objective
+
+Define and implement the mock support/refund environment for the first TRACE vertical slice.
+
+Scope
+
+Implement resettable order state, refund state, ticket state, deterministic tool behavior, authoritative fields, and tool input/output schemas.
+
+Tools: get_order, issue_refund, and create_ticket.
+
+Deliverables
+
+Environment state model and reset behavior.
+
+Tool input/output schemas.
+
+Deterministic tool implementations.
+
+Initial and final state inspection hooks.
+
+Fixture data for refund/support scenarios.
+
+Acceptance Criteria
+
+Environment resets between runs.
+
+Side effects are inspectable.
+
+Final state can be verified.
+
+Unsafe actions can occur in sandbox without external effects.
+
+Tool responses are deterministic for fixture mode.
+
+Suggested Technical Approach
+
+Use Python and Pydantic with simple in-memory or SQLite fixture state initially. Avoid live external side effects.
+
+Read through this ticket and identify:
+
+1. Everything that is already implemented
+2. What must be refined/improved
+3. What needs to be implemented to complete the ticket 
+
+Then, break it down into actionable steps to comprehensively and effectively finish the ticketed task.
+
+---
+
+<ide_selection>The user selected the lines 11 to 23 from /Users/evanzyang/.claude/plans/context-the-target-agent-cuddly-lantern.md:
+## What Is Already Done
+
+| Component | File | Status |
+|---|---|---|
+| State model (`SupportState`, `Order`, `Refund`, `Ticket`, `Doc`) | `src/trace_harness/environment/state.py` | Complete |
+| Tool definitions + handlers (all 4 tools) | `src/trace_harness/environment/tools.py` | Complete |
+| Deterministic keyword retrieval | `src/trace_harness/environment/retrieval.py` | Complete |
+| Tool registry | `src/trace_harness/environment/registry.py` | Complete |
+| `SupportEnvironment` (ToolEnvironment protocol) | `src/trace_harness/environment/support_env.py` | Complete |
+| Fixture tasks (failure + valid sibling) | `fixtures/tasks/refund_policy_{failure,valid_cash}.json` | Complete |
+| Docs corpus | `fixtures/docs/refund_docs.json` | Complete |
+| Fixture scripts (both scenarios) | `fixtures/scripts/refund_policy_{failure,valid_cash}_script.json` | Complete |
+| Expected verifier outcome | `fixtures/expected/refund_policy_failure_expected_verifier.json` | Complete |
+
+This may or may not be related to the current task.</ide_selection>
+Summarize this even more briefly.
+
+---
+
+Are there any optimizations that can be made to the current mock environment?
