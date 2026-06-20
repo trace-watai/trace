@@ -1,8 +1,8 @@
 /**
  * Attribution data contract.
  *
- * Mirrors `src/trace_harness/attribution/schemas.py` 
- * (TRA-13, PR #65, ATTRIBUTION_SCHEMA_VERSION 0.3.0). 
+ * Mirrors `src/trace_harness/attribution/schemas.py`
+ * (TRA-13, PR #65, ATTRIBUTION_SCHEMA_VERSION 0.3.0).
  * Category definitions: docs/failure_taxonomy.md.
  */
 
