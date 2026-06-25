@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "3ea3d278fd99",
+  "strategy": "manual-commit",
+  "branch": "evaluation-core/tra-56-evidence-kind-enum",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/trace_harness/verifiers/base.py",
+    "src/trace_harness/verifiers/refund_policy.py",
+    "tests/test_refund_verifier.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3e/a3d278fd99/0/metadata.json",
+      "transcript": "/3e/a3d278fd99/0/full.jsonl",
+      "content_hash": "/3e/a3d278fd99/0/content_hash.txt",
+      "prompt": "/3e/a3d278fd99/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 13428,
+    "cache_creation_tokens": 94056,
+    "cache_read_tokens": 1090172,
+    "output_tokens": 12582,
+    "api_call_count": 30
+  }
+}

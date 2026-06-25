@@ -1,0 +1,100 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "3ea3d278fd99",
+  "session_id": "b78ec858-62c8-47ef-a6f9-3fb52116d39c",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-25T22:40:24.364774Z",
+  "branch": "evaluation-core/tra-56-evidence-kind-enum",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/trace_harness/verifiers/base.py",
+    "src/trace_harness/verifiers/refund_policy.py",
+    "tests/test_refund_verifier.py"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "ebf6f3f8476e",
+  "token_usage": {
+    "input_tokens": 13428,
+    "cache_creation_tokens": 94056,
+    "cache_read_tokens": 1090172,
+    "output_tokens": 12582,
+    "api_call_count": 30
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-claude-code-sync-repos-2026-06-25T22:26:58.614713Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "sync-repos"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "c0b5d9a0961a",
+      "timestamp": "2026-06-25T22:26:58.614713Z",
+      "native": {
+        "command": "/sync-repos"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/sync-repos",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-06-25T22:40:24.354331Z",
+    "agent_lines": 50,
+    "agent_removed": 15,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 50,
+    "total_lines_changed": 65,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1822,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/commands/sync-repos.md": 59,
+        ".claude/commands/wrap.md": 89,
+        "CLAUDE.md": 95,
+        "TRACE_AutoLab_AutoResearch_Design.md": 1204,
+        "kb/.wrap-state.json": 25,
+        "kb/code-changes/AGENTS.md": 193,
+        "kb/meetings/AGENTS.md": 7,
+        "kb/misc/AGENTS.md": 150
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 1822,
+      "user_lines_removed": 0,
+      "agent_lines_added": 50,
+      "agent_lines_removed": 15,
+      "user_added_per_file": {
+        ".claude/commands/sync-repos.md": 59,
+        ".claude/commands/wrap.md": 89,
+        "CLAUDE.md": 95,
+        "TRACE_AutoLab_AutoResearch_Design.md": 1204,
+        "kb/.wrap-state.json": 25,
+        "kb/code-changes/AGENTS.md": 193,
+        "kb/meetings/AGENTS.md": 7,
+        "kb/misc/AGENTS.md": 150
+      }
+    }
+  ]
+}

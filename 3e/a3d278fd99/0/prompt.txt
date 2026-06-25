@@ -1,0 +1,16 @@
+/sync-repos
+
+---
+
+skye said: Skye — 6/20/26, 11:09 AM
+@Samrath S. Patpatia with the current EvidenceItem.kind  it's an open string. can you make this into an enum and define the types you already have i.e. something like this 
+class EvidenceKind(StrEnum):
+    POLICY_RULES = "policy_rules"
+    ORDER_RECORD = "order_record"
+    REFUND_RECORD = "refund_record"
+    TICKET_RECORD = "ticket_record"
+    FINAL_ANSWER = "final_answer"
+    RETRIEVAL_PROVENANCE = "retrieval_provenance"
+    PROVENANCE_QUOTE = "provenance_quote"
+ and add more as you need to.
+for the sake of alignment with the frontend ^
