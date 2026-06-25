@@ -21,6 +21,7 @@ Contract notes
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import StrEnum
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -28,18 +29,36 @@ from pydantic import BaseModel, Field
 from trace_harness.tasks.schemas import Severity, TaskSpec, max_severity
 from trace_harness.tracing.events import TraceEvent
 
-VERIFIER_RESULT_SCHEMA_VERSION = "0.1.0"
+VERIFIER_RESULT_SCHEMA_VERSION = "0.2.0"
+
+
+class EvidenceKind(StrEnum):
+    """Closed vocabulary of evidence tags shared with the dashboard.
+
+    Constraining ``EvidenceItem.kind`` to this enum keeps producers and the
+    frontend renderer aligned on one set of values. Add a member here (and the
+    matching case in the dashboard) when a verifier needs to emit a new kind —
+    never an ad-hoc string.
+    """
+
+    POLICY_RULES = "policy_rules"
+    ORDER_RECORD = "order_record"
+    REFUND_RECORD = "refund_record"
+    TICKET_RECORD = "ticket_record"
+    FINAL_ANSWER = "final_answer"
+    RETRIEVAL_PROVENANCE = "retrieval_provenance"
+    PROVENANCE_QUOTE = "provenance_quote"
 
 
 class EvidenceItem(BaseModel):
     """One piece of evidence supporting a check outcome.
 
-    ``kind`` is a short machine-usable tag (e.g. ``order_record``,
-    ``policy_rule``, ``reasoning_quote``); ``data`` carries the raw facts so
-    the dashboard can render them without re-deriving anything.
+    ``kind`` is a machine-usable tag from :class:`EvidenceKind`; ``data``
+    carries the raw facts so the dashboard can render them without re-deriving
+    anything.
     """
 
-    kind: str
+    kind: EvidenceKind
     description: str
     step_ids: list[int] = Field(default_factory=list)
     data: dict[str, Any] = Field(default_factory=dict)
