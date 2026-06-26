@@ -37,7 +37,7 @@ def _good_kwargs() -> dict:
         "available_tools": ["get_order", "issue_refund"],
         "expected_behavior": ["issue the refund"],
         "required_evidence": ["order checked"],
-        "targeted_failure_modes": ["overblocking"],
+        "targeted_failure_modes": ["stale_source_authority"],
         "verifier_ids": ["refund_policy"],
     }
 
@@ -90,3 +90,16 @@ def test_unknown_verifier_id_is_flagged() -> None:
     bad = TaskSpec(**{**_good_kwargs(), "verifier_ids": ["definitely_not_a_real_verifier"]})
     codes = {i.code for i in errors(validate_task(bad))}
     assert "unknown_verifier_id" in codes
+
+
+def test_failure_mode_outside_taxonomy_warns() -> None:
+    # A targeted_failure_mode not in FailureCategory warns (not errors).
+    task = TaskSpec(**{**_good_kwargs(), "targeted_failure_modes": ["not_a_real_category"]})
+    issues = validate_task(task)
+    assert "unknown_failure_mode" in {i.code for i in issues if i.severity == "warning"}
+    assert "unknown_failure_mode" not in {i.code for i in errors(issues)}
+
+
+def test_taxonomy_failure_mode_does_not_warn() -> None:
+    task = TaskSpec(**{**_good_kwargs(), "targeted_failure_modes": ["stale_source_authority"]})
+    assert "unknown_failure_mode" not in {i.code for i in validate_task(task)}

@@ -28,11 +28,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from trace_harness.attribution.schemas import FailureCategory
 from trace_harness.tasks.loader import TaskLoadError, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.verifiers.registry import available_verifier_ids
 
 Severity = Literal["error", "warning"]
+
+# Canonical agent-failure vocabulary, owned by Darrel (attribution). Task
+# `targeted_failure_modes` should draw from this so task labels join with the
+# Judge's failure_category. See docs/failure_taxonomy.md.
+_FAILURE_CATEGORIES = {category.value for category in FailureCategory}
 
 # Vague instructions can't be objectively verified, the agent has no concrete target.
 _VAGUE_TERMS = re.compile(
@@ -106,6 +112,18 @@ def validate_task(task: TaskSpec) -> list[ValidationIssue]:
                 "targeted_failure_modes is empty; the task exposes no known failure",
             )
         )
+    else:
+        unknown_modes = [m for m in task.targeted_failure_modes if m not in _FAILURE_CATEGORIES]
+        if unknown_modes:
+            issues.append(
+                ValidationIssue(
+                    "unknown_failure_mode",
+                    f"targeted_failure_modes {unknown_modes} are not in the FailureCategory "
+                    "taxonomy (attribution); align them, or confirm intentional "
+                    "non-agent-failure labels (e.g. positive-control guards) with Darrel",
+                    severity="warning",
+                )
+            )
     if not task.expected_behavior and not task.forbidden_actions:
         issues.append(
             ValidationIssue(

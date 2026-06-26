@@ -30,6 +30,7 @@ Errors block a seed task; warnings should be reviewed.
 | `empty_available_tools` | error | The agent needs something to act with. |
 | `empty_verifier_ids` | error | Without a verifier nothing can decide pass/fail. |
 | `empty_targeted_failure_modes` | error | A task must target a known failure to be useful for attribution. |
+| `unknown_failure_mode` | warning | `targeted_failure_modes` should draw from the `FailureCategory` taxonomy (attribution, Darrel) so labels join with the Judge's `failure_category`. Non-taxonomy labels (e.g. positive-control guards like `overblocking`) warn — confirm them with Darrel. |
 | `no_correct_behavior` | error | `expected_behavior` and/or `forbidden_actions` must define what correct looks like. |
 | `clock_in_initial_state` | error | No wall-clock time in state — encode time as relative ages (e.g. `purchase_age_days`) so runs are reproducible. |
 | `vague_language` | warning | `goal`/`description` should state a concrete outcome, not "do right by the customer". |
