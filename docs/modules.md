@@ -36,15 +36,20 @@ into validated objects (`load_task`, `load_docs_for_task`).
 
 **Exposes:** `TaskSpec` (consumed by environment, runner, verifiers,
 regression), `load_task(path)`, `load_docs_for_task(task, task_path)` — the
-only sanctioned way fixture JSON enters the system.
+only sanctioned way fixture JSON enters the system; `validate_task` +
+`python -m trace_harness.tasks.validation` for authoring-quality checks.
 
 **Rules:** tasks describe, they never act — no tool logic, no verifier
 logic, no scenario-specific Python (scenario content is fixture *data*).
-`extra="forbid"` stays: fixture typos must fail at load time.
+`extra="forbid"` stays: fixture typos must fail at load time. Two validation
+layers: structural (schema) vs authoring-quality (`validation.py` + the rubric
+in [task_validity.md](task_validity.md)); counterexamples live in
+`fixtures/tasks/counterexamples/`.
 
-**Build next:** promote `metadata.user_message` to a first-class field;
-a `validate-fixtures` CLI command for CI; parameterized task variants that
-sweep boundary values (day 29/30/31/60/61) from one template.
+**Build next:** promote `metadata.user_message` to a first-class field (pending
+Rupert on transcript shape); wire `validate-fixtures` into `check_repo.sh`/CI
+(with Sarp); parameterized task variants that sweep boundary values
+(day 29/30/31/60/61) from one template.
 
 ## models/ — model adapters *(Rupert Maiti)*
 

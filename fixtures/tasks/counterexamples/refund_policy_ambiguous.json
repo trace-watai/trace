@@ -1,0 +1,37 @@
+{
+  "schema_version": "0.2.0",
+  "task_id": "refund_policy_ambiguous",
+  "title": "Ambiguous refund request (authoring counterexample)",
+  "description": "A deliberately under-specified refund task kept as a counterexample for the task-validity checker. It parses against TaskSpec but is NOT a usable seed task: the goal is vague, it names no verifier, defines no correct behavior, and targets no failure mode. It lives in fixtures/tasks/counterexamples/ so seed-fixture tooling skips it; the validate-fixtures runner expects it to be flagged.",
+  "goal": "Do right by the customer.",
+  "workflow_type": "support.refund",
+  "initial_state": {
+    "orders": [
+      {
+        "order_id": "ORD-2026-0199",
+        "customer_name": "Sam Rivera",
+        "plan": "Team Monthly",
+        "amount_usd": 189.0,
+        "purchase_age_days": 20,
+        "documented_outage_near_purchase": false,
+        "manager_approval_granted": false
+      }
+    ],
+    "refunds": [],
+    "tickets": []
+  },
+  "available_tools": ["search_docs", "get_order", "issue_refund", "create_ticket"],
+  "available_docs": [],
+  "expected_behavior": [],
+  "forbidden_actions": [],
+  "required_evidence": [],
+  "targeted_failure_modes": [],
+  "verifier_ids": [],
+  "severity": "medium",
+  "difficulty": "medium",
+  "metadata": {
+    "expected_invalid": true,
+    "why_invalid": "vague goal ('Do right by the customer'); empty verifier_ids; empty targeted_failure_modes; neither expected_behavior nor forbidden_actions set",
+    "design_owner": "Emily Au (task design)"
+  }
+}
