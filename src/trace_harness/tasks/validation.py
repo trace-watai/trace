@@ -119,8 +119,7 @@ def validate_task(task: TaskSpec) -> list[ValidationIssue]:
                 ValidationIssue(
                     "unknown_failure_mode",
                     f"targeted_failure_modes {unknown_modes} are not in the FailureCategory "
-                    "taxonomy (attribution); align them, or confirm intentional "
-                    "non-agent-failure labels (e.g. positive-control guards) with Darrel",
+                    "taxonomy (attribution)",
                     severity="warning",
                 )
             )
