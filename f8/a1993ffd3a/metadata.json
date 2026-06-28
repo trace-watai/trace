@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "f8a1993ffd3a",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-20-run-read-service",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/future_api.md",
+    "src/trace_harness/cli.py",
+    "src/trace_harness/run_reader.py",
+    "tests/test_run_reader.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f8/a1993ffd3a/0/metadata.json",
+      "transcript": "/f8/a1993ffd3a/0/full.jsonl",
+      "content_hash": "/f8/a1993ffd3a/0/content_hash.txt",
+      "prompt": "/f8/a1993ffd3a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 21888,
+    "cache_creation_tokens": 317142,
+    "cache_read_tokens": 7684120,
+    "output_tokens": 53437,
+    "api_call_count": 61
+  }
+}
