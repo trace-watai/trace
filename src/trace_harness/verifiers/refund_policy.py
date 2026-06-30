@@ -52,6 +52,7 @@ from trace_harness.tasks.schemas import Severity, TaskSpec
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import (
     EvidenceItem,
+    EvidenceKind,
     FailedCheck,
     Verifier,
     VerifierResult,
@@ -167,7 +168,7 @@ class RefundPolicyVerifier(Verifier):
         rules, rules_doc_id = self._load_rules(state, warnings)
         evidence.append(
             EvidenceItem(
-                kind="policy_rules",
+                kind=EvidenceKind.POLICY_RULES,
                 description=f"policy rules in effect (source: {rules_doc_id})",
                 data={"source_doc_id": rules_doc_id, "rules": rules.model_dump()},
             )
@@ -187,13 +188,13 @@ class RefundPolicyVerifier(Verifier):
                 )
                 continue
             order_evidence = EvidenceItem(
-                kind="order_record",
+                kind=EvidenceKind.ORDER_RECORD,
                 description=f"order {order.order_id} facts at verification time",
                 step_ids=[s for s in [refund.issued_at_step] if s is not None],
                 data={"order": order.model_dump(mode="json")},
             )
             refund_evidence = EvidenceItem(
-                kind="refund_record",
+                kind=EvidenceKind.REFUND_RECORD,
                 description=f"refund {refund.refund_id} as recorded in final state",
                 step_ids=[s for s in [refund.issued_at_step] if s is not None],
                 data={"refund": refund.model_dump(mode="json")},
@@ -279,13 +280,13 @@ class RefundPolicyVerifier(Verifier):
                         step_ids=[s for s in [ticket.created_at_step] if s is not None],
                         evidence=[
                             EvidenceItem(
-                                kind="ticket_record",
+                                kind=EvidenceKind.TICKET_RECORD,
                                 description=f"ticket {ticket.ticket_id} title and notes",
                                 step_ids=[s for s in [ticket.created_at_step] if s is not None],
                                 data={"ticket": ticket.model_dump(mode="json")},
                             ),
                             EvidenceItem(
-                                kind="order_record",
+                                kind=EvidenceKind.ORDER_RECORD,
                                 description=f"order {order.order_id} outage field",
                                 data={
                                     "documented_outage_near_purchase": (
@@ -374,7 +375,7 @@ class RefundPolicyVerifier(Verifier):
         if not hits:
             return None
         return EvidenceItem(
-            kind="retrieval_provenance",
+            kind=EvidenceKind.RETRIEVAL_PROVENANCE,
             description="documents surfaced to the agent by retrieval, with status",
             step_ids=sorted(set(steps)),
             data={"hits": hits},
@@ -458,7 +459,7 @@ class RefundPolicyVerifier(Verifier):
             step_ids=steps,
             evidence=[
                 EvidenceItem(
-                    kind="provenance_quote",
+                    kind=EvidenceKind.PROVENANCE_QUOTE,
                     description=f"{source} at step {step} cites {doc_id}",
                     step_ids=[step] if step is not None else [],
                     data={"text": text[:500], "doc_id": doc_id},
@@ -504,7 +505,7 @@ class RefundPolicyVerifier(Verifier):
                 step_ids=step_ids,
                 evidence=[
                     EvidenceItem(
-                        kind="final_answer",
+                        kind=EvidenceKind.FINAL_ANSWER,
                         description="final answer text",
                         step_ids=step_ids,
                         data={"final_answer": answer},
@@ -525,13 +526,13 @@ class RefundPolicyVerifier(Verifier):
                 step_ids=step_ids,
                 evidence=[
                     EvidenceItem(
-                        kind="final_answer",
+                        kind=EvidenceKind.FINAL_ANSWER,
                         description="final answer text",
                         step_ids=step_ids,
                         data={"final_answer": answer},
                     ),
                     EvidenceItem(
-                        kind="refund_record",
+                        kind=EvidenceKind.REFUND_RECORD,
                         description="refunds present in final state",
                         data={"refunds": [r.model_dump(mode="json") for r in state.refunds]},
                     ),
