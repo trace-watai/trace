@@ -87,9 +87,13 @@ for every contract and a sub-second offline test suite.
 
 ## What's intentionally scaffolded (not faked)
 
-- **Gemini adapter** — config-checked scaffold; the provider call raises
-  `NotImplementedError` with the intended design. Fixture provider is the
-  default everywhere; tests never need keys.
+- **Gemini adapter** — implemented for native function calling. Install the
+  extra and set a key, then select it per run:
+  `pip install -e ".[gemini]"`, put `GEMINI_API_KEY` in `.env` (free keys:
+  https://aistudio.google.com/apikey), and run
+  `trace-harness run-fixture <task> --provider gemini --model gemini-2.0-flash`.
+  Fixture provider stays the default everywhere; tests never need a key or the
+  SDK. (JSON tool-mode fallback is still TODO.)
 - **Refund guardrails** — deliberately absent so the verifier has real
   failures to catch; the installation seam is marked in
   `environment/support_env.py` and prescribed by the generated repair
