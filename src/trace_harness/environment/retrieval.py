@@ -97,7 +97,9 @@ def search_docs(
             )
         )
     if ranking_override:
-        order_index = {doc_id: i for i, doc_id in enumerate(ranking_override)}
+        order_index: dict[str, int] = {}
+        for i, doc_id in enumerate(ranking_override):
+            order_index.setdefault(doc_id, i)
         scored.sort(
             key=lambda c: (
                 order_index.get(c.doc_id, len(ranking_override)),
