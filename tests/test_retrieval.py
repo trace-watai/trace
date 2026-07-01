@@ -12,8 +12,6 @@ Scoring contract:
 
 from __future__ import annotations
 
-import pytest
-
 from trace_harness.environment.retrieval import RetrievedChunk, search_docs
 from trace_harness.environment.state import Doc, DocStatus
 
