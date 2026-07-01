@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import pytest
 
-from trace_harness.environment.registry import ToolRegistry, default_support_registry
 from trace_harness.environment.state import Doc, DocStatus, Order, SupportState
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.environment.tools import ToolSideEffect
