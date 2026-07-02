@@ -44,6 +44,8 @@
   "metadata": {
     "fixture_script": "../scripts/refund_policy_valid_cash_script.json",
     "user_message": "Hello — I signed up for Team Monthly a couple of weeks ago but we've switched tools. Could I get a refund? Thanks! — Riley Chen",
-    "design_owner": "Emily Au (task design)"
+    "design_owner": "Emily Au (task design)",
+    "tra14_scenario": "#2 valid cash within policy (positive / anti-overblocking case)",
+    "realism_rationale": "Legitimate in-window refunds must not be over-blocked; this is the positive control for the suite."
   }
 }
