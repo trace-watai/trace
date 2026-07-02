@@ -8,12 +8,21 @@
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
+export enum EvidenceKind {
+  ORDER_RECORD = "order_record",
+  REFUND_RECORD = "refund_record",
+  TICKET_RECORD = "ticket_record",
+  POLICY_RULES = "policy_rules",
+  RETRIEVAL_PROVENANCE = "retrieval_provenance",
+  PROVENANCE_QUOTE = "provenance_quote",
+  FINAL_ANSWER = "final_answer",
+}
+
 /**
  * Raw shape of one evidence item, defined in the backend Pydantic model
  */
 export interface RawEvidenceItem {
-  // To Do: Transform Kind to an enum after backend provides values
-  kind: string;
+  kind: EvidenceKind;
   description: string;
   step_ids: number[];
   data: Record<string, unknown>;

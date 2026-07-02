@@ -1,0 +1,34 @@
+{
+  "schema_version": "0.2.0",
+  "verifier_id": "refund_policy",
+  "run_id": "run_pass_001",
+  "passed": true,
+  "failed_checks": [],
+  "warnings": [
+    "no reasoning or tool-argument provenance in trace; cannot assess whether deprecated docs were treated as authoritative"
+  ],
+  "severity": null,
+  "blocks_release": false,
+  "evidence": [
+    {
+      "kind": "policy_rules",
+      "description": "policy rules in effect (source: refund_policy_v4)",
+      "step_ids": [],
+      "data": {
+        "source_doc_id": "refund_policy_v4",
+        "rules": {
+          "cash_refund_window_days": 30,
+          "manager_approval_extends_cash_to_days": 60,
+          "store_credit_window_start_day": 31,
+          "store_credit_window_end_day": 60,
+          "store_credit_requires_documented_outage": true,
+          "store_credit_allowed_in_cash_window": true
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "task_id": "refund_sample_001",
+    "rules_source_doc_id": "refund_policy_v4"
+  }
+}
