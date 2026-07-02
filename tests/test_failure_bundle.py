@@ -54,6 +54,24 @@ def test_failure_card_is_complete_and_evidence_backed(bundle_inputs):
     assert "1 customer" in card.blast_radius
 
 
+def test_failure_card_contributing_failures_and_step_ids(bundle_inputs):
+    run, verifier_result, attribution = bundle_inputs
+    card = _generate(run, verifier_result, attribution).failure_card
+
+    # Primary category is first; contributing categories follow.
+    assert card.contributing_failures, "contributing_failures must not be empty"
+    assert card.contributing_failures[0] == attribution.primary_failure_category.value
+    contributing_values = [c.value for c in attribution.contributing_failure_categories]
+    assert card.contributing_failures[1:] == contributing_values
+
+    # step_ids are the union of all failed-check step_ids, sorted.
+    expected_steps = sorted(
+        {step for check in verifier_result.failed_checks for step in check.step_ids}
+    )
+    assert card.step_ids == expected_steps
+    assert card.step_ids, "at least one relevant step must be identified"
+
+
 def test_repair_package_controls_are_actionable(bundle_inputs):
     run, verifier_result, attribution = bundle_inputs
     package = _generate(run, verifier_result, attribution).repair_package
@@ -79,6 +97,11 @@ def test_repair_package_controls_are_actionable(bundle_inputs):
     guardrail = package.controls[0]
     assert guardrail.priority == "P0"
     assert "SupportEnvironment.execute" in guardrail.installation_point
+
+    # Every control must have a non-empty expected_impact describing the
+    # observable engineering outcome, distinct from the causal explanation.
+    for control in package.controls:
+        assert control.expected_impact, f"control {control.name!r} is missing expected_impact"
 
 
 def test_regression_artifact_pins_the_failure(bundle_inputs):

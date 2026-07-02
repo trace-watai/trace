@@ -16,8 +16,8 @@ from pydantic import BaseModel, Field
 from trace_harness.tasks.schemas import Severity
 from trace_harness.verifiers.base import EvidenceItem
 
-FAILURE_CARD_SCHEMA_VERSION = "0.1.0"
-REPAIR_PACKAGE_SCHEMA_VERSION = "0.1.0"
+FAILURE_CARD_SCHEMA_VERSION = "0.2.0"
+REPAIR_PACKAGE_SCHEMA_VERSION = "0.2.0"
 
 
 class FailureCard(BaseModel):
@@ -33,6 +33,13 @@ class FailureCard(BaseModel):
     task_result: str
     severity: Severity
     root_cause: str
+    # Coarse failure categories that contributed (primary first), sourced from
+    # attribution. Surfaces contributing_failure_categories as a first-class
+    # field rather than burying them in metadata.
+    contributing_failures: list[str] = Field(default_factory=list)
+    # Step numbers directly implicated in the failure, drawn from failed
+    # verifier checks — lets readers jump straight to the relevant trace lines.
+    step_ids: list[int] = Field(default_factory=list)
     visible_symptoms: list[str] = Field(default_factory=list)
     evidence: list[EvidenceItem] = Field(default_factory=list)
     causal_explanation: str
@@ -52,6 +59,10 @@ class RepairControl(BaseModel):
     # The exact check the control performs, stated deterministically.
     check: str
     behavior_on_failure: str
+    # Measurable outcome if the control is installed: what rate/class of
+    # failure it eliminates. Distinct from why_it_prevents_recurrence, which
+    # is the causal claim; this is the observable engineering impact.
+    expected_impact: str
     why_it_prevents_recurrence: str
     risk_or_tradeoff: str
     # P0 (do before next release) .. P3 (opportunistic).

@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from trace_harness.tasks.schemas import Severity, TaskSpec, max_severity
 from trace_harness.tracing.events import TraceEvent
 
-VERIFIER_RESULT_SCHEMA_VERSION = "0.1.0"
+VERIFIER_RESULT_SCHEMA_VERSION = "0.2.0"
 VERIFIER_INPUT_SCHEMA_VERSION = "0.1.0"
 
 
@@ -77,11 +77,12 @@ class VerifierInput(BaseModel):
 
 
 class EvidenceKind(StrEnum):
-    """Machine-usable tags for evidence items.
+    """Closed vocabulary of evidence tags shared with the dashboard.
 
-    The dashboard (Skye) branches on these values to decide how to render
-    each piece of evidence, so they must be a closed set — not free strings.
-    Add new values here when a verifier introduces a new evidence category.
+    Constraining ``EvidenceItem.kind`` to this enum keeps producers and the
+    frontend renderer aligned on one set of values. Add a member here (and the
+    matching case in the dashboard) when a verifier needs to emit a new kind —
+    never an ad-hoc string.
     """
 
     ORDER_RECORD = "order_record"
@@ -96,9 +97,9 @@ class EvidenceKind(StrEnum):
 class EvidenceItem(BaseModel):
     """One piece of evidence supporting a check outcome.
 
-    ``kind`` identifies the evidence category so the dashboard can render
-    it appropriately; ``data`` carries the raw facts so consumers never
-    need to re-derive anything from the trace.
+    ``kind`` is a machine-usable tag from :class:`EvidenceKind`; ``data``
+    carries the raw facts so the dashboard can render them without re-deriving
+    anything.
     """
 
     kind: EvidenceKind

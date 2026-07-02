@@ -395,3 +395,18 @@ def test_merge_honors_each_verifiers_own_verdict():
     merged = merge_verifier_results([failing, passing])
     assert merged.passed is False
     assert merged.metadata["verifier_metadata"]["y"] == {"k": "v"}
+
+
+def test_evidence_kind_is_constrained_enum():
+    """EvidenceItem.kind is a closed EvidenceKind vocabulary, not an open string."""
+    import pytest
+    from pydantic import ValidationError
+
+    from trace_harness.verifiers.base import EvidenceItem, EvidenceKind
+
+    item = EvidenceItem(kind="order_record", description="x")
+    assert item.kind is EvidenceKind.ORDER_RECORD
+    assert item.kind == "order_record"  # StrEnum stays string-comparable
+
+    with pytest.raises(ValidationError):
+        EvidenceItem(kind="not_a_real_kind", description="x")
