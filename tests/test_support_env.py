@@ -207,3 +207,91 @@ def test_fresh_environment_is_clean(_failure_task_and_docs):
 
     assert len(env1.state.refunds) == 1
     assert len(env2.state.refunds) == 0
+
+
+# --- pre_execute_hooks ---
+
+
+def test_no_hooks_dispatch_runs_normally(env):
+    call = ToolCall(
+        tool_name="issue_refund",
+        arguments={"customer_name": "Casey Nguyen", "refund_type": "cash", "reason": "test"},
+    )
+    result = env.execute(call, step_id=1)
+    assert result.status == "ok"
+    assert len(env.state.refunds) == 1
+
+
+def test_hook_returning_none_is_transparent(env):
+    from trace_harness.environment.tools import ToolResult  # noqa: F401 — used for type clarity
+
+    fired = []
+
+    def passthrough(call, state):
+        fired.append(call.tool_name)
+        return None
+
+    env.register_pre_execute_hook(passthrough)
+    call = ToolCall(
+        tool_name="issue_refund",
+        arguments={"customer_name": "Casey Nguyen", "refund_type": "cash", "reason": "test"},
+    )
+    result = env.execute(call, step_id=1)
+    assert result.status == "ok"
+    assert len(env.state.refunds) == 1
+    assert fired == ["issue_refund"]
+
+
+def test_hook_returning_result_blocks_dispatch(env):
+    from trace_harness.environment.tools import ToolResult
+
+    def blocker(call, state):
+        return ToolResult(tool_name=call.tool_name, status="error", error="blocked by guardrail")
+
+    env.register_pre_execute_hook(blocker)
+    call = ToolCall(
+        tool_name="issue_refund",
+        arguments={"customer_name": "Casey Nguyen", "refund_type": "cash", "reason": "test"},
+    )
+    result = env.execute(call, step_id=1)
+    assert result.status == "error"
+    assert "blocked" in (result.error or "")
+    assert len(env.state.refunds) == 0  # handler never ran; no state mutation
+
+
+def test_multiple_hooks_first_nonnone_wins(env):
+    from trace_harness.environment.tools import ToolResult
+
+    calls_seen = []
+
+    def first_hook(call, state):
+        calls_seen.append("first")
+        return ToolResult(tool_name=call.tool_name, status="error", error="first hook blocked")
+
+    def second_hook(call, state):
+        calls_seen.append("second")
+        return None
+
+    env.register_pre_execute_hook(first_hook)
+    env.register_pre_execute_hook(second_hook)
+    call = ToolCall(
+        tool_name="issue_refund",
+        arguments={"customer_name": "Casey Nguyen", "refund_type": "cash", "reason": "test"},
+    )
+    env.execute(call, step_id=1)
+    assert calls_seen == ["first"]  # second hook never reached
+
+
+def test_hook_does_not_fire_on_invalid_call(env):
+    fired = []
+
+    def should_not_fire(call, state):
+        fired.append(call.tool_name)
+        return None
+
+    env.register_pre_execute_hook(should_not_fire)
+    # Missing required argument — validation fails before hooks run.
+    call = ToolCall(tool_name="issue_refund", arguments={})
+    result = env.execute(call)
+    assert result.status == "error"
+    assert fired == []  # validation short-circuited before hooks
