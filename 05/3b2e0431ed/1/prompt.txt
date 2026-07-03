@@ -1,0 +1,23 @@
+<ide_opened_file>The user opened the file /Users/evanzyang/Documents/Projects/TRACE/tests/test_config.py in the IDE. This may or may not be related to the current task.</ide_opened_file>
+Is there a way for you to view merge conflicts on a pr from here?
+
+---
+
+pr #71
+
+---
+
+<ide_opened_file>The user opened the file /Users/evanzyang/Documents/Projects/TRACE/tests/test_fixture_run.py in the IDE. This may or may not be related to the current task.</ide_opened_file>
+If i want to keep all effective tests, is this the way to go? also, after rebasing, will the pr still be open for review from my managers?
+
+---
+
+this does not affect anyone else's work and stays within the branch right?
+
+---
+
+yes. confirm that this is the correct action, and proceed. do not do anything else unnecessarily.
+
+---
+
+if you are resolving the conflicts now, why even rebase?
