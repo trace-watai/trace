@@ -46,8 +46,11 @@ def test_failure_card_is_complete_and_evidence_backed(bundle_inputs):
     assert len(card.visible_symptoms) == 3
     assert card.evidence, "a failure card without evidence is an opinion"
     assert card.causal_explanation == attribution.causal_explanation
-    assert "$432.00" in card.blast_radius
-    assert "1 customer" in card.blast_radius
+    assert card.blast_radius.refund_total_usd == 432.0
+    assert card.blast_radius.refund_count == 1
+    assert card.blast_radius.ticket_count == 1
+    assert card.blast_radius.customers_affected == ["Casey Nguyen"]
+    assert "$432.00" in card.blast_radius.summary
 
 
 def test_failure_card_contributing_failures_and_step_ids(bundle_inputs):
