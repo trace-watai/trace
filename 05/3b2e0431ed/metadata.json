@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "053b2e0431ed",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-42-integrate-tools",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "tests/test_fixture_run.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/05/3b2e0431ed/0/metadata.json",
+      "transcript": "/05/3b2e0431ed/0/full.jsonl",
+      "content_hash": "/05/3b2e0431ed/0/content_hash.txt",
+      "prompt": "/05/3b2e0431ed/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3224,
+    "cache_creation_tokens": 431483,
+    "cache_read_tokens": 12415976,
+    "output_tokens": 83488,
+    "api_call_count": 138
+  }
+}

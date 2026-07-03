@@ -1,0 +1,89 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "053b2e0431ed",
+  "session_id": "6ea86c7a-d815-4f05-9e7e-600a03a14647",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-03T19:31:36.329782Z",
+  "branch": "trace-harness/tra-42-integrate-tools",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "tests/test_fixture_run.py"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "60329c28017d",
+  "token_usage": {
+    "input_tokens": 3224,
+    "cache_creation_tokens": 431483,
+    "cache_read_tokens": 12415976,
+    "output_tokens": 83488,
+    "api_call_count": 138
+  },
+  "session_metrics": {
+    "turn_count": 6
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-03T19:31:36.30576Z",
+    "agent_lines": 99,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 99,
+    "total_lines_changed": 99,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 373,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "CLAUDE.md": 373
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 373,
+      "user_lines_removed": 0,
+      "agent_lines_added": 92,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "CLAUDE.md": 373
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 373,
+      "user_lines_removed": 0,
+      "agent_lines_added": 136,
+      "agent_lines_removed": 9,
+      "user_added_per_file": {
+        "CLAUDE.md": 373
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 373,
+      "user_lines_removed": 0,
+      "agent_lines_added": 224,
+      "agent_lines_removed": 9,
+      "user_added_per_file": {
+        "CLAUDE.md": 373
+      }
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 373,
+      "user_lines_removed": 0,
+      "agent_lines_added": 243,
+      "agent_lines_removed": 17,
+      "user_added_per_file": {
+        "CLAUDE.md": 373
+      }
+    }
+  ]
+}
