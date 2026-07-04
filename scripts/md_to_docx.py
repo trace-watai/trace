@@ -87,10 +87,12 @@ def build(doc: Document, lines: list[str]) -> None:
             # Continuation lines of a wrapped bullet are indented further
             # without their own leading "-"; fold them into one paragraph.
             j = i + 1
-            while j < len(lines) and lines[j].strip() and not re.match(
-                r"^(\s*)-\s+", lines[j]
-            ) and not lines[j].strip().startswith("|") and not re.match(
-                r"^#{1,3}\s", lines[j]
+            while (
+                j < len(lines)
+                and lines[j].strip()
+                and not re.match(r"^(\s*)-\s+", lines[j])
+                and not lines[j].strip().startswith("|")
+                and not re.match(r"^#{1,3}\s", lines[j])
             ):
                 text += " " + lines[j].strip()
                 j += 1
@@ -102,10 +104,12 @@ def build(doc: Document, lines: list[str]) -> None:
         # Plain paragraph: fold wrapped lines until a blank line or new block.
         text = stripped
         j = i + 1
-        while j < len(lines) and lines[j].strip() and not re.match(
-            r"^(\s*)-\s+", lines[j]
-        ) and not lines[j].strip().startswith("|") and not re.match(
-            r"^#{1,3}\s", lines[j]
+        while (
+            j < len(lines)
+            and lines[j].strip()
+            and not re.match(r"^(\s*)-\s+", lines[j])
+            and not lines[j].strip().startswith("|")
+            and not re.match(r"^#{1,3}\s", lines[j])
         ):
             text += " " + lines[j].strip()
             j += 1

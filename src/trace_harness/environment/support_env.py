@@ -12,18 +12,39 @@ Validation vs execution
     of truth) and then dispatches — an invalid call can therefore never
     execute, even if a caller skips ``validate_call``.
 
-Guardrail seam
-    A future deterministic pre-call guardrail (block unauthorized refunds
-    *before* execution) installs at the top of :meth:`execute`. It is left
-    out of the MVP on purpose so the verifier has real failures to catch;
-    the generated repair package names this exact seam.
+Pre-execute hooks
+    ``register_pre_execute_hook`` attaches a guardrail that runs after
+    argument validation but before the tool handler fires. A hook receives
+    the call and the live state; returning a :class:`ToolResult` short-
+    circuits dispatch (the handler never runs, so no state mutation occurs).
+    Returning ``None`` passes control to the next hook or the handler.
+    Hooks run in registration order; the first non-``None`` return wins.
 
-# TODO(Evan Yang/environment): per-tool execution hooks (pre/post) once the
-# first guardrail lands, so guardrails compose instead of stacking ifs here.
+    This is the seam named in the repair package for the refund failure
+    scenario. The MVP intentionally ships with no hooks registered so the
+    verifier catches real violations; a guardrail is installed by callers
+    after construction, not hardcoded here.
+
+Edge cases for verifier inspection
+    - Two distinct error paths exist: (1) validation failure — the tool is
+      never executed and no ``TOOL_CALL_EXECUTED`` event is emitted;
+      (2) handler error (e.g. customer not found) — execution ran and
+      ``TOOL_CALL_EXECUTED`` is emitted with ``status="error"``. The
+      verifier must distinguish these from the trace.
+    - State mutations have no rollback. If a handler mutates state and then
+      raises, the mutation persists in the final snapshot. A run with
+      ``RunStatus=ERROR`` does not imply a clean ``final_state``.
+    - ``step_id`` is always non-``None`` when called from the runner, but
+      the field is nullable on ``Refund`` and ``Ticket``. The verifier must
+      not assume ``issued_at_step`` is set on arbitrary ``SupportState``
+      instances constructed outside a run.
+    - ``snapshot()`` returns a deep copy via ``model_dump(mode="json")``.
+      Mutating the returned dict does not affect live state.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import ValidationError
@@ -46,6 +67,7 @@ class SupportEnvironment:
     ):
         self.state = state
         self._registry = registry or default_support_registry()
+        self._pre_execute_hooks: list[Callable[[ToolCall, SupportState], ToolResult | None]] = []
         if available_tools is None:
             self._available = self._registry.names()
         else:
@@ -67,6 +89,17 @@ class SupportEnvironment:
         """Build the environment a task describes: initial state + tool subset."""
         state = SupportState.from_task(task, docs=docs)
         return cls(state, registry=registry, available_tools=task.available_tools)
+
+    def register_pre_execute_hook(
+        self, hook: Callable[[ToolCall, SupportState], ToolResult | None]
+    ) -> None:
+        """Attach a guardrail that runs before every tool dispatch.
+
+        The hook receives the validated call and live state. Return a
+        ``ToolResult`` to block execution; return ``None`` to pass through.
+        Hooks run in registration order; first non-``None`` return wins.
+        """
+        self._pre_execute_hooks.append(hook)
 
     # --- ToolEnvironment protocol ---
 
@@ -103,8 +136,10 @@ class SupportEnvironment:
         definition = self._registry.get(call.tool_name)
         assert definition is not None
         args = definition.args_model.model_validate(call.arguments)
-        # Future deterministic guardrails install here, between validation
-        # and dispatch (see module docstring).
+        for hook in self._pre_execute_hooks:
+            early = hook(call, self.state)
+            if early is not None:
+                return early
         return definition.handler(self.state, args, step_id)
 
     def side_effect_for(self, tool_name: str) -> ToolSideEffect | None:
