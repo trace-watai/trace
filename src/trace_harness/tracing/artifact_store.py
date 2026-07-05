@@ -191,11 +191,14 @@ class ArtifactStore:
         return self.runs_dir / RUN_INDEX
 
     def read_index(self) -> RunIndex:
-        """Load the run index; a missing index is simply empty (rebuildable)."""
+        """Load the run index; missing or corrupt indexes are rebuildable."""
         path = self.index_path()
         if not path.is_file():
             return RunIndex()
-        return RunIndex.model_validate_json(path.read_text(encoding="utf-8"))
+        try:
+            return RunIndex.model_validate_json(path.read_text(encoding="utf-8"))
+        except ValueError:
+            return self.rebuild_index()
 
     def upsert_index_entry(self, entry: RunIndexEntry) -> None:
         """Add or replace ``entry`` in the index, keyed by ``run_id``.
