@@ -21,6 +21,7 @@ from trace_harness.environment.state import (
 )
 from trace_harness.tasks.schemas import Severity, TaskSpec
 from trace_harness.tracing.events import TraceEvent, TraceEventType
+from trace_harness.verifiers.base import VerifierInput
 from trace_harness.verifiers.refund_policy import RefundPolicyVerifier
 from trace_harness.verifiers.registry import get_verifier
 
@@ -130,7 +131,11 @@ def _final_answer_event(text: str, step: int = 7) -> TraceEvent:
 
 
 def _verify(state: SupportState, trace: list[TraceEvent] | None = None):
-    return RefundPolicyVerifier().verify(_task(), trace or [], state.snapshot(), run_id="run_test")
+    return RefundPolicyVerifier().verify(
+        VerifierInput.from_parts(
+            task=_task(), trace=trace or [], final_state=state.snapshot(), run_id="run_test"
+        )
+    )
 
 
 def _failed_ids(result) -> set[str]:
@@ -284,7 +289,10 @@ def test_rules_come_from_doc_metadata_not_hardcoding():
 def test_failure_fixture_matches_pinned_expectations(failure_run):
     verifier = get_verifier(failure_run.task.verifier_ids[0])
     result = verifier.verify(
-        failure_run.task, failure_run.trace, failure_run.final_state, failure_run.run_id
+        VerifierInput.from_parts(
+            task=failure_run.task, trace=failure_run.trace,
+            final_state=failure_run.final_state, run_id=failure_run.run_id,
+        )
     )
     expected = json.loads(EXPECTED_VERIFIER_PATH.read_text())["expected"]
     assert result.passed is expected["passed"]
@@ -305,7 +313,10 @@ def test_valid_fixture_passes_verifier(valid_run):
     """The positive sibling: mentions the deprecated doc, acts correctly, passes."""
     verifier = get_verifier(valid_run.task.verifier_ids[0])
     result = verifier.verify(
-        valid_run.task, valid_run.trace, valid_run.final_state, valid_run.run_id
+        VerifierInput.from_parts(
+            task=valid_run.task, trace=valid_run.trace,
+            final_state=valid_run.final_state, run_id=valid_run.run_id,
+        )
     )
     assert result.passed, [c.check_id for c in result.failed_checks]
     assert not result.blocks_release

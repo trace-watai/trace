@@ -30,6 +30,50 @@ from trace_harness.tasks.schemas import Severity, TaskSpec, max_severity
 from trace_harness.tracing.events import TraceEvent
 
 VERIFIER_RESULT_SCHEMA_VERSION = "0.2.0"
+VERIFIER_INPUT_SCHEMA_VERSION = "0.1.0"
+
+
+class VerifierInput(BaseModel):
+    """Everything a verifier needs to judge one run.
+
+    Bundles the inputs into a single serializable object so callers,
+    storage (Samrath), and regression replay (Samir) can round-trip a
+    complete verification request through JSON without juggling loose
+    parameters.
+
+    ``initial_state`` is optional because some verification contexts
+    (re-running from artifacts) may only have the final snapshot.  When
+    present it lets checks compare before/after (future use).
+    """
+
+    schema_version: str = VERIFIER_INPUT_SCHEMA_VERSION
+    task: TaskSpec
+    trace: list["TraceEvent"]
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+    final_state: dict[str, Any]
+    run_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_parts(
+        cls,
+        *,
+        task: TaskSpec,
+        trace: list["TraceEvent"],
+        final_state: dict[str, Any],
+        run_id: str,
+        initial_state: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> "VerifierInput":
+        """Convenience factory mirroring the old verify() signature."""
+        return cls(
+            task=task,
+            trace=trace,
+            initial_state=initial_state or {},
+            final_state=final_state,
+            run_id=run_id,
+            metadata=metadata or {},
+        )
 
 
 class EvidenceKind(StrEnum):
@@ -41,13 +85,13 @@ class EvidenceKind(StrEnum):
     never an ad-hoc string.
     """
 
-    POLICY_RULES = "policy_rules"
     ORDER_RECORD = "order_record"
     REFUND_RECORD = "refund_record"
     TICKET_RECORD = "ticket_record"
-    FINAL_ANSWER = "final_answer"
+    POLICY_RULES = "policy_rules"
     RETRIEVAL_PROVENANCE = "retrieval_provenance"
     PROVENANCE_QUOTE = "provenance_quote"
+    FINAL_ANSWER = "final_answer"
 
 
 class EvidenceItem(BaseModel):
@@ -161,10 +205,7 @@ class Verifier(ABC):
     @abstractmethod
     def verify(
         self,
-        task: TaskSpec,
-        trace: list[TraceEvent],
-        final_state: dict[str, Any],
-        run_id: str,
+        input: VerifierInput,
     ) -> VerifierResult:
         """Judge one finished run. Must be deterministic and side-effect free."""
         raise NotImplementedError
