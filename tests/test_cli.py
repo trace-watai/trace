@@ -92,8 +92,9 @@ def test_runs_dir_flag_works_in_either_position(tmp_path):
     before, after = tmp_path / "before", tmp_path / "after"
     assert main(["--runs-dir", str(before), "run-fixture", str(VALID_TASK_PATH)]) == 0
     assert main(["run-fixture", str(VALID_TASK_PATH), "--runs-dir", str(after)]) == 0
-    assert len(list(before.iterdir())) == 1
-    assert len(list(after.iterdir())) == 1
+    # Exactly one run landed in each dir (alongside the runs-dir-level index.json).
+    assert len([p for p in before.iterdir() if p.is_dir()]) == 1
+    assert len([p for p in after.iterdir() if p.is_dir()]) == 1
 
 
 def test_input_errors_exit_2_with_clean_message(tmp_path, capsys):
