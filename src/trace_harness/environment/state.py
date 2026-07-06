@@ -145,6 +145,10 @@ class SupportState(BaseModel):
     # Counters keep generated IDs deterministic (REF-0001, TICK-0001, ...).
     next_refund_seq: int = 1
     next_ticket_seq: int = 1
+    # Optional fixture-pinned result order for search_docs. When set, docs
+    # whose doc_id appears in this list are returned first (in list order)
+    # regardless of keyword score. Remaining matches follow by score desc.
+    doc_ranking_override: list[str] | None = Field(default=None)
 
     @classmethod
     def from_task(cls, task: TaskSpec, docs: list[Doc] | None = None) -> SupportState:
