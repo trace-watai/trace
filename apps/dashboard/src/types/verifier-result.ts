@@ -2,7 +2,7 @@
  * Verifier-result data contract.
  *
  * Mirrors `VerifierResult` in `src/trace_harness/verifiers/base.py`
- * (VERIFIER_RESULT_SCHEMA_VERSION 0.1.0), serialized as `verifier_result.json`.
+ * (VERIFIER_RESULT_SCHEMA_VERSION 0.2.0), serialized as `verifier_result.json`.
  *
  * The verdict for one run from one verifier (or a merge of several). The
  * verifier is the authority on pass/fail: it returns structured evidence and
@@ -14,7 +14,7 @@ import { camelizeKeys, type Camelize } from "@/lib/casing";
 import type { RawEvidenceItem } from "@/types/evidence";
 import type { Severity } from "@/types/severity";
 
-export const VERIFIER_RESULT_SCHEMA_VERSION = "0.1.0";
+export const VERIFIER_RESULT_SCHEMA_VERSION = "0.2.0";
 
 /**
  * Wire shape of one deterministic check that failed, defined in the backend
