@@ -7,3 +7,4 @@ export * from "./severity";
 export * from "./failure-card";
 export * from "./run-result";
 export * from "./verifier-result";
+export * from "./trace-event";
