@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "d241b02059eb",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-63-run-index-verifier-verdict",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/trace_harness/cli.py",
+    "src/trace_harness/run_reader.py",
+    "src/trace_harness/tracing/artifact_store.py",
+    "src/trace_harness/tracing/run_index.py",
+    "tests/test_run_index.py",
+    "tests/test_run_reader.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d2/41b02059eb/0/metadata.json",
+      "transcript": "/d2/41b02059eb/0/full.jsonl",
+      "content_hash": "/d2/41b02059eb/0/content_hash.txt",
+      "prompt": "/d2/41b02059eb/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1459,
+    "cache_creation_tokens": 126666,
+    "cache_read_tokens": 5223872,
+    "output_tokens": 37334,
+    "api_call_count": 47
+  }
+}

@@ -1,0 +1,10 @@
+I need to get some serious progress done for my part, for Trace itself. As Samrath, part of the evaluation team, I haven't done much work in about two weeks, or even more than that. In this session, I want to complete just a shit ton of work:
+- Pick up existing tickets and put up PRs for those.
+- Create new tickets and then put up PRs for those, depending on the current state and direction of the entire project. I want you to look at what everyone's been doing so far or recently:
+- What PRs others have been putting up.
+- What work they've been doing.
+- What exactly Samrath should do next. Come up with a list of items or action items to do code-wise, and then that can all be converted into a PR and pushed out by the end of this session today. It should be substantial yet consistent, substantial yet obviously high-quality work as well. That's all, but look at linear, GitHub, everything, and Notion even
+
+---
+
+continue, linear reconnected
