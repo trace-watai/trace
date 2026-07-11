@@ -266,7 +266,10 @@ class ArtifactStore:
         for run_id in self.list_runs():
             if not self.exists(run_id, RUN_RESULT):
                 continue
-            entry = RunIndexEntry.model_validate(self.read_json(run_id, RUN_RESULT))
+            try:
+                entry = RunIndexEntry.model_validate(self.read_json(run_id, RUN_RESULT))
+            except (FileNotFoundError, ValueError):
+                continue
             verifier_fields = self._read_verifier_index_fields(run_id)
             if verifier_fields is not None:
                 entry = entry.model_copy(

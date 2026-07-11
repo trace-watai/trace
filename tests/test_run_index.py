@@ -102,6 +102,18 @@ def test_rebuild_skips_runs_without_result(tmp_path):
     assert [e.run_id for e in index.entries] == ["run_finished"]
 
 
+def test_rebuild_skips_malformed_run_result(tmp_path):
+    store = ArtifactStore(tmp_path / "runs")
+    store.create_run_dir("run_valid")
+    store.write_json("run_valid", names.RUN_RESULT, _entry("run_valid").model_dump(mode="json"))
+    store.create_run_dir("run_malformed")
+    store.write_json("run_malformed", names.RUN_RESULT, {"run_id": "run_malformed"})
+
+    index = store.rebuild_index()
+
+    assert [entry.run_id for entry in index.entries] == ["run_valid"]
+
+
 def test_index_file_excluded_from_list_runs(tmp_path):
     store = ArtifactStore(tmp_path / "runs")
     store.create_run_dir("run_a")
