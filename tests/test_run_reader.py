@@ -89,6 +89,9 @@ def test_downstream_artifacts_populated_after_pipeline(tmp_path: Path) -> None:
     exit_code = main(["--runs-dir", str(runs_dir), "run-pipeline", str(FAILURE_TASK_PATH)])
     assert exit_code == 0  # a verified failure without --fail-on-verifier is success
 
+    # Simulate pre-index history: listing rebuilds from source artifacts and
+    # preserves the verifier verdict instead of returning an incomplete summary.
+    (runs_dir / "index.json").unlink()
     reader = RunReader.from_runs_dir(runs_dir)
     (summary,) = reader.list_runs()
     run_id = summary.run_id

@@ -24,7 +24,7 @@ Missing-artifact states are explicit:
     existing run dir (run_result/task/trace)       ArtifactStore.read_json,
                                                     with its stage guidance
 
-``list_runs`` reads from the run index (O(1) — no directory scan) and
+``list_runs`` reads one run-index file instead of one artifact per run and
 includes the verifier verdict when the verify stage has run.
 """
 
@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from trace_harness.attribution.schemas import AttributionResult
 from trace_harness.failure_bundles.generator import FailureBundle
@@ -118,23 +118,14 @@ class RunReader:
     def list_runs(self) -> list[RunSummary]:
         """Summaries of every listable run, oldest-first (chronological).
 
-        Reads from the run index (O(1), no directory scan) and includes the
-        verifier verdict when the verify stage has run. Falls back to a
-        directory scan when the index is empty (new runs dir or pre-index
-        history) — in that case verifier fields are not populated.
+        Reads one run-index file and includes the verifier verdict when the
+        verify stage has run. Rebuilds by scanning run directories when the
+        index is empty (new runs dir or pre-index history).
         """
         index = self.store.read_index()
-        if index.entries:
-            return [RunSummary.from_entry(e) for e in index.entries]
-        # Fallback: scan dirs (pre-index history or empty runs dir)
-        summaries: list[RunSummary] = []
-        for run_id in self.store.list_runs():
-            try:
-                result = RunResult.model_validate(self.store.read_json(run_id, names.RUN_RESULT))
-            except (FileNotFoundError, ValidationError):
-                continue
-            summaries.append(RunSummary.from_result(result))
-        return summaries
+        if not index.entries and self.store.list_runs():
+            index = self.store.rebuild_index()
+        return [RunSummary.from_entry(entry) for entry in index.entries]
 
     # --- single run ---
 

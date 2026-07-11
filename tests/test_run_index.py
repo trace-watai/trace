@@ -74,6 +74,22 @@ def test_corrupt_index_self_heals_from_run_results(tmp_path):
     assert run_ids == {"run_old", "run_new"}  # old history recovered, new added
 
 
+def test_old_schema_index_rebuilds_at_current_version(tmp_path):
+    store = ArtifactStore(tmp_path / "runs")
+    run_id = "run_old"
+    store.create_run_dir(run_id)
+    store.write_json(run_id, names.RUN_RESULT, _entry(run_id).model_dump(mode="json"))
+    store.index_path().write_text(
+        json.dumps({"schema_version": "0.1.0", "entries": []}),
+        encoding="utf-8",
+    )
+
+    index = store.read_index()
+
+    assert index.schema_version == "0.2.0"
+    assert [entry.run_id for entry in index.entries] == [run_id]
+
+
 def test_rebuild_skips_runs_without_result(tmp_path):
     store = ArtifactStore(tmp_path / "runs")
     store.create_run_dir("run_finished")
@@ -122,7 +138,7 @@ def test_index_failure_cannot_break_a_run(tmp_path, monkeypatch):
 
 def test_enrich_index_entry_with_verifier_populates_verdict(tmp_path):
     """enrich_index_entry_with_verifier reads verifier_result.json and updates
-    the entry; run_id not yet in index is a safe no-op."""
+    the existing entry."""
     store = ArtifactStore(tmp_path / "runs")
     run_id = "run_20260101T000000Z_test"
     store.upsert_index_entry(_entry(run_id))
@@ -144,6 +160,25 @@ def test_enrich_index_entry_with_verifier_populates_verdict(tmp_path):
     assert entry.failed_check_count == 2
 
 
+def test_enrich_reconstructs_missing_index_entry(tmp_path):
+    store = ArtifactStore(tmp_path / "runs")
+    run_id = "run_20260101T000000Z_recover"
+    store.create_run_dir(run_id)
+    store.write_json(run_id, names.RUN_RESULT, _entry(run_id).model_dump(mode="json"))
+    store.write_json(
+        run_id,
+        names.VERIFIER_RESULT,
+        {"passed": False, "failed_checks": [{"check_id": "c1"}]},
+    )
+
+    store.enrich_index_entry_with_verifier(run_id)
+
+    (entry,) = store.read_index().entries
+    assert entry.run_id == run_id
+    assert entry.verifier_passed is False
+    assert entry.failed_check_count == 1
+
+
 def test_enrich_noop_when_no_verifier_artifact(tmp_path):
     """enrich_index_entry_with_verifier is a no-op when verifier hasn't run yet."""
     store = ArtifactStore(tmp_path / "runs")
@@ -154,6 +189,23 @@ def test_enrich_noop_when_no_verifier_artifact(tmp_path):
     entry = next(e for e in store.read_index().entries if e.run_id == run_id)
     assert entry.verifier_passed is None
     assert entry.failed_check_count is None
+
+
+def test_malformed_verifier_fields_do_not_create_false_verdict(tmp_path):
+    store = ArtifactStore(tmp_path / "runs")
+    run_id = "run_20260101T000000Z_malformed"
+    store.create_run_dir(run_id)
+    store.write_json(run_id, names.RUN_RESULT, _entry(run_id).model_dump(mode="json"))
+    store.write_json(
+        run_id,
+        names.VERIFIER_RESULT,
+        {"passed": "false", "failed_checks": None},
+    )
+
+    index = store.rebuild_index()
+
+    assert index.entries[0].verifier_passed is None
+    assert index.entries[0].failed_check_count is None
 
 
 def test_rebuild_includes_verifier_verdict_when_present(tmp_path):
