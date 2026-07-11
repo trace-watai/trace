@@ -14,3 +14,7 @@ The generator fixes the run ID and timestamps so rerunning it only changes this
 bundle when the pipeline or an artifact schema changes. The JSON files preserve
 the trace harness's canonical artifact formatting and are intentionally excluded
 from dashboard Prettier.
+
+Unlike the production `runs/{run_id}/` layout, this fixture is intentionally
+flat. Its `run_result.json` rewrites `artifact_paths` to filenames that resolve
+relative to this directory; all other artifact content matches pipeline output.

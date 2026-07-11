@@ -10,6 +10,7 @@ Usage (from repo root):
 Outputs:
     fixtures/expected/sample_passing_result.json
     fixtures/expected/sample_failing_result.json
+    apps/dashboard/src/fixtures/refund-failure/*
 """
 
 from __future__ import annotations
@@ -310,6 +311,11 @@ def _normalize_artifact(artifact: Path, real_run_id: str) -> str:
     if artifact.name == "run_result.json":
         data["started_at"] = _fixture_timestamp()
         data["finished_at"] = _fixture_timestamp(timedelta(seconds=1))
+        # The dashboard bundle is flat, unlike runs/{run_id}/. Keep these paths
+        # resolvable relative to the fixture directory for offline loaders.
+        data["artifact_paths"] = {
+            name: Path(path).name for name, path in data["artifact_paths"].items()
+        }
     return json.dumps(data, indent=2) + "\n"
 
 
