@@ -5,20 +5,21 @@ The trace is the evidence record of a run: an append-only sequence of
 `runs/{run_id}/trace.jsonl`. Everything downstream — verifiers,
 attribution, failure bundles, the dashboard — consumes traces. Owner:
 Samrath. Schema: `trace_harness/tracing/events.py`
-(`TRACE_SCHEMA_VERSION = 0.1.0`).
+(`TRACE_SCHEMA_VERSION = 0.2.0`).
 
 ## Event envelope
 
 ```json
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "event_id": "evt_000007",        // unique within the run, ordered
   "run_id": "run_20260611T025555Z_99032a0d",
   "step_id": 3,                    // decision step; null for run-level events
   "event_type": "model_action",
   "timestamp": "2026-06-11T02:55:55.123456+00:00",
   "payload": { ... },              // event-type-specific
-  "metadata": { ... }              // free-form annotations
+  "metadata": { ... },             // free-form annotations
+  "parent_event_id": null           // parent event in this run, if any
 }
 ```
 
@@ -27,7 +28,13 @@ events caused by one decision (prompt, action, tool call, observation)
 share its id — this is the join key the entire system uses (verifier
 evidence, attribution fields, dashboard timeline).
 
-## Event types and payloads (MVP)
+**Parent linkage:** tool validation, execution, retrieval, and observation
+events set `parent_event_id` to the originating `tool_call_requested` event.
+Top-level events use `null`. This event-level link complements `step_id`: a
+step groups one agent decision, while the parent identifies the exact event
+that caused a child.
+
+## Event types and typed payloads
 
 | event_type | step_id | payload (MVP) |
 |---|---|---|
@@ -51,6 +58,12 @@ Two payload fields are load-bearing downstream: `side_effect` on
 it) and `status` on retrieval results (verifier provenance and the
 dashboard's status badges).
 
+Each event type has a Pydantic payload model in
+`trace_harness.tracing.payloads`. `TraceEvent.payload` remains the lossless raw
+dictionary and `TraceEvent.typed_payload` validates it into the corresponding
+model. Payload models ignore unknown fields so older readers can consume traces
+from newer runners without discarding the raw data.
+
 ## Guarantees
 
 - **Write-through:** events flush to disk as they happen, so a dying run
@@ -61,15 +74,14 @@ dashboard's status badges).
   new artifacts, never rewrites evidence.
 - **Self-contained lines:** each line parses independently
   (`TraceRecorder.read_jsonl` round-trips, tested).
+- **Backward-readable envelope:** traces written before 0.2.0 remain readable;
+  `parent_event_id` defaults to `null`.
 
-## Intended evolution (decided now, built later)
+## Intended evolution
 
-1. **Typed payloads:** payloads become per-event-type Pydantic models
-   (discriminated unions on `event_type`) once the dashboard's first read
-   pass shows what it consumes. Consumers should not string-index dicts
-   forever.
-2. **Nested spans:** `parent_event_id` for sub-agent calls and retries.
-3. **Structured citations:** model actions that reference docs should carry
+1. **Nested spans beyond tools:** link model provider responses, retries, and
+   future sub-agent calls to their initiating events.
+2. **Structured citations:** model actions that reference docs should carry
    doc_ids structurally (today: substring matching of reasoning text).
 
 Any of these = schema_version bump + consumer coordination (tests,

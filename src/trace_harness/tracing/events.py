@@ -29,9 +29,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from trace_harness.tracing.payloads import TracePayload
 
 TRACE_SCHEMA_VERSION = "0.2.0"
 
@@ -78,7 +81,7 @@ class TraceEvent(BaseModel):
     parent_event_id: str | None = None
 
     @property
-    def typed_payload(self) -> Any:
+    def typed_payload(self) -> TracePayload | None:
         """Payload deserialized into the per-event-type model (read-only view).
 
         Returns ``None`` if no model is registered for this ``event_type``.

@@ -111,6 +111,24 @@ class ErrorPayload(_IgnoreExtra):
     traceback: str | None = None
 
 
+TracePayload = (
+    RunStartedPayload
+    | TaskLoadedPayload
+    | StateSnapshotPayload
+    | ModelPromptPayload
+    | ModelResponsePayload
+    | ModelActionPayload
+    | ToolCallRequestedPayload
+    | ToolCallValidatedPayload
+    | ToolCallExecutedPayload
+    | RetrievalResultPayload
+    | ToolObservationPayload
+    | FinalAnswerPayload
+    | RunFinishedPayload
+    | ErrorPayload
+)
+
+
 PAYLOAD_TYPES: dict[TraceEventType, type[_IgnoreExtra]] = {
     TraceEventType.RUN_STARTED: RunStartedPayload,
     TraceEventType.TASK_LOADED: TaskLoadedPayload,

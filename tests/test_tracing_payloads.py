@@ -299,6 +299,12 @@ def test_parent_event_id_preserved_in_jsonl(tmp_path) -> None:
         parent_event_id=parent.event_id,
     )
     recorder.record(
+        TraceEventType.RETRIEVAL_RESULT,
+        step_id=1,
+        payload={"query": "policy", "result_count": 0, "results": []},
+        parent_event_id=parent.event_id,
+    )
+    recorder.record(
         TraceEventType.TOOL_OBSERVATION,
         step_id=1,
         payload={"tool_name": "lookup", "status": "ok", "result": {}, "error": None},
@@ -309,6 +315,7 @@ def test_parent_event_id_preserved_in_jsonl(tmp_path) -> None:
     child_types = {
         TraceEventType.TOOL_CALL_VALIDATED,
         TraceEventType.TOOL_CALL_EXECUTED,
+        TraceEventType.RETRIEVAL_RESULT,
         TraceEventType.TOOL_OBSERVATION,
     }
     for ev in events:
@@ -345,6 +352,7 @@ def test_runner_wires_tool_chain_parent_event_ids(tmp_path) -> None:
     child_types = {
         TraceEventType.TOOL_CALL_VALIDATED,
         TraceEventType.TOOL_CALL_EXECUTED,
+        TraceEventType.RETRIEVAL_RESULT,
         TraceEventType.TOOL_OBSERVATION,
     }
     children = [ev for ev in events if ev.event_type in child_types]
