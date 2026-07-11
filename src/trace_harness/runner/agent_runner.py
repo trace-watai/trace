@@ -328,7 +328,7 @@ class AgentRunner:
                 # Tool-call path.
                 call = action.tool_call
                 assert call is not None
-                recorder.record(
+                tool_requested = recorder.record(
                     TraceEventType.TOOL_CALL_REQUESTED,
                     step_id=step_id,
                     payload={"tool_name": call.tool_name, "arguments": call.arguments},
@@ -342,6 +342,7 @@ class AgentRunner:
                         "valid": valid,
                         "error": validation_error,
                     },
+                    parent_event_id=tool_requested.event_id,
                 )
 
                 if valid:
@@ -357,6 +358,7 @@ class AgentRunner:
                             "side_effect": side_effect.value if side_effect else None,
                             "error": observation.error,
                         },
+                        parent_event_id=tool_requested.event_id,
                     )
                     if observation.retrieval is not None:
                         recorder.record(
@@ -370,6 +372,7 @@ class AgentRunner:
                                     for chunk in observation.retrieval
                                 ],
                             },
+                            parent_event_id=tool_requested.event_id,
                         )
                 else:
                     # Invalid calls are never executed; the agent observes the
@@ -387,6 +390,7 @@ class AgentRunner:
                         "result": observation.result,
                         "error": observation.error,
                     },
+                    parent_event_id=tool_requested.event_id,
                 )
                 transcript.append(_observation_to_tool_message(observation))
             else:
