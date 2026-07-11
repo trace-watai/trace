@@ -119,11 +119,17 @@ class RunReader:
         """Summaries of every listable run, oldest-first (chronological).
 
         Reads one run-index file and includes the verifier verdict when the
-        verify stage has run. Rebuilds by scanning run directories when the
-        index is empty (new runs dir or pre-index history).
+        verify stage has run. A cheap directory/stat reconciliation detects
+        missing or stale entries and rebuilds from source artifacts.
         """
         index = self.store.read_index()
-        if not index.entries and self.store.list_runs():
+        listable_run_ids = {
+            run_id
+            for run_id in self.store.list_runs()
+            if self.store.exists(run_id, names.RUN_RESULT)
+        }
+        indexed_run_ids = {entry.run_id for entry in index.entries}
+        if indexed_run_ids != listable_run_ids:
             index = self.store.rebuild_index()
         return [RunSummary.from_entry(entry) for entry in index.entries]
 

@@ -19,6 +19,7 @@ from trace_harness.failure_bundles.generator import FailureBundle
 from trace_harness.run_reader import RunNotFound, RunReader, RunSummary
 from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import TaskSpec
+from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.events import TraceEvent
 from trace_harness.verifiers.base import VerifierResult
 
@@ -48,6 +49,21 @@ def test_list_runs_chronological_and_skips_resultless_dirs(failure_run: FixtureR
     store.create_run_dir("run_00000000T000000Z_empty")
     summaries = RunReader(store).list_runs()
     assert [s.run_id for s in summaries] == [failure_run.run_id]
+
+
+def test_list_runs_rebuilds_nonempty_incomplete_index(failure_run: FixtureRun) -> None:
+    store = failure_run.store
+    missing_run_id = "run_99999999T999999Z_missing"
+    store.create_run_dir(missing_run_id)
+    store.write_json(
+        missing_run_id,
+        names.RUN_RESULT,
+        failure_run.result.model_copy(update={"run_id": missing_run_id}),
+    )
+
+    summaries = RunReader(store).list_runs()
+
+    assert [summary.run_id for summary in summaries] == [failure_run.run_id, missing_run_id]
 
 
 def test_list_runs_empty_when_no_runs(tmp_path: Path) -> None:
