@@ -15,7 +15,9 @@ Outputs:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from trace_harness.environment.state import (
     Doc,
@@ -263,6 +265,52 @@ def build_failing_scenario() -> dict:
 DASHBOARD_FIXTURE_DIR = REPO_ROOT / "apps" / "dashboard" / "src" / "fixtures" / "refund-failure"
 DASHBOARD_TASKS_PATH = REPO_ROOT / "fixtures" / "tasks" / "refund_policy_failure.json"
 FIXTURE_RUN_ID = "run_20260101T000000Z_sample01"
+FIXTURE_STARTED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+DASHBOARD_ARTIFACTS = (
+    "attribution_result.json",
+    "failure_card.json",
+    "final_state.json",
+    "initial_state.json",
+    "regression_artifact.json",
+    "repair_package.json",
+    "run_config.json",
+    "run_result.json",
+    "task_spec.json",
+    "trace.jsonl",
+    "verifier_result.json",
+)
+
+
+def _replace_run_id(value: Any, real_run_id: str) -> Any:
+    """Replace the generated run id recursively without touching unrelated text."""
+    if isinstance(value, dict):
+        return {key: _replace_run_id(item, real_run_id) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_run_id(item, real_run_id) for item in value]
+    if isinstance(value, str):
+        return value.replace(real_run_id, FIXTURE_RUN_ID)
+    return value
+
+
+def _fixture_timestamp(offset: timedelta = timedelta()) -> str:
+    return (FIXTURE_STARTED_AT + offset).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_artifact(artifact: Path, real_run_id: str) -> str:
+    """Return stable artifact text with generated ids and timestamps normalized."""
+    if artifact.suffix == ".jsonl":
+        normalized_lines = []
+        for index, line in enumerate(artifact.read_text(encoding="utf-8").splitlines()):
+            event = _replace_run_id(json.loads(line), real_run_id)
+            event["timestamp"] = _fixture_timestamp(timedelta(microseconds=index))
+            normalized_lines.append(json.dumps(event, separators=(",", ":")))
+        return "\n".join(normalized_lines) + "\n"
+
+    data = _replace_run_id(json.loads(artifact.read_text(encoding="utf-8")), real_run_id)
+    if artifact.name == "run_result.json":
+        data["started_at"] = _fixture_timestamp()
+        data["finished_at"] = _fixture_timestamp(timedelta(seconds=1))
+    return json.dumps(data, indent=2) + "\n"
 
 
 def generate_dashboard_fixture() -> None:
@@ -290,15 +338,12 @@ def generate_dashboard_fixture() -> None:
 
         DASHBOARD_FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
 
-        for artifact in src_dir.iterdir():
+        for artifact_name in DASHBOARD_ARTIFACTS:
+            artifact = src_dir / artifact_name
             if not artifact.is_file():
-                continue
-            raw = artifact.read_text(encoding="utf-8")
-            # Normalize the dynamic run_id so the fixture is stable across re-runs.
-            normalized = raw.replace(real_run_id, FIXTURE_RUN_ID)
-            # JSONL files need a trailing newline per line; JSON files keep theirs.
+                raise RuntimeError(f"run-pipeline did not produce {artifact_name}")
             dst = DASHBOARD_FIXTURE_DIR / artifact.name
-            dst.write_text(normalized, encoding="utf-8")
+            dst.write_text(_normalize_artifact(artifact, real_run_id), encoding="utf-8")
             print(f"  [OK] {artifact.name}")
 
     print(f"[OK] Dashboard fixture -> {DASHBOARD_FIXTURE_DIR}")
