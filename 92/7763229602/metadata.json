@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "927763229602",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-73-sample-trace-fixture",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "scripts/generate_sample_outputs.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/92/7763229602/0/metadata.json",
+      "transcript": "/92/7763229602/0/full.jsonl",
+      "content_hash": "/92/7763229602/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 35,
+    "cache_creation_tokens": 41070,
+    "cache_read_tokens": 3362265,
+    "output_tokens": 8971,
+    "api_call_count": 31
+  }
+}
