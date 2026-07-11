@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import FixtureRun
 from trace_harness.tracing.events import (
     TRACE_SCHEMA_VERSION,
     TraceEvent,
@@ -234,6 +235,11 @@ def test_typed_payload_returns_correct_type_for_error() -> None:
     p = ev.typed_payload
     assert isinstance(p, ErrorPayload)
     assert p.error == "boom"
+
+
+def test_real_fixture_trace_payloads_all_validate(failure_run: FixtureRun) -> None:
+    for event in failure_run.trace:
+        assert event.typed_payload is not None
 
 
 @pytest.mark.parametrize("event_type", list(TraceEventType))

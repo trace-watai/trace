@@ -50,7 +50,7 @@ that caused a child.
 | `retrieval_result` | step | query, result_count, results: [{doc_id, **status**, title, score, source}] (content lives in the observation) |
 | `final_answer` | step | final_answer |
 | `run_finished` | null | status, termination_reason, steps_taken |
-| `error` | step? | error, kind (script_exhausted \| model_error \| internal_error), traceback? |
+| `error` | step? | error, kind (model_timeout \| script_exhausted \| model_error \| internal_error), traceback? |
 | `model_response` | step | **reserved** — raw provider response when a real adapter's output differs from the normalized action |
 
 Two payload fields are load-bearing downstream: `side_effect` on

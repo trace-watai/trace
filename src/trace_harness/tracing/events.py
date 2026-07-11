@@ -14,8 +14,9 @@ Step numbering
 
 Parent events
     ``parent_event_id`` links child events to their parent within the same run:
-    e.g. TOOL_CALL_VALIDATED / TOOL_CALL_EXECUTED / TOOL_OBSERVATION all point
-    to the originating TOOL_CALL_REQUESTED event. ``None`` means top-level.
+    e.g. TOOL_CALL_VALIDATED / TOOL_CALL_EXECUTED / RETRIEVAL_RESULT /
+    TOOL_OBSERVATION all point to the originating TOOL_CALL_REQUESTED event.
+    ``None`` means top-level.
 
 Typed payloads
     ``payload`` is the raw dict — the source of truth, always round-trips
@@ -86,7 +87,9 @@ class TraceEvent(BaseModel):
 
         Returns ``None`` if no model is registered for this ``event_type``.
         Uses ``extra="ignore"`` so unknown fields from newer runners are
-        silently dropped rather than raising.
+        silently dropped rather than raising. Missing or invalid required
+        fields still raise Pydantic ``ValidationError`` so contract drift is
+        visible to consumers.
         """
         from trace_harness.tracing.payloads import PAYLOAD_TYPES  # local to avoid circular import
 
