@@ -24,9 +24,8 @@ Missing-artifact states are explicit:
     existing run dir (run_result/task/trace)       ArtifactStore.read_json,
                                                     with its stage guidance
 
-``RunSummary`` intentionally mirrors the (currently orphaned, TRA-54) run-index
-entry field-for-field, so when the run index re-lands ``list_runs`` can read it
-instead of scanning, with no change for callers.
+``list_runs`` reads from the run index (O(1) — no directory scan) and
+includes the verifier verdict when the verify stage has run.
 """
 
 from __future__ import annotations
@@ -44,6 +43,7 @@ from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEvent
+from trace_harness.tracing.run_index import RunIndexEntry
 from trace_harness.verifiers.base import VerifierResult
 
 
@@ -56,11 +56,11 @@ class RunNotFound(FileNotFoundError):
 
 
 class RunSummary(BaseModel):
-    """One-line summary of a finished run, projected from its ``RunResult``.
+    """One-line summary of a finished run for listing.
 
-    Fields mirror the orphaned TRA-54 ``RunIndexEntry`` so a re-landed index is
-    wire-compatible. ``status``/``termination_reason`` are plain strings (the
-    source uses StrEnums; the value on the wire is identical).
+    ``status``/``termination_reason`` are plain strings (the source uses
+    StrEnums; the value on the wire is identical). ``verifier_passed`` and
+    ``failed_check_count`` are ``None`` until the verify stage has run.
     """
 
     run_id: str
@@ -71,6 +71,8 @@ class RunSummary(BaseModel):
     started_at: str
     finished_at: str
     error: str | None = None
+    verifier_passed: bool | None = None
+    failed_check_count: int | None = None
 
     @classmethod
     def from_result(cls, result: RunResult) -> RunSummary:
@@ -83,6 +85,21 @@ class RunSummary(BaseModel):
             started_at=result.started_at.isoformat(),
             finished_at=result.finished_at.isoformat(),
             error=result.error,
+        )
+
+    @classmethod
+    def from_entry(cls, entry: RunIndexEntry) -> RunSummary:
+        return cls(
+            run_id=entry.run_id,
+            task_id=entry.task_id,
+            status=entry.status,
+            termination_reason=entry.termination_reason,
+            steps_taken=entry.steps_taken,
+            started_at=entry.started_at.isoformat(),
+            finished_at=entry.finished_at.isoformat(),
+            error=entry.error,
+            verifier_passed=entry.verifier_passed,
+            failed_check_count=entry.failed_check_count,
         )
 
 
@@ -101,11 +118,15 @@ class RunReader:
     def list_runs(self) -> list[RunSummary]:
         """Summaries of every listable run, oldest-first (chronological).
 
-        A run directory without a parseable ``run_result.json`` (e.g. a run that
-        crashed before writing its result) is skipped rather than failing the
-        whole listing. When the TRA-54 run index re-lands this can read it
-        instead of scanning every directory.
+        Reads from the run index (O(1), no directory scan) and includes the
+        verifier verdict when the verify stage has run. Falls back to a
+        directory scan when the index is empty (new runs dir or pre-index
+        history) — in that case verifier fields are not populated.
         """
+        index = self.store.read_index()
+        if index.entries:
+            return [RunSummary.from_entry(e) for e in index.entries]
+        # Fallback: scan dirs (pre-index history or empty runs dir)
         summaries: list[RunSummary] = []
         for run_id in self.store.list_runs():
             try:

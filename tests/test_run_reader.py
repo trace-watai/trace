@@ -36,6 +36,9 @@ def test_list_runs_returns_summaries_matching_run_result(failure_run: FixtureRun
     assert summary.status == str(result.status)
     assert summary.termination_reason == str(result.termination_reason)
     assert summary.steps_taken == result.steps_taken
+    # verifier hasn't run yet — verdict fields are absent
+    assert summary.verifier_passed is None
+    assert summary.failed_check_count is None
 
 
 def test_list_runs_chronological_and_skips_resultless_dirs(failure_run: FixtureRun) -> None:
@@ -99,6 +102,10 @@ def test_downstream_artifacts_populated_after_pipeline(tmp_path: Path) -> None:
     bundle = reader.get_bundle(run_id)
     assert isinstance(bundle, FailureBundle)
     assert bundle.failure_card and bundle.repair_package and bundle.regression_artifact
+
+    # After verify runs, list_runs should surface the verdict in the summary.
+    assert summary.verifier_passed is False
+    assert summary.failed_check_count is not None and summary.failed_check_count > 0
 
 
 def test_cli_list_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -34,7 +34,7 @@ def test_upsert_round_trip_sorted_and_valid_json(tmp_path):
         "run_20260101T000000Z_aaaa",
         "run_20260102T000000Z_bbbb",
     ]
-    assert index.schema_version == "0.1.0"
+    assert index.schema_version == "0.2.0"
 
     # On disk at the runs-dir root, valid newline-terminated JSON.
     raw = store.index_path().read_text()
@@ -118,3 +118,60 @@ def test_index_failure_cannot_break_a_run(tmp_path, monkeypatch):
     run = run_task_fixture(FAILURE_TASK_PATH, tmp_path / "runs")
     assert run.result.run_id  # run completed and returned
     assert run.store.exists(run.result.run_id, names.RUN_RESULT)
+
+
+def test_enrich_index_entry_with_verifier_populates_verdict(tmp_path):
+    """enrich_index_entry_with_verifier reads verifier_result.json and updates
+    the entry; run_id not yet in index is a safe no-op."""
+    store = ArtifactStore(tmp_path / "runs")
+    run_id = "run_20260101T000000Z_test"
+    store.upsert_index_entry(_entry(run_id))
+
+    # Write a minimal verifier_result.json (raw JSON, no VerifierResult import needed)
+    store.create_run_dir(run_id)
+    store.write_json(
+        run_id,
+        names.VERIFIER_RESULT,
+        {
+            "passed": False,
+            "failed_checks": [{"check_id": "c1"}, {"check_id": "c2"}],
+        },
+    )
+    store.enrich_index_entry_with_verifier(run_id)
+
+    entry = next(e for e in store.read_index().entries if e.run_id == run_id)
+    assert entry.verifier_passed is False
+    assert entry.failed_check_count == 2
+
+
+def test_enrich_noop_when_no_verifier_artifact(tmp_path):
+    """enrich_index_entry_with_verifier is a no-op when verifier hasn't run yet."""
+    store = ArtifactStore(tmp_path / "runs")
+    run_id = "run_20260101T000000Z_test"
+    store.upsert_index_entry(_entry(run_id))
+    store.enrich_index_entry_with_verifier(run_id)  # no verifier_result.json
+
+    entry = next(e for e in store.read_index().entries if e.run_id == run_id)
+    assert entry.verifier_passed is None
+    assert entry.failed_check_count is None
+
+
+def test_rebuild_includes_verifier_verdict_when_present(tmp_path):
+    """rebuild_index enriches entries with verifier verdicts found on disk."""
+    store = ArtifactStore(tmp_path / "runs")
+    run_id = "run_20260101T000000Z_rbd"
+    store.create_run_dir(run_id)
+    store.write_json(run_id, names.RUN_RESULT, _entry(run_id).model_dump(mode="json"))
+    store.write_json(
+        run_id,
+        names.VERIFIER_RESULT,
+        {
+            "passed": True,
+            "failed_checks": [],
+        },
+    )
+
+    index = store.rebuild_index()
+    assert len(index.entries) == 1
+    assert index.entries[0].verifier_passed is True
+    assert index.entries[0].failed_check_count == 0

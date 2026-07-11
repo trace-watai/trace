@@ -175,13 +175,23 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
     results = [
         get_verifier(verifier_id).verify(
             VerifierInput.from_parts(
-                task=task, trace=trace, final_state=final_state, run_id=run_id,
+                task=task,
+                trace=trace,
+                final_state=final_state,
+                run_id=run_id,
             )
         )
         for verifier_id in task.verifier_ids
     ]
     merged = merge_verifier_results(results)
     store.write_json(run_id, names.VERIFIER_RESULT, merged)
+    try:
+        store.enrich_index_entry_with_verifier(run_id)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "run index verifier enrich failed for %s; verifier_result is the source of truth",
+            run_id,
+        )
 
     verdict = "PASS" if merged.passed else "FAIL"
     print(f"\nVerifier verdict for {run_id}: {verdict}")
@@ -284,6 +294,8 @@ def _list_runs(store: ArtifactStore) -> None:
         return
     for s in summaries:
         detail = f"{s.status} ({s.termination_reason}) · {s.steps_taken} steps · {s.task_id}"
+        if s.verifier_passed is not None:
+            detail += f" · {'PASS' if s.verifier_passed else 'FAIL'}"
         _print(s.run_id, detail)
     print(f"\n{len(summaries)} run(s) in {store.runs_dir}")
 
