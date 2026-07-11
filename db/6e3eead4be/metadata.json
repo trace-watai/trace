@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "db6e3eead4be",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-76-typed-event-payloads",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/trace_harness/runner/agent_runner.py",
+    "src/trace_harness/tracing/events.py",
+    "src/trace_harness/tracing/payloads.py",
+    "src/trace_harness/tracing/recorder.py",
+    "tests/test_tracing_payloads.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/db/6e3eead4be/0/metadata.json",
+      "transcript": "/db/6e3eead4be/0/full.jsonl",
+      "content_hash": "/db/6e3eead4be/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 42,
+    "cache_creation_tokens": 80427,
+    "cache_read_tokens": 3502932,
+    "output_tokens": 23443,
+    "api_call_count": 38
+  }
+}
