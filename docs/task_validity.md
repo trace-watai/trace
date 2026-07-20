@@ -36,6 +36,7 @@ Errors block a seed task; warnings should be reviewed.
 | `vague_language` | warning | `goal`/`description` should state a concrete outcome, not "do right by the customer". |
 | `not_multi_step` | warning | Tasks should require multi-step behavior (≥2 tools); single-tool tasks produce thin trajectories. |
 | `missing_required_evidence` | warning | `required_evidence` documents what proves pass/fail. |
+| `requires_escalation_without_tool` | error | A task with `requires_escalation: true` must offer the `escalate_case` tool in `available_tools`, or a correct run could not escalate. (Plain string check — independent of whether the tool has landed in the environment yet.) |
 
 ## Examples
 - **Good seed:** `fixtures/tasks/refund_policy_valid_cash.json`,
@@ -56,4 +57,6 @@ Concrete `goal`; complete deterministic `initial_state` (no clocks); the tools i
 needs in `available_tools`; `expected_behavior` and/or `forbidden_actions`;
 at least one `verifier_id` and one `targeted_failure_mode`; `required_evidence`;
 a `difficulty`; and a `metadata.fixture_script` if it should run in the pipeline.
+If a correct run must escalate to a human rather than resolve the case, set
+`requires_escalation: true` and include `escalate_case` in `available_tools`.
 Run `python -m trace_harness.tasks.validation` before committing.

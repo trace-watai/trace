@@ -51,6 +51,10 @@ _VAGUE_TERMS = re.compile(
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _CLOCK_KEYS = {"current_date", "now", "today", "timestamp", "datetime"}
 
+# The environment tool a task must offer when it declares requires_escalation.
+# A bare string on purpose: see the requires_escalation check in validate_task.
+_ESCALATION_TOOL = "escalate_case"
+
 
 @dataclass(frozen=True)
 class ValidationIssue:
@@ -168,6 +172,19 @@ def validate_task(task: TaskSpec) -> list[ValidationIssue]:
                 "missing_required_evidence",
                 "required_evidence is empty; reviewers/verifiers have no evidence manifest",
                 severity="warning",
+            )
+        )
+
+    # A task that requires escalation must actually offer the escalate_case tool,
+    # or a correct run is impossible. Deliberately a plain string-membership check
+    # (not a tool-registry lookup) so the rubric stays independent of whether the
+    # escalate_case tool has landed in the environment yet.
+    if task.requires_escalation and _ESCALATION_TOOL not in task.available_tools:
+        issues.append(
+            ValidationIssue(
+                "requires_escalation_without_tool",
+                f"requires_escalation is true but available_tools does not include "
+                f"'{_ESCALATION_TOOL}'; a correct run could not escalate",
             )
         )
 

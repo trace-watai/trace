@@ -108,6 +108,17 @@ def test_difficulty_is_optional_and_validated() -> None:
         TaskSpec(**{**_valid_kwargs(), "difficulty": "trivial"})
 
 
+# --- requires_escalation (optional bool, defaults false) -------------------
+
+
+def test_requires_escalation_defaults_false_and_round_trips() -> None:
+    assert TaskSpec(**_valid_kwargs()).requires_escalation is False
+    task = TaskSpec(**{**_valid_kwargs(), "requires_escalation": True})
+    assert task.requires_escalation is True
+    # survives a JSON round-trip so it reaches the verifier via the run artifact
+    assert TaskSpec.model_validate(task.model_dump()).requires_escalation is True
+
+
 # --- docs resolvability ----------------------------------------------------
 
 
