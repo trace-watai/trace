@@ -1,0 +1,37 @@
+ticket: https://linear.app/trace-watai/issue/TRA-69/deep-audit-run-artifact-read-path-run-index-and-trace-event-dashboard
+## src/trace_harness/tracing/artifact_store.py
+
+### Current behavior
+- Partial run directories are valid and artifacts are stored independently under runs/{run_id}/.
+- list_runs() is generated from the run directories and can be rebuilt if needed.
+- read_json() and read_trace() raise FileNotFoundError when artifacts are missing.
+- index.json is derived and rebuildable, not the source of truth.
+- rebuild_index() only includes runs with run_result.json.
+
+### Risks
+- list_runs() and index.json use different definitions of a valid run.
+- Switching to index.json may hide incomplete runs.
+- Dashboard people must handle missing artifacts.
+
+### Things to consider
+- Decide whether incomplete runs should appear in the dashboard.
+- Figure out UI for missing artifacts case.
+- Ensure higher-level readers translate FileNotFoundError into stable missing states.
+
+## src/trace_harness/tracing/events.py
+
+### Current behavior
+- Traces are stored as append-only events in trace.jsonl.
+- TraceEvent is shared across the dashboard, verifiers, attribution, and failure bundles.
+- Events from the same decision share a step_id; run-level events use step_id=None.
+- Event data is stored in generic payload and metadata fields.
+
+### Risks
+- Changes to the trace schema may break the dashboard and other consumers.
+- Using generic payloads makes it easy to access the wrong fields.
+- Nested events are not yet supported.
+
+### Things to consider
+- Update TRACE_SCHEMA_VERSION whenever the schema changes.
+- Create specific payload formats for each event type.
+- Decide how parent-child event relationships will be represented.
