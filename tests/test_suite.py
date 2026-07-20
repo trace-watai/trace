@@ -128,6 +128,7 @@ def test_agent_config_metadata_recorded(tmp_path: Path) -> None:
     assert entry.agent_label == "fixture-baseline"
     assert entry.provider == "fixture"
     assert entry.prompt_version  # recorded for reproducibility
+    assert entry.task_schema_version  # task "version" recorded
     assert entry.model and entry.model.startswith("scripted:")
 
 

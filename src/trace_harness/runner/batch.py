@@ -47,6 +47,7 @@ class BatchRunEntry(BaseModel):
     run_id: str | None  # None when setup failed before a run existed
     task_id: str
     task_path: str
+    task_schema_version: str | None = None  # task "version" for reproducibility
     agent_label: str
     provider: str
     model: str | None = None
@@ -154,6 +155,7 @@ def _entry_from_pipeline(
         run_id=run.run_id,
         task_id=run.task_id,
         task_path=str(task_path),
+        task_schema_version=result.task.schema_version,
         agent_label=config.label,
         provider=result.run_config.provider,
         model=result.run_config.model,
