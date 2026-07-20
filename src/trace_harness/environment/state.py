@@ -127,6 +127,17 @@ class Ticket(BaseModel):
     created_at_step: int | None = None
 
 
+class Escalation(BaseModel):
+    """An escalation side effect created by the ``escalate_case`` tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    escalation_id: str
+    customer_name: str
+    reason: str
+    created_at_step: int | None = None
+
+
 class SupportState(BaseModel):
     """The complete mutable world of the support/refund environment.
 
@@ -141,10 +152,12 @@ class SupportState(BaseModel):
     orders: list[Order] = Field(default_factory=list)
     refunds: list[Refund] = Field(default_factory=list)
     tickets: list[Ticket] = Field(default_factory=list)
+    escalations: list[Escalation] = Field(default_factory=list)
     docs: list[Doc] = Field(default_factory=list)
-    # Counters keep generated IDs deterministic (REF-0001, TICK-0001, ...).
+    # Counters keep generated IDs deterministic (REF-0001, TICK-0001, ESC-0001, ...).
     next_refund_seq: int = 1
     next_ticket_seq: int = 1
+    next_escalation_seq: int = 1
     # Optional fixture-pinned result order for search_docs. When set, docs
     # whose doc_id appears in this list are returned first (in list order)
     # regardless of keyword score. Remaining matches follow by score desc.
@@ -169,6 +182,10 @@ class SupportState(BaseModel):
             state.next_refund_seq = _next_seq("REF", (r.refund_id for r in state.refunds))
         if "next_ticket_seq" not in payload:
             state.next_ticket_seq = _next_seq("TICK", (t.ticket_id for t in state.tickets))
+        if "next_escalation_seq" not in payload:
+            state.next_escalation_seq = _next_seq(
+                "ESC", (e.escalation_id for e in state.escalations)
+            )
         return state
 
     def find_order(self, customer_name: str) -> Order | None:
