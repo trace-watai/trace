@@ -2,19 +2,32 @@
  * Repair-package data contract.
  *
  * Mirrors `RepairPackage` in `src/trace_harness/failure_bundles/schemas.py`
- * (REPAIR_PACKAGE_SCHEMA_VERSION 0.2.0), serialized as `repair_package.json`.
+ * (REPAIR_PACKAGE_SCHEMA_VERSION 0.3.0), serialized as `repair_package.json`.
  *
  */
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
-export const REPAIR_PACKAGE_SCHEMA_VERSION = "0.2.0";
+export const REPAIR_PACKAGE_SCHEMA_VERSION = "0.3.0";
+
+/**
+ * Ordered urgency levels for a repair control, most urgent first; index
+ * doubles as the rank for sorting. Mirrors the backend `ControlPriority`
+ * StrEnum: P0 (do before next release) → P3 (optional improvements).
+ */
+export const CONTROL_PRIORITIES = ["P0", "P1", "P2", "P3"] as const;
+
+export type ControlPriority = (typeof CONTROL_PRIORITIES)[number];
+
+/** Numeric rank for a control priority, P0 (0) → P3 (3). */
+export const controlPriorityRank = (priority: ControlPriority): number =>
+  CONTROL_PRIORITIES.indexOf(priority);
 
 /**
  * Wire shape of one concrete control that would prevent this failure class,
- * defined in the backend Pydantic model (snake_case keys). In the future
- * we will need to transform many of these raw strings to enums for better
- * UI/UX in the dashboard.
+ * defined in the backend Pydantic model (snake_case keys). Some free-text
+ * fields (e.g. `installation_point`) may still become enums as the dashboard
+ * settles on a closed vocabulary for them.
  */
 export interface RawRepairControl {
   name: string;
@@ -26,8 +39,8 @@ export interface RawRepairControl {
   expected_impact: string;
   why_it_prevents_recurrence: string;
   risk_or_tradeoff: string;
-  /** P0 (do before next release) .. P3 (opportunistic). Should be an enum */
-  priority: string;
+  /** Urgency, P0 (do before next release) → P3 (optional improvements). */
+  priority: ControlPriority;
   linked_verifier_checks: string[];
 }
 
