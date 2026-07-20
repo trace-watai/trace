@@ -127,7 +127,13 @@ def _search_docs_handler(state: SupportState, args: BaseModel, step_id: int | No
                 error=f"unknown status_filter '{args.status_filter}'; "
                 "expected current|deprecated|resolved",
             )
-    chunks = search_docs(state.docs, args.query, status_filter=status, top_k=args.top_k)
+    chunks = search_docs(
+        state.docs,
+        args.query,
+        status_filter=status,
+        top_k=args.top_k,
+        ranking_override=state.doc_ranking_override,
+    )
     return ToolResult(
         tool_name="search_docs",
         status="ok",

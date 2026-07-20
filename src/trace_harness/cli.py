@@ -39,7 +39,7 @@ from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
-from trace_harness.verifiers.base import VerifierResult, merge_verifier_results
+from trace_harness.verifiers.base import VerifierInput, VerifierResult, merge_verifier_results
 from trace_harness.verifiers.registry import get_verifier
 
 logger = logging.getLogger("trace_harness")
@@ -173,7 +173,11 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
     if not task.verifier_ids:
         raise CliInputError(f"task '{task.task_id}' declares no verifier_ids; nothing to verify")
     results = [
-        get_verifier(verifier_id).verify(task, trace, final_state, run_id)
+        get_verifier(verifier_id).verify(
+            VerifierInput.from_parts(
+                task=task, trace=trace, final_state=final_state, run_id=run_id,
+            )
+        )
         for verifier_id in task.verifier_ids
     ]
     merged = merge_verifier_results(results)

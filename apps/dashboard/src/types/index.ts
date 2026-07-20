@@ -9,3 +9,4 @@ export * from "./run-result";
 export * from "./verifier-result";
 export * from "./repair-package";
 export * from "./regression-artifact";
+export * from "./trace-event";

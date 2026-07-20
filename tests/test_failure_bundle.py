@@ -7,13 +7,17 @@ import pytest
 from trace_harness.attribution.heuristic import HeuristicAttributor
 from trace_harness.failure_bundles.generator import FailureBundleGenerator
 from trace_harness.tasks.schemas import Severity
+from trace_harness.verifiers.base import VerifierInput
 from trace_harness.verifiers.registry import get_verifier
 
 
 @pytest.fixture
 def bundle_inputs(failure_run):
     verifier_result = get_verifier(failure_run.task.verifier_ids[0]).verify(
-        failure_run.task, failure_run.trace, failure_run.final_state, failure_run.run_id
+        VerifierInput.from_parts(
+            task=failure_run.task, trace=failure_run.trace,
+            final_state=failure_run.final_state, run_id=failure_run.run_id,
+        )
     )
     attribution = HeuristicAttributor().attribute(
         failure_run.task, failure_run.trace, verifier_result
@@ -135,7 +139,10 @@ def test_bundle_refuses_passing_runs(valid_run):
     from trace_harness.attribution.schemas import AttributionResult
 
     verifier_result = get_verifier(valid_run.task.verifier_ids[0]).verify(
-        valid_run.task, valid_run.trace, valid_run.final_state, valid_run.run_id
+        VerifierInput.from_parts(
+            task=valid_run.task, trace=valid_run.trace,
+            final_state=valid_run.final_state, run_id=valid_run.run_id,
+        )
     )
     assert verifier_result.passed
     with pytest.raises(ValueError, match="passing run"):

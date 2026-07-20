@@ -14,12 +14,18 @@ import pytest
 from trace_harness.attribution.heuristic import HeuristicAttributor
 from trace_harness.attribution.schemas import FailureCategory
 from trace_harness.tracing.events import TraceEventType
+from trace_harness.verifiers.base import VerifierInput
 from trace_harness.verifiers.registry import get_verifier
 
 
 def _verified(run):
     verifier = get_verifier(run.task.verifier_ids[0])
-    return verifier.verify(run.task, run.trace, run.final_state, run.run_id)
+    return verifier.verify(
+        VerifierInput.from_parts(
+            task=run.task, trace=run.trace,
+            final_state=run.final_state, run_id=run.run_id,
+        )
+    )
 
 
 def test_attribution_localizes_the_staged_failure_anatomy(failure_run):
