@@ -25,7 +25,13 @@ from pydantic import BaseModel
 
 from trace_harness.attribution.schemas import AttributionResult
 from trace_harness.environment.state import SupportState
-from trace_harness.failure_bundles.schemas import FailureCard, RepairControl, RepairPackage
+from trace_harness.failure_bundles.schemas import (
+    BlastRadius,
+    ControlPriority,
+    FailureCard,
+    RepairControl,
+    RepairPackage,
+)
 from trace_harness.regression.materializer import materialize_regression_artifact
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.runner.result import RunResult
@@ -76,7 +82,7 @@ def _control_refund_guardrail(checks: list[str]) -> RepairControl:
             "rules data models them; guardrail rules and verifier rules must stay "
             "the same source of truth or they will drift"
         ),
-        priority="P0",
+        priority=ControlPriority.P0,
         linked_verifier_checks=checks,
     )
 
@@ -111,7 +117,7 @@ def _control_source_precedence(checks: list[str]) -> RepairControl:
             "demotion must not hide deprecated docs entirely — agents sometimes "
             "need them for history; over-filtering creates a different failure mode"
         ),
-        priority="P1",
+        priority=ControlPriority.P1,
         linked_verifier_checks=checks,
     )
 
@@ -147,7 +153,7 @@ def _control_ticket_grounding(checks: list[str]) -> RepairControl:
             "(e.g. 'customer asked about the outage'); needs the verifier's "
             "matcher improvements to ride along"
         ),
-        priority="P1",
+        priority=ControlPriority.P1,
         linked_verifier_checks=checks,
     )
 
@@ -165,6 +171,7 @@ def _control_regression_gate(checks: list[str]) -> RepairControl:
             "every positive sibling task must still pass"
         ),
         behavior_on_failure="block the release; link the failing run directory in CI output",
+        priority=ControlPriority.P0,
         expected_impact=(
             "guarantees this exact failure cannot be reintroduced silently; any "
             "prompt, policy, tool, or model change that reactivates the failure "
@@ -179,7 +186,6 @@ def _control_regression_gate(checks: list[str]) -> RepairControl:
             "regression suites grow; curation is needed so stale scenarios get "
             "retired deliberately rather than ignored"
         ),
-        priority="P0",
         linked_verifier_checks=checks,
     )
 
@@ -216,7 +222,7 @@ def _control_answer_grounding(checks: list[str]) -> RepairControl:
             "keyword-level claim extraction can misread unusual phrasing; a "
             "structured final-answer schema is the robust long-term form"
         ),
-        priority="P1",
+        priority=ControlPriority.P1,
         linked_verifier_checks=checks,
     )
 
@@ -280,9 +286,9 @@ class FailureBundleGenerator:
         checks = verifier_result.failed_checks
         headline = checks[0].message if checks else "verifier failure"
         root_cause = self._root_cause_text(trace, attribution)
-        contributing = [attribution.primary_failure_category.value] + [
-            c.value for c in attribution.contributing_failure_categories
-        ]
+        contributing = [attribution.primary_failure_category] + list(
+            attribution.contributing_failure_categories
+        )
         step_ids = sorted({step for check in checks for step in check.step_ids})
         return FailureCard(
             run_id=run_result.run_id,
@@ -337,20 +343,27 @@ class FailureBundleGenerator:
             f"({attribution.primary_failure_category.value}).{quote}"
         )
 
-    def _blast_radius(self, final_state: dict[str, Any]) -> str:
+    def _blast_radius(self, final_state: dict[str, Any]) -> BlastRadius:
         """Scope of external impact, computed from actual side effects."""
         try:
             state = SupportState.model_validate(final_state)
-        except Exception:  # noqa: BLE001 — blast radius is best-effort descriptive text
-            return "final state not parseable as SupportState; blast radius unknown"
+        except Exception:  # noqa: BLE001 — blast radius is best-effort on unparseable state
+            return BlastRadius(summary="final state not parseable as SupportState")
         refund_total = sum(r.amount_usd for r in state.refunds)
         customers = sorted(
             {r.customer_name for r in state.refunds} | {t.customer_name for t in state.tickets}
         )
-        return (
+        summary = (
             f"{len(state.refunds)} refund(s) totalling ${refund_total:.2f} issued; "
             f"{len(state.tickets)} durable ticket record(s) created; "
             f"{len(customers)} customer(s) affected ({', '.join(customers) or 'none'})"
+        )
+        return BlastRadius(
+            refund_count=len(state.refunds),
+            refund_total_usd=refund_total,
+            ticket_count=len(state.tickets),
+            customers_affected=customers,
+            summary=summary,
         )
 
     def _build_repair_package(
