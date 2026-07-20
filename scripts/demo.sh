@@ -25,12 +25,29 @@ cd "$(dirname "$0")/.."
 # TRACE_RUNS_DIR to point elsewhere.
 RUNS_DIR="${TRACE_RUNS_DIR:-runs/demo}"
 
+# Find an interpreter that has trace_harness installed. Prefer the repo's own
+# .venv (bash launched from an activated PowerShell venv does NOT inherit its
+# PATH, so relying on `python`/`trace-harness` being on PATH is unreliable on
+# Windows); fall back to whatever python is on PATH.
+find_python() {
+  for cand in .venv/Scripts/python.exe .venv/bin/python; do
+    [ -x "$cand" ] && { echo "$cand"; return 0; }
+  done
+  for cand in python python3; do
+    command -v "$cand" >/dev/null 2>&1 && { echo "$cand"; return 0; }
+  done
+  return 1
+}
+
+PY="$(find_python)" || {
+  echo "error: no Python with trace_harness found." >&2
+  echo "Create the venv and install the package first:" >&2
+  echo "  python -m venv .venv && .venv/Scripts/pip install -e \".[dev]\"" >&2
+  exit 1
+}
+
 run_pipeline() {
-  if command -v trace-harness >/dev/null 2>&1; then
-    trace-harness --runs-dir "$RUNS_DIR" run-pipeline "$@"
-  else
-    python -m trace_harness.cli --runs-dir "$RUNS_DIR" run-pipeline "$@"
-  fi
+  "$PY" -m trace_harness.cli --runs-dir "$RUNS_DIR" run-pipeline "$@"
 }
 
 echo "############################################################"
