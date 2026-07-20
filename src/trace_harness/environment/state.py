@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 if TYPE_CHECKING:
     from trace_harness.tasks.schemas import TaskSpec
 
-STATE_SCHEMA_VERSION = "0.1.0"
+STATE_SCHEMA_VERSION = "0.2.0"  # 0.2.0: added Escalation / escalations / next_escalation_seq
 
 
 class DocStatus(StrEnum):
