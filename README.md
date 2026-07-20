@@ -30,9 +30,19 @@ python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 pytest                                                          # offline test suite
+scripts/demo.sh                                                 # the end-to-end demo: both tasks, every artifact
+scripts/check_repo.sh                                           # the pre-push bar (lint + format + tests + smoke)
+```
+
+`scripts/demo.sh` is the one-command demo / readiness check: it runs the full
+pipeline on a staged failure (→ verifier FAIL + attribution + failure bundle)
+and its positive sibling (→ PASS, proving no overblocking), writing every
+artifact under `runs/demo/<run_id>/`. It's deterministic and offline — no API
+keys, no network. To drive the pipeline directly instead:
+
+```bash
 trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json    # staged failure → FAIL + full bundle
 trace-harness run-pipeline fixtures/tasks/refund_policy_valid_cash.json # positive sibling → PASS
-scripts/check_repo.sh                                           # the pre-push bar (lint + format + tests + smoke)
 ```
 
 Pipeline stages also run individually, handing off through artifacts in
