@@ -1,4 +1,4 @@
-"""Unit tests for the four support-environment tool handlers.
+"""Unit tests for the five support-environment tool handlers.
 
 Handlers are reached through ToolDefinition objects fetched from the default
 registry — this keeps tests at the public-API boundary while exercising each
@@ -9,6 +9,7 @@ Side-effect contract under test:
     get_order     → read_only:             no state mutation
     issue_refund  → external_irreversible: appends Refund, increments seq
     create_ticket → external_durable:      appends Ticket, increments seq
+    escalate_case → external_durable:      appends Escalation, increments seq
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from trace_harness.environment.registry import default_support_registry
 from trace_harness.environment.state import Doc, DocStatus, Order, RefundType, SupportState
 from trace_harness.environment.tools import (
     CreateTicketArgs,
+    EscalateCaseArgs,
     GetOrderArgs,
     IssueRefundArgs,
     SearchDocsArgs,
@@ -297,12 +299,84 @@ def test_create_ticket_side_effect_is_durable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# escalate_case handler
+# ---------------------------------------------------------------------------
+
+
+def test_escalate_case_appends_escalation_to_state() -> None:
+    state = _state()
+    _handler("escalate_case")(
+        state,
+        EscalateCaseArgs(customer_name="Dana", reason="Customer requested a supervisor"),
+        None,
+    )
+    assert len(state.escalations) == 1
+    assert state.escalations[0].customer_name == "Dana"
+    assert state.escalations[0].reason == "Customer requested a supervisor"
+
+
+def test_escalate_case_increments_seq_counter() -> None:
+    state = _state()
+    seq_before = state.next_escalation_seq
+    _handler("escalate_case")(
+        state,
+        EscalateCaseArgs(customer_name="Dana", reason="r"),
+        None,
+    )
+    assert state.next_escalation_seq == seq_before + 1
+
+
+def test_escalate_case_id_is_deterministic() -> None:
+    state = _state()
+    state.next_escalation_seq = 1
+    result = _handler("escalate_case")(
+        state,
+        EscalateCaseArgs(customer_name="Dana", reason="r"),
+        None,
+    )
+    assert result.result["escalation_id"] == "ESC-0001"
+
+
+def test_escalate_case_records_step_id_provenance() -> None:
+    state = _state()
+    _handler("escalate_case")(
+        state,
+        EscalateCaseArgs(customer_name="Dana", reason="r"),
+        step_id=4,
+    )
+    assert state.escalations[0].created_at_step == 4
+
+
+def test_escalate_case_returns_ok_with_escalation_id() -> None:
+    state = _state()
+    result = _handler("escalate_case")(
+        state,
+        EscalateCaseArgs(customer_name="Dana", reason="r"),
+        None,
+    )
+    assert result.status == "ok"
+    assert result.result["escalation_id"].startswith("ESC-")
+    assert result.result["status"] == "escalated"
+
+
+def test_escalate_case_side_effect_is_durable() -> None:
+    defn = _REGISTRY.get("escalate_case")
+    assert defn.side_effect == ToolSideEffect.EXTERNAL_DURABLE
+
+
+# ---------------------------------------------------------------------------
 # ToolDefinition.spec
 # ---------------------------------------------------------------------------
 
 
 def test_tool_definition_spec_has_name_description_and_parameters() -> None:
-    for tool_name in ("search_docs", "get_order", "issue_refund", "create_ticket"):
+    for tool_name in (
+        "search_docs",
+        "get_order",
+        "issue_refund",
+        "create_ticket",
+        "escalate_case",
+    ):
         defn = _REGISTRY.get(tool_name)
         spec = defn.spec()
         assert spec.name == defn.name
