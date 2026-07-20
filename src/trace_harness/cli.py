@@ -31,6 +31,7 @@ from pathlib import Path
 from trace_harness.config import HarnessConfig, load_env_file
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models import create_model_adapter
+from trace_harness.run_reader import RunReader
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunResult, RunStatus
@@ -38,7 +39,7 @@ from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
-from trace_harness.verifiers.base import VerifierResult, merge_verifier_results
+from trace_harness.verifiers.base import VerifierInput, VerifierResult, merge_verifier_results
 from trace_harness.verifiers.registry import get_verifier
 
 logger = logging.getLogger("trace_harness")
@@ -172,7 +173,11 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
     if not task.verifier_ids:
         raise CliInputError(f"task '{task.task_id}' declares no verifier_ids; nothing to verify")
     results = [
-        get_verifier(verifier_id).verify(task, trace, final_state, run_id)
+        get_verifier(verifier_id).verify(
+            VerifierInput.from_parts(
+                task=task, trace=trace, final_state=final_state, run_id=run_id,
+            )
+        )
         for verifier_id in task.verifier_ids
     ]
     merged = merge_verifier_results(results)
@@ -271,6 +276,18 @@ def _bundle(run_dir: Path) -> bool:
     return True
 
 
+def _list_runs(store: ArtifactStore) -> None:
+    """Print a one-line summary per run, newest last (chronological)."""
+    summaries = RunReader(store).list_runs()
+    if not summaries:
+        print(f"no runs found in {store.runs_dir}")
+        return
+    for s in summaries:
+        detail = f"{s.status} ({s.termination_reason}) · {s.steps_taken} steps · {s.task_id}"
+        _print(s.run_id, detail)
+    print(f"\n{len(summaries)} run(s) in {store.runs_dir}")
+
+
 def main(argv: list[str] | None = None) -> int:
     load_env_file()  # opt-in convenience; real env vars always win
     harness_config = HarnessConfig.from_env()
@@ -326,6 +343,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_bundle.add_argument("run_path")
 
+    sub.add_parser("list-runs", parents=[common], help="list stored runs with one-line summaries")
+
     p_pipe = sub.add_parser(
         "run-pipeline",
         parents=[common],
@@ -358,6 +377,9 @@ def main(argv: list[str] | None = None) -> int:
 def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
     if args.command == "run-fixture":
         _run_fixture(args, store)
+        return 0
+    if args.command == "list-runs":
+        _list_runs(store)
         return 0
     if args.command == "verify":
         merged, run_completed = _verify(_resolve_run_dir(args.run_path, store.runs_dir))

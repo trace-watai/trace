@@ -255,6 +255,105 @@ def test_seeded_side_effect_ids_do_not_collide():
     assert state.next_refund_seq == 2
 
 
+def test_invalid_tool_call_omits_executed_event(tmp_path):
+    """Runner skips TOOL_CALL_EXECUTED for invalid calls; valid call on next step still executes."""
+    task_path = FIXTURES_DIR / "tasks" / "refund_policy_failure.json"
+    script = {
+        "schema_version": "0.1.0",
+        "script_id": "invalid_recovery",
+        "task_id": "refund_policy_failure",
+        "actions": [
+            {
+                "kind": "tool_call",
+                "tool_call": {"tool_name": "does_not_exist", "arguments": {}},
+            },
+            {
+                "kind": "tool_call",
+                "tool_call": {"tool_name": "search_docs", "arguments": {"query": "refund"}},
+            },
+            {
+                "kind": "final_answer",
+                "final_answer": "Checked the policy. No refund applicable.",
+            },
+        ],
+    }
+    script_path = tmp_path / "invalid_recovery_script.json"
+    script_path.write_text(json.dumps(script))
+
+    import trace_harness.tasks.loader as loader
+    from trace_harness.environment.support_env import SupportEnvironment
+    from trace_harness.models.fixture import FixtureModelAdapter
+    from trace_harness.runner.agent_runner import AgentRunner
+    from trace_harness.runner.config import RunConfig
+    from trace_harness.tracing.artifact_store import ArtifactStore
+
+    task = loader.load_task(task_path)
+    docs = loader.load_docs_for_task(task, task_path)
+    store = ArtifactStore(tmp_path / "runs")
+    result = AgentRunner(
+        FixtureModelAdapter.from_file(script_path),
+        SupportEnvironment.from_task(task, docs=docs),
+        store,
+    ).run(task, RunConfig(task_id=task.task_id))
+
+    trace = store.read_trace(result.run_id)
+    counts = Counter(event.event_type for event in trace)
+
+    # Invalid call: REQUESTED + VALIDATED(valid=False) + OBSERVATION, but NO EXECUTED.
+    # Valid call: REQUESTED + VALIDATED(valid=True) + EXECUTED + OBSERVATION.
+    assert counts[TraceEventType.TOOL_CALL_REQUESTED] == 2
+    assert counts[TraceEventType.TOOL_CALL_VALIDATED] == 2
+    assert counts[TraceEventType.TOOL_CALL_EXECUTED] == 1
+    assert counts[TraceEventType.TOOL_OBSERVATION] == 2
+
+    validated = [e for e in trace if e.event_type is TraceEventType.TOOL_CALL_VALIDATED]
+    assert validated[0].payload["valid"] is False
+    assert "does_not_exist" in validated[0].payload["error"]
+    assert validated[1].payload["valid"] is True
+
+
+def test_retrieval_result_events_all_fields_present(failure_run):
+    """Every RETRIEVAL_RESULT result has all provenance fields; content excluded."""
+    retrieval_events = [
+        e for e in failure_run.trace if e.event_type is TraceEventType.RETRIEVAL_RESULT
+    ]
+    assert len(retrieval_events) > 0
+    for event in retrieval_events:
+        payload = event.payload
+        assert payload["result_count"] == len(payload["results"])
+        for result in payload["results"]:
+            for field in ("doc_id", "status", "title", "score", "source"):
+                assert field in result, (
+                    f"retrieval result missing '{field}' at step {event.step_id}"
+                )
+            # Content lives in tool_observation, not in the retrieval event.
+            assert "content" not in result
+
+
+def test_state_snapshot_structure(failure_run):
+    """Both initial and final state snapshots have all required top-level fields."""
+    for state in (failure_run.initial_state, failure_run.final_state):
+        for key in (
+            "schema_version",
+            "orders",
+            "refunds",
+            "tickets",
+            "docs",
+            "next_refund_seq",
+            "next_ticket_seq",
+        ):
+            assert key in state, f"state snapshot missing '{key}'"
+        assert isinstance(state["orders"], list)
+        assert isinstance(state["refunds"], list)
+        assert isinstance(state["tickets"], list)
+        assert isinstance(state["docs"], list)
+    # Provenance must be set so the verifier can link side effects to trace steps.
+    for refund in failure_run.final_state["refunds"]:
+        assert refund["issued_at_step"] is not None
+    for ticket in failure_run.final_state["tickets"]:
+        assert ticket["created_at_step"] is not None
+
+
 def test_run_result_written_even_if_final_snapshot_fails(tmp_path):
     """The partial-artifacts promise: a dying snapshot must not lose run_result."""
     from conftest import FAILURE_TASK_PATH

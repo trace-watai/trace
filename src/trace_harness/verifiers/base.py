@@ -21,6 +21,7 @@ Contract notes
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import StrEnum
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -28,18 +29,80 @@ from pydantic import BaseModel, Field
 from trace_harness.tasks.schemas import Severity, TaskSpec, max_severity
 from trace_harness.tracing.events import TraceEvent
 
-VERIFIER_RESULT_SCHEMA_VERSION = "0.1.0"
+VERIFIER_RESULT_SCHEMA_VERSION = "0.2.0"
+VERIFIER_INPUT_SCHEMA_VERSION = "0.1.0"
+
+
+class VerifierInput(BaseModel):
+    """Everything a verifier needs to judge one run.
+
+    Bundles the inputs into a single serializable object so callers,
+    storage (Samrath), and regression replay (Samir) can round-trip a
+    complete verification request through JSON without juggling loose
+    parameters.
+
+    ``initial_state`` is optional because some verification contexts
+    (re-running from artifacts) may only have the final snapshot.  When
+    present it lets checks compare before/after (future use).
+    """
+
+    schema_version: str = VERIFIER_INPUT_SCHEMA_VERSION
+    task: TaskSpec
+    trace: list["TraceEvent"]
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+    final_state: dict[str, Any]
+    run_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_parts(
+        cls,
+        *,
+        task: TaskSpec,
+        trace: list["TraceEvent"],
+        final_state: dict[str, Any],
+        run_id: str,
+        initial_state: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> "VerifierInput":
+        """Convenience factory mirroring the old verify() signature."""
+        return cls(
+            task=task,
+            trace=trace,
+            initial_state=initial_state or {},
+            final_state=final_state,
+            run_id=run_id,
+            metadata=metadata or {},
+        )
+
+
+class EvidenceKind(StrEnum):
+    """Closed vocabulary of evidence tags shared with the dashboard.
+
+    Constraining ``EvidenceItem.kind`` to this enum keeps producers and the
+    frontend renderer aligned on one set of values. Add a member here (and the
+    matching case in the dashboard) when a verifier needs to emit a new kind —
+    never an ad-hoc string.
+    """
+
+    ORDER_RECORD = "order_record"
+    REFUND_RECORD = "refund_record"
+    TICKET_RECORD = "ticket_record"
+    POLICY_RULES = "policy_rules"
+    RETRIEVAL_PROVENANCE = "retrieval_provenance"
+    PROVENANCE_QUOTE = "provenance_quote"
+    FINAL_ANSWER = "final_answer"
 
 
 class EvidenceItem(BaseModel):
     """One piece of evidence supporting a check outcome.
 
-    ``kind`` is a short machine-usable tag (e.g. ``order_record``,
-    ``policy_rule``, ``reasoning_quote``); ``data`` carries the raw facts so
-    the dashboard can render them without re-deriving anything.
+    ``kind`` is a machine-usable tag from :class:`EvidenceKind`; ``data``
+    carries the raw facts so the dashboard can render them without re-deriving
+    anything.
     """
 
-    kind: str
+    kind: EvidenceKind
     description: str
     step_ids: list[int] = Field(default_factory=list)
     data: dict[str, Any] = Field(default_factory=dict)
@@ -142,10 +205,7 @@ class Verifier(ABC):
     @abstractmethod
     def verify(
         self,
-        task: TaskSpec,
-        trace: list[TraceEvent],
-        final_state: dict[str, Any],
-        run_id: str,
+        input: VerifierInput,
     ) -> VerifierResult:
         """Judge one finished run. Must be deterministic and side-effect free."""
         raise NotImplementedError

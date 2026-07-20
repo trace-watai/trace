@@ -61,6 +61,12 @@ def _control_refund_guardrail(checks: list[str]) -> RepairControl:
             "agent which rule failed and that escalation/manager approval is the "
             "compliant path; record the block in the trace"
         ),
+        expected_impact=(
+            "eliminates unauthorized cash/store-credit refunds regardless of model "
+            "or prompt variation; the unauthorized_cash_refund and "
+            "unauthorized_store_credit verifier checks should not fire on any run "
+            "once the guardrail is active"
+        ),
         why_it_prevents_recurrence=(
             "the violation is stopped before money moves, regardless of which "
             "model, prompt, or retrieval mistake produced the bad decision"
@@ -92,6 +98,11 @@ def _control_source_precedence(checks: list[str]) -> RepairControl:
             "policy violation: surface a correction observation instead of "
             "proceeding"
         ),
+        expected_impact=(
+            "eliminates the deprecated_policy_treated_as_authoritative failure "
+            "class; agents that retrieve and read stale docs may still do so, but "
+            "cannot cite them as the basis for a policy decision"
+        ),
         why_it_prevents_recurrence=(
             "removes the ambiguity that let a deprecated 60-day policy outrank the "
             "current 30-day policy in the agent's reasoning"
@@ -122,6 +133,11 @@ def _control_ticket_grounding(checks: list[str]) -> RepairControl:
             "unsupported claim, so the agent must re-word to supported facts or "
             "escalate"
         ),
+        expected_impact=(
+            "eliminates the ticket_outage_claim_unsupported failure class; "
+            "durable records written through this environment will only contain "
+            "outage claims that are supported by order data"
+        ),
         why_it_prevents_recurrence=(
             "false durable records are stopped at write time instead of being "
             "discovered by audits after other teams have relied on them"
@@ -149,6 +165,11 @@ def _control_regression_gate(checks: list[str]) -> RepairControl:
             "every positive sibling task must still pass"
         ),
         behavior_on_failure="block the release; link the failing run directory in CI output",
+        expected_impact=(
+            "guarantees this exact failure cannot be reintroduced silently; any "
+            "prompt, policy, tool, or model change that reactivates the failure "
+            "is caught before merge"
+        ),
         why_it_prevents_recurrence=(
             "converts this one-time finding into a permanent, automatically "
             "enforced test, including protection against overblocking via the "
@@ -180,6 +201,11 @@ def _control_answer_grounding(checks: list[str]) -> RepairControl:
             "withhold the final answer, return a correction observation to the "
             "agent (or flag the run for human review) instead of sending a "
             "user-facing claim the ledger contradicts"
+        ),
+        expected_impact=(
+            "eliminates the final_answer_inconsistent_with_state failure class; "
+            "users never receive a claim about refund/credit status that contradicts "
+            "the actual ledger"
         ),
         why_it_prevents_recurrence=(
             "user-facing statements are grounded against the same state the "
@@ -254,6 +280,10 @@ class FailureBundleGenerator:
         checks = verifier_result.failed_checks
         headline = checks[0].message if checks else "verifier failure"
         root_cause = self._root_cause_text(trace, attribution)
+        contributing = [attribution.primary_failure_category.value] + [
+            c.value for c in attribution.contributing_failure_categories
+        ]
+        step_ids = sorted({step for check in checks for step in check.step_ids})
         return FailureCard(
             run_id=run_result.run_id,
             task_id=task.task_id,
@@ -273,6 +303,8 @@ class FailureBundleGenerator:
             ),
             severity=verifier_result.severity or task.severity,
             root_cause=root_cause,
+            contributing_failures=contributing,
+            step_ids=step_ids,
             visible_symptoms=[check.message for check in checks],
             evidence=[item for check in checks for item in check.evidence]
             + verifier_result.evidence,
