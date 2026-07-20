@@ -1,0 +1,145 @@
+"""Batch-suite execution: cross-product runs, failure isolation, and summary.
+
+Uses the real repo fixtures (no synthetic tasks) and writes into pytest temp
+dirs. Fully offline — the fixture provider needs no keys or network.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, VALID_TASK_PATH
+from trace_harness.runner.batch import BatchRunner, BatchSummary, summary_path
+from trace_harness.runner.suite import AgentConfig, SuiteLoadError, SuiteSpec, load_suite
+from trace_harness.tracing.artifact_store import ArtifactStore
+
+AMBIGUOUS_TASK_PATH = FIXTURES_DIR / "tasks" / "counterexamples" / "refund_policy_ambiguous.json"
+SUITE_MANIFEST = FIXTURES_DIR / "suites" / "refund_v0.json"
+
+
+def _fixture_config(label: str = "fixture-baseline") -> AgentConfig:
+    return AgentConfig(label=label, provider="fixture")
+
+
+# --- suite loading / validation ---
+
+
+def test_load_sample_suite() -> None:
+    suite = load_suite(SUITE_MANIFEST)
+    assert suite.suite_id == "refund_v0"
+    assert len(suite.tasks) == 2
+    assert suite.agent_configs[0].provider == "fixture"
+
+
+def test_load_suite_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(SuiteLoadError):
+        load_suite(tmp_path / "nope.json")
+
+
+def test_load_suite_bad_json(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ not json", encoding="utf-8")
+    with pytest.raises(SuiteLoadError):
+        load_suite(bad)
+
+
+def test_duplicate_agent_labels_rejected() -> None:
+    with pytest.raises(ValueError):
+        SuiteSpec(
+            suite_id="x",
+            tasks=["t.json"],
+            agent_configs=[AgentConfig(label="a"), AgentConfig(label="a")],
+        )
+
+
+# --- batch execution ---
+
+
+def test_batch_runs_all_and_aggregates(tmp_path: Path) -> None:
+    suite = SuiteSpec(
+        suite_id="two",
+        tasks=[str(FAILURE_TASK_PATH), str(VALID_TASK_PATH)],
+        agent_configs=[_fixture_config()],
+    )
+    store = ArtifactStore(tmp_path / "runs")
+    summary = BatchRunner(store).run(suite)
+
+    assert len(summary.entries) == 2
+    agg = summary.aggregates
+    assert agg.total == 2
+    assert agg.completed == 2
+    assert agg.errored == 0
+    assert agg.verifier_passed == 1
+    assert agg.verifier_failed == 1
+    assert agg.pass_rate == 0.5
+    for e in summary.entries:
+        assert e.run_id is not None
+        assert store.run_dir(e.run_id).is_dir()
+        assert e.latency_ms is not None
+
+
+def test_batch_isolates_setup_failure(tmp_path: Path) -> None:
+    # The ambiguous counterexample has no fixture_script -> a setup failure that
+    # must NOT crash the batch or lose the other runs.
+    suite = SuiteSpec(
+        suite_id="isolation",
+        tasks=[str(FAILURE_TASK_PATH), str(AMBIGUOUS_TASK_PATH), str(VALID_TASK_PATH)],
+        agent_configs=[_fixture_config()],
+    )
+    store = ArtifactStore(tmp_path / "runs")
+    summary = BatchRunner(store).run(suite)
+
+    assert len(summary.entries) == 3  # batch completed all cells
+    errored = [e for e in summary.entries if e.status == "setup_error"]
+    assert len(errored) == 1
+    assert errored[0].run_id is None
+    assert errored[0].error
+    # the two runnable tasks still ran and were verified
+    assert summary.aggregates.completed == 2
+    assert summary.aggregates.errored == 1
+    assert summary.aggregates.verifier_passed == 1
+    assert summary.aggregates.verifier_failed == 1
+
+
+def test_summary_written_and_reparses(tmp_path: Path) -> None:
+    suite = SuiteSpec(suite_id="w", tasks=[str(VALID_TASK_PATH)], agent_configs=[_fixture_config()])
+    store = ArtifactStore(tmp_path / "runs")
+    summary = BatchRunner(store).run(suite)
+
+    path = summary_path(store.runs_dir, summary.batch_id)
+    assert path.is_file()
+    reloaded = BatchSummary.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    assert reloaded.batch_id == summary.batch_id
+    assert reloaded.suite_id == "w"
+    assert len(reloaded.entries) == 1
+
+
+def test_agent_config_metadata_recorded(tmp_path: Path) -> None:
+    suite = SuiteSpec(
+        suite_id="cfg",
+        tasks=[str(VALID_TASK_PATH)],
+        agent_configs=[AgentConfig(label="fixture-baseline", provider="fixture")],
+    )
+    store = ArtifactStore(tmp_path / "runs")
+    entry = BatchRunner(store).run(suite).entries[0]
+    assert entry.agent_label == "fixture-baseline"
+    assert entry.provider == "fixture"
+    assert entry.prompt_version  # recorded for reproducibility
+    assert entry.model and entry.model.startswith("scripted:")
+
+
+def test_multiple_agent_configs_cross_product(tmp_path: Path) -> None:
+    suite = SuiteSpec(
+        suite_id="cross",
+        tasks=[str(VALID_TASK_PATH)],
+        agent_configs=[_fixture_config("a"), _fixture_config("b")],
+    )
+    store = ArtifactStore(tmp_path / "runs")
+    summary = BatchRunner(store).run(suite)
+
+    assert len(summary.entries) == 2  # 1 task x 2 configs
+    assert {e.agent_label for e in summary.entries} == {"a", "b"}
+    assert set(summary.aggregates.by_agent.keys()) == {"a", "b"}

@@ -7,6 +7,10 @@ Commands (each is one pipeline stage; ``run-pipeline`` chains them):
     trace-harness attribute    runs/<run_id>
     trace-harness bundle       runs/<run_id>
     trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json
+    trace-harness run-suite    fixtures/suites/refund_v0.json
+
+``run-suite`` runs many tasks across agent configs in one batch, isolating
+per-run failures and writing a batch summary for dashboard metrics.
 
 Stages communicate only through run artifacts on disk — ``verify`` reads
 exactly what ``run-fixture`` wrote — so any stage can be re-run later, and
@@ -175,7 +179,10 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
     results = [
         get_verifier(verifier_id).verify(
             VerifierInput.from_parts(
-                task=task, trace=trace, final_state=final_state, run_id=run_id,
+                task=task,
+                trace=trace,
+                final_state=final_state,
+                run_id=run_id,
             )
         )
         for verifier_id in task.verifier_ids
@@ -288,6 +295,45 @@ def _list_runs(store: ArtifactStore) -> None:
     print(f"\n{len(summaries)} run(s) in {store.runs_dir}")
 
 
+def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
+    """Run a task suite (batch) and print + persist a batch summary."""
+    from trace_harness.runner.batch import BatchRunner, summary_path
+    from trace_harness.runner.suite import load_suite
+
+    suite = load_suite(Path(args.suite_path))
+    cells = len(suite.tasks) * len(suite.agent_configs)
+    print(
+        f"\nRunning suite '{suite.suite_id}': {len(suite.tasks)} task(s) x "
+        f"{len(suite.agent_configs)} agent config(s) = {cells} run(s)"
+    )
+
+    summary = BatchRunner(store).run(suite)
+
+    print(f"\nBatch {summary.batch_id} complete:")
+    for e in summary.entries:
+        verdict = (
+            "PASS" if e.verifier_passed is True else "FAIL" if e.verifier_passed is False else "-"
+        )
+        rid = e.run_id or "(no run)"
+        detail = f"{e.status} · verdict={verdict} · {rid}"
+        if e.error:
+            detail += f" · {e.error}"
+        _print(f"{e.agent_label} / {e.task_id}", detail)
+
+    agg = summary.aggregates
+    print()
+    _print("total runs:", str(agg.total))
+    _print("completed:", str(agg.completed))
+    _print("passed / failed:", f"{agg.verifier_passed} / {agg.verifier_failed}")
+    _print("errored:", str(agg.errored))
+    _print("pass_rate:", "n/a" if agg.pass_rate is None else f"{agg.pass_rate:.0%}")
+    _print("summary:", str(summary_path(store.runs_dir, summary.batch_id)))
+
+    if args.fail_on_verifier and (agg.verifier_failed > 0 or agg.errored > 0):
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     load_env_file()  # opt-in convenience; real env vars always win
     harness_config = HarnessConfig.from_env()
@@ -356,6 +402,18 @@ def main(argv: list[str] | None = None) -> int:
     p_pipe.add_argument("--fail-on-verifier", action="store_true")
     _add_provider_args(p_pipe)
 
+    p_suite = sub.add_parser(
+        "run-suite",
+        parents=[common],
+        help="run a task suite (batch) across agent configs and write a batch summary",
+    )
+    p_suite.add_argument("suite_path", help="path to a suite manifest JSON")
+    p_suite.add_argument(
+        "--fail-on-verifier",
+        action="store_true",
+        help="exit 1 if any run failed verification or errored (CI gate mode)",
+    )
+
     args = parser.parse_args(argv)
     runs_dir_arg = getattr(args, "runs_dir", None)
     runs_dir = Path(runs_dir_arg) if runs_dir_arg else harness_config.runs_dir
@@ -401,6 +459,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
             print("\nVerifier passed: no attribution or failure bundle needed.")
         print(f"\nPipeline complete. Inspect artifacts in: {run_dir}")
         return 1 if (args.fail_on_verifier and not (merged.passed and run_completed)) else 0
+    if args.command == "run-suite":
+        return _run_suite(args, store)
     raise AssertionError(f"unhandled command {args.command}")  # pragma: no cover
 
 

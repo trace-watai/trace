@@ -1,0 +1,15 @@
+{
+  "schema_version": "0.1.0",
+  "suite_id": "refund_v0",
+  "description": "Month-1 refund/support smoke suite: the staged failure and its positive sibling, run under the deterministic fixture agent.",
+  "tasks": [
+    "fixtures/tasks/refund_policy_failure.json",
+    "fixtures/tasks/refund_policy_valid_cash.json"
+  ],
+  "agent_configs": [
+    {
+      "label": "fixture-baseline",
+      "provider": "fixture"
+    }
+  ]
+}
