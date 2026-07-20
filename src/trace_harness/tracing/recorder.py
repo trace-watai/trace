@@ -45,6 +45,7 @@ class TraceRecorder:
         step_id: int | None = None,
         payload: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        parent_event_id: str | None = None,
     ) -> TraceEvent:
         """Create, store, and (if configured) immediately persist one event."""
         event = TraceEvent(
@@ -54,6 +55,7 @@ class TraceRecorder:
             event_type=event_type,
             payload=payload or {},
             metadata=metadata or {},
+            parent_event_id=parent_event_id,
         )
         self._next_seq += 1
         self._events.append(event)
