@@ -300,7 +300,26 @@ def _list_runs(store: ArtifactStore) -> None:
     print(f"\n{len(summaries)} run(s) in {store.runs_dir}")
 
 
+def _force_utf8_stdio() -> None:
+    """Make stdout/stderr UTF-8 so verifier glyphs (✗, ⚠) never crash the CLI.
+
+    On a default Windows console stdout is cp1252, and printing the verdict
+    lines raises UnicodeEncodeError mid-pipeline — aborting before attribution
+    and the failure bundle run. Reconfiguring to UTF-8 (best-effort; older
+    streams without ``reconfigure`` are left as-is) keeps the demo runnable on
+    any platform.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8")
+            except (ValueError, OSError):  # pragma: no cover - platform dependent
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_stdio()
     load_env_file()  # opt-in convenience; real env vars always win
     harness_config = HarnessConfig.from_env()
     # Unknown TRACE_LOG_LEVEL values fall back to INFO rather than crashing.
