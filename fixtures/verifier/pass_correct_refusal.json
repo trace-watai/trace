@@ -1,0 +1,82 @@
+{
+  "fixture_id": "pass_correct_refusal",
+  "description": "Agent correctly refuses refund at 40 days",
+  "verifier_id": "refund_policy",
+  "input": {
+    "task": {
+      "schema_version": "0.2.0",
+      "task_id": "pass_correct_refusal_task",
+      "title": "Pass correct refusal task",
+      "description": "Task description",
+      "goal": "Test goal",
+      "workflow_type": "support.refund",
+      "initial_state": {},
+      "available_tools": [],
+      "available_docs": [],
+      "expected_behavior": [],
+      "forbidden_actions": [],
+      "required_evidence": [],
+      "targeted_failure_modes": [],
+      "verifier_ids": ["refund_policy"],
+      "severity": "medium",
+      "metadata": {}
+    },
+    "trace": [
+      {
+        "schema_version": "0.2.0",
+        "event_id": "evt_1",
+        "run_id": "fixture-pass-refusal",
+        "step_id": 5,
+        "event_type": "final_answer",
+        "timestamp": "2026-07-20T12:02:00Z",
+        "payload": {"final_answer": "I'm unable to issue a refund as you're outside the 30-day cash window and there's no documented outage for store credit."},
+        "metadata": {}
+      }
+    ],
+    "final_state": {
+      "schema_version": "0.1.0",
+      "orders": [
+        {
+          "order_id": "ORD-F-0006",
+          "customer_name": "Morgan Patel",
+          "plan": "Team Monthly",
+          "amount_usd": 189.0,
+          "purchase_age_days": 40,
+          "documented_outage_near_purchase": false,
+          "manager_approval_granted": false,
+          "metadata": {}
+        }
+      ],
+      "refunds": [],
+      "tickets": [],
+      "docs": [
+        {
+          "doc_id": "policy_current",
+          "title": "Current Policy",
+          "status": "current",
+          "content": "Cash within 30 days; manager approval to day 60; store credit 31-60 with outage.",
+          "source": "fixture",
+          "metadata": {
+            "rules": {
+              "cash_refund_window_days": 30,
+              "manager_approval_extends_cash_to_days": 60,
+              "store_credit_window_start_day": 31,
+              "store_credit_window_end_day": 60,
+              "store_credit_requires_documented_outage": true,
+              "store_credit_allowed_in_cash_window": true
+            }
+          }
+        }
+      ],
+      "next_refund_seq": 1,
+      "next_ticket_seq": 1
+    },
+    "run_id": "fixture-pass-refusal"
+  },
+  "expected": {
+    "passed": true,
+    "severity": null,
+    "blocks_release": false,
+    "check_ids": []
+  }
+}
