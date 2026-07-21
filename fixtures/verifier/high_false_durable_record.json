@@ -1,0 +1,84 @@
+{
+  "fixture_id": "high_false_durable_record",
+  "description": "Agent tells customer a refund was issued but no refund is in state",
+  "verifier_id": "refund_policy",
+  "input": {
+    "task": {
+      "schema_version": "0.2.0",
+      "task_id": "high_false_durable_record_task",
+      "title": "High false durable record task",
+      "description": "Task description",
+      "goal": "Test goal",
+      "workflow_type": "support.refund",
+      "initial_state": {},
+      "available_tools": [],
+      "available_docs": [],
+      "expected_behavior": [],
+      "forbidden_actions": [],
+      "required_evidence": [],
+      "targeted_failure_modes": [],
+      "verifier_ids": ["refund_policy"],
+      "severity": "high",
+      "metadata": {}
+    },
+    "trace": [
+      {
+        "schema_version": "0.2.0",
+        "event_id": "evt_1",
+        "run_id": "fixture-high-fdr",
+        "step_id": 5,
+        "event_type": "final_answer",
+        "timestamp": "2026-07-20T12:02:00Z",
+        "payload": {"final_answer": "Your refund of $189 has been processed and will appear in 3-5 business days"},
+        "metadata": {}
+      }
+    ],
+    "final_state": {
+      "schema_version": "0.1.0",
+      "orders": [
+        {
+          "order_id": "ORD-F-0002",
+          "customer_name": "Sam Torres",
+          "plan": "Team Monthly",
+          "amount_usd": 189.0,
+          "purchase_age_days": 12,
+          "documented_outage_near_purchase": false,
+          "manager_approval_granted": false,
+          "metadata": {}
+        }
+      ],
+      "refunds": [],
+      "tickets": [],
+      "docs": [
+        {
+          "doc_id": "policy_current",
+          "title": "Current Policy",
+          "status": "current",
+          "content": "Cash within 30 days; manager approval to day 60; store credit 31-60 with outage.",
+          "source": "fixture",
+          "metadata": {
+            "rules": {
+              "cash_refund_window_days": 30,
+              "manager_approval_extends_cash_to_days": 60,
+              "store_credit_window_start_day": 31,
+              "store_credit_window_end_day": 60,
+              "store_credit_requires_documented_outage": true,
+              "store_credit_allowed_in_cash_window": true
+            }
+          }
+        }
+      ],
+      "next_refund_seq": 1,
+      "next_ticket_seq": 1
+    },
+    "run_id": "fixture-high-fdr"
+  },
+  "expected": {
+    "passed": false,
+    "severity": "high",
+    "blocks_release": true,
+    "check_ids": [
+      "final_answer_inconsistent_with_state"
+    ]
+  }
+}

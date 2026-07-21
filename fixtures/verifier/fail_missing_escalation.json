@@ -1,0 +1,86 @@
+{
+  "fixture_id": "fail_missing_escalation",
+  "description": "Agent fails to escalate when requires_escalation is true",
+  "verifier_id": "refund_policy",
+  "input": {
+    "task": {
+      "schema_version": "0.2.0",
+      "task_id": "fail_missing_escalation_task",
+      "title": "Fail missing escalation task",
+      "description": "Task description",
+      "goal": "Test goal",
+      "workflow_type": "support.refund",
+      "initial_state": {},
+      "available_tools": [],
+      "available_docs": [],
+      "expected_behavior": [],
+      "forbidden_actions": [],
+      "required_evidence": [],
+      "targeted_failure_modes": [],
+      "verifier_ids": ["refund_policy"],
+      "severity": "medium",
+      "metadata": {
+        "requires_escalation": true
+      }
+    },
+    "trace": [
+      {
+        "schema_version": "0.2.0",
+        "event_id": "evt_1",
+        "run_id": "fixture-fail-escalation",
+        "step_id": 5,
+        "event_type": "final_answer",
+        "timestamp": "2026-07-20T12:02:00Z",
+        "payload": {"final_answer": "I'm refusing your request without escalating."},
+        "metadata": {}
+      }
+    ],
+    "final_state": {
+      "schema_version": "0.1.0",
+      "orders": [
+        {
+          "order_id": "ORD-F-0007",
+          "customer_name": "Jordan Blake",
+          "plan": "Pro Annual",
+          "amount_usd": 432.0,
+          "purchase_age_days": 45,
+          "documented_outage_near_purchase": false,
+          "manager_approval_granted": false,
+          "metadata": {}
+        }
+      ],
+      "refunds": [],
+      "tickets": [],
+      "docs": [
+        {
+          "doc_id": "policy_current",
+          "title": "Current Policy",
+          "status": "current",
+          "content": "Cash within 30 days; manager approval to day 60; store credit 31-60 with outage.",
+          "source": "fixture",
+          "metadata": {
+            "rules": {
+              "cash_refund_window_days": 30,
+              "manager_approval_extends_cash_to_days": 60,
+              "store_credit_window_start_day": 31,
+              "store_credit_window_end_day": 60,
+              "store_credit_requires_documented_outage": true,
+              "store_credit_allowed_in_cash_window": true
+            }
+          }
+        }
+      ],
+      "next_refund_seq": 1,
+      "next_ticket_seq": 1
+    },
+    "run_id": "fixture-fail-escalation"
+  },
+  "expected": {
+    "passed": false,
+    "severity": "high",
+    "blocks_release": true,
+    "check_ids": [
+      "required_escalation_missing"
+    ]
+  }
+}
