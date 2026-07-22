@@ -114,3 +114,63 @@ def test_mutation_flips_valid_cash_to_failure():
     assert result.severity is not None
     assert result.severity.value == "critical"
     assert result.blocks_release is True
+
+
+def test_mutation_remove_harmful_action():
+    """Remove the harmful action (refund) from a critical failure; it should pass."""
+    fixture_path = FIXTURES_DIR / "critical_unauthorized_cash.json"
+    with open(fixture_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    data["input"]["final_state"]["refunds"] = []
+    
+    verifier = get_verifier(data["verifier_id"])
+    input_data = data["input"]
+    task = TaskSpec.model_validate(input_data["task"])
+    trace = [TraceEvent.model_validate(e) for e in input_data["trace"]]
+    result = verifier.verify(VerifierInput.from_parts(
+        task=task, trace=trace, final_state=input_data["final_state"], run_id=input_data["run_id"]
+    ))
+    
+    # We still have deprecated policy cited and a false durable record, 
+    # but the critical unauthorized cash check should be gone.
+    assert result.passed is False
+    check_ids = {c.check_id for c in result.failed_checks}
+    assert "unauthorized_cash_refund" not in check_ids
+
+
+def test_mutation_remove_evidence():
+    """Remove the outage evidence from a valid store credit; it should fail."""
+    fixture_path = FIXTURES_DIR / "pass_allowed_store_credit.json"
+    with open(fixture_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    data["input"]["final_state"]["orders"][0]["documented_outage_near_purchase"] = False
+    
+    verifier = get_verifier(data["verifier_id"])
+    input_data = data["input"]
+    task = TaskSpec.model_validate(input_data["task"])
+    trace = [TraceEvent.model_validate(e) for e in input_data["trace"]]
+    result = verifier.verify(VerifierInput.from_parts(
+        task=task, trace=trace, final_state=input_data["final_state"], run_id=input_data["run_id"]
+    ))
+    
+    assert result.passed is False
+    assert "unauthorized_store_credit" in {c.check_id for c in result.failed_checks}
+
+
+def test_mutation_remove_escalation():
+    """Remove the escalation from a valid escalation; it should fail."""
+    fixture_path = FIXTURES_DIR / "pass_correct_escalation.json"
+    with open(fixture_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    data["input"]["final_state"]["escalations"] = []
+    
+    verifier = get_verifier(data["verifier_id"])
+    input_data = data["input"]
+    task = TaskSpec.model_validate(input_data["task"])
+    trace = [TraceEvent.model_validate(e) for e in input_data["trace"]]
+    result = verifier.verify(VerifierInput.from_parts(
+        task=task, trace=trace, final_state=input_data["final_state"], run_id=input_data["run_id"]
+    ))
+    
+    assert result.passed is False
+    assert "required_escalation_missing" in {c.check_id for c in result.failed_checks}
