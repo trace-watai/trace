@@ -12,6 +12,7 @@ you change X" column.
 | [trace_schema.md](trace_schema.md) | Before adding/changing trace events or anything that reads `trace.jsonl`. |
 | [verifier_philosophy.md](verifier_philosophy.md) | Before writing pass/fail checks or proposing an LLM judge for anything release-blocking. |
 | [attribution_methodology.md](attribution_methodology.md) | Before touching attribution — the step vocabulary and why its fields must never collapse. |
+| [attribution_semantics_audit.md](attribution_semantics_audit.md) | Reviewing TRA-10 semantics, representative-run evidence, null handling, or dashboard attribution markers. |
 | [failure_bundles.md](failure_bundles.md) | Before changing cards, repair packages, or regression artifacts. |
 | [team_ownership.md](team_ownership.md) | To find an owner, a reviewer, or your Linear workstream. |
 | [future_api.md](future_api.md) / [future_dashboard.md](future_dashboard.md) | Picking up the API or dashboard — contracts and start conditions are pinned there. |

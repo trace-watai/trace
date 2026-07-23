@@ -38,6 +38,7 @@ What this is NOT
 from __future__ import annotations
 
 from trace_harness.attribution.schemas import AttributionResult, FailureCategory
+from trace_harness.attribution.validation import validate_attribution_result
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import VerifierResult
@@ -99,6 +100,11 @@ class HeuristicAttributor:
                 )
 
         irreversible_step = self._first_irreversible_step(trace)
+        if irreversible_step is None:
+            notes.append(
+                "trace contains no successful external irreversible action; "
+                "first irreversible and approximated unrecoverable steps remain unset"
+            )
         # Missed-recovery only makes sense when an authorization check actually
         # failed: order facts like "no outage / no approval" are only
         # disconfirming evidence if the action they preceded was unauthorized.
@@ -133,6 +139,11 @@ class HeuristicAttributor:
             default=None,
         )
         first_bad_step = root_cause_step if root_cause_step is not None else earliest_check_step
+        if first_bad_step is None:
+            notes.append(
+                "failed verifier result contains no step-linked failed-check evidence; "
+                "first bad step remains unset"
+            )
 
         if irreversible_step is not None:
             notes.append(
@@ -148,6 +159,8 @@ class HeuristicAttributor:
             primary = FailureCategory.STALE_SOURCE_AUTHORITY
         for check in verifier_result.failed_checks:
             category = _CHECK_CATEGORY.get(check.check_id, FailureCategory.UNKNOWN)
+            if category is FailureCategory.UNKNOWN:
+                continue
             if primary is FailureCategory.UNKNOWN:
                 primary = category
             elif category is not primary and category not in contributing:
@@ -156,6 +169,11 @@ class HeuristicAttributor:
             [primary] + contributing
         ):
             contributing.append(FailureCategory.MISSED_RECOVERY)
+        if primary is FailureCategory.UNKNOWN:
+            notes.append(
+                "no known failure category could be derived from the verifier checks; "
+                "primary category remains unknown"
+            )
 
         confidence = 0.35
         if root_cause_step is not None:
@@ -179,13 +197,20 @@ class HeuristicAttributor:
         evidence_steps = sorted(
             {
                 step
-                for step in [root_cause_step, missed_recovery_step, irreversible_step]
+                for step in [
+                    root_cause_step,
+                    first_bad_step,
+                    missed_recovery_step,
+                    irreversible_step,
+                ]
                 if step is not None
             }
             | set(symptom_steps)
         )
+        if not evidence_steps:
+            confidence = 0.0
 
-        return AttributionResult(
+        result = AttributionResult(
             run_id=verifier_result.run_id,
             root_cause_step=root_cause_step,
             first_bad_step=first_bad_step,
@@ -204,6 +229,11 @@ class HeuristicAttributor:
                 "deprecated_doc_ids_seen": sorted(deprecated_ids),
             },
         )
+        validation_issues = validate_attribution_result(result, trace, verifier_result)
+        if validation_issues:
+            details = "; ".join(f"{issue.code}: {issue.message}" for issue in validation_issues)
+            raise ValueError(f"invalid heuristic attribution: {details}")
+        return result
 
     # --- heuristics ---
 
@@ -318,21 +348,25 @@ class HeuristicAttributor:
         if missed_recovery_step is not None:
             parts.append(
                 f"By step {missed_recovery_step} the agent had observed order data "
-                "contradicting its plan (no documented outage, no manager approval) "
-                "and proceeded anyway — the missed recovery point."
+                "contradicting the prepared refund and proceeded anyway — the missed "
+                "recovery point."
             )
         if irreversible_step is not None:
             parts.append(
                 f"Step {irreversible_step} executed the first irreversible external "
-                "action (refund issued); from here the failure could no longer be "
-                "self-corrected."
+                "action recorded by the trace; from here the failure could no longer "
+                "be self-corrected."
             )
         if symptom_steps:
+            symptom_messages = [
+                check.message
+                for check in verifier_result.failed_checks
+                if _CHECK_CATEGORY.get(check.check_id, FailureCategory.UNKNOWN)
+                in _SYMPTOM_CATEGORIES
+            ]
             parts.append(
                 f"Externally visible symptoms appear at step(s) "
-                f"{symptom_steps}: "
-                + "; ".join(check.message for check in verifier_result.failed_checks)
-                + "."
+                f"{symptom_steps}: " + "; ".join(symptom_messages) + "."
             )
         parts.append(f"Verifier verdict: {len(verifier_result.failed_checks)} failed check(s).")
         return " ".join(parts)
