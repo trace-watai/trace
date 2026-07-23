@@ -1,4 +1,4 @@
-# Attribution semantics audit
+# Attribution canonical run results
 
 The verifier owns `passed` and `blocks_release`. Attribution runs only after a
 failed verdict and explains the failure without changing it.
