@@ -219,7 +219,7 @@ def _control_escalation_check(checks: list[str]) -> RepairControl:
             "legitimate runs may be blocked; task authoring must set this flag "
             "deliberately"
         ),
-        priority="P0",
+        priority=ControlPriority.P0,
         linked_verifier_checks=checks,
     )
 

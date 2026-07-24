@@ -11,15 +11,11 @@ What gets pinned and why
       ``metadata.positive_sibling_tasks`` so every blocking regression is
       paired with at least one scenario that must keep passing.
 
-Replay (MVP honesty)
-    ``replay_command`` re-runs the originating task fixture through the
-    pipeline. The artifact itself is already self-contained (state + docs),
-    but a ``trace-harness replay <regression_artifact.json>`` command that
-    consumes it directly does not exist yet.
-
-# TODO(Samir/regression): add the replay-from-artifact command and a CI
-# collector that sweeps runs/ (or a curated regression dir) and executes
-# every blocking regression + its positive siblings.
+Replay
+    ``trace-harness replay <regression_artifact.json>`` re-runs the
+    originating task fixture, asserts the verifier produces the expected
+    failed check IDs, then runs each positive sibling and asserts it passes.
+    See ``cli._replay`` for the implementation.
 """
 
 from __future__ import annotations
@@ -67,9 +63,5 @@ def materialize_regression_artifact(
         replay_command=f"trace-harness run-pipeline {fixture_path}",
         metadata={
             "source_verifier_id": verifier_result.verifier_id,
-            "note": (
-                "replay_command re-runs the originating fixture; replay directly "
-                "from this artifact's pinned state is not implemented yet"
-            ),
         },
     )

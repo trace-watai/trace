@@ -24,6 +24,7 @@ Revisit if the CLI grows rich help/completions needs.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -31,6 +32,7 @@ from pathlib import Path
 from trace_harness.config import HarnessConfig, load_env_file
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models import create_model_adapter
+from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import RunConfig
@@ -286,6 +288,74 @@ def _bundle(run_dir: Path) -> bool:
     return True
 
 
+def _replay(artifact_path: Path, store: ArtifactStore) -> int:
+    """Replay a regression artifact and assert the gate conditions hold.
+
+    1. Re-runs the originating task fixture through the pipeline.
+    2. Asserts the verifier produces at least the expected failed check IDs.
+    3. Runs each positive sibling fixture and asserts it passes.
+
+    Returns 0 if all assertions hold, 1 if the regression gate fires.
+    """
+    data = json.loads(artifact_path.read_text(encoding="utf-8"))
+    artifact = RegressionArtifact.model_validate(data)
+
+    print(f"\nReplaying regression: {artifact.test_name}")
+    _print("source_run_id:", artifact.source_run_id)
+    _print("severity:", str(artifact.severity))
+    _print("blocks_release:", str(artifact.blocks_release))
+
+    gate_failed = False
+
+    def _fixture_args(task_path: str) -> argparse.Namespace:
+        return argparse.Namespace(
+            task_path=task_path,
+            script=None,
+            provider="fixture",
+            model=None,
+            max_steps=16,
+            timeout=120.0,
+        )
+
+    # Step 1: re-run the originating fixture; verifier must produce the expected failures.
+    print(f"\n[1/2] Running fixture: {artifact.task_fixture}")
+    result = _run_fixture(_fixture_args(artifact.task_fixture), store)
+    run_dir = store.run_dir(result.run_id)
+    merged, _ = _verify(run_dir)
+
+    actual_ids = {c.check_id for c in merged.failed_checks}
+    expected_ids = set(artifact.verifier_checks)
+    missing = expected_ids - actual_ids
+
+    if merged.passed:
+        print(f"  FAIL: expected verifier to fail on {sorted(expected_ids)} but run passed")
+        gate_failed = True
+    elif missing:
+        print(f"  FAIL: expected checks {sorted(missing)} to fail — not seen in result")
+        gate_failed = True
+    else:
+        print("  PASS: all expected checks failed as expected")
+
+    # Step 2: each positive sibling must pass.
+    if artifact.positive_sibling_tests:
+        print(f"\n[2/2] Running {len(artifact.positive_sibling_tests)} positive sibling(s)")
+        for i, sibling in enumerate(artifact.positive_sibling_tests, 1):
+            print(f"  [{i}] {sibling.test_name}: {sibling.task_fixture}")
+            sib_result = _run_fixture(_fixture_args(sibling.task_fixture), store)
+            sib_dir = store.run_dir(sib_result.run_id)
+            sib_merged, _ = _verify(sib_dir)
+            if not sib_merged.passed:
+                failed = sorted(c.check_id for c in sib_merged.failed_checks)
+                print(f"      FAIL: sibling must pass but failed on {failed}")
+                gate_failed = True
+            else:
+                print("      PASS")
+
+    status = "FAIL — regression gate fired" if gate_failed else "PASS — regression gate clear"
+    print(f"\nReplay result: {status}\n")
+    return 1 if gate_failed else 0
+
+
 def _list_runs(store: ArtifactStore) -> None:
     """Print a one-line summary per run, newest last (chronological)."""
     summaries = RunReader(store).list_runs()
@@ -376,6 +446,16 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("list-runs", parents=[common], help="list stored runs with one-line summaries")
 
+    p_replay = sub.add_parser(
+        "replay",
+        parents=[common],
+        help="replay a regression artifact and assert the gate conditions hold",
+    )
+    p_replay.add_argument(
+        "artifact_path",
+        help="path to a regression_artifact.json produced by the bundle stage",
+    )
+
     p_pipe = sub.add_parser(
         "run-pipeline",
         parents=[common],
@@ -421,6 +501,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
     if args.command == "bundle":
         _bundle(_resolve_run_dir(args.run_path, store.runs_dir))
         return 0
+    if args.command == "replay":
+        return _replay(Path(args.artifact_path), store)
     if args.command == "run-pipeline":
         result = _run_fixture(args, store)
         run_dir = store.run_dir(result.run_id)
