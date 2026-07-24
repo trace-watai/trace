@@ -79,16 +79,12 @@ fixture and the valid sibling.
 
 For each `RegressionArtifact` where `blocks_release: true`:
 
-1. Run `replay_command` (currently re-runs the originating fixture)
-2. Assert the verifier produces the expected `verifier_checks` as failed checks
-3. Run each `positive_sibling_tests[*].task_fixture` through the full pipeline
-4. Assert every sibling produces a verifier PASS
-5. Fail the CI run if any of the above break
+1. Run `trace-harness replay <regression_artifact.json>` — loads pinned state and docs from the artifact, runs the agent, and asserts the verifier produces the expected `verifier_checks` as failed checks
+2. Run each `positive_sibling_tests[*].task_fixture` through the full pipeline
+3. Assert every sibling produces a verifier PASS
+4. Fail the CI run if any of the above break
 
-Note: step 1 re-runs the fixture rather than replaying directly from the
-pinned `initial_state`. A `trace-harness replay <regression_artifact.json>`
-command that reads from pinned state is the next step (see TODO in
-`regression/materializer.py`).
+Severity and `blocks_release` are read directly off the `VerifierResult` — they come from the canonical `SEVERITY_MAP` in `verifiers/severity_map.py` and must not be recalculated in CI.
 
 ### Linear visibility guidance
 
@@ -106,25 +102,22 @@ command that reads from pinned state is the next step (see TODO in
 
 ## Replay instructions
 
-### Running a regression now (MVP)
+### Running a single regression
 
 ```bash
-# 1. Activate the environment
 source .venv/bin/activate
 
-# 2. Run the regression fixture through the full pipeline
-trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json --fail-on-verifier
+# Replay the failure — must produce the expected failed checks
+trace-harness replay runs/<run_id>/regression_artifact.json
 
-# 3. Run the positive sibling (must pass)
+# Run the positive sibling — must pass
 trace-harness run-pipeline fixtures/tasks/refund_policy_valid_cash.json --fail-on-verifier
 ```
 
-The `replay_command` field in each `RegressionArtifact` has the exact command
-for that artifact. For the refund failure:
-
-```
-trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json
-```
+`trace-harness replay` loads `initial_state` and `pinned_docs` directly from
+the artifact, runs the agent against that exact pinned world, asserts the
+verifier produces the expected `verifier_checks`, and exits 1 if it doesn't.
+This makes regression tests independent of fixture evolution.
 
 ### Running all repo health checks (including regression smoke)
 
@@ -132,20 +125,7 @@ trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json
 scripts/check_repo.sh
 ```
 
-This runs lint, format, tests, and the full pipeline smoke test on both
-fixtures. Minimum bar before any PR.
-
-### What "replay" will mean once fully implemented
-
-A future `trace-harness replay <regression_artifact.json>` command will:
-
-1. Load `initial_state` and `pinned_docs` directly from the artifact
-2. Run the agent against that exact pinned world, not the live fixture
-3. Assert the verifier result contains the artifact's `verifier_checks`
-4. Run all `positive_sibling_tests` and assert each passes
-
-This makes regression tests independent of fixture evolution. The seam for
-this is in `regression/materializer.py`.
+Runs lint, format, tests, and the full pipeline smoke test. Minimum bar before any PR.
 
 ---
 
