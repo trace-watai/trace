@@ -1,0 +1,324 @@
+Context
+
+The first vertical slice needs one visible integration issue that proves TRACE is a coherent product rather than separate stream artifacts.
+
+Objective
+
+Complete the first end-to-end refund/support run through the full TRACE loop.
+
+Scope
+
+Coordinate the refund task, mock environment, target-agent execution, trace capture, deterministic verifier, attribution output, failure card, repair package, regression artifact, and dashboard read path.
+
+Deliverables
+
+One failing refund/support run stored by run ID.
+
+One successful or positive-control run stored by run ID.  
+
+Linked verifier result, attribution, failure card, repair package, and regression artifact.
+
+Dashboard path that can read and display the run or a clearly documented missing piece.
+
+Integration notes listing unresolved gaps.
+
+Acceptance Criteria
+
+Task loads.
+
+Agent runs.
+
+Tools execute.
+
+Trace saves.
+
+Verifier runs.
+
+Attribution saves.
+
+Failure card generates.
+
+Regression artifact generates.
+
+Dashboard reads the result.
+
+Gaps are represented by linked follow-up issues rather than hidden assumptions.
+
+Suggested Technical Approach
+
+Use the canonical deprecated-policy refund failure and a positive sibling task. Keep the run reproducible from the repository.
+
+Collaborators / Reviewers
+
+Rupert Maiti, Samrath, Emily Au, Karan Gupta, Darrel Wihandi, Samir Mohammed, Skye Haik.
+
+Dependencies
+
+Requires the task suite, environment/RAG integration, repeatable runner, storage, verifier, attribution schema, failure bundle artifacts, and dashboard integration.
+
+read this ticket and read the repo to see what needs to be done and what should be done to complete this ticket to its expectations
+
+---
+
+<task-notification>
+<task-id>a8c29bd82ba6d3071</task-id>
+<tool-use-id>toolu_01AvuLBXs6YXXvgByAQBtC2p</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evanzyang-Documents-Projects-TRACE/f9fb5349-435e-4312-963f-af37befefbce/tasks/a8c29bd82ba6d3071.output</output-file>
+<status>completed</status>
+<summary>Agent "Audit pipeline stages implementation status" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have a complete picture now. Here is the audit.
+
+## 1. `verifiers/`
+
+Files: `/Users/evanzyang/Documents/Projects/TRACE/src/trace_harness/verifiers/{__init__.py,base.py,registry.py,refund_policy.py}`
+
+- `base.py` — `VerifierInput` (bundles task/trace/state for a verify call), `EvidenceKind` (StrEnum of evidence tags), `EvidenceItem`, `FailedCheck`, `VerifierResult`, `build_result()` (assembles a result from failed checks), `merge_verifier_results()` (combines multiple verifier verdicts for a task with several `verifier_ids`), abstract `Verifier` base class with abstract `verify()`.
+- `registry.py` — `VERIFIER_REGISTRY` dict, `available_verifier_ids()`, `get_verifier(verifier_id)` (raises `KeyError` on unknown id). Line 7-8: `# TODO(Karan/verifier): add the next domain verifier here (and only here)`.
+- `refund_policy.py` — `RefundPolicyRules` (policy model with `cash_allowed`/`store_credit_allowed`), `RefundPolicyVerifier` (verifier_id `"refund_policy"`) implementing 5 checks: `unauthorized_cash_refund`, `unauthorized_store_credit`, `deprecated_policy_treated_as_authoritative`, `ticket_outage_claim_unsupported`, `final_answer_inconsistent_with_state`. Line 38-40: `# TODO(Karan/verifier): replace string-match provenance with structured citations ...; expand boundary tests as policy rules grow; decide how partial refunds interact with the windows.`
+
+Status: Fully implemented for the one domain (refund policy) it covers — only a single verifier exists in the registry (a "vertical slice"), not a stub. `base.py:211` has `raise NotImplementedError` but it's the expected abstract-method body, not a gap. Documented MVP heuristics (substring/keyword matching) are called out as known limitations, not TODOs blocking functionality.
+
+Tests: `tests/test_refund_verifier.py` (very thorough — ~29 test functions covering boundary days, outage claims, final-answer consistency, rules-from-doc-metadata, merge semantics, evidence-kind enum). Good coverage.
+
+## 2. `attribution/`
+
+Files: `/Users/evanzyang/Documents/Projects/TRACE/src/trace_harness/attribution/{__init__.py,schemas.py,heuristic.py}`
+
+- `schemas.py` — `FailureCategory` (StrEnum, 19 values), `AttributionResult` (root_cause_step, first_bad_step, missed_recovery_step, first_unrecoverable_step, first_irreversible_action_step, visible_symptom_steps, categories, causal_explanation, confidence, ambiguity_notes, metadata).
+- `heuristic.py` — `HeuristicAttributor` class with `attribute(task, trace, verifier_result)` plus private helpers `_deprecated_doc_ids`, `_first_reasoning_citing`, `_first_irreversible_step`, `_missed_recovery_step`, `_explain`. Line 33-35: `# TODO(Darrel/attribution): replace/augment with a judge schema + prompt and a human-labeled agreement set; the disconfirming-evidence detector below is refund-domain-specific and needs a per-workflow strategy interface.`
+
+Status: Explicitly documented as a deterministic MVP scaffold, not a judge ("What this is NOT: A judge..."). Fully functional for the refund domain but domain-specific by design; confidence capped at 0.85. No LLM-based judge exists yet — that's the acknowledged gap (tracked via the TODO).
+
+Tests: `tests/test_attribution.py` (5 tests: localizes staged failure anatomy, requires failed verifier result, degrades gracefully without reasoning, no missed-recovery without auth failure, no recovery window when evidence arrives after harm). Reasonable coverage of the heuristic's documented edge cases.
+
+## 3. `failure_bundles/`
+
+Files: `/Users/evanzyang/Documents/Projects/TRACE/src/trace_harness/failure_bundles/{__init__.py,schemas.py,generator.py}`
+
+- `schemas.py` — `FailureCard`, `RepairControl`, `RepairPackage`.
+- `generator.py` — `FailureBundle` (grouping model), 5 control-builder functions (`_control_refund_guardrail`, `_control_source_precedence`, `_control_ticket_grounding`, `_control_regression_gate`, `_control_answer_grounding`), `_CONTROL_BUILDERS` mapping check_id→builder, and `FailureBundleGenerator` class with `generate()` (produces card + repair package + regression artifact), `_build_card()`, `_root_cause_text()`, `_blast_radius()`, `_build_repair_package()`. Line 16-17: `# TODO(Samir/failure_bundles): markdown rendering of the failure card for humans (the JSON is the contract; a .md view is a nice-to-have for PRs).`
+
+Status: Fully implemented (template-assembled, no LLM, explicitly documented as intentional — "Honesty contract"). The generator internally calls `regression.materializer.materialize_regression_artifact`, so bundle generation and regression-artifact generation are coupled — there's no way to get one without going through `FailureBundleGenerator.generate()` in the CLI path. Only gap noted is markdown rendering (nice-to-have, not blocking).
+
+Tests: `tests/test_failure_bundle.py` (8 tests, including `test_regression_artifact_pins_the_failure` — this is the only place `RegressionArtifact` content is asserted). Also covers card completeness, contributing categories, control actionability, refusal on passing runs, dedup of controls on repeated check_ids.
+
+## 4. `regression/`
+
+Files: `/Users/evanzyang/Documents/Projects/TRACE/src/trace_harness/regression/{__init__.py,schemas.py,materializer.py}`
+
+- `schemas.py` — `SiblingTest`, `RegressionArtifact` (test_name, source_run_id, task_fixture, initial_state, pinned_docs, expected_behavior, forbidden_actions, verifier_checks, positive_sibling_tests, severity, blocks_release, replay_command, metadata).
+- `materializer.py` — single function `materialize_regression_artifact(task, verifier_result, initial_state, run_id, task_fixture_path)`. Line 20-22: `# TODO(Samir/regression): add the replay-from-artifact command and a CI collector that sweeps runs/ (or a curated regression dir) and executes every blocking regression + its positive siblings.` Also explicitly documented in the module docstring (lines 14-18): `replay_command` re-runs the *originating fixture*, not the pinned artifact directly — "a `trace-harness replay &lt;regression_artifact.json&gt;` command that consumes it directly does not exist yet."
+
+Status: **Partially stubbed at the pipeline-completeness level.** The artifact schema and materialization logic are fully implemented and correct, but two explicitly-acknowledged gaps exist:
+1. No standalone `replay` command that consumes a `regression_artifact.json` directly (replay only works by re-running the original fixture path).
+2. No CI collector/sweeper that discovers and executes all blocking regressions + their positive siblings across `runs/`.
+
+Tests: **No dedicated `tests/test_regression.py` file.** Coverage is indirect only, via `tests/test_failure_bundle.py::test_regression_artifact_pins_the_failure`, which exercises `materialize_regression_artifact` through `FailureBundleGenerator.generate()`. There is no test that calls `materialize_regression_artifact` directly, no test of `SiblingTest` validation, and no test exercising the "no replay-from-artifact" gap (since that feature doesn't exist).
+
+## 5. `cli.py` (fully read, `/Users/evanzyang/Documents/Projects/TRACE/src/trace_harness/cli.py`, 409 lines)
+
+Subcommands (all under a single argparse parser, `main()` at line 291, `_dispatch()` at line 377):
+
+- **`run-fixture &lt;task_path&gt;`** (`_run_fixture`, line 108): loads a `TaskSpec` + docs, builds a `SupportEnvironment`, creates a model adapter (`fixture` default, replaying a script resolved via `--script` or `task.metadata.fixture_script`; or `gemini`/other live providers), runs `AgentRunner`, writes run artifacts under `runs/&lt;run_id&gt;/` via `ArtifactStore`. Prints run_id, status, steps, artifact/trace paths. Flags: `--script`, `--max-steps` (default 16), `--provider`, `--model`, `--timeout` (default 120s).
+- **`verify &lt;run_path&gt;`** (`_verify`, line 158): reads `task_spec.json`, trace, `final_state.json`, `run_result.json` from the run dir; runs each verifier in `task.verifier_ids` via `get_verifier`, merges results, writes `verifier_result.json`. `--fail-on-verifier` makes exit code 1 if verifier failed or run didn't complete (`RunStatus.COMPLETED`).
+- **`attribute &lt;run_path&gt;`** (`_attribute`, line 209): reads task/trace/`verifier_result.json`; if verifier passed, no-ops (prints message, returns False); otherwise runs `HeuristicAttributor`, writes `attribution_result.json`.
+- **`bundle &lt;run_path&gt;`** (`_bundle`, line 238): reads task/run_result/trace/`verifier_result.json`/`attribution_result.json`/`final_state.json`/`initial_state.json`/`run_config.json` (for `task_fixture_path` metadata); if verifier passed, no-ops; else calls `FailureBundleGenerator().generate(...)`, writes `failure_card.json`, `repair_package.json`, `regression_artifact.json`.
+- **`list-runs`** (`_list_runs`, line 279): uses `RunReader` to print a one-line summary per stored run (status, termination reason, steps, task_id).
+- **`run-pipeline &lt;task_path&gt;`** (line 393 in `_dispatch`): chains `run-fixture` → `verify` → (if verifier failed) `attribute` + `bundle`; else prints "no attribution or failure bundle needed." Same flags as `run-fixture` plus `--fail-on-verifier`.
+
+Error handling: `CliInputError` (subclass of `ValueError`) plus `FileNotFoundError`/`KeyError`/`ValueError` are caught in `main()` and printed as `error: ...` with exit code 2 (bad paths, malformed fixtures, unknown verifier ids, out-of-order stages). Exit code 1 is reserved solely for `--fail-on-verifier` CI-gate trips.
+
+No TODO/FIXME/NotImplementedError in `cli.py` itself.
+
+**No `regression` subcommand exists.** Regression-artifact generation is reachable only as a side effect of `bundle` (or `run-pipeline` on a failing run) — there is no way to invoke regression materialization standalone from the CLI, and (per the TODO in `regression/materializer.py`) there is no `replay` command to consume a `regression_artifact.json` directly either. The only way regression artifacts get created is: CLI `bundle`/`run-pipeline`, or directly in tests (`test_failure_bundle.py`) by calling `FailureBundleGenerator().generate()` / indirectly `materialize_regression_artifact()`.
+
+## Tests directory summary
+
+`/Users/evanzyang/Documents/Projects/TRACE/tests/` (17 files):
+- `test_refund_verifier.py` — verifiers, strong coverage (29 tests).
+- `test_attribution.py` — attribution, moderate coverage (5 tests).
+- `test_failure_bundle.py` — failure_bundles, good coverage (8 tests: card, repair package, regression artifact via bundle, refusal on pass, dedup hardening). This is also the *only* coverage regression gets.
+- `test_cli.py` — cli.py, strong coverage (13 tests: full pipeline write-all-artifacts, gate exit codes, stage independence via disk, runs-dir flag position, input-error exit 2 cases, missing-script/empty-verifier-ids input errors, aborted-run gate behavior, bare run-id resolution).
+- Others not in scope here but present: `test_artifact_store.py`, `test_config.py`, `test_fixture_run.py`, `test_retrieval.py`, `test_run_index.py`, `test_run_reader.py`, `test_state.py`, `test_support_env.py`, `test_task_schema.py`, `test_task_validation.py`, `test_tools.py`.
+
+**Gap: no `tests/test_regression.py`.** The `regression/` module (schemas + materializer) has no dedicated unit tests — only indirect coverage through one test in `test_failure_bundle.py`. Nothing tests `materialize_regression_artifact` in isolation, `SiblingTest` validation, or edge cases (e.g., empty `positive_sibling_tasks`, missing `task_fixture_path` falling back to `runs/{run_id}/task_spec.json`).</result>
+<usage><subagent_tokens>66763</subagent_tokens><tool_uses>26</tool_uses><duration_ms>84521</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>adb1dffd73a5c5dea</task-id>
+<tool-use-id>toolu_01Jnk7gMEGZuwUUG2QHo3EJX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evanzyang-Documents-Projects-TRACE/f9fb5349-435e-4312-963f-af37befefbce/tasks/adb1dffd73a5c5dea.output</output-file>
+<status>completed</status>
+<summary>Agent "Audit dashboard, runs storage, and docs for gaps" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Now I have a comprehensive picture. Here is the audit.
+
+## 1. Dashboard / API / web UI code
+
+Real code exists, but it is scaffolding, not a working read path.
+
+- **`apps/dashboard/`** — a Next.js 15 + React 19 + TypeScript + Tailwind app (`apps/dashboard/package.json`), fully checked into git (not gitignored). Contents:
+  - `src/app/page.tsx` is a literal placeholder: `"Placeholder. No content yet."` with a `TODO: link into a run view (/runs/[runId])` and a comment pointing at `docs/future_dashboard.md`.
+  - `src/types/` has real TypeScript data-contract types mirrored from the Python schemas: `attribution.ts`, `evidence.ts`, `severity.ts`, `failure-card.ts`, `run-result.ts`, `verifier-result.ts`, `trace-event.ts`, exported from `src/types/index.ts` ("Dashboard data contracts, align with the backend run artifacts"). No repair-package or regression-artifact type file yet, even though it's committed as reflecting a schema-0.3.0 bump per commit `2284db4`.
+  - `src/components/ui/.gitkeep` and `src/data/.gitkeep` — empty placeholder dirs, no components or data fixtures actually present.
+  - There is a dashboard-scoped CI (`.github/workflows/dashboard-ci.yml`) that runs lint/format/typecheck, scoped to `apps/dashboard/**` changes only.
+  - No page fetches or renders any run artifact yet; no run JSON has been copied into `src/data/` as instructed by `future_dashboard.md`.
+- **No FastAPI / API server code anywhere** (`docs/future_api.md` is a spec doc only; no `apps/api/` directory exists).
+- There **is** a backing read-service already implemented in Python: `src/trace_harness/run_reader.py` (`RunReader`), covered by `tests/test_run_reader.py`. It's explicitly described as "the documented Python service the future FastAPI app will wrap" and mirrors the planned endpoint map (`list_runs`, `get_run`, `get_task`, `get_trace`, `get_verifier`, `get_attribution`, `get_bundle`), with explicit missing-artifact semantics (`RunNotFound` for unknown run id, `None` for not-yet-produced downstream artifacts).
+
+### `docs/future_dashboard.md` (full read)
+- Status line: **"Status: not started — deliberately."** Owner: Skye Haik; data contracts coordinate with Samrath (schemas) and Darrel (attribution semantics).
+- Explicit **start condition**: the first UI must consume **static JSON from a real run** — generate via `trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json`, copy `runs/{run_id}/` into the app's fixture data, and render it. No backend, no live API. Any unrenderable view is a data-contract conversation with Samrath, not an excuse to invent dashboard-side state.
+- Required views table (all sourced from the fixture failure run): Run summary, Trace timeline, Verifier failures, Attribution (with distinct markers for root cause / missed recovery / first irreversible), Failure card, Repair package, Regression artifact.
+- North star: someone unfamiliar opens a failed run and within a minute understands what happened, where it became inevitable, what prevents it — step ids are the cross-linking key.
+- Explicitly out of scope for now: auth, live polling, run comparison, editing — "render one run excellently first."
+
+### `docs/future_api.md` (full read)
+- Status line: **"Status: not started — deliberately."** Owner: Samrath.
+- Notes a **backing service already exists (TRA-20)**: `RunReader`, described above — an already-implemented Python read layer that returns artifact schemas unchanged. It gives the endpoint↔method map and explicit missing-artifact rules (unknown run → `RunNotFound`; unproduced downstream artifact → `None`).
+- What it "will be": a thin FastAPI wrapper over `RunReader`, serving the same `runs/` artifact files without reshaping — `GET /runs`, `/runs/{id}`, `/runs/{id}/task`, `/trace`, `/verifier`, `/attribution`, `/bundle`.
+- Ground rules: responses are the artifact schemas unchanged; no auth/multi-tenancy in v1.
+- **Definition of ready to start**: "the dashboard renders real run dirs from static JSON, and someone (dashboard or CI) needs the same query twice." Until then, no `apps/api/` should be created.
+
+## 2. `runs/README.md` (full read)
+
+- Configurable via `TRACE_RUNS_DIR`; **everything under `runs/` except the README is gitignored** (regenerable outputs, not source).
+- Layout is one directory per run, `runs/{run_id}/`, listing 11 files in pipeline order: `task_spec.json`, `run_config.json`, `initial_state.json`, `trace.jsonl`, `final_state.json`, `run_result.json`, then downstream stage outputs `verifier_result.json` (by `verify`), `attribution_result.json` (by `attribute`), and the bundle trio `failure_card.json` / `repair_package.json` / `regression_artifact.json` (by `bundle`).
+- Run ids: `run_&lt;UTC timestamp&gt;_&lt;hex8&gt;`, lexicographically = chronologically ordered.
+- **Partial-artifact guarantee**: "Partial directories are valid: a failed run keeps whatever it wrote. Caught failures record an `error` event and still append the final state snapshot and `run_finished`; only a hard kill leaves a trace truncated mid-stream."
+- States the layout is the data contract for the future dashboard/API, defined in code at `src/trace_harness/tracing/artifact_store.py` (owned by Samrath).
+- Instructs generating two reference runs via `trace-harness run-pipeline` on the failure task and its positive sibling; explicitly says don't commit run dirs, don't hand-edit artifacts.
+
+## 3. `runs/` directory contents (currently present, gitignored)
+
+Not empty — four example run directories currently exist locally (git-ignored, confirmed via `git check-ignore`):
+- `run_20260625T134844Z_0d5061b5` — task `refund_policy_failure`, status `completed`, 7 steps — **has the full pipeline**: `verifier_result.json`, `attribution_result.json`, `failure_card.json`, `repair_package.json`, `regression_artifact.json` all present alongside the base artifacts. This is exactly the kind of run the dashboard doc calls for as its render target.
+- `run_20260625T134851Z_b49a418e` — task `refund_policy_valid_cash` (positive sibling) — only has base artifacts + `verifier_result.json` (no attribution/bundle, since it passes and bundling is skipped for passing runs per `failure_bundles.md`).
+- `run_20260703T192348Z_1895c00e` — `refund_policy_failure`, also full pipeline (a later regeneration).
+- `run_20260703T192352Z_59bd6e3d` — `refund_policy_valid_cash`, base + verifier only.
+
+So a real, full-pipeline example run for `refund_policy_failure` exists on disk today (twice, from two generation passes), but since `runs/*` is gitignored, it is not committed anywhere and would need to be regenerated (`trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json`) for a fresh clone or for anyone building the dashboard read path.
+
+## 4. `docs/failure_bundles.md` (full read)
+
+Owner: Samir Mohammed. Documents `FailureBundleGenerator`'s three artifacts, all stored in the run directory:
+- **`failure_card.json`** — human one-pager: title, summary, `task_result` (status + verdict kept deliberately distinct), severity, root cause (quoting actual agent reasoning at the root-cause step), contributing failures, `step_ids`, visible symptoms, structured evidence, causal explanation, and **blast radius** — computed strictly from final state (dollar amounts, durable records, customers affected), never adjectives.
+- **`repair_package.json`** — ordered list of `RepairControl`s, each requiring `installation_point` (real code/CI seam), `check`, `behavior_on_failure`, `expected_impact`, `why_it_prevents_recurrence`, `risk_or_tradeoff`, `priority` (P0–P3), `linked_verifier_checks`. Regression CI gate control is always included, always last, always P0.
+- **`regression_artifact.json`** — pinned rerunnable failure spec: snapshotted initial state/docs as the failing run saw them, failed check ids as assertions, severity, `blocks_release`, `replay_command`, and mandatory **positive sibling tests** (anti-overblocking).
+- Full field reference tables for `FailureCard` and `RepairPackage`, plus a verifier/attribution → card/package field-mapping table.
+- **Dashboard consumption is explicitly named**: "generated together..., stored in the run directory, consumed by humans, CI, and the dashboard." And in the generation rules: "Evidence chains end at steps. Card → checks → evidence → step ids → trace events. **The dashboard renders this chain; breaking it breaks the product story.**" No specific dashboard wire/UI format is documented beyond this — it's the same JSON schema as everything else, no separate dashboard-specific transformation format is defined (consistent with `future_api.md`'s "don't reshape" rule).
+
+## 5. `docs/team_ownership.md` (full read)
+
+- **Frontend/Dashboard section**: **Skye Haik** — "Trace replay / failure UX" — owns the dashboard (spec: `docs/future_dashboard.md`), "builds against static run artifacts first; data-contract changes go through Samrath (trace/artifacts) and Darrel (attribution semantics)."
+- Cross-stream contract note: "**Artifacts ↔ frontend** — Samrath + Skye (+ Darrel for attribution views): run-directory layout and schema versions."
+- **Samrath** (Evaluation Systems section) owns `trace_harness/tracing/` (events, recorder, artifact store), `config.py`, and explicitly "future API (`docs/future_api.md`)," plus "data contracts to frontend."
+- No explicit status note beyond what's in the two future_* docs themselves (both say "not started — deliberately"); the ownership doc doesn't add new status info, just names owners and coordination points.
+
+## 6. `fixtures/expected/`
+
+Three files, no full-pipeline pin:
+- `refund_policy_failure_expected_verifier.json` — pinned **verifier-only** expectations for the `refund_policy_failure` task (expected failed check ids, severity `critical`, `blocks_release: true`, per-check notes). Explicit contract note: "if this file no longer matches, that is the contract telling you to review the change."
+- `sample_passing_result.json` / `sample_failing_result.json` — generic sample `VerifierResult` JSONs (schema `0.2.0`) generated by `scripts/generate_sample_outputs.py` as a TRA-16 deliverable for downstream consumers (attribution/dashboard/regression) to build against — these are illustrative samples with synthetic run ids (`run_fail_001`), not tied to a specific fixture task's full run.
+
+**There is no pinned expected output covering the full pipeline** (verifier + attribution + failure_card + repair_package + regression_artifact together) for `refund_policy_failure` in `fixtures/expected/`. Only the verifier stage is pinned as a fixture expectation; attribution/bundle artifacts are only tested via unit tests (`tests/test_attribution.py`, `tests/test_failure_bundle.py`) and demonstrated by the ad hoc runs sitting in the gitignored `runs/` directory.
+
+## 7. Git history signal (`git log --all --oneline -30` + branches)
+
+Directly dashboard/frontend-relevant commits already merged to `main`:
+- `a4fd0fa` Merge PR #90 "add-trace-run-data-contract-frontend"
+- `94e176f` "Converted failure bundle schema types from strings to enums for intuitive dashboard rendering"
+- `2284db4` "Update example failure card and repair package artifacts to reflect schema 0.3.0"
+- `7b954fd` "add repair package and regression artifact data contracts to frontend"
+- `e8537b5` "Add trace event data contract"
+- `1b9e6e0`/`d6c7f28` TRA-16-2 verifier sample JSONs + dashboard `EvidenceKind` enum, schema v0.2.0
+- `7e96add` "TRA-19: Add regression artifact contract doc and example artifact"
+- `bb17a8c` Merge PR #88 "tra-16-2/verifier-sample-artifacts"
+
+Remote branches (not merged) that look directly relevant to this ticket's scope:
+- `origin/trace-harness/tra-20-run-read-service` — likely the source branch for the already-merged `RunReader` (TRA-20 is referenced as done in `future_api.md`); worth checking if fully merged or if there's follow-on work.
+- `origin/add-data-contracts-faliure-card`, `origin/add-data-contracts-frontend`, `origin/add-repair-regression-data-contracts-frontend`, `origin/add-trace-run-data-contract-frontend`, `origin/bump-data-contract-versions`, `origin/init-frontend-architecture`, `origin/dashboard` — a cluster of frontend/data-contract branches; some names look already merged (their PRs show in the log above) but `origin/dashboard` and `origin/init-frontend-architecture` may be earlier scaffolding history for `apps/dashboard/` worth a `git log &lt;branch&gt;` diff-check before assuming stale.
+- `origin/trace-harness/tra-54-run-index-file` / `-recovery` — relevant to `RunSummary`'s TODO note in `run_reader.py` ("currently orphaned, TRA-54 run-index entry... when the run index re-lands `list_runs` can read it instead of scanning").
+
+No PR or branch name found (searched via branch list and log) that indicates dashboard UI work beyond the placeholder page — the actual "render a run" work described in `future_dashboard.md` does not appear to have started yet in any branch.
+
+---
+
+### Summary of the gap (for planning)
+
+The "missing piece" for a dashboard read path is well-documented and narrow:
+1. `RunReader` (Python, TRA-20) already implements the read logic `future_api.md` calls for.
+2. `apps/dashboard/` already has the app scaffold, type contracts (missing repair-package/regression-artifact TS types), and CI — but `page.tsx` is a literal placeholder with zero data fetching/rendering.
+3. A full-pipeline example run for `refund_policy_failure` exists on disk (gitignored, regenerable via one CLI command) — nothing blocks copying it into `src/data/` per `future_dashboard.md`'s explicit start condition.
+4. No `apps/api/` and no full-pipeline fixture pin exist yet, and per `future_api.md`'s "definition of ready to start," the API shouldn't be built until the dashboard needs the same query twice — this is the deliberate, documented "not started" state, not an oversight.</result>
+<usage><subagent_tokens>40441</subagent_tokens><tool_uses>20</tool_uses><duration_ms>107830</duration_ms></usage>
+</task-notification>
+
+---
+
+Check whether the dashboard/runs-storage Explore agent has completed. If so, synthesize both audits and proceed to Phase 2 (Design) of the plan workflow. If not, wait longer.
+
+---
+
+where should i run dev to run the dashboard and test?
+
+---
+
+is there no content in the dashboard yet?
+
+---
+
+<ide_opened_file>The user opened the file /Users/evanzyang/Documents/Projects/TRACE/docs/tra42_integration_notes.md in the IDE. This may or may not be related to the current task.</ide_opened_file>
+so all other components of the vertical slice: Task loads.
+
+Agent runs.
+
+Tools execute.
+
+Trace saves.
+
+Verifier runs.
+
+Attribution saves.
+
+Failure card generates.
+
+Regression artifact generates.
+
+Dashboard reads the result.
+
+Gaps are represented by linked follow-up issues rather than hidden assumptions.
+
+are all built out and ready to use?
+
+---
+
+Go through the codebase current state and update claude.md
+
+---
+
+continue
+
+---
+
+Can you add an escalate_case(customer_name, reason) tool that records an Escalation on the state?
+
+---
+
+create a branch trace-harness/escalate-case-tool and check it out
+
+---
+
+write me a short pr comment description of the escalate case tool
+
+---
+
+state schema version is not bumped
+
+---
+
+look in trace-harness/escalate-case-tool

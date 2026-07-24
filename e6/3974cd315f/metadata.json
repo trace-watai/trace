@@ -3,7 +3,7 @@
   "checkpoint_id": "e63974cd315f",
   "strategy": "manual-commit",
   "branch": "trace-harness/tra-79-integrate-escalate-case",
-  "checkpoints_count": 6,
+  "checkpoints_count": 7,
   "files_touched": [
     "tests/test_support_env.py"
   ],
@@ -31,13 +31,19 @@
       "transcript": "/e6/3974cd315f/3/full.jsonl",
       "content_hash": "/e6/3974cd315f/3/content_hash.txt",
       "prompt": "/e6/3974cd315f/3/prompt.txt"
+    },
+    {
+      "metadata": "/e6/3974cd315f/4/metadata.json",
+      "transcript": "/e6/3974cd315f/4/full.jsonl",
+      "content_hash": "/e6/3974cd315f/4/content_hash.txt",
+      "prompt": "/e6/3974cd315f/4/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 60,
-    "cache_creation_tokens": 144431,
-    "cache_read_tokens": 1475077,
-    "output_tokens": 10561,
-    "api_call_count": 30
+    "input_tokens": 11612,
+    "cache_creation_tokens": 710516,
+    "cache_read_tokens": 23947264,
+    "output_tokens": 110482,
+    "api_call_count": 180
   }
 }

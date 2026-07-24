@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "e63974cd315f",
+  "session_id": "f9fb5349-435e-4312-963f-af37befefbce",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-24T04:33:10.702678Z",
+  "branch": "trace-harness/tra-79-integrate-escalate-case",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tests/test_support_env.py"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "b10bc57fac4d",
+  "token_usage": {
+    "input_tokens": 11552,
+    "cache_creation_tokens": 566085,
+    "cache_read_tokens": 22472187,
+    "output_tokens": 99921,
+    "api_call_count": 150
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-24T04:33:10.658394Z",
+    "agent_lines": 8,
+    "agent_removed": 2,
+    "human_added": 3,
+    "human_modified": 5,
+    "human_removed": 0,
+    "total_committed": 16,
+    "total_lines_changed": 27,
+    "agent_percentage": 37.03703703703704,
+    "metric_version": 2
+  }
+}
