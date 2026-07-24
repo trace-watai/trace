@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "afcf348e4096",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-79-integrate-escalate-case",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tests/conftest.py",
+    "tests/test_missing_info_escalation.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/af/cf348e4096/0/metadata.json",
+      "transcript": "/af/cf348e4096/0/full.jsonl",
+      "content_hash": "/af/cf348e4096/0/content_hash.txt",
+      "prompt": "/af/cf348e4096/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 22,
+    "cache_creation_tokens": 8770,
+    "cache_read_tokens": 2008740,
+    "output_tokens": 4843,
+    "api_call_count": 11
+  }
+}
