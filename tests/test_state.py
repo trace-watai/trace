@@ -252,7 +252,7 @@ def test_snapshot_returns_dict() -> None:
 def test_snapshot_contains_expected_top_level_keys() -> None:
     state = SupportState()
     snap = state.snapshot()
-    for key in ("schema_version", "orders", "refunds", "tickets", "docs"):
+    for key in ("schema_version", "orders", "refunds", "tickets", "escalations", "docs"):
         assert key in snap, f"snapshot missing key '{key}'"
 
 
