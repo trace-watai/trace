@@ -75,6 +75,14 @@ Exit codes:
 `check_repo.sh` already runs this gate as a smoke test on both the failure
 fixture and the valid sibling.
 
+`trace-harness replay <regression_artifact.json>` has its own exit contract:
+
+| Code | Meaning |
+|---|---|
+| `0` | Verifier reproduced the expected failed checks AND every positive sibling passed -- gate clear |
+| `1` | Either the verifier didn't reproduce the expected checks, or a sibling failed -- gate fired |
+| `2` | Usage/input error: bad artifact path, malformed JSON, missing fixture |
+
 ### What CI should do with a regression artifact
 
 For each `RegressionArtifact` where `blocks_release: true`:
