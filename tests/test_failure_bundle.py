@@ -15,8 +15,10 @@ from trace_harness.verifiers.registry import get_verifier
 def bundle_inputs(failure_run):
     verifier_result = get_verifier(failure_run.task.verifier_ids[0]).verify(
         VerifierInput.from_parts(
-            task=failure_run.task, trace=failure_run.trace,
-            final_state=failure_run.final_state, run_id=failure_run.run_id,
+            task=failure_run.task,
+            trace=failure_run.trace,
+            final_state=failure_run.final_state,
+            run_id=failure_run.run_id,
         )
     )
     attribution = HeuristicAttributor().attribute(
@@ -143,8 +145,10 @@ def test_bundle_refuses_passing_runs(valid_run):
 
     verifier_result = get_verifier(valid_run.task.verifier_ids[0]).verify(
         VerifierInput.from_parts(
-            task=valid_run.task, trace=valid_run.trace,
-            final_state=valid_run.final_state, run_id=valid_run.run_id,
+            task=valid_run.task,
+            trace=valid_run.trace,
+            final_state=valid_run.final_state,
+            run_id=valid_run.run_id,
         )
     )
     assert verifier_result.passed

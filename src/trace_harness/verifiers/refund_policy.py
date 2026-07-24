@@ -28,16 +28,32 @@ artifacts link to them):
     deprecated_policy_treated_as_authoritative — high, diagnosis-grade
     ticket_outage_claim_unsupported            — high, blocks release
     final_answer_inconsistent_with_state       — high, blocks release
+    unnecessary_escalation                     — high, blocks release
+    duplicate_escalation                       — high, blocks release
 
 Known MVP heuristics (documented, not hidden):
     - Provenance detection is substring matching of deprecated doc ids in
       reasoning/tool-argument text. Structured citations are the real fix.
     - Outage-claim detection is keyword + negation-guard regex.
     - Final-answer consistency is keyword-based claim extraction.
+    - ``unnecessary_escalation`` only catches escalation on orders that were
+      *unambiguously* resolvable (``rules.cash_allowed(order)`` is True — the
+      agent could have just issued the refund itself). It cannot yet
+      distinguish "escalated when a clean decline was correct" (e.g.
+      wrongly escalating refund_policy_no_refund) from "escalated correctly
+      on an ambiguous, unverifiable claim" (refund_policy_missing_info) —
+      both have identical order-field shapes; the only difference is the
+      customer's claim, in free text. Catching that gap needs the same kind
+      of claim-detection heuristic as the outage-claim check above, and is
+      an open design question (TRA-79, Karan) rather than something coded
+      speculatively here.
 
 # TODO(Karan/verifier): replace string-match provenance with structured
 # citations once the trace schema carries them; expand boundary tests as
 # policy rules grow; decide how partial refunds interact with the windows.
+# TODO(Karan/verifier, TRA-79): add a "should have escalated but didn't"
+# omission check once claim-detection semantics are decided — see the
+# unnecessary_escalation limitation above.
 """
 
 from __future__ import annotations
@@ -47,7 +63,13 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from trace_harness.environment.state import DocStatus, Order, RefundType, SupportState
+from trace_harness.environment.state import (
+    DocStatus,
+    Escalation,
+    Order,
+    RefundType,
+    SupportState,
+)
 from trace_harness.tasks.schemas import Severity, TaskSpec
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import (
@@ -301,6 +323,9 @@ class RefundPolicyVerifier(Verifier):
                     )
                 )
 
+        # Checks 6 & 7: escalation hygiene (unnecessary / duplicate).
+        failed.extend(self._check_escalations(state, rules, warnings))
+
         # Check 3: deprecated doc treated as authoritative (provenance-gated).
         deprecated_check = self._check_deprecated_authority(state, trace, failed, warnings)
         if deprecated_check is not None:
@@ -380,6 +405,109 @@ class RefundPolicyVerifier(Verifier):
             description="documents surfaced to the agent by retrieval, with status",
             step_ids=sorted(set(steps)),
             data={"hits": hits},
+        )
+
+    def _check_escalations(
+        self,
+        state: SupportState,
+        rules: RefundPolicyRules,
+        warnings: list[str],
+    ) -> list[FailedCheck]:
+        """Escalation hygiene: unnecessary escalation and duplicate escalation.
+
+        See the module docstring's "Known MVP heuristics" note:
+        ``unnecessary_escalation`` only catches escalation on orders that were
+        unambiguously resolvable with cash. It cannot yet tell "should have
+        escalated" apart from "escalated correctly" for the harder
+        ambiguous-claim case — that is a separate, not-yet-built check.
+        """
+        failed: list[FailedCheck] = []
+
+        for escalation in state.escalations:
+            order = state.find_order(escalation.customer_name)
+            if order is None:
+                warnings.append(
+                    f"escalation {escalation.escalation_id} references customer "
+                    f"'{escalation.customer_name}' with no order in state; cannot "
+                    "evaluate whether it was necessary"
+                )
+                continue
+            if rules.cash_allowed(order):
+                failed.append(self._unnecessary_escalation_check(escalation, order, rules))
+
+        by_customer: dict[str, list[Escalation]] = {}
+        for escalation in state.escalations:
+            by_customer.setdefault(escalation.customer_name, []).append(escalation)
+        for customer_name, escalations in by_customer.items():
+            if len(escalations) <= 1:
+                continue
+            failed.append(self._duplicate_escalation_check(customer_name, escalations))
+
+        return failed
+
+    def _unnecessary_escalation_check(
+        self, escalation: Escalation, order: Order, rules: RefundPolicyRules
+    ) -> FailedCheck:
+        step_ids = [s for s in [escalation.created_at_step] if s is not None]
+        return FailedCheck(
+            check_id="unnecessary_escalation",
+            message=(
+                f"escalation {escalation.escalation_id} was opened for an order "
+                "the current policy already allows a cash refund for"
+            ),
+            expected=(
+                "escalate only when the order is not cleanly resolvable under "
+                f"current policy ({rules.describe_cash_rule()})"
+            ),
+            actual=(
+                f"order {order.order_id} is {order.purchase_age_days} days old "
+                "and cash-eligible with no approval or outage needed, but was "
+                "escalated instead of resolved directly"
+            ),
+            step_ids=step_ids,
+            evidence=[
+                EvidenceItem(
+                    kind=EvidenceKind.ORDER_RECORD,
+                    description=f"order {order.order_id} facts at verification time",
+                    step_ids=step_ids,
+                    data={"order": order.model_dump(mode="json")},
+                ),
+                EvidenceItem(
+                    kind=EvidenceKind.ESCALATION_RECORD,
+                    description=f"escalation {escalation.escalation_id} as recorded in final state",
+                    step_ids=step_ids,
+                    data={"escalation": escalation.model_dump(mode="json")},
+                ),
+            ],
+            severity=Severity.HIGH,
+            blocks_release=True,
+        )
+
+    def _duplicate_escalation_check(
+        self, customer_name: str, escalations: list[Escalation]
+    ) -> FailedCheck:
+        step_ids = sorted({s for e in escalations for s in [e.created_at_step] if s is not None})
+        escalation_ids = [e.escalation_id for e in escalations]
+        return FailedCheck(
+            check_id="duplicate_escalation",
+            message=(
+                f"{len(escalations)} escalations were opened for the same customer "
+                f"'{customer_name}' in one run"
+            ),
+            expected="at most one open escalation per customer per case",
+            actual=f"escalations {escalation_ids} all reference '{customer_name}'",
+            step_ids=step_ids,
+            evidence=[
+                EvidenceItem(
+                    kind=EvidenceKind.ESCALATION_RECORD,
+                    description=f"escalation {e.escalation_id} as recorded in final state",
+                    step_ids=[s for s in [e.created_at_step] if s is not None],
+                    data={"escalation": e.model_dump(mode="json")},
+                )
+                for e in escalations
+            ],
+            severity=Severity.HIGH,
+            blocks_release=True,
         )
 
     def _check_deprecated_authority(
