@@ -54,10 +54,16 @@ def _call(tool_name: str, **arguments) -> ToolCall:
 # ---------------------------------------------------------------------------
 
 
-def test_tool_specs_returns_all_four_tools_by_default() -> None:
+def test_tool_specs_returns_all_five_tools_by_default() -> None:
     env = _env()
     names = {spec.name for spec in env.tool_specs()}
-    assert names == {"search_docs", "get_order", "issue_refund", "create_ticket"}
+    assert names == {
+        "search_docs",
+        "get_order",
+        "issue_refund",
+        "create_ticket",
+        "escalate_case",
+    }
 
 
 def test_tool_specs_respects_available_tools_filter() -> None:
