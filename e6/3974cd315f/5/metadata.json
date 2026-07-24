@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "e63974cd315f",
+  "session_id": "fe58e6de-906a-4dec-9f6a-bf82846cd6da",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-24T04:33:17.14767Z",
+  "branch": "trace-harness/tra-79-integrate-escalate-case",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "fixtures/scripts/refund_policy_missing_info_script.json",
+    "fixtures/tasks/refund_policy_missing_info.json",
+    "tests/test_support_env.py"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "68b744915abe",
+  "token_usage": {
+    "input_tokens": 188,
+    "cache_creation_tokens": 157359,
+    "cache_read_tokens": 11440544,
+    "output_tokens": 64832,
+    "api_call_count": 94
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-24T04:33:17.135091Z",
+    "agent_lines": 8,
+    "agent_removed": 2,
+    "human_added": 93,
+    "human_modified": 5,
+    "human_removed": 0,
+    "total_committed": 106,
+    "total_lines_changed": 108,
+    "agent_percentage": 9.25925925925926,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 377,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "CLAUDE.md": 377
+      }
+    }
+  ]
+}

@@ -1,0 +1,144 @@
+Why this exists
+
+PR #106 adds a real escalate_case(customer_name, reason) tool and tests, but the PR explicitly says it is not wired into task fixtures. Meanwhile the newly merged canonical missing-information task can still behave like an ordinary refusal or create a generic ticket. TRACE therefore cannot yet prove the important distinction between:
+
+correctly refusing a prohibited refund;
+
+asking for missing facts and handing the case to a person;
+
+merely declining without completing the required handoff.
+
+Merging the tool by itself would add another isolated primitive without completing the product behavior.
+
+Product outcome
+
+A canonical missing-information run must perform one durable, traceable human handoff, and the verifier must distinguish that correct outcome from a plain decline.
+
+Required work
+
+Rebase PR #106 from current green main; do not merge it as a standalone tool.
+
+Make the state-schema bump intentional and update every affected fixture/reader contract in the same change.
+
+Register escalate_case in the exact environment used by the canonical task.
+
+Update the missing-information fixture/model path to call it once with a useful customer and reason.
+
+Preserve created_at_step so trace, verifier evidence, attribution, and the dashboard can link the handoff to the decision that caused it.
+
+Add verifier coverage for:
+
+required escalation present: pass;
+
+plain refusal with no escalation: fail;
+
+duplicate or unsupported escalation: fail;
+
+ordinary no-refund scenario with no escalation required: pass.
+
+Keep the action deterministic and local; no real external ticketing side effect is needed for MVP.
+
+Acceptance evidence
+
+The canonical missing-information pipeline completes and its final state contains exactly one valid escalation.
+
+The trace contains the requested, executed, and observed escalation events with correct step provenance.
+
+Removing the escalation from the same run makes the relevant verifier check fail.
+
+The no-refund and valid-refund sibling paths still pass without creating an escalation.
+
+All environment, task, verifier, demo, and contract tests pass through TRA-78's full gate.
+
+The PR description links the canonical run artifacts, not only unit tests for the tool.
+
+Ownership and review
+
+Primary owner: Evan Yang.
+
+Required collaborators: Emily Au owns the task-validity declaration in TRA-77; Karan Gupta owns the verifier semantics; Samrath reviews state/trace compatibility.
+
+This is blocked by TRA-77 and TRA-78. It blocks final static-fixture generation and TRA-52 acceptance.
+
+Go through this ticket (TRA-79: Integrate escalate_case into the canonical missing-information run and verifier) adn the codebase and determine what needs to be done to complete the ticket thoroughly/comprehensively and what already exists, and also determine what information is missing/needed (e.g. if it is blocked by tra-78: Restore green main and enforce the full TRACE integration gate Why this exists
+
+The offline TRACE product loop now works on main: the one-command demo runs a harmful refund case through trace, verifier, attribution, failure card, repair package, and regression output, then proves the valid sibling still passes. That useful result is sitting on an unreliable shared baseline.
+
+Verified on main at b974fe3 on July 20, 2026:
+
+pytest -q: 272 tests pass, but 5 hook tests cannot start because tests/test_support_env.py references a missing env fixture.
+
+ruff check .: 18 findings remain, 12 mechanically fixable.
+
+ruff format --check .: 7 files would be reformatted.
+
+Dashboard format, lint, typecheck, 12 tests, and production build pass.
+
+scripts/demo.sh passes directly and emits the complete failing bundle plus the passing sibling.
+
+The current GitHub workflow only protects part of the dashboard and does not prove the Python evaluation loop. Until this is fixed, separately green PRs can still break the cumulative product.
+
+Product outcome
+
+Create one trustworthy shared baseline where every later integration PR proves the complete relevant product path, not only its own files.
+
+Required work
+
+Restore the missing support-environment fixture and make all five hook tests execute and pass.
+
+Resolve all repository Ruff and formatter failures without weakening the configured rules.
+
+Add Python CI for Ruff, format check, the full test suite, and both deterministic pipeline outcomes.
+
+Expand dashboard CI to format, lint, typecheck, unit tests, and production build.
+
+Keep scripts/demo.sh as the release smoke: expected failing case must fail for the intended checks and the positive sibling must pass.
+
+Add or retain a generated producer/consumer contract assertion so backend schema drift cannot pass independently of the dashboard.
+
+Make the checks required before merge if repository settings permit it; otherwise document and enforce a no-merge-until-green rule.
+
+Acceptance evidence
+
+scripts/check_repo.sh exits 0 on a fresh checkout.
+
+Full Pytest has zero failures or setup errors.
+
+Full Ruff and formatter checks are clean.
+
+Dashboard format, lint, typecheck, tests, and production build are clean.
+
+The offline demo retains both runs and their expected verdicts.
+
+A deliberately incompatible backend/dashboard artifact version makes CI fail.
+
+The PR links the exact successful workflow run and is reviewed by one platform owner and one downstream consumer.)
+
+---
+
+Yes. Turn this into an escalation plan that is digestible to read. What can be built now, what I should communicate/clarify with others, what needs to be held off
+
+---
+
+1. isn't skye in charge of dashboard?
+2. clarify what you mean by clearing emily's task file
+3. clarify what karan's question should be asking and what portion of the work it is affecting 
+4. what do you mean fold tra78's changes into this pr? someone does own this ticket, but it is not done yet. is it possible to build from a new branch now regardless?
+
+use slightly simpler language to explain and be comprehensive to help me holistically understand concepts.
+
+---
+
+1. is escalations already added to the schema? if not, will it be and will it affect anything downstream? would you be able to check?
+
+3. does karan own the verifier? why him?
+
+---
+
+Give me a brief 2 sentences for each thing i need to ask now
+
+---
+
+Cool. The schema/supportstate portion should be good other than blast radius, but you should do a thorough check to make sure everything links together perfectly. 
+
+Make a plan for everything that needs to be built out now. For now, just consider the verifier "unsupported" check to be making sure that the escalation was not raised when not needed if possible. Split the plan into modular steps with a clear goal for each (should be a reasonable commit size for each).

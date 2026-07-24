@@ -5,6 +5,8 @@
   "branch": "trace-harness/tra-79-integrate-escalate-case",
   "checkpoints_count": 7,
   "files_touched": [
+    "fixtures/scripts/refund_policy_missing_info_script.json",
+    "fixtures/tasks/refund_policy_missing_info.json",
     "tests/test_support_env.py"
   ],
   "sessions": [
@@ -37,13 +39,19 @@
       "transcript": "/e6/3974cd315f/4/full.jsonl",
       "content_hash": "/e6/3974cd315f/4/content_hash.txt",
       "prompt": "/e6/3974cd315f/4/prompt.txt"
+    },
+    {
+      "metadata": "/e6/3974cd315f/5/metadata.json",
+      "transcript": "/e6/3974cd315f/5/full.jsonl",
+      "content_hash": "/e6/3974cd315f/5/content_hash.txt",
+      "prompt": "/e6/3974cd315f/5/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 11612,
-    "cache_creation_tokens": 710516,
-    "cache_read_tokens": 23947264,
-    "output_tokens": 110482,
-    "api_call_count": 180
+    "input_tokens": 11800,
+    "cache_creation_tokens": 867875,
+    "cache_read_tokens": 35387808,
+    "output_tokens": 175314,
+    "api_call_count": 274
   }
 }
