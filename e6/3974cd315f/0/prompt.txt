@@ -1,0 +1,1 @@
+what are conventions i should keep in mind before opening a pr
