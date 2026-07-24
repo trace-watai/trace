@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "1b387be087ff",
+  "session_id": "fe58e6de-906a-4dec-9f6a-bf82846cd6da",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-24T04:42:48.662343Z",
+  "branch": "trace-harness/tra-79-integrate-escalate-case",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/trace_harness/failure_bundles/generator.py",
+    "src/trace_harness/failure_bundles/schemas.py",
+    "tests/test_failure_bundle.py"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "04411c4dad58",
+  "checkpoint_transcript_start": 488,
+  "transcript_lines_at_start": 488,
+  "token_usage": {
+    "input_tokens": 36,
+    "cache_creation_tokens": 12398,
+    "cache_read_tokens": 3480406,
+    "output_tokens": 7180,
+    "api_call_count": 18
+  },
+  "session_metrics": {
+    "turn_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-24T04:42:48.649219Z",
+    "agent_lines": 31,
+    "agent_removed": 2,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 31,
+    "total_lines_changed": 33,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 377,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "CLAUDE.md": 377
+      }
+    }
+  ]
+}
