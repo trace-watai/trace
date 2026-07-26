@@ -13,7 +13,7 @@ interface LabeledBadgeProps extends Omit<ComponentProps<"span">, "children"> {
 
 /**
  * Coverage-style two-segment badge: a neutral label joined to a colored value
- * segment. The shared shape behind the severity and primary-cause badges so status 
+ * segment. The shared shape behind the severity and primary-cause badges so status
  * chips read consistently.
  */
 export const LabeledBadge = ({
