@@ -46,7 +46,10 @@ export const BlastRadiusSummary = ({
         (customersAffected.length >= CUSTOMER_LIST_COLLAPSE_THRESHOLD ? (
           <details className="group">
             <summary className="flex cursor-pointer list-none items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground">
-              <span aria-hidden className="transition-transform group-open:rotate-90">
+              <span
+                aria-hidden
+                className="transition-transform group-open:rotate-90"
+              >
                 ▸
               </span>
               {customersAffected.length} customers affected
@@ -72,8 +75,18 @@ interface CustomerBadgesProps {
 }
 
 /** The affected-customer name badges, shared by the inline and collapsed views. */
-const CustomerBadges = ({ customers, className, inline }: CustomerBadgesProps) => (
-  <div className={cn(!inline && "flex flex-wrap gap-1.5", inline && "contents", className)}>
+const CustomerBadges = ({
+  customers,
+  className,
+  inline,
+}: CustomerBadgesProps) => (
+  <div
+    className={cn(
+      !inline && "flex flex-wrap gap-1.5",
+      inline && "contents",
+      className,
+    )}
+  >
     {customers.map((customer) => (
       <Badge key={customer} variant="outline">
         {customer}
