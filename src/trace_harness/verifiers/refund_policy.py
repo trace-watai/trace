@@ -59,6 +59,7 @@ from trace_harness.verifiers.base import (
     VerifierResult,
     build_result,
 )
+from trace_harness.verifiers.severity_map import SEVERITY_MAP
 
 
 class RefundPolicyRules(BaseModel):
@@ -158,8 +159,17 @@ class RefundPolicyVerifier(Verifier):
         failed: list[FailedCheck] = []
         evidence: list[EvidenceItem] = []
 
+        # --- escalation check (runs defensively on raw dict before SupportState parse) ---
+        escalation_check = self._check_required_escalation(
+            task, input.final_state, trace,
+        )
+        if escalation_check is not None:
+            failed.append(escalation_check)
+
+        # Strip escalations before SupportState parse to avoid extra='forbid' validation error
+        state_dict = {k: v for k, v in input.final_state.items() if k != "escalations"}
         try:
-            state = SupportState.model_validate(input.final_state)
+            state = SupportState.model_validate(state_dict)
         except ValidationError as exc:
             raise ValueError(
                 f"final_state is not a valid SupportState; refund verification "
@@ -471,6 +481,47 @@ class RefundPolicyVerifier(Verifier):
             # Diagnosis-grade: the refund/ticket checks already block release;
             # this check explains the source error without double-blocking.
             blocks_release=False,
+        )
+
+    def _check_required_escalation(
+        self,
+        task: TaskSpec,
+        final_state_raw: dict[str, Any],
+        trace: list[TraceEvent],
+    ) -> FailedCheck | None:
+        """If the task says the agent should escalate, verify it did.
+
+        Reads values defensively from raw dicts to gracefully handle missing 
+        metadata or missing escalation arrays on older tasks.
+        """
+        if not task.metadata.get("requires_escalation", False):
+            return None
+        escalations = final_state_raw.get("escalations", [])
+        if escalations:
+            return None  # escalation exists → check passes
+
+        # Cite the final-answer step if available.
+        step_ids = [
+            e.step_id
+            for e in trace
+            if e.event_type is TraceEventType.FINAL_ANSWER and e.step_id is not None
+        ]
+        entry = SEVERITY_MAP["required_escalation_missing"]
+        return FailedCheck(
+            check_id="required_escalation_missing",
+            message="task requires escalation but no escalation was recorded in final state",
+            expected="agent escalates the case when task.metadata.requires_escalation is set",
+            actual="final_state contains no escalations",
+            step_ids=step_ids,
+            evidence=[
+                EvidenceItem(
+                    kind=EvidenceKind.ESCALATION_RECORD,
+                    description="no escalation found in final state",
+                    data={"escalations": [], "requires_escalation": True},
+                )
+            ],
+            severity=entry.severity,
+            blocks_release=entry.blocks_release,
         )
 
     def _check_final_answer_consistency(
