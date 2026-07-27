@@ -298,6 +298,7 @@ class FailureBundleGenerator:
         repair_package = self._build_repair_package(task, run_result, verifier_result)
         regression_artifact = materialize_regression_artifact(
             task=task,
+            trace=trace,
             verifier_result=verifier_result,
             initial_state=initial_state,
             run_id=run_result.run_id,
