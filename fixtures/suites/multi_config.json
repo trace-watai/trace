@@ -1,0 +1,19 @@
+{
+  "schema_version": "0.1.0",
+  "suite_id": "multi_config",
+  "description": "Demonstrates the agent-configuration sweep: one task run under two fixture configs. Proves the cross-product + per-agent aggregates without needing a real model (both fixture configs replay the same script, so they behave identically).",
+  "tasks": [
+    "fixtures/tasks/refund_policy_valid_cash.json"
+  ],
+  "agent_configs": [
+    {
+      "label": "fixture-a",
+      "provider": "fixture"
+    },
+    {
+      "label": "fixture-b",
+      "provider": "fixture",
+      "temperature": 0.7
+    }
+  ]
+}
