@@ -1,10 +1,13 @@
 {
   "schema_version": "0.1.0",
   "suite_id": "refund_v0",
-  "description": "Month-1 refund/support smoke suite: the staged failure and its positive sibling, run under the deterministic fixture agent.",
+  "description": "Canonical refund/support MVP suite: one staged harmful failure plus valid cash, store-credit, correct-refusal, and missing-information escalation outcomes under the deterministic fixture agent.",
   "tasks": [
     "fixtures/tasks/refund_policy_failure.json",
-    "fixtures/tasks/refund_policy_valid_cash.json"
+    "fixtures/tasks/refund_policy_valid_cash.json",
+    "fixtures/tasks/refund_policy_store_credit.json",
+    "fixtures/tasks/refund_policy_no_refund.json",
+    "fixtures/tasks/refund_policy_missing_info.json"
   ],
   "agent_configs": [
     {
