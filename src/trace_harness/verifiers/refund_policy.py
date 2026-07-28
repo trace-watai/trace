@@ -161,7 +161,9 @@ class RefundPolicyVerifier(Verifier):
 
         # --- escalation check (runs defensively on raw dict before SupportState parse) ---
         escalation_check = self._check_required_escalation(
-            task, input.final_state, trace,
+            task,
+            input.final_state,
+            trace,
         )
         if escalation_check is not None:
             failed.append(escalation_check)
@@ -491,7 +493,7 @@ class RefundPolicyVerifier(Verifier):
     ) -> FailedCheck | None:
         """If the task says the agent should escalate, verify it did.
 
-        Reads values defensively from raw dicts to gracefully handle missing 
+        Reads values defensively from raw dicts to gracefully handle missing
         metadata or missing escalation arrays on older tasks.
         """
         if not task.metadata.get("requires_escalation", False):
