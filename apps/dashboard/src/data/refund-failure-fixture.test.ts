@@ -35,6 +35,7 @@ describe("loadRefundFailureFixture", () => {
     expect(fixture.artifactNames).toEqual(ARTIFACT_NAMES);
     expect(fixture.taskSpec).toMatchObject({
       task_id: "refund_policy_failure",
+      title: "Refund request at 47 days (no approval, no outage)",
     });
     expect(fixture.runConfig).toMatchObject({
       task_id: "refund_policy_failure",

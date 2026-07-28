@@ -25,6 +25,7 @@ const HomePage = () => {
           <dl className="grid gap-x-6 gap-y-5 sm:grid-cols-2 lg:grid-cols-3">
             <SummaryField label="Run ID" value={runResult.runId} mono />
             <SummaryField label="Task" value={runResult.taskId} mono />
+            <SummaryField label="Task title" value={fixture.taskSpec.title} />
             <SummaryField
               label="Run status"
               value={`${runResult.status} · ${runResult.terminationReason.replaceAll("_", " ")}`}
@@ -37,6 +38,10 @@ const HomePage = () => {
             <SummaryField
               label="Severity"
               value={verifierResult.severity ?? "none"}
+            />
+            <SummaryField
+              label="Blast radius"
+              value={fixture.failureCard.blastRadius.summary}
             />
           </dl>
           <p className="mt-5 border-t pt-4 text-xs text-muted-foreground">

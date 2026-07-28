@@ -63,8 +63,14 @@ export const REFUND_FAILURE_ARTIFACT_NAMES = [
 
 type RawArtifactRecord = Record<string, unknown>;
 
+export interface RefundFailureTaskSpec extends RawArtifactRecord {
+  task_id: string;
+  title: string;
+  goal: string;
+}
+
 export interface RefundFailureFixture {
-  taskSpec: RawArtifactRecord;
+  taskSpec: RefundFailureTaskSpec;
   runConfig: RawArtifactRecord;
   initialState: RawArtifactRecord;
   finalState: RawArtifactRecord;
@@ -97,7 +103,7 @@ const loadTrace = (): TraceEvent[] => {
 };
 
 export const loadRefundFailureFixture = (): RefundFailureFixture => ({
-  taskSpec: rawTaskSpec as unknown as RawArtifactRecord,
+  taskSpec: rawTaskSpec as unknown as RefundFailureTaskSpec,
   runConfig: rawRunConfig as unknown as RawArtifactRecord,
   initialState: rawInitialState as unknown as RawArtifactRecord,
   finalState: rawFinalState as unknown as RawArtifactRecord,
