@@ -16,7 +16,7 @@
     "false_durable_record",
     "missed_recovery"
   ],
-  "causal_explanation": "At step 3 the agent committed to deprecated doc(s) ['refund_policy_v2'] as the operative policy, although retrieval had surfaced their status as deprecated. By step 4 the agent had observed order data contradicting its plan (no documented outage, no manager approval) and proceeded anyway \u2014 the missed recovery point. Step 5 executed the first irreversible external action (refund issued); from here the failure could no longer be self-corrected. Externally visible symptoms appear at step(s) [5, 6]: cash refund REF-0001 ($432.00) issued at 47 days without manager approval; ticket TICK-0001 records an outage claim, but the order shows no documented outage near purchase; deprecated doc(s) ['refund_policy_v2'] were cited as the basis for actions in a run that violated current policy. Verifier verdict: 3 failed check(s).",
+  "causal_explanation": "At step 3 the agent committed to deprecated doc(s) ['refund_policy_v2'] as the operative policy, although retrieval had surfaced their status as deprecated. By step 4 the agent had observed order data contradicting the prepared refund and proceeded anyway \u2014 the missed recovery point. Step 5 executed the first irreversible external action recorded by the trace; from here the failure could no longer be self-corrected. Externally visible symptoms appear at step(s) [5, 6]: cash refund REF-0001 ($432.00) issued at 47 days without manager approval; ticket TICK-0001 records an outage claim, but the order shows no documented outage near purchase. Verifier verdict: 4 failed check(s).",
   "evidence_step_ids": [
     3,
     4,

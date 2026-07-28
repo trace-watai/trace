@@ -1,9 +1,22 @@
 {
-  "schema_version": "0.2.0",
+  "schema_version": "0.3.0",
   "run_id": "run_20260101T000000Z_sample01",
   "task_id": "refund_policy_failure",
-  "summary": "4 control(s) addressing failed checks ['unauthorized_cash_refund', 'ticket_outage_claim_unsupported', 'deprecated_policy_treated_as_authoritative'] (severity: critical). Deterministic guardrails first; prompt fixes alone are not controls.",
+  "summary": "5 control(s) addressing failed checks ['required_escalation_missing', 'unauthorized_cash_refund', 'ticket_outage_claim_unsupported', 'deprecated_policy_treated_as_authoritative'] (severity: critical). Deterministic guardrails first; prompt fixes alone are not controls.",
   "controls": [
+    {
+      "name": "required_escalation_enforcement",
+      "installation_point": "trace_harness.environment.support_env.SupportEnvironment.execute \u2014 post-final-answer hook, before the run completes: verify an escalation record exists in state when task.metadata.requires_escalation is set",
+      "check": "if task.metadata.requires_escalation is true, require at least one entry in state.escalations before the run can complete successfully",
+      "behavior_on_failure": "block the final answer, return an observation telling the agent it must escalate the case before closing",
+      "expected_impact": "eliminates the required_escalation_missing failure class; tasks that require escalation cannot complete without the agent actually escalating",
+      "why_it_prevents_recurrence": "the escalation requirement is enforced at the environment level, so no model or prompt variation can bypass it",
+      "risk_or_tradeoff": "if requires_escalation metadata is missing or mis-set on a task, legitimate runs may be blocked; task authoring must set this flag deliberately",
+      "priority": "P0",
+      "linked_verifier_checks": [
+        "required_escalation_missing"
+      ]
+    },
     {
       "name": "deterministic_pre_call_refund_guardrail",
       "installation_point": "trace_harness.environment.support_env.SupportEnvironment.execute \u2014 between validation and dispatch for issue_refund (the seam is marked with a comment)",
@@ -53,6 +66,7 @@
       "risk_or_tradeoff": "regression suites grow; curation is needed so stale scenarios get retired deliberately rather than ignored",
       "priority": "P0",
       "linked_verifier_checks": [
+        "required_escalation_missing",
         "unauthorized_cash_refund",
         "ticket_outage_claim_unsupported",
         "deprecated_policy_treated_as_authoritative"
@@ -61,6 +75,7 @@
   ],
   "metadata": {
     "generated_from_checks": [
+      "required_escalation_missing",
       "unauthorized_cash_refund",
       "ticket_outage_claim_unsupported",
       "deprecated_policy_treated_as_authoritative"

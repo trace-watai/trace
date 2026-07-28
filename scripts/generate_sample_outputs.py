@@ -355,6 +355,7 @@ def generate_dashboard_fixture() -> None:
     print(f"[OK] Dashboard fixture -> {DASHBOARD_FIXTURE_DIR}")
     print(f"     run_id normalized to: {FIXTURE_RUN_ID}")
 
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

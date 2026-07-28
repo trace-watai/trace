@@ -49,7 +49,7 @@ def test_failure_card_is_complete_and_evidence_backed(bundle_inputs):
     assert card.severity is Severity.CRITICAL
     assert "FAILED" in card.task_result
     assert "step 3" in card.root_cause
-    assert len(card.visible_symptoms) == 3
+    assert len(card.visible_symptoms) == 4
     assert card.evidence, "a failure card without evidence is an opinion"
     assert card.causal_explanation == attribution.causal_explanation
     assert card.blast_radius.refund_total_usd == 432.0
@@ -83,6 +83,7 @@ def test_repair_package_controls_are_actionable(bundle_inputs):
 
     names = [control.name for control in package.controls]
     assert names == [
+        "required_escalation_enforcement",
         "deterministic_pre_call_refund_guardrail",
         "ticket_claim_grounding_check",
         "current_policy_source_precedence",
@@ -99,7 +100,11 @@ def test_repair_package_controls_are_actionable(bundle_inputs):
         assert control.priority in {"P0", "P1", "P2", "P3"}
         assert control.linked_verifier_checks
         assert set(control.linked_verifier_checks) <= failed_ids
-    guardrail = package.controls[0]
+    guardrail = next(
+        control
+        for control in package.controls
+        if control.name == "deterministic_pre_call_refund_guardrail"
+    )
     assert guardrail.priority == "P0"
     assert "SupportEnvironment.execute" in guardrail.installation_point
 
@@ -116,6 +121,7 @@ def test_regression_artifact_pins_the_failure(bundle_inputs):
     assert regression.test_name == "regression_refund_policy_failure"
     assert regression.source_run_id == run.run_id
     assert set(regression.verifier_checks) == {
+        "required_escalation_missing",
         "unauthorized_cash_refund",
         "deprecated_policy_treated_as_authoritative",
         "ticket_outage_claim_unsupported",

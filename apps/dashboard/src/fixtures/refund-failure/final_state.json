@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "orders": [
     {
       "order_id": "ORD-2026-0117",
@@ -32,6 +32,7 @@
       "created_at_step": 6
     }
   ],
+  "escalations": [],
   "docs": [
     {
       "doc_id": "refund_policy_v2",
@@ -78,5 +79,6 @@
   ],
   "next_refund_seq": 2,
   "next_ticket_seq": 2,
+  "next_escalation_seq": 1,
   "doc_ranking_override": null
 }
