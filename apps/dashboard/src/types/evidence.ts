@@ -12,6 +12,7 @@ export enum EvidenceKind {
   ORDER_RECORD = "order_record",
   REFUND_RECORD = "refund_record",
   TICKET_RECORD = "ticket_record",
+  ESCALATION_RECORD = "escalation_record",
   POLICY_RULES = "policy_rules",
   RETRIEVAL_PROVENANCE = "retrieval_provenance",
   PROVENANCE_QUOTE = "provenance_quote",

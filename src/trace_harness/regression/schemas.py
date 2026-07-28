@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 
 from trace_harness.tasks.schemas import Severity
 
-REGRESSION_SCHEMA_VERSION = "0.1.0"
+# 0.2.0: added pinned_agent_actions so the agent's moves are pinned alongside
+# the world they ran in (previously only state and docs were).
+REGRESSION_SCHEMA_VERSION = "0.2.0"
 
 
 class SiblingTest(BaseModel):
@@ -35,6 +37,11 @@ class RegressionArtifact(BaseModel):
     initial_state: dict[str, Any]
     # The exact docs (content + status + metadata) the failing run saw.
     pinned_docs: list[dict[str, Any]] = Field(default_factory=list)
+    # The agent's normalized moves as recorded in the trace, in order. Pinning
+    # these makes a replay reproducible even if the fixture script is edited
+    # later; empty on artifacts written before 0.2.0, which fall back to the
+    # script named in the task fixture.
+    pinned_agent_actions: list[dict[str, Any]] = Field(default_factory=list)
     expected_behavior: list[str] = Field(default_factory=list)
     forbidden_actions: list[str] = Field(default_factory=list)
     # Verifier check ids that must hold when this regression is replayed.

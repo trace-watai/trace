@@ -41,7 +41,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-TASK_SCHEMA_VERSION = "0.2.0"
+TASK_SCHEMA_VERSION = "0.3.0"
 
 
 class Severity(StrEnum):
@@ -183,6 +183,17 @@ class TaskSpec(BaseModel):
         description=(
             "Optional calibration label (easy/medium/hard) for suite balance and reporting; "
             "unset means not yet calibrated. Does not affect pass/fail."
+        ),
+    )
+    requires_escalation: bool = Field(
+        default=False,
+        description=(
+            "Whether a correct run must escalate to a human (via the escalate_case tool) rather "
+            "than resolve the case itself. When true, the verifier treats a run that issues no "
+            "refund AND records no escalation as a failure — this is what distinguishes a "
+            "missing-info / must-escalate task from a plain no-refund decline. Consumed by the "
+            "RefundPolicyVerifier's escalation check (owned with Karan); a task that sets this "
+            "must offer escalate_case in available_tools (enforced by the task-validity rubric)."
         ),
     )
     metadata: dict[str, Any] = Field(

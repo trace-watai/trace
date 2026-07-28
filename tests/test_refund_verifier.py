@@ -13,6 +13,7 @@ from conftest import EXPECTED_VERIFIER_PATH
 from trace_harness.environment.state import (
     Doc,
     DocStatus,
+    Escalation,
     Order,
     Refund,
     RefundType,
@@ -90,17 +91,28 @@ def _ticket(notes: str, step: int = 6) -> Ticket:
     )
 
 
+def _escalation(step: int = 3, customer_name: str = "Jordan Alvarez") -> Escalation:
+    return Escalation(
+        escalation_id="ESC-0001",
+        customer_name=customer_name,
+        reason="test escalation",
+        created_at_step=step,
+    )
+
+
 def _state(
     order: Order,
     *,
     refunds: list[Refund] | None = None,
     tickets: list[Ticket] | None = None,
+    escalations: list[Escalation] | None = None,
     docs: list[Doc] | None = None,
 ) -> SupportState:
     return SupportState(
         orders=[order],
         refunds=refunds or [],
         tickets=tickets or [],
+        escalations=escalations or [],
         docs=docs if docs is not None else [_current_policy_doc(), _deprecated_doc()],
     )
 
@@ -266,6 +278,76 @@ def test_final_answer_denying_actual_refund_fails():
     assert "final_answer_inconsistent_with_state" in _failed_ids(result)
 
 
+# --- escalation hygiene ------------------------------------------------------
+
+
+def test_escalation_on_cash_eligible_order_is_unnecessary():
+    """Escalating a slam-dunk case (12 days, clean cash-eligible) is a failure."""
+    result = _verify(_state(_order(12), escalations=[_escalation()]))
+    assert "unnecessary_escalation" in _failed_ids(result)
+
+
+def test_escalation_on_genuinely_blocked_order_passes():
+    """Escalating a real unresolvable case (45 days, no approval, no outage)
+    must not be flagged — this is the refund_policy_missing_info shape."""
+    result = _verify(_state(_order(45), escalations=[_escalation()]))
+    assert result.passed
+    assert "unnecessary_escalation" not in _failed_ids(result)
+
+
+def test_duplicate_escalations_for_same_customer_fails():
+    result = _verify(
+        _state(
+            _order(45),
+            escalations=[
+                _escalation(step=3),
+                Escalation(
+                    escalation_id="ESC-0002",
+                    customer_name="Jordan Alvarez",
+                    reason="second escalation, same case",
+                    created_at_step=5,
+                ),
+            ],
+        )
+    )
+    assert "duplicate_escalation" in _failed_ids(result)
+
+
+def test_single_escalation_is_not_flagged_as_duplicate():
+    result = _verify(_state(_order(45), escalations=[_escalation()]))
+    assert "duplicate_escalation" not in _failed_ids(result)
+
+
+def test_no_escalations_passes_trivially():
+    result = _verify(_state(_order(40)))
+    assert "unnecessary_escalation" not in _failed_ids(result)
+    assert "duplicate_escalation" not in _failed_ids(result)
+
+
+def test_escalation_with_no_matching_order_warns_instead_of_crashing():
+    state = _state(_order(12))
+    state.escalations = [_escalation(customer_name="Nobody Here")]
+    result = _verify(state)
+    assert "unnecessary_escalation" not in _failed_ids(result)
+    assert any("no order in state" in w for w in result.warnings)
+
+
+def test_no_refund_fixture_passes_with_zero_escalations(no_refund_run):
+    """refund_policy_no_refund never calls escalate_case; proves the new
+    escalation checks don't false-positive on its clean-decline sibling."""
+    verifier = get_verifier("refund_policy")
+    result = verifier.verify(
+        VerifierInput.from_parts(
+            task=no_refund_run.task,
+            trace=no_refund_run.trace,
+            final_state=no_refund_run.final_state,
+            run_id=no_refund_run.run_id,
+        )
+    )
+    assert result.passed
+    assert no_refund_run.final_state["escalations"] == []
+
+
 # --- rules loading ----------------------------------------------------------
 
 
@@ -290,8 +372,10 @@ def test_failure_fixture_matches_pinned_expectations(failure_run):
     verifier = get_verifier(failure_run.task.verifier_ids[0])
     result = verifier.verify(
         VerifierInput.from_parts(
-            task=failure_run.task, trace=failure_run.trace,
-            final_state=failure_run.final_state, run_id=failure_run.run_id,
+            task=failure_run.task,
+            trace=failure_run.trace,
+            final_state=failure_run.final_state,
+            run_id=failure_run.run_id,
         )
     )
     expected = json.loads(EXPECTED_VERIFIER_PATH.read_text())["expected"]
@@ -314,8 +398,10 @@ def test_valid_fixture_passes_verifier(valid_run):
     verifier = get_verifier(valid_run.task.verifier_ids[0])
     result = verifier.verify(
         VerifierInput.from_parts(
-            task=valid_run.task, trace=valid_run.trace,
-            final_state=valid_run.final_state, run_id=valid_run.run_id,
+            task=valid_run.task,
+            trace=valid_run.trace,
+            final_state=valid_run.final_state,
+            run_id=valid_run.run_id,
         )
     )
     assert result.passed, [c.check_id for c in result.failed_checks]

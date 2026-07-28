@@ -44,10 +44,10 @@ Defense in depth, not a single fix.
 
 ## Regression artifact (`regression_artifact.json`) — for CI
 
-The failure, pinned and rerunnable: initial state and docs *as the failing
-run saw them* (snapshots, not live fixtures — fixtures may evolve), the
-failed check ids as the assertion set, severity, `blocks_release`, a
-replay command, and **positive sibling tests**.
+The failure, pinned and rerunnable: initial state, docs, and the agent's
+actions *as the failing run saw and did them* (snapshots, not live fixtures —
+fixtures may evolve), the failed check ids as the assertion set, severity,
+`blocks_release`, a replay command, and **positive sibling tests**.
 
 Positive siblings are the anti-overblocking mechanism and they are
 mandatory in spirit: a fix for "unauthorized refund at 47 days" that also
@@ -55,9 +55,11 @@ blocks the legitimate 12-day refund is a new bug. The sibling
 (`refund_policy_valid_cash`) must keep passing in the same CI gate that
 replays the failure.
 
-MVP honesty: `replay_command` re-runs the originating fixture;
-`trace-harness replay <artifact>` (consuming the pinned state directly) is
-the named next step in the regression section of `docs/modules.md`.
+Two ways to rerun it, and they are not equivalent: the `replay_command`
+field is a plain `run-pipeline` on the originating fixture (whatever that
+fixture says *today*), while `trace-harness replay <artifact>` rebuilds the
+world from the pinned state and asserts the gate conditions. Prefer the
+latter in CI — see [regression_contract.md](regression_contract.md).
 
 ## Generation rules
 

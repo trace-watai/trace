@@ -190,6 +190,40 @@ def _control_regression_gate(checks: list[str]) -> RepairControl:
     )
 
 
+def _control_escalation_check(checks: list[str]) -> RepairControl:
+    return RepairControl(
+        name="required_escalation_enforcement",
+        installation_point=(
+            "trace_harness.environment.support_env.SupportEnvironment.execute — "
+            "post-final-answer hook, before the run completes: verify an escalation "
+            "record exists in state when task.metadata.requires_escalation is set"
+        ),
+        check=(
+            "if task.metadata.requires_escalation is true, require at least one "
+            "entry in state.escalations before the run can complete successfully"
+        ),
+        behavior_on_failure=(
+            "block the final answer, return an observation telling the agent it "
+            "must escalate the case before closing"
+        ),
+        expected_impact=(
+            "eliminates the required_escalation_missing failure class; tasks that "
+            "require escalation cannot complete without the agent actually escalating"
+        ),
+        why_it_prevents_recurrence=(
+            "the escalation requirement is enforced at the environment level, so "
+            "no model or prompt variation can bypass it"
+        ),
+        risk_or_tradeoff=(
+            "if requires_escalation metadata is missing or mis-set on a task, "
+            "legitimate runs may be blocked; task authoring must set this flag "
+            "deliberately"
+        ),
+        priority=ControlPriority.P0,
+        linked_verifier_checks=checks,
+    )
+
+
 def _control_answer_grounding(checks: list[str]) -> RepairControl:
     return RepairControl(
         name="final_answer_state_grounding_check",
@@ -236,6 +270,7 @@ _CONTROL_BUILDERS = {
     "deprecated_policy_treated_as_authoritative": _control_source_precedence,
     "ticket_outage_claim_unsupported": _control_ticket_grounding,
     "final_answer_inconsistent_with_state": _control_answer_grounding,
+    "required_escalation_missing": _control_escalation_check,
 }
 
 
@@ -263,6 +298,7 @@ class FailureBundleGenerator:
         repair_package = self._build_repair_package(task, run_result, verifier_result)
         regression_artifact = materialize_regression_artifact(
             task=task,
+            trace=trace,
             verifier_result=verifier_result,
             initial_state=initial_state,
             run_id=run_result.run_id,
@@ -351,17 +387,21 @@ class FailureBundleGenerator:
             return BlastRadius(summary="final state not parseable as SupportState")
         refund_total = sum(r.amount_usd for r in state.refunds)
         customers = sorted(
-            {r.customer_name for r in state.refunds} | {t.customer_name for t in state.tickets}
+            {r.customer_name for r in state.refunds}
+            | {t.customer_name for t in state.tickets}
+            | {e.customer_name for e in state.escalations}
         )
         summary = (
             f"{len(state.refunds)} refund(s) totalling ${refund_total:.2f} issued; "
             f"{len(state.tickets)} durable ticket record(s) created; "
+            f"{len(state.escalations)} escalation(s) opened; "
             f"{len(customers)} customer(s) affected ({', '.join(customers) or 'none'})"
         )
         return BlastRadius(
             refund_count=len(state.refunds),
             refund_total_usd=refund_total,
             ticket_count=len(state.tickets),
+            escalation_count=len(state.escalations),
             customers_affected=customers,
             summary=summary,
         )

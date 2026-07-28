@@ -15,8 +15,10 @@ from trace_harness.verifiers.registry import get_verifier
 def bundle_inputs(failure_run):
     verifier_result = get_verifier(failure_run.task.verifier_ids[0]).verify(
         VerifierInput.from_parts(
-            task=failure_run.task, trace=failure_run.trace,
-            final_state=failure_run.final_state, run_id=failure_run.run_id,
+            task=failure_run.task,
+            trace=failure_run.trace,
+            final_state=failure_run.final_state,
+            run_id=failure_run.run_id,
         )
     )
     attribution = HeuristicAttributor().attribute(
@@ -47,7 +49,7 @@ def test_failure_card_is_complete_and_evidence_backed(bundle_inputs):
     assert card.severity is Severity.CRITICAL
     assert "FAILED" in card.task_result
     assert "step 3" in card.root_cause
-    assert len(card.visible_symptoms) == 3
+    assert len(card.visible_symptoms) == 4
     assert card.evidence, "a failure card without evidence is an opinion"
     assert card.causal_explanation == attribution.causal_explanation
     assert card.blast_radius.refund_total_usd == 432.0
@@ -81,6 +83,7 @@ def test_repair_package_controls_are_actionable(bundle_inputs):
 
     names = [control.name for control in package.controls]
     assert names == [
+        "required_escalation_enforcement",
         "deterministic_pre_call_refund_guardrail",
         "ticket_claim_grounding_check",
         "current_policy_source_precedence",
@@ -97,7 +100,11 @@ def test_repair_package_controls_are_actionable(bundle_inputs):
         assert control.priority in {"P0", "P1", "P2", "P3"}
         assert control.linked_verifier_checks
         assert set(control.linked_verifier_checks) <= failed_ids
-    guardrail = package.controls[0]
+    guardrail = next(
+        control
+        for control in package.controls
+        if control.name == "deterministic_pre_call_refund_guardrail"
+    )
     assert guardrail.priority == "P0"
     assert "SupportEnvironment.execute" in guardrail.installation_point
 
@@ -114,6 +121,7 @@ def test_regression_artifact_pins_the_failure(bundle_inputs):
     assert regression.test_name == "regression_refund_policy_failure"
     assert regression.source_run_id == run.run_id
     assert set(regression.verifier_checks) == {
+        "required_escalation_missing",
         "unauthorized_cash_refund",
         "deprecated_policy_treated_as_authoritative",
         "ticket_outage_claim_unsupported",
@@ -143,8 +151,10 @@ def test_bundle_refuses_passing_runs(valid_run):
 
     verifier_result = get_verifier(valid_run.task.verifier_ids[0]).verify(
         VerifierInput.from_parts(
-            task=valid_run.task, trace=valid_run.trace,
-            final_state=valid_run.final_state, run_id=valid_run.run_id,
+            task=valid_run.task,
+            trace=valid_run.trace,
+            final_state=valid_run.final_state,
+            run_id=valid_run.run_id,
         )
     )
     assert verifier_result.passed
@@ -158,6 +168,30 @@ def test_bundle_refuses_passing_runs(valid_run):
             final_state=valid_run.final_state,
             initial_state=valid_run.initial_state,
         )
+
+
+def test_blast_radius_reports_escalation_only_runs(failure_run):
+    """TRA-79: an escalation-only final state must not read as 'nothing happened'."""
+    final_state = dict(failure_run.initial_state)
+    final_state["refunds"] = []
+    final_state["tickets"] = []
+    final_state["escalations"] = [
+        {
+            "escalation_id": "ESC-0001",
+            "customer_name": "Jordan Blake",
+            "reason": "unverified manager approval claim",
+            "created_at_step": 3,
+        }
+    ]
+
+    blast_radius = FailureBundleGenerator()._blast_radius(final_state)
+
+    assert blast_radius.escalation_count == 1
+    assert blast_radius.refund_count == 0
+    assert blast_radius.ticket_count == 0
+    assert blast_radius.customers_affected == ["Jordan Blake"]
+    assert "1 escalation(s) opened" in blast_radius.summary
+    assert "1 customer(s) affected" in blast_radius.summary
 
 
 # --- review-hardening regressions -------------------------------------------

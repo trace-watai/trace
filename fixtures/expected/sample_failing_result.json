@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.2.0",
+  "schema_version": "0.3.0",
   "verifier_id": "refund_policy",
   "run_id": "run_fail_001",
   "passed": false,
