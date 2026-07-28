@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Generate sample passing and failing VerifierResult JSON artifacts.
+"""Generate static sample artifacts for tests and dashboard offline rendering.
 
-These files are the TRA-16 deliverable: concrete examples that downstream
-consumers (Darrel/attribution, Skye/dashboard, Samir/regression) can build
-against without reading verifier source code.
+TRA-16: sample_passing_result.json / sample_failing_result.json
+TRA-73: full refund-failure run bundle at apps/dashboard/src/fixtures/refund-failure/
 
 Usage (from repo root):
     python scripts/generate_sample_outputs.py
@@ -11,12 +10,15 @@ Usage (from repo root):
 Outputs:
     fixtures/expected/sample_passing_result.json
     fixtures/expected/sample_failing_result.json
+    apps/dashboard/src/fixtures/refund-failure/*
 """
 
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from trace_harness.environment.state import (
     Doc,
@@ -39,6 +41,7 @@ OUTPUT_DIR = REPO_ROOT / "fixtures" / "expected"
 # ---------------------------------------------------------------------------
 # Shared builders (mirrors the test helpers, kept self-contained here)
 # ---------------------------------------------------------------------------
+
 
 def _current_policy_doc() -> Doc:
     return Doc(
@@ -89,6 +92,7 @@ def _task() -> TaskSpec:
 # Scenario 1: PASSING — agent issues a valid cash refund within 30 days
 # ---------------------------------------------------------------------------
 
+
 def build_passing_scenario() -> dict:
     order = Order(
         order_id="ORD-2001",
@@ -131,7 +135,10 @@ def build_passing_scenario() -> dict:
     verifier = RefundPolicyVerifier()
     result = verifier.verify(
         VerifierInput.from_parts(
-            task=_task(), trace=trace, final_state=state.snapshot(), run_id="run_pass_001",
+            task=_task(),
+            trace=trace,
+            final_state=state.snapshot(),
+            run_id="run_pass_001",
         )
     )
     return json.loads(result.model_dump_json(indent=2))
@@ -142,6 +149,7 @@ def build_passing_scenario() -> dict:
 #              without manager approval, cites deprecated policy, and creates
 #              a ticket with an unsupported outage claim.
 # ---------------------------------------------------------------------------
+
 
 def build_failing_scenario() -> dict:
     order = Order(
@@ -208,11 +216,7 @@ def build_failing_scenario() -> dict:
             run_id="run_fail_001",
             step_id=5,
             event_type=TraceEventType.MODEL_ACTION,
-            payload={
-                "reasoning": (
-                    "Based on refund_policy_v2, issuing cash refund now."
-                )
-            },
+            payload={"reasoning": ("Based on refund_policy_v2, issuing cash refund now.")},
         ),
         # Tool call to issue the refund
         TraceEvent(
@@ -246,7 +250,10 @@ def build_failing_scenario() -> dict:
     verifier = RefundPolicyVerifier()
     result = verifier.verify(
         VerifierInput.from_parts(
-            task=_task(), trace=trace, final_state=state.snapshot(), run_id="run_fail_001",
+            task=_task(),
+            trace=trace,
+            final_state=state.snapshot(),
+            run_id="run_fail_001",
         )
     )
     return json.loads(result.model_dump_json(indent=2))
@@ -256,6 +263,99 @@ def build_failing_scenario() -> dict:
 # Main
 # ---------------------------------------------------------------------------
 
+DASHBOARD_FIXTURE_DIR = REPO_ROOT / "apps" / "dashboard" / "src" / "fixtures" / "refund-failure"
+DASHBOARD_TASKS_PATH = REPO_ROOT / "fixtures" / "tasks" / "refund_policy_failure.json"
+FIXTURE_RUN_ID = "run_20260101T000000Z_sample01"
+FIXTURE_STARTED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+DASHBOARD_ARTIFACTS = (
+    "attribution_result.json",
+    "failure_card.json",
+    "final_state.json",
+    "initial_state.json",
+    "regression_artifact.json",
+    "repair_package.json",
+    "run_config.json",
+    "run_result.json",
+    "task_spec.json",
+    "trace.jsonl",
+    "verifier_result.json",
+)
+
+
+def _replace_run_id(value: Any, real_run_id: str) -> Any:
+    """Replace the generated run id recursively without touching unrelated text."""
+    if isinstance(value, dict):
+        return {key: _replace_run_id(item, real_run_id) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_run_id(item, real_run_id) for item in value]
+    if isinstance(value, str):
+        return value.replace(real_run_id, FIXTURE_RUN_ID)
+    return value
+
+
+def _fixture_timestamp(offset: timedelta = timedelta()) -> str:
+    return (FIXTURE_STARTED_AT + offset).isoformat().replace("+00:00", "Z")
+
+
+def _normalize_artifact(artifact: Path, real_run_id: str) -> str:
+    """Return stable artifact text with generated ids and timestamps normalized."""
+    if artifact.suffix == ".jsonl":
+        normalized_lines = []
+        for index, line in enumerate(artifact.read_text(encoding="utf-8").splitlines()):
+            event = _replace_run_id(json.loads(line), real_run_id)
+            event["timestamp"] = _fixture_timestamp(timedelta(microseconds=index))
+            normalized_lines.append(json.dumps(event, separators=(",", ":")))
+        return "\n".join(normalized_lines) + "\n"
+
+    data = _replace_run_id(json.loads(artifact.read_text(encoding="utf-8")), real_run_id)
+    if artifact.name == "run_result.json":
+        data["started_at"] = _fixture_timestamp()
+        data["finished_at"] = _fixture_timestamp(timedelta(seconds=1))
+        # The dashboard bundle is flat, unlike runs/{run_id}/. Keep these paths
+        # resolvable relative to the fixture directory for offline loaders.
+        data["artifact_paths"] = {
+            name: Path(path).name for name, path in data["artifact_paths"].items()
+        }
+    return json.dumps(data, indent=2) + "\n"
+
+
+def generate_dashboard_fixture() -> None:
+    """Run the full refund-failure pipeline and commit the artifacts for dashboard offline use.
+
+    Produces a deterministic bundle at apps/dashboard/src/fixtures/refund-failure/ by running
+    run-pipeline in a temp dir, then normalizing the run_id to a stable sentinel value so the
+    fixture never changes across re-runs (only schema changes should update it).
+    """
+    import tempfile
+
+    from trace_harness.cli import main as cli_main
+
+    with tempfile.TemporaryDirectory(prefix="trace_fixture_gen_") as tmp:
+        runs_dir = Path(tmp) / "runs"
+        rc = cli_main(["--runs-dir", str(runs_dir), "run-pipeline", str(DASHBOARD_TASKS_PATH)])
+        if rc != 0:
+            raise RuntimeError(f"run-pipeline exited {rc}")
+
+        run_dirs = sorted(p for p in runs_dir.iterdir() if p.is_dir())
+        if not run_dirs:
+            raise RuntimeError("no run directory produced")
+        src_dir = run_dirs[0]
+        real_run_id = src_dir.name
+
+        DASHBOARD_FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+
+        for artifact_name in DASHBOARD_ARTIFACTS:
+            artifact = src_dir / artifact_name
+            if not artifact.is_file():
+                raise RuntimeError(f"run-pipeline did not produce {artifact_name}")
+            dst = DASHBOARD_FIXTURE_DIR / artifact.name
+            dst.write_text(_normalize_artifact(artifact, real_run_id), encoding="utf-8")
+            print(f"  [OK] {artifact.name}")
+
+    print(f"[OK] Dashboard fixture -> {DASHBOARD_FIXTURE_DIR}")
+    print(f"     run_id normalized to: {FIXTURE_RUN_ID}")
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -263,18 +363,24 @@ def main():
     passing_path = OUTPUT_DIR / "sample_passing_result.json"
     passing_path.write_text(json.dumps(passing, indent=2) + "\n")
     print(f"[OK] Passing result -> {passing_path}")
-    print(f"     passed={passing['passed']}, "
-          f"failed_checks={len(passing['failed_checks'])}, "
-          f"warnings={len(passing['warnings'])}")
+    print(
+        f"     passed={passing['passed']}, "
+        f"failed_checks={len(passing['failed_checks'])}, "
+        f"warnings={len(passing['warnings'])}"
+    )
 
     failing = build_failing_scenario()
     failing_path = OUTPUT_DIR / "sample_failing_result.json"
     failing_path.write_text(json.dumps(failing, indent=2) + "\n")
     print(f"[OK] Failing result -> {failing_path}")
-    print(f"     passed={failing['passed']}, "
-          f"failed_checks={len(failing['failed_checks'])}, "
-          f"warnings={len(failing['warnings'])}")
+    print(
+        f"     passed={failing['passed']}, "
+        f"failed_checks={len(failing['failed_checks'])}, "
+        f"warnings={len(failing['warnings'])}"
+    )
     print(f"     check_ids: {[c['check_id'] for c in failing['failed_checks']]}")
+
+    generate_dashboard_fixture()
 
 
 if __name__ == "__main__":

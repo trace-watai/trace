@@ -18,7 +18,7 @@ from trace_harness.attribution.schemas import FailureCategory
 from trace_harness.tasks.schemas import Severity
 from trace_harness.verifiers.base import EvidenceItem
 
-FAILURE_CARD_SCHEMA_VERSION = "0.3.0"
+FAILURE_CARD_SCHEMA_VERSION = "0.4.0"  # 0.4.0: BlastRadius gained escalation_count
 REPAIR_PACKAGE_SCHEMA_VERSION = "0.3.0"
 
 
@@ -32,6 +32,7 @@ class BlastRadius(BaseModel):
     refund_count: int = 0
     refund_total_usd: float = 0.0
     ticket_count: int = 0
+    escalation_count: int = 0
     customers_affected: list[str] = Field(default_factory=list)
     # Pre-formatted summary for plain-text display (PR comments, CLI output).
     summary: str = ""

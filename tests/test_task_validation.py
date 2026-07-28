@@ -103,3 +103,20 @@ def test_failure_mode_outside_taxonomy_warns() -> None:
 def test_taxonomy_failure_mode_does_not_warn() -> None:
     task = TaskSpec(**{**_good_kwargs(), "targeted_failure_modes": ["stale_source_authority"]})
     assert "unknown_failure_mode" not in {i.code for i in validate_task(task)}
+
+
+def test_requires_escalation_without_escalate_case_tool_is_error() -> None:
+    # available_tools has get_order + issue_refund but not escalate_case.
+    task = TaskSpec(**{**_good_kwargs(), "requires_escalation": True})
+    assert "requires_escalation_without_tool" in {i.code for i in errors(validate_task(task))}
+
+
+def test_requires_escalation_with_escalate_case_tool_is_clean() -> None:
+    task = TaskSpec(
+        **{
+            **_good_kwargs(),
+            "requires_escalation": True,
+            "available_tools": ["get_order", "escalate_case"],
+        }
+    )
+    assert "requires_escalation_without_tool" not in {i.code for i in validate_task(task)}

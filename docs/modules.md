@@ -229,19 +229,22 @@ across bundles (same root cause in N runs → one card, not N).
 rerunnable `RegressionArtifact`s.
 
 **Exposes:** `materialize_regression_artifact(...)`;
-`RegressionArtifact`/`SiblingTest`.
+`RegressionArtifact`/`SiblingTest`; `pinned_initial_state(...)` /
+`describe_state_drift(...)` (`replay.py`) — the pinned world a
+`trace-harness replay` run rebuilds, and how it differs from the fixture's
+world today.
 
-**Rules:** pin the run's *recorded* state and docs (snapshots, not live
-fixtures — fixtures may evolve). Failed check ids are the assertion set.
+**Rules:** pin the run's *recorded* state, docs, and agent actions (snapshots
+from the trace, not live fixtures — fixtures may evolve) and replay from
+those, not from the files. Failed check ids are the assertion set.
 `positive_sibling_tests` (from task metadata) are mandatory in spirit — a
 fix that breaks the sibling is overblocking. This loop is TRACE's
 differentiation over pure attribution (see
 [AGENTRX_TRACE_SUMMARY.md](AGENTRX_TRACE_SUMMARY.md)).
 
-**Build next:** `trace-harness replay <regression_artifact.json>` that
-runs directly from pinned state; a CI collector that executes every
-blocking regression plus its positive siblings; a promotion flow (run
-artifact → reviewed → committed fixture).
+**Build next:** a CI collector that executes every blocking regression plus
+its positive siblings; a promotion flow (run artifact → reviewed → committed
+fixture); pin sibling state too (today siblings run from their live fixtures).
 
 ---
 

@@ -2,7 +2,7 @@
  * Regression-artifact data contract.
  *
  * Mirrors `RegressionArtifact` in `src/trace_harness/regression/schemas.py`
- * (REGRESSION_SCHEMA_VERSION 0.1.0), serialized as `regression_artifact.json`.
+ * (REGRESSION_SCHEMA_VERSION 0.2.0), serialized as `regression_artifact.json`.
  *
  * Pins everything needed to re-test a failure class later: the task, initial
  * state, the exact docs the agent saw, the checks that must hold, and a replay
@@ -13,7 +13,7 @@
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 import type { Severity } from "@/types/severity";
 
-export const REGRESSION_SCHEMA_VERSION = "0.1.0";
+export const REGRESSION_SCHEMA_VERSION = "0.2.0";
 
 /**
  * Wire shape of a positive companion scenario that must continue to pass,
@@ -44,6 +44,8 @@ export interface RawRegressionArtifact {
   initial_state: Record<string, unknown>;
   /** The exact docs (content + status + metadata) the failing run saw. */
   pinned_docs: Record<string, unknown>[];
+  /** Normalized model actions replayed independently of mutable script files. */
+  pinned_agent_actions: Record<string, unknown>[];
   expected_behavior: string[];
   forbidden_actions: string[];
   /** Verifier check ids that must hold when this regression is replayed. */
