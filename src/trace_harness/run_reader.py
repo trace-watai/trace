@@ -24,16 +24,15 @@ Missing-artifact states are explicit:
     existing run dir (run_result/task/trace)       ArtifactStore.read_json,
                                                     with its stage guidance
 
-``RunSummary`` intentionally mirrors the (currently orphaned, TRA-54) run-index
-entry field-for-field, so when the run index re-lands ``list_runs`` can read it
-instead of scanning, with no change for callers.
+``list_runs`` reads one run-index file instead of one artifact per run and
+includes the verifier verdict when the verify stage has run.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from trace_harness.attribution.schemas import AttributionResult
 from trace_harness.failure_bundles.generator import FailureBundle
@@ -44,6 +43,7 @@ from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEvent
+from trace_harness.tracing.run_index import RunIndexEntry
 from trace_harness.verifiers.base import VerifierResult
 
 
@@ -56,11 +56,11 @@ class RunNotFound(FileNotFoundError):
 
 
 class RunSummary(BaseModel):
-    """One-line summary of a finished run, projected from its ``RunResult``.
+    """One-line summary of a finished run for listing.
 
-    Fields mirror the orphaned TRA-54 ``RunIndexEntry`` so a re-landed index is
-    wire-compatible. ``status``/``termination_reason`` are plain strings (the
-    source uses StrEnums; the value on the wire is identical).
+    ``status``/``termination_reason`` are plain strings (the source uses
+    StrEnums; the value on the wire is identical). ``verifier_passed`` and
+    ``failed_check_count`` are ``None`` until the verify stage has run.
     """
 
     run_id: str
@@ -71,6 +71,8 @@ class RunSummary(BaseModel):
     started_at: str
     finished_at: str
     error: str | None = None
+    verifier_passed: bool | None = None
+    failed_check_count: int | None = None
 
     @classmethod
     def from_result(cls, result: RunResult) -> RunSummary:
@@ -83,6 +85,21 @@ class RunSummary(BaseModel):
             started_at=result.started_at.isoformat(),
             finished_at=result.finished_at.isoformat(),
             error=result.error,
+        )
+
+    @classmethod
+    def from_entry(cls, entry: RunIndexEntry) -> RunSummary:
+        return cls(
+            run_id=entry.run_id,
+            task_id=entry.task_id,
+            status=entry.status,
+            termination_reason=entry.termination_reason,
+            steps_taken=entry.steps_taken,
+            started_at=entry.started_at.isoformat(),
+            finished_at=entry.finished_at.isoformat(),
+            error=entry.error,
+            verifier_passed=entry.verifier_passed,
+            failed_check_count=entry.failed_check_count,
         )
 
 
@@ -101,19 +118,20 @@ class RunReader:
     def list_runs(self) -> list[RunSummary]:
         """Summaries of every listable run, oldest-first (chronological).
 
-        A run directory without a parseable ``run_result.json`` (e.g. a run that
-        crashed before writing its result) is skipped rather than failing the
-        whole listing. When the TRA-54 run index re-lands this can read it
-        instead of scanning every directory.
+        Reads one run-index file and includes the verifier verdict when the
+        verify stage has run. A cheap directory/stat reconciliation detects
+        missing or stale entries and rebuilds from source artifacts.
         """
-        summaries: list[RunSummary] = []
-        for run_id in self.store.list_runs():
-            try:
-                result = RunResult.model_validate(self.store.read_json(run_id, names.RUN_RESULT))
-            except (FileNotFoundError, ValidationError):
-                continue
-            summaries.append(RunSummary.from_result(result))
-        return summaries
+        index = self.store.read_index()
+        listable_run_ids = {
+            run_id
+            for run_id in self.store.list_runs()
+            if self.store.exists(run_id, names.RUN_RESULT)
+        }
+        indexed_run_ids = {entry.run_id for entry in index.entries}
+        if indexed_run_ids != listable_run_ids:
+            index = self.store.rebuild_index()
+        return [RunSummary.from_entry(entry) for entry in index.entries]
 
     # --- single run ---
 

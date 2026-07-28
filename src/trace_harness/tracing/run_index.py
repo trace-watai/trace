@@ -1,13 +1,10 @@
 """RunIndex: a runs-dir-level summary so consumers can list runs cheaply.
 
-One entry per run, denormalized from each run's ``run_result.json``. The index
-is a *derived convenience* — it can always be rebuilt by scanning the run
-directories (see :meth:`ArtifactStore.rebuild_index`), so a missing or corrupt
-index is recoverable, never fatal.
-
-Scope: this captures how a run *ended* (status/termination), not whether it was
-*correct*. Correctness is the verifier's verdict in ``verifier_result.json``,
-written by a later stage; folding it in here is a follow-up (TRA-20).
+One entry per run, denormalized from each run's ``run_result.json`` and (when
+available) its ``verifier_result.json``. The index is a *derived convenience*
+— it can always be rebuilt by scanning the run directories (see
+:meth:`ArtifactStore.rebuild_index`), so a missing or corrupt index is
+recoverable, never fatal.
 """
 
 from __future__ import annotations
@@ -20,7 +17,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from trace_harness.runner.result import RunResult
 
-RUN_INDEX_SCHEMA_VERSION = "0.1.0"
+RUN_INDEX_SCHEMA_VERSION = "0.2.0"
 
 
 class RunIndexEntry(BaseModel):
@@ -29,6 +26,10 @@ class RunIndexEntry(BaseModel):
     ``status``/``termination_reason`` are plain strings (RunResult uses StrEnums)
     so the index stays decoupled from the runner module — the values are
     identical on the wire.
+
+    ``verifier_passed``/``failed_check_count`` are populated by
+    :meth:`ArtifactStore.enrich_index_entry_with_verifier` after the verify
+    stage runs; they are ``None`` until then.
     """
 
     run_id: str
@@ -39,6 +40,8 @@ class RunIndexEntry(BaseModel):
     started_at: datetime
     finished_at: datetime
     error: str | None = None
+    verifier_passed: bool | None = None
+    failed_check_count: int | None = None
 
     @classmethod
     def from_result(cls, result: RunResult) -> RunIndexEntry:

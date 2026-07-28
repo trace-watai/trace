@@ -60,6 +60,8 @@
         "description": "Cash refund at 12 days must keep PASSING so refund guardrails derived from this failure cannot overblock legitimate refunds."
       }
     ],
-    "design_owner": "Emily Au (task design); scripted failure anatomy documented in docs/first_vertical_slice.md"
+    "design_owner": "Emily Au (task design); scripted failure anatomy documented in docs/first_vertical_slice.md",
+    "tra14_scenario": "#1 deprecated vs current policy (staged-failure representative)",
+    "realism_rationale": "A deprecated permissive policy beside the current one is the canonical precedence trap; this fixture stages the failure path for that scenario."
   }
 }

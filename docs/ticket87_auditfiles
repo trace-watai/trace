@@ -1,0 +1,198 @@
+# Run Index and RunReader Integration Audit Notes
+
+## 1. Run Discovery
+
+**Code path:** `ArtifactStore.list_runs()`
+
+### Current behavior
+
+- Scans the `runs/` directory for subdirectories.
+- Returns run IDs sorted lexicographically (chronological order because run IDs contain timestamps).
+- Returns an empty list if the `runs/` directory does not exist.
+
+### Missing-state behavior
+
+- Does not verify that discovered directories contain valid run artifacts.
+- Any directory is initially considered a potential run.
+
+### Risk
+
+Invalid or partially created directories may be discovered initially, although later stages filter out directories without `run_result.json`.
+
+---
+
+## 2. Run Index Loading
+
+**Code path:** `ArtifactStore.read_index()`
+
+### Current behavior
+
+- Reads `runs/index.json`.
+- Validates the file as a `RunIndex`.
+
+### Recovery behavior
+
+- Missing index → returns an empty `RunIndex`.
+- Corrupt or invalid JSON → rebuilds the index.
+- Schema version mismatch → rebuilds the index.
+
+### Assessment
+
+The run index is treated as a rebuildable cache rather than the primary source of truth. Corruption or deletion does not permanently remove run history.
+
+---
+
+## 3. Run Index Updates
+
+**Code path:** `ArtifactStore.upsert_index_entry()`
+
+### Current behavior
+
+- Reads the existing index.
+- Removes any existing entry with the same `run_id`.
+- Inserts the updated entry.
+- Sorts entries chronologically by `run_id`.
+- Writes the updated index atomically.
+
+### Assessment
+
+Duplicate entries are prevented while maintaining deterministic ordering.
+
+---
+
+## 4. Verifier Result Enrichment
+
+**Code path:** `ArtifactStore.enrich_index_entry_with_verifier()`
+
+### Current behavior
+
+When `verifier_result.json` exists, the corresponding run index entry is updated with:
+
+- `verifier_passed`
+- `failed_check_count`
+
+If the index entry is missing, it is reconstructed from `run_result.json` before enrichment.
+
+### Missing-state behavior
+
+The method safely exits when:
+
+- `verifier_result.json` is missing.
+- `run_result.json` is missing.
+- Validation fails.
+- Required verifier fields are malformed.
+
+### Assessment
+
+Verifier metadata is added without creating a runtime dependency between the tracing and verifier modules.
+
+---
+
+## 5. Run Index Rebuilding
+
+**Code path:** `ArtifactStore.rebuild_index()`
+
+### Current behavior
+
+The index is rebuilt by scanning run directories.
+
+A run is included only if:
+
+- The directory exists.
+- `run_result.json` exists.
+- `run_result.json` successfully validates.
+
+If `verifier_result.json` exists, the rebuilt entry is enriched with verifier information.
+
+### Missing-state behavior
+
+- Runs without `run_result.json` are skipped.
+- Invalid run results are skipped.
+- Invalid verifier results do not prevent the run from being indexed.
+
+### Assessment
+
+The run index can always be reconstructed from canonical run artifacts.
+
+---
+
+# RunReader Integration
+
+## 6. Run Listing
+
+**Code path:** `RunReader.list_runs()`
+
+### Current flow
+
+1. Read `index.json`.
+2. Scan the run directories.
+3. Keep only directories containing `run_result.json`.
+4. Compare directory run IDs against indexed run IDs.
+5. Rebuild the index if they differ.
+6. Return `RunSummary` objects generated from index entries.
+
+### Assessment
+
+RunReader now uses the run index as its primary read path.
+
+A lightweight reconciliation step automatically detects:
+
+- Missing index entries.
+- Stale index entries.
+- Newly completed runs.
+- Deleted runs.
+
+Only finalized runs containing `run_result.json` are returned.
+
+This confirms that the earlier architectural migration from directory scanning to index-backed run listing has been implemented.
+
+---
+
+## 7. Single Run Retrieval
+
+### Required artifacts
+
+The following methods require the run to exist and return validated models:
+
+- `get_run()`
+- `get_task()`
+- `get_trace()`
+
+### Optional artifacts
+
+The following methods return `None` when the artifact is absent:
+
+- `get_verifier()`
+- `get_attribution()`
+
+### Failure bundle behavior
+
+`get_bundle()` returns `None` if the bundle has not been created.
+
+If one bundle artifact exists but another is missing, an error is raised rather than silently returning a partial bundle.
+
+### Assessment
+
+The reader correctly distinguishes between:
+
+- A missing run.
+- An optional stage that has not executed.
+- A partially written bundle.
+
+---
+
+# Preliminary Conclusion
+
+The previously planned RunReader/run-index integration has been completed.
+
+Current implementation provides:
+
+- Index-backed run discovery.
+- Automatic index rebuilding.
+- Verifier verdict enrichment.
+- Filtering of incomplete runs.
+- Typed `RunSummary` objects.
+- Explicit handling of optional artifacts.
+- Detection of partially written bundles.
+
+

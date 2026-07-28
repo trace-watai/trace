@@ -33,7 +33,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from trace_harness.environment.retrieval import RetrievedChunk, search_docs
-from trace_harness.environment.state import DocStatus, Refund, RefundType, SupportState, Ticket
+from trace_harness.environment.state import (
+    DocStatus,
+    Escalation,
+    Refund,
+    RefundType,
+    SupportState,
+    Ticket,
+)
 from trace_harness.models.base import ToolSpec
 
 
@@ -91,6 +98,13 @@ class CreateTicketArgs(BaseModel):
     customer_name: str
     title: str
     notes: str
+
+
+class EscalateCaseArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    customer_name: str
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -217,8 +231,25 @@ def _create_ticket_handler(state: SupportState, args: BaseModel, step_id: int | 
     )
 
 
+def _escalate_case_handler(state: SupportState, args: BaseModel, step_id: int | None) -> ToolResult:
+    assert isinstance(args, EscalateCaseArgs)
+    escalation = Escalation(
+        escalation_id=f"ESC-{state.next_escalation_seq:04d}",
+        customer_name=args.customer_name,
+        reason=args.reason,
+        created_at_step=step_id,
+    )
+    state.next_escalation_seq += 1
+    state.escalations.append(escalation)
+    return ToolResult(
+        tool_name="escalate_case",
+        status="ok",
+        result={"escalation_id": escalation.escalation_id, "status": "escalated"},
+    )
+
+
 def support_tool_definitions() -> list[ToolDefinition]:
-    """The four tools of the support/refund vertical slice."""
+    """The five tools of the support/refund vertical slice."""
     return [
         ToolDefinition(
             name="search_docs",
@@ -261,5 +292,16 @@ def support_tool_definitions() -> list[ToolDefinition]:
             args_model=CreateTicketArgs,
             side_effect=ToolSideEffect.EXTERNAL_DURABLE,
             handler=_create_ticket_handler,
+        ),
+        ToolDefinition(
+            name="escalate_case",
+            description=(
+                "Escalate a case to a human for a customer, with a reason. "
+                "Creates a durable escalation record other teams rely on — "
+                "only record supported facts."
+            ),
+            args_model=EscalateCaseArgs,
+            side_effect=ToolSideEffect.EXTERNAL_DURABLE,
+            handler=_escalate_case_handler,
         ),
     ]

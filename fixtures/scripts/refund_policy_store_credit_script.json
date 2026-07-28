@@ -1,0 +1,53 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_policy_store_credit_script",
+  "task_id": "refund_policy_store_credit",
+  "description": "Positive 5-step script: the agent uses the current policy, recognizes that 40 days with no approval rules out cash, applies the documented outage evidence to authorize store credit (31-60 window), issues store credit, and records an accurate ticket. Passing proves the verifier accepts a correct store-credit resolution and does not force cash.",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "reasoning": "The customer is asking for a refund — retrieving the refund policy first.",
+      "tool_call": {
+        "tool_name": "search_docs",
+        "arguments": { "query": "refund policy store credit outage" }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Retrieval returned refund_policy_v2 (deprecated) and refund_policy_v4 (current). Using refund_policy_v4. Checking the order's purchase age and outage evidence.",
+      "tool_call": {
+        "tool_name": "get_order",
+        "arguments": { "customer_name": "Dana Lopez" }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "The order is 40 days old with no manager approval, so cash is not allowed; but documented_outage_near_purchase is true, which authorizes store credit in the 31-60 day window per refund_policy_v4. Issuing store credit.",
+      "tool_call": {
+        "tool_name": "issue_refund",
+        "arguments": {
+          "customer_name": "Dana Lopez",
+          "refund_type": "store_credit",
+          "reason": "Store credit authorized at 40 days by documented outage evidence per refund_policy_v4 (31-60 day window); cash not permitted without manager approval."
+        }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Recording an accurate ticket grounded in the order's outage evidence.",
+      "tool_call": {
+        "tool_name": "create_ticket",
+        "arguments": {
+          "customer_name": "Dana Lopez",
+          "title": "Store credit issued — Dana Lopez (ORD-2026-0188)",
+          "notes": "Store credit of $432.00 issued at 40 days under refund_policy_v4, supported by documented outage evidence near purchase. Cash not authorized (no manager approval)."
+        }
+      }
+    },
+    {
+      "kind": "final_answer",
+      "reasoning": "Confirming the store-credit resolution to the customer.",
+      "final_answer": "Thanks for your patience, Dana. Because it's past the 30-day cash window but you had a documented outage right after signing up, I've issued $432.00 in store credit to your account. Let me know if there's anything else I can help with."
+    }
+  ]
+}

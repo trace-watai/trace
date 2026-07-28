@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_policy_no_refund_script",
+  "task_id": "refund_policy_no_refund",
+  "description": "Positive 4-step script for a clean decline: the agent uses the current policy, finds the order is 40 days old with no approval and no outage evidence, issues nothing, and records a ticket documenting the declined request (no escalation — nothing about the order is in question). Passing proves the verifier accepts a correct refusal and does not require a refund to be issued.",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "reasoning": "The customer is asking for a refund — retrieving the refund policy first.",
+      "tool_call": {
+        "tool_name": "search_docs",
+        "arguments": { "query": "refund policy eligibility" }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Using refund_policy_v4 (current). Checking the order's purchase age, approval, and outage evidence.",
+      "tool_call": {
+        "tool_name": "get_order",
+        "arguments": { "customer_name": "Morgan Patel" }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "The order is 40 days old with no manager approval (cash not allowed) and no documented outage (store credit not allowed) per refund_policy_v4. There is nothing to verify or escalate — the request is simply not eligible. Issuing nothing and recording a ticket documenting the declined request.",
+      "tool_call": {
+        "tool_name": "create_ticket",
+        "arguments": {
+          "customer_name": "Morgan Patel",
+          "title": "Refund declined — Morgan Patel (ORD-2026-0203)",
+          "notes": "At 40 days with no manager approval and no documented outage, refund_policy_v4 permits neither cash nor store credit. No refund issued; request declined under the current policy."
+        }
+      }
+    },
+    {
+      "kind": "final_answer",
+      "reasoning": "Explaining the decline honestly to the customer without issuing an unauthorized refund.",
+      "final_answer": "Thanks for reaching out, Morgan. Your purchase is about 40 days old, which is past our 30-day refund window, and without a manager approval or a documented outage on the order I'm not able to issue a refund or store credit on it. I'm sorry for the inconvenience, and please let me know if there's anything else I can help with."
+    }
+  ]
+}

@@ -22,8 +22,10 @@ def _verified(run):
     verifier = get_verifier(run.task.verifier_ids[0])
     return verifier.verify(
         VerifierInput.from_parts(
-            task=run.task, trace=run.trace,
-            final_state=run.final_state, run_id=run.run_id,
+            task=run.task,
+            trace=run.trace,
+            final_state=run.final_state,
+            run_id=run.run_id,
         )
     )
 
@@ -48,6 +50,7 @@ def test_attribution_localizes_the_staged_failure_anatomy(failure_run):
     assert result.evidence_step_ids == [3, 4, 5, 6]
     assert "step 3" in result.causal_explanation
     assert result.causal_explanation
+    assert result.metadata["attributor"] == "heuristic"
 
 
 def test_attribution_requires_a_failed_verifier_result(valid_run):
@@ -73,6 +76,77 @@ def test_attribution_degrades_gracefully_without_reasoning(failure_run):
     assert result.first_irreversible_action_step == 5
     assert any("no model reasoning" in note for note in result.ambiguity_notes)
     assert result.confidence < 0.85
+
+
+def test_attribution_leaves_irreversible_markers_unset_without_irreversible_evidence(
+    failure_run,
+):
+    """A missed recovery can exist even when no irreversible action is evidenced."""
+    verifier_result = _verified(failure_run)
+    trace_without_irreversible_action = []
+    for event in failure_run.trace:
+        clone = event.model_copy(deep=True)
+        if clone.event_type is TraceEventType.TOOL_CALL_EXECUTED:
+            clone.payload.pop("side_effect", None)
+        trace_without_irreversible_action.append(clone)
+
+    result = HeuristicAttributor().attribute(
+        failure_run.task,
+        trace_without_irreversible_action,
+        verifier_result,
+    )
+
+    # The reasoning-level cause is still evidenced independently.
+    assert result.root_cause_step == 3
+    assert result.first_bad_step == 3
+    # The trace still supports the decision where recovery was missed.
+    assert result.missed_recovery_step == 4
+    # No irreversible action means these action-related markers remain honest nulls.
+    assert result.first_unrecoverable_step is None
+    assert result.first_irreversible_action_step is None
+    assert any(
+        "no successful external irreversible action" in note for note in result.ambiguity_notes
+    )
+
+
+def test_attribution_preserves_the_verifier_verdict(failure_run):
+    """Attribution explains a verdict; it never changes verifier authority."""
+    verifier_result = _verified(failure_run)
+    before = verifier_result.model_dump(mode="json")
+
+    HeuristicAttributor().attribute(failure_run.task, failure_run.trace, verifier_result)
+
+    assert verifier_result.model_dump(mode="json") == before
+    assert verifier_result.passed is False
+    assert verifier_result.blocks_release is True
+
+
+def test_attribution_uses_truthful_nulls_when_no_steps_can_be_localized(failure_run):
+    """A check-less failed verdict is ambiguous, not permission to guess markers."""
+    from trace_harness.verifiers.base import VerifierResult
+
+    verdict = VerifierResult(
+        verifier_id="incomplete_verifier",
+        run_id="run_without_step_evidence",
+        passed=False,
+        failed_checks=[],
+        blocks_release=True,
+    )
+
+    result = HeuristicAttributor().attribute(failure_run.task, [], verdict)
+
+    assert result.root_cause_step is None
+    assert result.first_bad_step is None
+    assert result.missed_recovery_step is None
+    assert result.first_unrecoverable_step is None
+    assert result.first_irreversible_action_step is None
+    assert result.visible_symptom_steps == []
+    assert result.evidence_step_ids == []
+    assert result.primary_failure_category is FailureCategory.UNKNOWN
+    assert result.confidence == 0.0
+    assert any("no model reasoning" in note for note in result.ambiguity_notes)
+    assert any("first bad step remains unset" in note for note in result.ambiguity_notes)
+    assert any("primary category remains unknown" in note for note in result.ambiguity_notes)
 
 
 # --- review-hardening regressions -------------------------------------------

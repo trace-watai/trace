@@ -12,26 +12,32 @@ Step numbering
     share that step's id. Run-level events (run_started, state snapshots,
     run_finished) have ``step_id=None``.
 
-Intended evolution (documented now so nobody is surprised)
-    - MVP uses one generic ``TraceEvent`` with dict payloads; the planned
-      next step is typed payload models per event type (discriminated by
-      ``event_type``) so consumers stop string-indexing dicts.
-    - Nested spans (sub-agent calls, retries) will need ``parent_event_id``.
+Parent events
+    ``parent_event_id`` links child events to their parent within the same run:
+    e.g. TOOL_CALL_VALIDATED / TOOL_CALL_EXECUTED / RETRIEVAL_RESULT /
+    TOOL_OBSERVATION all point to the originating TOOL_CALL_REQUESTED event.
+    ``None`` means top-level.
 
-# TODO(Samrath/tracing): add parent event IDs when nested spans are
-# introduced; add typed payload models per event type after the dashboard's
-# first read pass tells us which fields it actually needs.
+Typed payloads
+    ``payload`` is the raw dict — the source of truth, always round-trips
+    through JSONL. ``typed_payload`` is a lazily-built read-only view that
+    deserializes ``payload`` into the per-event-type Pydantic model from
+    :mod:`trace_harness.tracing.payloads`, using ``extra="ignore"`` so traces
+    written by newer runners do not break older readers.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-TRACE_SCHEMA_VERSION = "0.1.0"
+if TYPE_CHECKING:
+    from trace_harness.tracing.payloads import TracePayload
+
+TRACE_SCHEMA_VERSION = "0.2.0"
 
 
 class TraceEventType(StrEnum):
@@ -73,3 +79,19 @@ class TraceEvent(BaseModel):
     timestamp: datetime = Field(default_factory=utc_now)
     payload: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    parent_event_id: str | None = None
+
+    @property
+    def typed_payload(self) -> TracePayload | None:
+        """Payload deserialized into the per-event-type model (read-only view).
+
+        Returns ``None`` if no model is registered for this ``event_type``.
+        Uses ``extra="ignore"`` so unknown fields from newer runners are
+        silently dropped rather than raising. Missing or invalid required
+        fields still raise Pydantic ``ValidationError`` so contract drift is
+        visible to consumers.
+        """
+        from trace_harness.tracing.payloads import PAYLOAD_TYPES  # local to avoid circular import
+
+        cls = PAYLOAD_TYPES.get(self.event_type)
+        return cls.model_validate(self.payload) if cls else None

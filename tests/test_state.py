@@ -15,7 +15,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from trace_harness.environment.state import Doc, DocStatus, Order, Refund, RefundType, SupportState, Ticket
+from trace_harness.environment.state import (
+    Doc,
+    DocStatus,
+    Order,
+    SupportState,
+)
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 
@@ -94,7 +99,7 @@ def test_from_task_merges_fixture_docs_before_inline_docs() -> None:
         docs=[fixture_doc],
     )
     assert len(state.docs) == 2
-    assert state.docs[0].doc_id == "from_fixture"   # fixture docs come first
+    assert state.docs[0].doc_id == "from_fixture"  # fixture docs come first
     assert state.docs[1].doc_id == "inline_doc"
 
 
@@ -186,9 +191,7 @@ def test_from_task_explicit_seq_in_payload_is_respected() -> None:
 
 
 def test_from_task_loads_doc_ranking_override() -> None:
-    state = SupportState.from_task(
-        _task(doc_ranking_override=["policy_v2", "policy_v4"])
-    )
+    state = SupportState.from_task(_task(doc_ranking_override=["policy_v2", "policy_v4"]))
     assert state.doc_ranking_override == ["policy_v2", "policy_v4"]
 
 
@@ -232,8 +235,20 @@ def test_find_order_returns_none_on_empty_orders() -> None:
 
 
 def test_find_order_returns_first_match() -> None:
-    o1 = Order(order_id="ORD-001", customer_name="Alice", plan="A", amount_usd=10, purchase_age_days=1)
-    o2 = Order(order_id="ORD-002", customer_name="Alice", plan="B", amount_usd=20, purchase_age_days=2)
+    o1 = Order(
+        order_id="ORD-001",
+        customer_name="Alice",
+        plan="A",
+        amount_usd=10,
+        purchase_age_days=1,
+    )
+    o2 = Order(
+        order_id="ORD-002",
+        customer_name="Alice",
+        plan="B",
+        amount_usd=20,
+        purchase_age_days=2,
+    )
     state = SupportState(orders=[o1, o2])
     assert state.find_order("Alice").order_id == "ORD-001"
 
@@ -252,7 +267,7 @@ def test_snapshot_returns_dict() -> None:
 def test_snapshot_contains_expected_top_level_keys() -> None:
     state = SupportState()
     snap = state.snapshot()
-    for key in ("schema_version", "orders", "refunds", "tickets", "docs"):
+    for key in ("schema_version", "orders", "refunds", "tickets", "escalations", "docs"):
         assert key in snap, f"snapshot missing key '{key}'"
 
 

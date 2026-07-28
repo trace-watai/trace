@@ -9,15 +9,48 @@ result, attribution) — never from vibes.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from trace_harness.attribution.schemas import FailureCategory
 from trace_harness.tasks.schemas import Severity
 from trace_harness.verifiers.base import EvidenceItem
 
-FAILURE_CARD_SCHEMA_VERSION = "0.2.0"
-REPAIR_PACKAGE_SCHEMA_VERSION = "0.2.0"
+FAILURE_CARD_SCHEMA_VERSION = "0.4.0"  # 0.4.0: BlastRadius gained escalation_count
+REPAIR_PACKAGE_SCHEMA_VERSION = "0.3.0"
+
+
+class BlastRadius(BaseModel):
+    """Structured scope of external impact from a failed run.
+
+    All fields are computed from actual final state. The dashboard renders each field separately.
+    ``summary`` is a human readable fallback for plaintext contexts (e.g. PR comments, CLI output).
+    """
+
+    refund_count: int = 0
+    refund_total_usd: float = 0.0
+    ticket_count: int = 0
+    escalation_count: int = 0
+    customers_affected: list[str] = Field(default_factory=list)
+    # Pre-formatted summary for plain-text display (PR comments, CLI output).
+    summary: str = ""
+
+
+class ControlPriority(StrEnum):
+    """Ordered urgency levels for repair controls.
+
+    P0 — do before the next release.
+    P1 — do in the upcoming development cycle.
+    P2 — schedule soon.
+    P3 — optional improvements.
+    """
+
+    P0 = "P0"
+    P1 = "P1"
+    P2 = "P2"
+    P3 = "P3"
 
 
 class FailureCard(BaseModel):
@@ -34,18 +67,18 @@ class FailureCard(BaseModel):
     severity: Severity
     root_cause: str
     # Coarse failure categories that contributed (primary first), sourced from
-    # attribution. Surfaces contributing_failure_categories as a first-class
-    # field rather than burying them in metadata.
-    contributing_failures: list[str] = Field(default_factory=list)
+    # attribution. Typed as FailureCategory so the dashboard has a 'closed
+    # vocabulary' of categories to branch on.
+    contributing_failures: list[FailureCategory] = Field(default_factory=list)
     # Step numbers directly implicated in the failure, drawn from failed
     # verifier checks — lets readers jump straight to the relevant trace lines.
     step_ids: list[int] = Field(default_factory=list)
     visible_symptoms: list[str] = Field(default_factory=list)
     evidence: list[EvidenceItem] = Field(default_factory=list)
     causal_explanation: str
-    # What actually got out: money moved, durable records created, customers
-    # affected. Scope, not adjectives.
-    blast_radius: str
+    # Structured scope of external impact: money moved, records created,
+    # customers affected — computed from final state, never adjectives.
+    blast_radius: BlastRadius
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -59,14 +92,13 @@ class RepairControl(BaseModel):
     # The exact check the control performs, stated deterministically.
     check: str
     behavior_on_failure: str
-    # Measurable outcome if the control is installed: what rate/class of
-    # failure it eliminates. Distinct from why_it_prevents_recurrence, which
-    # is the causal claim; this is the observable engineering impact.
+    # Measurable outcome if the control is installed: what class of
+    # failure it eliminates (distinct from why_it_prevents_recurrence,
+    # which is the causal claim).
     expected_impact: str
     why_it_prevents_recurrence: str
     risk_or_tradeoff: str
-    # P0 (do before next release) .. P3 (opportunistic).
-    priority: str
+    priority: ControlPriority
     linked_verifier_checks: list[str] = Field(default_factory=list)
 
 
