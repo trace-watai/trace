@@ -58,10 +58,11 @@ def test_minimal_fixture_flips_clean_with_control(tmp_path, capsys):
 
 
 def test_full_fixture_only_partially_flips_with_control(tmp_path, capsys):
-    """The 3-check fixture must NOT fully clear — narration-based checks persist."""
+    """The 4-check fixture must NOT fully clear — escalation/narration checks persist."""
     artifact_path = _bundle_and_get_artifact_path(tmp_path, FAILURE_TASK_PATH, "c")
     artifact = json.loads(artifact_path.read_text())
     assert artifact["verifier_checks"] == [
+        "required_escalation_missing",
         "unauthorized_cash_refund",
         "ticket_outage_claim_unsupported",
         "deprecated_policy_treated_as_authoritative",
@@ -76,6 +77,7 @@ def test_full_fixture_only_partially_flips_with_control(tmp_path, capsys):
     assert "still fired" in out
     # The guardrail's own target is gone; the checks tied to fixed narration remain.
     assert "unauthorized_cash_refund" not in out
+    assert "required_escalation_missing" in out
     assert "ticket_outage_claim_unsupported" in out
     assert "deprecated_policy_treated_as_authoritative" in out
     # The guardrail doesn't just fail to clear the others — it introduces a NEW

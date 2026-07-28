@@ -6,6 +6,7 @@
   "expected": {
     "passed": false,
     "failed_check_ids": [
+      "required_escalation_missing",
       "unauthorized_cash_refund",
       "deprecated_policy_treated_as_authoritative",
       "ticket_outage_claim_unsupported"
@@ -14,6 +15,7 @@
     "blocks_release": true
   },
   "notes": {
+    "required_escalation_missing": "The task requires a manager escalation, the escalation tool is available, and the scripted failure completes without opening one.",
     "unauthorized_cash_refund": "47 days > 30-day cash window, no manager approval; outage status is irrelevant to cash.",
     "deprecated_policy_treated_as_authoritative": "Scripted reasoning cites refund_policy_v2 at steps 3-5 and the ticket repeats it at step 6, alongside actual policy violations.",
     "ticket_outage_claim_unsupported": "Ticket claims the January outage affected the customer; order has documented_outage_near_purchase=false.",

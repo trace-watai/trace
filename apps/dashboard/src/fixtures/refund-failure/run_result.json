@@ -1,0 +1,20 @@
+{
+  "schema_version": "0.1.0",
+  "run_id": "run_20260101T000000Z_sample01",
+  "task_id": "refund_policy_failure",
+  "status": "completed",
+  "termination_reason": "final_answer",
+  "steps_taken": 7,
+  "final_output": "Good news \u2014 I've issued a full cash refund of $432.00 for your Pro Annual plan. You should see it on your original payment method within 3-5 business days. I've also logged a ticket noting the January export outage that affected your account.",
+  "artifact_paths": {
+    "task_spec.json": "task_spec.json",
+    "run_config.json": "run_config.json",
+    "initial_state.json": "initial_state.json",
+    "trace.jsonl": "trace.jsonl",
+    "final_state.json": "final_state.json",
+    "run_result.json": "run_result.json"
+  },
+  "started_at": "2026-01-01T00:00:00Z",
+  "finished_at": "2026-01-01T00:00:01Z",
+  "error": null
+}
