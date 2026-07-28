@@ -30,10 +30,16 @@ def _fixture_config(label: str = "fixture-baseline") -> AgentConfig:
 # --- suite loading / validation ---
 
 
-def test_load_sample_suite() -> None:
+def test_load_canonical_suite() -> None:
     suite = load_suite(SUITE_MANIFEST)
     assert suite.suite_id == "refund_v0"
-    assert len(suite.tasks) == 2
+    assert suite.tasks == [
+        "fixtures/tasks/refund_policy_failure.json",
+        "fixtures/tasks/refund_policy_valid_cash.json",
+        "fixtures/tasks/refund_policy_store_credit.json",
+        "fixtures/tasks/refund_policy_no_refund.json",
+        "fixtures/tasks/refund_policy_missing_info.json",
+    ]
     assert suite.agent_configs[0].provider == "fixture"
 
 
@@ -59,6 +65,24 @@ def test_duplicate_agent_labels_rejected() -> None:
 
 
 # --- batch execution ---
+
+
+def test_canonical_suite_executes_all_five_product_outcomes(tmp_path: Path) -> None:
+    summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(load_suite(SUITE_MANIFEST))
+
+    assert {entry.task_id: entry.verifier_passed for entry in summary.entries} == {
+        "refund_policy_failure": False,
+        "refund_policy_valid_cash": True,
+        "refund_policy_store_credit": True,
+        "refund_policy_no_refund": True,
+        "refund_policy_missing_info": True,
+    }
+    assert summary.aggregates.total == 5
+    assert summary.aggregates.completed == 5
+    assert summary.aggregates.terminated == 0
+    assert summary.aggregates.errored == 0
+    assert summary.aggregates.verifier_passed == 4
+    assert summary.aggregates.verifier_failed == 1
 
 
 def test_batch_runs_all_and_aggregates(tmp_path: Path) -> None:
