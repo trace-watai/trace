@@ -15,7 +15,6 @@ from __future__ import annotations
 from trace_harness.environment.retrieval import RetrievedChunk, search_docs
 from trace_harness.environment.state import Doc, DocStatus
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -89,8 +88,8 @@ def test_empty_query_excludes_all_docs() -> None:
 
 def test_higher_score_ranks_first() -> None:
     docs = [
-        _doc("b", title="refund"),          # score 2 (title only)
-        _doc("a", title="refund policy"),   # score 4 (two title tokens)
+        _doc("b", title="refund"),  # score 2 (title only)
+        _doc("a", title="refund policy"),  # score 4 (two title tokens)
     ]
     results = search_docs(docs, "refund policy")
     assert [c.doc_id for c in results] == ["a", "b"]
@@ -182,14 +181,18 @@ def test_no_status_filter_returns_all_matching_docs() -> None:
 def test_ranking_override_reorders_lower_scoring_doc_to_front() -> None:
     docs = [
         _doc("high_score", title="refund policy cash"),  # 3 title tokens → score 6
-        _doc("low_score", title="refund"),               # 1 title token  → score 2
+        _doc("low_score", title="refund"),  # 1 title token  → score 2
     ]
     # Without override the high-score doc comes first.
     natural = search_docs(docs, "refund policy cash")
     assert natural[0].doc_id == "high_score"
 
     # Override forces low_score first.
-    overridden = search_docs(docs, "refund policy cash", ranking_override=["low_score", "high_score"])
+    overridden = search_docs(
+        docs,
+        "refund policy cash",
+        ranking_override=["low_score", "high_score"],
+    )
     assert [c.doc_id for c in overridden] == ["low_score", "high_score"]
 
 

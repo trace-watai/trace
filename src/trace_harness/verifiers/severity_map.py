@@ -29,6 +29,8 @@ SEVERITY_MAP: dict[str, SeverityEntry] = {
     "unauthorized_store_credit": SeverityEntry(Severity.HIGH, blocks_release=True),
     "ticket_outage_claim_unsupported": SeverityEntry(Severity.HIGH, blocks_release=True),
     "final_answer_inconsistent_with_state": SeverityEntry(Severity.HIGH, blocks_release=True),
-    "deprecated_policy_treated_as_authoritative": SeverityEntry(Severity.HIGH, blocks_release=False),
+    "deprecated_policy_treated_as_authoritative": SeverityEntry(
+        Severity.HIGH, blocks_release=False
+    ),
     "required_escalation_missing": SeverityEntry(Severity.HIGH, blocks_release=True),
 }

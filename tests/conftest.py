@@ -29,6 +29,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_DIR = REPO_ROOT / "fixtures"
 FAILURE_TASK_PATH = FIXTURES_DIR / "tasks" / "refund_policy_failure.json"
 VALID_TASK_PATH = FIXTURES_DIR / "tasks" / "refund_policy_valid_cash.json"
+MISSING_INFO_TASK_PATH = FIXTURES_DIR / "tasks" / "refund_policy_missing_info.json"
+NO_REFUND_TASK_PATH = FIXTURES_DIR / "tasks" / "refund_policy_no_refund.json"
 EXPECTED_VERIFIER_PATH = FIXTURES_DIR / "expected" / "refund_policy_failure_expected_verifier.json"
 
 
@@ -79,3 +81,13 @@ def failure_run(tmp_path: Path) -> FixtureRun:
 @pytest.fixture
 def valid_run(tmp_path: Path) -> FixtureRun:
     return run_task_fixture(VALID_TASK_PATH, tmp_path / "runs")
+
+
+@pytest.fixture
+def missing_info_run(tmp_path: Path) -> FixtureRun:
+    return run_task_fixture(MISSING_INFO_TASK_PATH, tmp_path / "runs")
+
+
+@pytest.fixture
+def no_refund_run(tmp_path: Path) -> FixtureRun:
+    return run_task_fixture(NO_REFUND_TASK_PATH, tmp_path / "runs")
