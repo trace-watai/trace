@@ -1,4 +1,4 @@
-"""GeminiModelAdapter — the first *real* model adapter (scaffold + helper seams).
+"""GeminiModelAdapter — the first real provider adapter.
 
 Why this exists now
     The team plans to prototype with free-tier Gemini API keys before sponsor
@@ -13,8 +13,8 @@ Design: keep the SDK at the edges
     - ``_transcript_to_contents`` / ``_tools_to_declarations`` return plain
       dicts; ``generate_content`` coerces dicts into ``types.Content`` /
       ``types.Tool`` for us.
-    - ``_normalize_response`` reads attributes (``.function_calls``, ``.text``)
-      off the response, so a duck-typed fake stands in for the real object.
+    - ``_normalize_response`` reads documented response attributes, so a
+      duck-typed fake stands in for the real object.
 
     Only ``next_action`` itself touches the live SDK; that path is verified
     manually (run a task with ``--provider gemini``), never in the test suite —
@@ -32,7 +32,7 @@ google-genai API reference (verify against the pinned version while implementing
     from google.genai import types
     client = genai.Client(api_key=..., http_options=types.HttpOptions(timeout=ms))
     resp = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-3.6-flash",
         contents=[{"role": "user", "parts": [{"text": "..."}]}, ...],
         config=types.GenerateContentConfig(
             system_instruction="...",
@@ -47,8 +47,7 @@ Out of scope (separate work): retries, rate limiting, cost tracking, parallel
 tool calls, streaming.
 
 # TODO(Rupert/runner): JSON tool-mode fallback for providers/models without
-# native function calling; verify HttpOptions.timeout units against the pinned
-# google-genai version; confirm function-response content role with the SDK.
+# native function calling.
 """
 
 from __future__ import annotations
@@ -69,7 +68,7 @@ from trace_harness.models.base import (
 if TYPE_CHECKING:  # typing only — the runtime import stays lazy inside methods
     from google import genai
 
-DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 
 
 class GeminiNotConfiguredError(RuntimeError):
@@ -198,12 +197,17 @@ def _normalize_response(response: Any) -> AgentAction:
     """
     raw = _response_to_dict(response)
     function_calls = getattr(response, "function_calls", None)
+    if function_calls and len(function_calls) != 1:
+        raise ModelAdapterError(
+            "Gemini returned multiple function calls, but TRACE requires exactly one action "
+            "per turn; parallel tool calls are not supported"
+        )
     if function_calls:
         call = function_calls[0]
         return AgentAction(
             kind=ActionKind.TOOL_CALL,
             tool_call=ToolCall(tool_name=call.name, arguments=dict(call.args or {})),
-            reasoning=_safe_text(response) or None,  # text alongside a call, if any
+            reasoning=_text_from_candidate_parts(response),
             raw=raw,
         )
     text = _safe_text(response)
@@ -224,6 +228,22 @@ def _safe_text(response: Any) -> str | None:
         return response.text
     except Exception:  # noqa: BLE001 - any provider-side text accessor failure is non-fatal
         return None
+
+
+def _text_from_candidate_parts(response: Any) -> str | None:
+    """Read text that accompanies a function call without touching ``response.text``.
+
+    The SDK warns when its convenience ``.text`` property sees non-text parts.
+    Walking candidate parts avoids that warning while preserving any genuine
+    text returned beside the single function call.
+    """
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return None
+    content = getattr(candidates[0], "content", None)
+    parts = getattr(content, "parts", None) or []
+    text = "\n".join(part_text for part in parts if (part_text := getattr(part, "text", None)))
+    return text or None
 
 
 def _response_to_dict(response: Any) -> dict[str, Any]:
@@ -247,8 +267,8 @@ class GeminiModelAdapter:
     """Adapter for Google Gemini models.
 
     Construction validates configuration (so ``--provider gemini`` fails fast,
-    with instructions). ``next_action`` is wired; the conversion helpers it
-    calls are the unimplemented seams.
+    with instructions). ``next_action`` uses the pure conversion helpers above
+    and keeps the optional SDK import at the live-call boundary.
     """
 
     name = "gemini"
@@ -259,10 +279,12 @@ class GeminiModelAdapter:
         api_key: str | None = None,
         *,
         temperature: float | None = None,
+        seed: int | None = None,
         timeout_seconds: float = 120.0,
     ):
         self.model = model or DEFAULT_GEMINI_MODEL
         self.temperature = temperature
+        self.seed = seed
         self.timeout_seconds = timeout_seconds
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         if not self.api_key:
@@ -307,7 +329,9 @@ class GeminiModelAdapter:
         config = types.GenerateContentConfig(
             system_instruction=system,
             tools=[types.Tool(function_declarations=declarations)] if declarations else None,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             temperature=self.temperature,
+            seed=self.seed,
         )
         try:
             response = client.models.generate_content(

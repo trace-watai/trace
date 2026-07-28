@@ -30,7 +30,7 @@ dev = [
 # does NOT make tests require an API key — the fixture provider stays the
 # default everywhere and the offline test suite never needs the SDK.
 gemini = [
-    "google-genai>=1.0",
+    "google-genai>=1.33,<2",
 ]
 
 [project.scripts]

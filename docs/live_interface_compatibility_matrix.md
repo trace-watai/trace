@@ -3,7 +3,7 @@
 Date: 2026-07-28
 Linear anchor: TRA-66
 Owner: Justin Lam
-Verified baseline: `origin/main` at `ad12a4be6183538e0d02646ac78875efdc82eb6a`
+Verified baseline: `origin/main` through PR #123 integration
 
 ## Executive result
 
@@ -15,13 +15,14 @@ compatible contracts on `main`.
 This is no longer a schema-sequencing problem. The remaining work is product
 completion:
 
-1. implement and prove a real Gemini-backed run through the same pipeline;
+1. run one final-main Gemini acceptance scenario with a team-owned key;
 2. finish the incomplete task families and put them in an acceptance suite;
 3. turn the dashboard's single failure view into a complete run browser;
 4. run and document one release-candidate acceptance pass.
 
 Until those four items are complete, the honest product stance is:
-**integrated fixture-backed vertical slice; not yet live-provider demo-ready.**
+**integrated fixture-backed vertical slice plus live adapter; final live
+acceptance and the complete product surface are still outstanding.**
 
 ## Contract matrix
 
@@ -41,7 +42,7 @@ Until those four items are complete, the honest product stance is:
 | Suite config/summary | `Suite 0.1.0`, `BatchSummary 0.1.0` | CLI, delivery reporting | Child run IDs, verdict counts, termination counts, cost coverage, and canonical artifacts are emitted and tested. | Compatible. Unknown live-provider cost remains `null` rather than being reported as zero. |
 | Full offline run fixture | Deterministic 11-artifact bundle | dashboard tests and offline demo | Generated from the current pipeline; all run IDs and artifact links align; regeneration is byte-for-byte deterministic. | Compatible and current. |
 | Dashboard contracts/UI | TypeScript mirrors listed above | browser UI | Format, lint, typecheck, 30 tests, and production build pass; first failure card is visible. | Partial product surface: no run list, selection, trace timeline, repair/regression panels, loading/error states, or real backend/API connection. |
-| Gemini/live adapter | `src/trace_harness/models/gemini.py` | intended live runner | Current `main` remains a configuration-checked scaffold, not a proven normalized provider adapter. | Blocking live readiness. A successful API call alone is insufficient; it must traverse run, trace, verifier, artifacts, index, and dashboard/read path. |
+| Gemini/live adapter | `src/trace_harness/models/gemini.py` | CLI and suite runner | Native function calling is implemented with current `google-genai`; the shut-down Gemini 2.0 default was replaced with `gemini-3.6-flash`; suite temperature, seed, and timeout reach both the persisted config and adapter; provider responses precede normalized actions in the trace; parallel calls fail explicitly. | Contract-compatible and offline-tested. Still needs one controlled final-main key-backed acceptance run; retries/backoff and cost extraction remain follow-ups. |
 
 ## Integrated decisions now in force
 
@@ -66,7 +67,7 @@ Fresh verification on the merged stack:
 Repository gate:
 - Ruff check: passed
 - Ruff format check: passed
-- Python tests: 366 passed
+- Python tests: 379 passed
 - end-to-end pipeline smoke: passed
 
 Dashboard gate:
@@ -86,7 +87,7 @@ Fixture generation:
 
 | Gate | Concrete completion condition | Primary owner | Required reviewers |
 | --- | --- | --- | --- |
-| Live provider | A real Gemini response is normalized into one tool call or final answer per turn; provider errors/timeouts are safe; raw content is redacted; one controlled run produces the same trace, verdict, artifacts, index entry, and readable summary as a fixture run. | Rupert | Samrath, Karan, Justin |
+| Live provider | With a team-owned key, one controlled final-main run produces a normal trace, verdict, artifacts, index entry, and readable summary; the retained provider-response fields and retry/cost limitations are documented. | Rupert | Samrath, Karan, Justin |
 | Complete task bank | Fill approval, customer wording, policy-order/status, refund type, and retrieval-completeness families with runnable task + script + explicit expected checks + positive sibling; include them in an acceptance suite. | Emily with Evan He | Karan, Rupert |
 | Complete dashboard | Load the canonical run read path; show a run list and selection, outcome, trace timeline, evidence, failure card, repair package, regression artifact, and clear empty/loading/error states. | Skye | Samrath, Samir |
 | Final acceptance | Run the complete suite on the release candidate, record exact PASS/FAIL/terminated/error counts, inspect every blocking failure, and publish one go/no-go note. | Mohammed and Sarp | Justin, Karan, all feature owners |

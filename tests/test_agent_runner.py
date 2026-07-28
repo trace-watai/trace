@@ -52,6 +52,17 @@ def test_runner_emits_model_response_when_raw_present(tmp_path: Path) -> None:
     assert len(responses) == 1
     assert responses[0].payload["raw"] == {"provider": "gemini", "echo": 1}
     assert responses[0].step_id == 1
+    response_index = next(
+        index
+        for index, event in enumerate(trace)
+        if event.event_type is TraceEventType.MODEL_RESPONSE
+    )
+    action_index = next(
+        index
+        for index, event in enumerate(trace)
+        if event.event_type is TraceEventType.MODEL_ACTION
+    )
+    assert response_index < action_index
 
 
 def test_fixture_run_emits_no_model_response(tmp_path: Path) -> None:

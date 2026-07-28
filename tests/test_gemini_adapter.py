@@ -34,7 +34,7 @@ def test_construction_with_key_sets_defaults(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-used")
     adapter = GeminiModelAdapter()
     assert adapter.name == "gemini"
-    assert adapter.model == DEFAULT_GEMINI_MODEL
+    assert adapter.model == DEFAULT_GEMINI_MODEL == "gemini-3.6-flash"
 
 
 # --- _tools_to_declarations ---
@@ -135,6 +135,18 @@ def test_normalize_response_tool_call() -> None:
     assert action.tool_call.tool_name == "get_order"
     assert action.tool_call.arguments == {"order_id": 42}
     assert action.raw is not None
+
+
+def test_normalize_response_rejects_parallel_tool_calls() -> None:
+    resp = _FakeResponse(
+        function_calls=[
+            _FakeFunctionCall("get_order", {"order_id": 42}),
+            _FakeFunctionCall("issue_refund", {"order_id": 42}),
+        ]
+    )
+
+    with pytest.raises(ModelAdapterError, match="exactly one action"):
+        _normalize_response(resp)
 
 
 def test_normalize_response_final_answer() -> None:

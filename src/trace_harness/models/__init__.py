@@ -5,9 +5,8 @@ protocol. Concrete adapters:
 
 - :class:`~trace_harness.models.fixture.FixtureModelAdapter` — deterministic,
   scripted, no API keys. The default everywhere (tests, CI, fixtures).
-- :class:`~trace_harness.models.gemini.GeminiModelAdapter` — scaffold for the
-  team's early free-tier Gemini prototyping. Not implemented yet; fails with
-  setup instructions instead of half-working API code.
+- :class:`~trace_harness.models.gemini.GeminiModelAdapter` — native function
+  calling through the optional ``google-genai`` SDK.
 
 ``create_model_adapter`` is the one place provider strings become adapters,
 so the CLI and future API server never branch on provider names themselves.
@@ -27,12 +26,16 @@ def create_model_adapter(
     *,
     script_path: Path | str | None = None,
     model: str | None = None,
+    temperature: float | None = None,
+    seed: int | None = None,
+    timeout_seconds: float = 120.0,
 ) -> ModelAdapter:
     """Build a model adapter for ``provider``.
 
     ``fixture`` requires ``script_path`` (a FixtureScript JSON file).
-    ``gemini`` requires ``GEMINI_API_KEY`` in the environment and is — by
-    design — still a scaffold that raises on use.
+    ``gemini`` requires ``GEMINI_API_KEY`` in the environment. Its behavioral
+    knobs are passed explicitly so the adapter executes the same configuration
+    persisted in ``run_config.json``.
     """
     if provider == "fixture":
         from trace_harness.models.fixture import FixtureModelAdapter
@@ -46,5 +49,10 @@ def create_model_adapter(
     if provider == "gemini":
         from trace_harness.models.gemini import GeminiModelAdapter
 
-        return GeminiModelAdapter(model=model)
+        return GeminiModelAdapter(
+            model=model,
+            temperature=temperature,
+            seed=seed,
+            timeout_seconds=timeout_seconds,
+        )
     raise ValueError(f"unknown model provider '{provider}'; known providers: {KNOWN_PROVIDERS}")

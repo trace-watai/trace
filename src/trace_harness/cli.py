@@ -162,7 +162,11 @@ def _run_fixture(
         model = f"scripted:{script_path.stem}"
         metadata["fixture_script_path"] = _repo_relative(script_path)
     else:
-        adapter = create_model_adapter(args.provider, model=args.model)
+        adapter = create_model_adapter(
+            args.provider,
+            model=args.model,
+            timeout_seconds=args.timeout,
+        )
         model = args.model
 
     config = RunConfig(
