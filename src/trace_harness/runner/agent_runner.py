@@ -311,6 +311,15 @@ class AgentRunner:
                     step_id=step_id,
                     payload=action.model_dump(mode="json", exclude={"raw"}),
                 )
+                # Real adapters stash the provider's raw response in action.raw;
+                # preserve it as its own event so model_action stays the clean
+                # normalized view. Fixture runs leave raw=None and emit nothing.
+                if action.raw is not None:
+                    recorder.record(
+                        TraceEventType.MODEL_RESPONSE,
+                        step_id=step_id,
+                        payload={"raw": action.raw},
+                    )
                 transcript.append(_action_to_assistant_message(action))
 
                 if action.kind is ActionKind.FINAL_ANSWER:
