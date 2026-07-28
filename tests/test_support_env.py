@@ -16,7 +16,6 @@ from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.environment.tools import ToolSideEffect
 from trace_harness.models.base import ToolCall
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -54,7 +53,7 @@ def _call(tool_name: str, **arguments) -> ToolCall:
 # ---------------------------------------------------------------------------
 
 
-def test_tool_specs_returns_all_five_tools_by_default() -> None:
+def test_tool_specs_returns_all_registered_tools_by_default() -> None:
     env = _env()
     names = {spec.name for spec in env.tool_specs()}
     assert names == {
@@ -103,7 +102,9 @@ def test_validate_call_unknown_tool_returns_false_with_message() -> None:
 
 def test_validate_call_tool_not_in_available_tools_returns_false() -> None:
     env = _env(available_tools=["search_docs"])
-    ok, err = env.validate_call(_call("issue_refund", customer_name="Alice", refund_type="cash", reason="r"))
+    ok, err = env.validate_call(
+        _call("issue_refund", customer_name="Alice", refund_type="cash", reason="r")
+    )
     assert ok is False
     assert "issue_refund" in err
 
@@ -169,7 +170,10 @@ def test_execute_issue_refund_mutates_state() -> None:
 
 def test_execute_passes_step_id_to_handler() -> None:
     env = _env(orders=[_order("Alice")])
-    env.execute(_call("issue_refund", customer_name="Alice", refund_type="cash", reason="r"), step_id=3)
+    env.execute(
+        _call("issue_refund", customer_name="Alice", refund_type="cash", reason="r"),
+        step_id=3,
+    )
     assert env.state.refunds[0].issued_at_step == 3
 
 
@@ -240,6 +244,11 @@ def test_fresh_environment_instances_do_not_share_state() -> None:
 
 
 # --- pre_execute_hooks ---
+
+
+@pytest.fixture
+def env() -> SupportEnvironment:
+    return _env(orders=[_order("Casey Nguyen")])
 
 
 def test_no_hooks_dispatch_runs_normally(env):

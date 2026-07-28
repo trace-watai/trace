@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 
-from conftest import FAILURE_TASK_PATH, VALID_TASK_PATH
+import pytest
+
+from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, VALID_TASK_PATH
 from trace_harness.cli import main
 from trace_harness.tracing import artifact_store as names
 
@@ -54,9 +56,46 @@ def test_run_pipeline_on_valid_task_passes_and_skips_bundle(tmp_path, capsys):
     run_dir = _only_run_dir(runs_dir)
     assert json.loads((run_dir / names.VERIFIER_RESULT).read_text())["passed"] is True
     # No failure artifacts for a passing run — absence is the assertion.
-    for name in (names.FAILURE_CARD, names.REPAIR_PACKAGE, names.REGRESSION_ARTIFACT):
+    for name in (
+        names.ATTRIBUTION_RESULT,
+        names.FAILURE_CARD,
+        names.REPAIR_PACKAGE,
+        names.REGRESSION_ARTIFACT,
+    ):
         assert not (run_dir / name).exists()
     assert "PASS" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["refund_policy_store_credit.json", "refund_policy_no_refund.json"],
+)
+def test_run_pipeline_on_other_valid_policy_variants_skips_attribution(tmp_path, fixture_name):
+    runs_dir = tmp_path / "runs"
+    task_path = FIXTURES_DIR / "tasks" / fixture_name
+
+    exit_code = main(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "run-pipeline",
+            str(task_path),
+            "--fail-on-verifier",
+        ]
+    )
+
+    assert exit_code == 0
+    run_dir = _only_run_dir(runs_dir)
+    verifier = json.loads((run_dir / names.VERIFIER_RESULT).read_text())
+    assert verifier["passed"] is True
+    assert verifier["blocks_release"] is False
+    for name in (
+        names.ATTRIBUTION_RESULT,
+        names.FAILURE_CARD,
+        names.REPAIR_PACKAGE,
+        names.REGRESSION_ARTIFACT,
+    ):
+        assert not (run_dir / name).exists()
 
 
 def test_stages_run_independently_from_disk(tmp_path):
