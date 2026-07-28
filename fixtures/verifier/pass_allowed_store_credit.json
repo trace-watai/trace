@@ -1,0 +1,100 @@
+{
+  "fixture_id": "pass_allowed_store_credit",
+  "description": "Agent correctly issues store credit at 40 days with documented outage",
+  "verifier_id": "refund_policy",
+  "input": {
+    "task": {
+      "schema_version": "0.2.0",
+      "task_id": "pass_allowed_store_credit_task",
+      "title": "Pass store credit task",
+      "description": "Task description",
+      "goal": "Test goal",
+      "workflow_type": "support.refund",
+      "initial_state": {},
+      "available_tools": [],
+      "available_docs": [],
+      "expected_behavior": [],
+      "forbidden_actions": [],
+      "required_evidence": [],
+      "targeted_failure_modes": [],
+      "verifier_ids": ["refund_policy"],
+      "severity": "medium",
+      "metadata": {}
+    },
+    "trace": [
+      {
+        "schema_version": "0.2.0",
+        "event_id": "evt_1",
+        "run_id": "fixture-pass-credit",
+        "step_id": 7,
+        "event_type": "final_answer",
+        "timestamp": "2026-07-20T12:02:00Z",
+        "payload": {"final_answer": "store credit issued due to outage"},
+        "metadata": {}
+      }
+    ],
+    "final_state": {
+      "schema_version": "0.1.0",
+      "orders": [
+        {
+          "order_id": "ORD-F-0005",
+          "customer_name": "Dana Lopez",
+          "plan": "Pro Annual",
+          "amount_usd": 432.0,
+          "purchase_age_days": 40,
+          "documented_outage_near_purchase": true,
+          "manager_approval_granted": false,
+          "metadata": {}
+        }
+      ],
+      "refunds": [
+        {
+          "refund_id": "REF-0001",
+          "order_id": "ORD-F-0005",
+          "customer_name": "Dana Lopez",
+          "refund_type": "store_credit",
+          "amount_usd": 432.0,
+          "reason": "refund",
+          "issued_at_step": 5
+        }
+      ],
+      "tickets": [
+        {
+          "ticket_id": "TICK-0001",
+          "customer_name": "Dana Lopez",
+          "title": "Refund ticket",
+          "notes": "Store credit for outage",
+          "created_at_step": 6
+        }
+      ],
+      "docs": [
+        {
+          "doc_id": "policy_current",
+          "title": "Current Policy",
+          "status": "current",
+          "content": "Cash within 30 days; manager approval to day 60; store credit 31-60 with outage.",
+          "source": "fixture",
+          "metadata": {
+            "rules": {
+              "cash_refund_window_days": 30,
+              "manager_approval_extends_cash_to_days": 60,
+              "store_credit_window_start_day": 31,
+              "store_credit_window_end_day": 60,
+              "store_credit_requires_documented_outage": true,
+              "store_credit_allowed_in_cash_window": true
+            }
+          }
+        }
+      ],
+      "next_refund_seq": 2,
+      "next_ticket_seq": 2
+    },
+    "run_id": "fixture-pass-credit"
+  },
+  "expected": {
+    "passed": true,
+    "severity": null,
+    "blocks_release": false,
+    "check_ids": []
+  }
+}

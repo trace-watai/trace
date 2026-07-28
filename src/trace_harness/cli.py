@@ -189,6 +189,13 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
     ]
     merged = merge_verifier_results(results)
     store.write_json(run_id, names.VERIFIER_RESULT, merged)
+    try:
+        store.enrich_index_entry_with_verifier(run_id)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "run index verifier enrich failed for %s; verifier_result is the source of truth",
+            run_id,
+        )
 
     verdict = "PASS" if merged.passed else "FAIL"
     print(f"\nVerifier verdict for {run_id}: {verdict}")
@@ -291,6 +298,8 @@ def _list_runs(store: ArtifactStore) -> None:
         return
     for s in summaries:
         detail = f"{s.status} ({s.termination_reason}) · {s.steps_taken} steps · {s.task_id}"
+        if s.verifier_passed is not None:
+            detail += f" · {'PASS' if s.verifier_passed else 'FAIL'}"
         _print(s.run_id, detail)
     print(f"\n{len(summaries)} run(s) in {store.runs_dir}")
 
@@ -334,7 +343,26 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
     return 0
 
 
+def _force_utf8_stdio() -> None:
+    """Make stdout/stderr UTF-8 so verifier glyphs (✗, ⚠) never crash the CLI.
+
+    On a default Windows console stdout is cp1252, and printing the verdict
+    lines raises UnicodeEncodeError mid-pipeline — aborting before attribution
+    and the failure bundle run. Reconfiguring to UTF-8 (best-effort; older
+    streams without ``reconfigure`` are left as-is) keeps the demo runnable on
+    any platform.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8")
+            except (ValueError, OSError):  # pragma: no cover - platform dependent
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_stdio()
     load_env_file()  # opt-in convenience; real env vars always win
     harness_config = HarnessConfig.from_env()
     # Unknown TRACE_LOG_LEVEL values fall back to INFO rather than crashing.

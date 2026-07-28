@@ -143,9 +143,9 @@ dashboard; renaming a field or file breaks them — coordinate and bump
 `schema_version`. No event *interpretation* here (that's
 verifiers/attribution), no database before local JSON actually hurts.
 
-**Build next:** typed per-event-type payload models once the dashboard's
-first read pass shows what it consumes; `parent_event_id` for nested
-spans; atomic writes (tmp + rename); a run index file.
+**Build next:** structured citations in model actions; parent links for
+provider responses, retries, and future sub-agent spans; storage backend
+interfaces once local JSON demonstrably hurts.
 
 ## verifiers/ — deterministic pass/fail *(Karan Gupta)*
 

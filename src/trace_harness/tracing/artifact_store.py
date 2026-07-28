@@ -44,7 +44,7 @@ from pydantic import BaseModel
 
 from trace_harness.tracing.events import TraceEvent
 from trace_harness.tracing.recorder import TraceRecorder
-from trace_harness.tracing.run_index import RunIndex, RunIndexEntry
+from trace_harness.tracing.run_index import RUN_INDEX_SCHEMA_VERSION, RunIndex, RunIndexEntry
 
 # Canonical artifact filenames. Use these constants, never string literals.
 TASK_SPEC = "task_spec.json"
@@ -196,9 +196,12 @@ class ArtifactStore:
         if not path.is_file():
             return RunIndex()
         try:
-            return RunIndex.model_validate_json(path.read_text(encoding="utf-8"))
+            index = RunIndex.model_validate_json(path.read_text(encoding="utf-8"))
         except ValueError:
             return self.rebuild_index()
+        if index.schema_version != RUN_INDEX_SCHEMA_VERSION:
+            return self.rebuild_index()
+        return index
 
     def upsert_index_entry(self, entry: RunIndexEntry) -> None:
         """Add or replace ``entry`` in the index, keyed by ``run_id``.
@@ -218,20 +221,83 @@ class ArtifactStore:
         index.entries = sorted(kept, key=lambda e: e.run_id)
         self._write_index(index)
 
+    def enrich_index_entry_with_verifier(self, run_id: str) -> None:
+        """Update the index entry for ``run_id`` with the verifier verdict.
+
+        Reads the existing entry and ``verifier_result.json`` (if present),
+        sets ``verifier_passed`` and ``failed_check_count``, and re-upserts
+        atomically. If the index entry is missing but ``run_result.json`` is
+        present, it is reconstructed first. A missing verifier or run result
+        remains a safe no-op — the verifier stage guards this call anyway.
+
+        Reads only the raw JSON fields it needs so ``tracing/`` stays decoupled
+        from ``verifiers/`` at runtime (no VerifierResult import here).
+        """
+        if not self.exists(run_id, VERIFIER_RESULT):
+            return
+        index = self.read_index()
+        existing = next((e for e in index.entries if e.run_id == run_id), None)
+        if existing is None:
+            if not self.exists(run_id, RUN_RESULT):
+                return
+            try:
+                existing = RunIndexEntry.model_validate(self.read_json(run_id, RUN_RESULT))
+            except (FileNotFoundError, ValueError):
+                return
+        verifier_fields = self._read_verifier_index_fields(run_id)
+        if verifier_fields is None:
+            return
+        updated = existing.model_copy(
+            update={
+                "verifier_passed": verifier_fields[0],
+                "failed_check_count": verifier_fields[1],
+            }
+        )
+        self.upsert_index_entry(updated)
+
     def rebuild_index(self) -> RunIndex:
         """Reconstruct the index by scanning run dirs for ``run_result.json``.
 
-        Runs without a result (crashed before finalize) are skipped. The result
-        is written back atomically and returned.
+        Runs without a result (crashed before finalize) are skipped. Each entry
+        is enriched with the verifier verdict when ``verifier_result.json``
+        exists. The result is written back atomically and returned.
         """
         entries: list[RunIndexEntry] = []
         for run_id in self.list_runs():
             if not self.exists(run_id, RUN_RESULT):
                 continue
-            entries.append(RunIndexEntry.model_validate(self.read_json(run_id, RUN_RESULT)))
+            try:
+                entry = RunIndexEntry.model_validate(self.read_json(run_id, RUN_RESULT))
+            except (FileNotFoundError, ValueError):
+                continue
+            verifier_fields = self._read_verifier_index_fields(run_id)
+            if verifier_fields is not None:
+                entry = entry.model_copy(
+                    update={
+                        "verifier_passed": verifier_fields[0],
+                        "failed_check_count": verifier_fields[1],
+                    }
+                )
+            entries.append(entry)
         index = RunIndex(entries=sorted(entries, key=lambda e: e.run_id))
         self._write_index(index)
         return index
+
+    def _read_verifier_index_fields(self, run_id: str) -> tuple[bool, int] | None:
+        """Read only validated verdict fields without importing verifier models."""
+        if not self.exists(run_id, VERIFIER_RESULT):
+            return None
+        try:
+            data = self.read_json(run_id, VERIFIER_RESULT)
+        except (FileNotFoundError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        passed = data.get("passed")
+        failed_checks = data.get("failed_checks")
+        if not isinstance(passed, bool) or not isinstance(failed_checks, list):
+            return None
+        return passed, len(failed_checks)
 
     def _write_index(self, index: RunIndex) -> None:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
