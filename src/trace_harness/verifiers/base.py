@@ -93,7 +93,6 @@ class EvidenceKind(StrEnum):
     RETRIEVAL_PROVENANCE = "retrieval_provenance"
     PROVENANCE_QUOTE = "provenance_quote"
     FINAL_ANSWER = "final_answer"
-    ESCALATION_RECORD = "escalation_record"
 
 
 class EvidenceItem(BaseModel):

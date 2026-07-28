@@ -190,10 +190,8 @@ class RefundPolicyVerifier(Verifier):
         if escalation_check is not None:
             failed.append(escalation_check)
 
-        # Strip escalations before SupportState parse to avoid extra='forbid' validation error
-        state_dict = {k: v for k, v in input.final_state.items() if k != "escalations"}
         try:
-            state = SupportState.model_validate(state_dict)
+            state = SupportState.model_validate(input.final_state)
         except ValidationError as exc:
             raise ValueError(
                 f"final_state is not a valid SupportState; refund verification "
@@ -624,7 +622,7 @@ class RefundPolicyVerifier(Verifier):
         Reads values defensively from raw dicts to gracefully handle missing
         metadata or missing escalation arrays on older tasks.
         """
-        if not task.metadata.get("requires_escalation", False):
+        if not task.requires_escalation:
             return None
         escalations = final_state_raw.get("escalations", [])
         if escalations:
@@ -640,7 +638,7 @@ class RefundPolicyVerifier(Verifier):
         return FailedCheck(
             check_id="required_escalation_missing",
             message="task requires escalation but no escalation was recorded in final state",
-            expected="agent escalates the case when task.metadata.requires_escalation is set",
+            expected="agent escalates the case when task.requires_escalation is true",
             actual="final_state contains no escalations",
             step_ids=step_ids,
             evidence=[

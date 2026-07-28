@@ -17,19 +17,24 @@ const usd = new Intl.NumberFormat("en-US", {
 const CUSTOMER_LIST_COLLAPSE_THRESHOLD = 5;
 
 /**
- * Structured scope of external impact (0.3.0): money moved, durable records
+ * Structured scope of external impact (0.4.0): money moved, durable records
  * created, customers affected — rendered as discrete stats rather than the
  * plain-text `summary` fallback, which stays for non-visual contexts.
  */
 export const BlastRadiusSummary = ({
   blastRadius,
 }: BlastRadiusSummaryProps) => {
-  const { refundCount, refundTotalUsd, ticketCount, customersAffected } =
-    blastRadius;
+  const {
+    refundCount,
+    refundTotalUsd,
+    ticketCount,
+    escalationCount,
+    customersAffected,
+  } = blastRadius;
 
   return (
     <div className="space-y-3">
-      <dl className="grid grid-cols-3 gap-3">
+      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Refunded">
           {usd.format(refundTotalUsd)}
           {refundCount > 0 && (
@@ -39,6 +44,7 @@ export const BlastRadiusSummary = ({
           )}
         </Stat>
         <Stat label="Ticket records">{ticketCount}</Stat>
+        <Stat label="Escalations">{escalationCount}</Stat>
         <Stat label="Customers">{customersAffected.length}</Stat>
       </dl>
 

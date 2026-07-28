@@ -2,8 +2,7 @@
 traceable escalation, not a plain decline or a generic ticket.
 
 These tests prove the trace <-> state <-> verifier linkage for escalate_case
-end-to-end, before any dedicated verifier logic exists for it (see
-verifiers/refund_policy.py for the checks that build on this).
+end-to-end, including the required-handoff omission check.
 """
 
 from __future__ import annotations
@@ -60,22 +59,15 @@ def test_missing_info_run_passes_verifier(missing_info_run):
 
 
 def test_removing_the_escalation_fails_the_run(missing_info_run):
-    """The acceptance-evidence tripwire: strip the escalation from final state
-    and confirm the run stops looking correct. Today this surfaces as a
-    warning (no check reads state.escalations yet) rather than a failure —
-    the dedicated omission check is held off pending Karan's input (TRA-79
-    plan, Step 5). This test documents that gap rather than hiding it.
-    """
+    """A required handoff cannot pass when its durable escalation is removed."""
     verifier = get_verifier("refund_policy")
     stripped_state = dict(missing_info_run.final_state)
     stripped_state["escalations"] = []
 
     result = verifier.verify(_verifier_input(missing_info_run, final_state=stripped_state))
 
-    # TODO(Evan Yang/verifier, TRA-79): once the omission check lands, this
-    # should assert result.passed is False. For now, assert the heuristic
-    # doesn't crash and record the known gap explicitly.
-    assert result.passed is True
+    assert result.passed is False
+    assert {check.check_id for check in result.failed_checks} == {"required_escalation_missing"}
 
 
 def _verifier_input(run, final_state=None):
