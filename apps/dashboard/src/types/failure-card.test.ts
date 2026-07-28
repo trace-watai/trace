@@ -16,10 +16,10 @@ const raw = sampleArtifact as unknown as RawFailureCard;
 describe("parseFailureCard on a Python-produced artifact", () => {
   it("parses the current schema version", () => {
     expect(raw.schema_version).toBe(FAILURE_CARD_SCHEMA_VERSION);
-    expect(FAILURE_CARD_SCHEMA_VERSION).toBe("0.3.0");
+    expect(FAILURE_CARD_SCHEMA_VERSION).toBe("0.4.0");
   });
 
-  it("camelizes structured blast radius (0.3.0 object shape)", () => {
+  it("camelizes structured blast radius (0.4.0 object shape)", () => {
     const card = parseFailureCard(raw);
 
     // Snake_case wire keys must survive as camelCase domain keys, values intact.
@@ -27,6 +27,7 @@ describe("parseFailureCard on a Python-produced artifact", () => {
       refundCount: raw.blast_radius.refund_count,
       refundTotalUsd: raw.blast_radius.refund_total_usd,
       ticketCount: raw.blast_radius.ticket_count,
+      escalationCount: raw.blast_radius.escalation_count,
       customersAffected: raw.blast_radius.customers_affected,
       summary: raw.blast_radius.summary,
     });

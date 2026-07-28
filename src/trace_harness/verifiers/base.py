@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from trace_harness.tasks.schemas import Severity, TaskSpec, max_severity
 from trace_harness.tracing.events import TraceEvent
 
-VERIFIER_RESULT_SCHEMA_VERSION = "0.2.0"
+VERIFIER_RESULT_SCHEMA_VERSION = "0.3.0"  # 0.3.0: EvidenceKind gained ESCALATION_RECORD
 VERIFIER_INPUT_SCHEMA_VERSION = "0.1.0"
 
 
@@ -88,11 +88,11 @@ class EvidenceKind(StrEnum):
     ORDER_RECORD = "order_record"
     REFUND_RECORD = "refund_record"
     TICKET_RECORD = "ticket_record"
+    ESCALATION_RECORD = "escalation_record"
     POLICY_RULES = "policy_rules"
     RETRIEVAL_PROVENANCE = "retrieval_provenance"
     PROVENANCE_QUOTE = "provenance_quote"
     FINAL_ANSWER = "final_answer"
-    ESCALATION_RECORD = "escalation_record"
 
 
 class EvidenceItem(BaseModel):

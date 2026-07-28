@@ -351,17 +351,21 @@ class FailureBundleGenerator:
             return BlastRadius(summary="final state not parseable as SupportState")
         refund_total = sum(r.amount_usd for r in state.refunds)
         customers = sorted(
-            {r.customer_name for r in state.refunds} | {t.customer_name for t in state.tickets}
+            {r.customer_name for r in state.refunds}
+            | {t.customer_name for t in state.tickets}
+            | {e.customer_name for e in state.escalations}
         )
         summary = (
             f"{len(state.refunds)} refund(s) totalling ${refund_total:.2f} issued; "
             f"{len(state.tickets)} durable ticket record(s) created; "
+            f"{len(state.escalations)} escalation(s) opened; "
             f"{len(customers)} customer(s) affected ({', '.join(customers) or 'none'})"
         )
         return BlastRadius(
             refund_count=len(state.refunds),
             refund_total_usd=refund_total,
             ticket_count=len(state.tickets),
+            escalation_count=len(state.escalations),
             customers_affected=customers,
             summary=summary,
         )

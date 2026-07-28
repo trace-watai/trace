@@ -1,7 +1,7 @@
 /**
  * Sample failure card for local development.
  *
- * The JSON is a real `failure_card.json` (schema 0.3.0) produced by
+ * The JSON is a real `failure_card.json` (schema 0.4.0) produced by
  * `trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json`, per
  * docs/future_dashboard.md: render static JSON from real runs, not invented
  * dashboard state. Parsed through the same `parseFailureCard` path the
