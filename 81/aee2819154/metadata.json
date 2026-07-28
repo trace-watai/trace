@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "81aee2819154",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-79-integrate-escalate-case",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/severity_policy.md",
+    "fixtures/tasks/refund_policy_missing_info.json",
+    "fixtures/verifier/README.md",
+    "fixtures/verifier/fail_duplicate_escalation.json",
+    "fixtures/verifier/fail_unnecessary_escalation.json",
+    "src/trace_harness/verifiers/base.py",
+    "src/trace_harness/verifiers/refund_policy.py",
+    "src/trace_harness/verifiers/severity_map.py",
+    "tests/test_missing_info_escalation.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/81/aee2819154/0/metadata.json",
+      "transcript": "/81/aee2819154/0/full.jsonl",
+      "content_hash": "/81/aee2819154/0/content_hash.txt",
+      "prompt": "/81/aee2819154/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 130,
+    "cache_creation_tokens": 334319,
+    "cache_read_tokens": 19379583,
+    "output_tokens": 56943,
+    "api_call_count": 65
+  }
+}

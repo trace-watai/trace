@@ -1,0 +1,37 @@
+next step
+
+---
+
+is it integrated into task fixtures now?
+
+---
+
+Make the pr comment more concise
+
+---
+
+make it md format so i can paste into pr comment correctly formatted. dont use em dashes
+
+---
+
+do you think i should make a pr now or do it later after having karan's decision
+
+---
+
+For duplicate escalation, you have the right idea. It means the agent opened more than one escalation for the same customer/case in a single run (e.g., grouping state.escalations by customer_name and finding len > 1).
+
+For unsupported/unnecessary escalation, it means escalating a case that was unambiguously resolvable under policy without an escalation. For example, in refund_policy_valid_cash (12 days old), the policy clearly allows a cash refund, so escalating to a manager is an unnecessary escalation because the agent should have issued the refund directly. It also covers escalating with invalid or missing order/customer references.
+
+For the rest of the criteria: required escalation present passes when the agent escalates an unverified claim (like in refund_policy_missing_info); plain refusal with no escalation fails with required_escalation_missing (which is mapped to High severity / release-blocking in PR 115); and ordinary no-refund passes when it cleanly declines a case with no special circumstances (like refund_policy_no_refund) with 0 escalations.
+
+---
+
+Explain more in depth what each does. for example for step 2, what is the raw final state and what is state.escalations? how does reading from one or the other change the program's flow?
+
+---
+
+Do all of this
+
+---
+
+give me a brief couple words commit message
