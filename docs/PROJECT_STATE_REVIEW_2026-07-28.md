@@ -37,7 +37,7 @@ The safe dependency patches in the first change moved Next.js and its ESLint con
 - The dashboard loader validates all **11 artifacts** and **47 trace events**. Every verifier and failure-card evidence step resolves to the retained trace.
 - A production dashboard start showed the expected run, task, status, verdict, severity, blast radius, and artifact count.
 - There are no open pull requests. Remaining remote branches are stale or superseded snapshots, not additional current features waiting to be merged.
-- GitHub issue #110 for restoring and enforcing the integration gate is closed. Its Linear counterpart, TRA-78, remains In Review only for the named human sign-off.
+- GitHub issue #110 and Linear TRA-78 remain In Review only for the named human sign-off; the technical gate itself is complete and green.
 
 ## Exactly what remains
 
