@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, VALID_TASK_PATH
+from trace_harness.run_reader import RunReader
 from trace_harness.runner.batch import BatchRunner, BatchSummary, summary_path
 from trace_harness.runner.suite import AgentConfig, SuiteLoadError, SuiteSpec, load_suite
 from trace_harness.tracing.artifact_store import ArtifactStore
@@ -71,14 +72,42 @@ def test_batch_runs_all_and_aggregates(tmp_path: Path) -> None:
     agg = summary.aggregates
     assert agg.total == 2
     assert agg.completed == 2
+    assert agg.terminated == 0
     assert agg.errored == 0
     assert agg.verifier_passed == 1
     assert agg.verifier_failed == 1
     assert agg.pass_rate == 0.5
+    assert agg.cost_recorded == 2
+    assert agg.known_cost_usd == 0.0
     for e in summary.entries:
         assert e.run_id is not None
         assert store.run_dir(e.run_id).is_dir()
         assert e.latency_ms is not None
+        assert e.cost_usd == 0.0
+
+    listed = {run.task_id: run.verifier_passed for run in RunReader(store).list_runs()}
+    assert listed == {
+        "refund_policy_failure": False,
+        "refund_policy_valid_cash": True,
+    }
+
+
+def test_batch_counts_terminated_runs_separately(tmp_path: Path) -> None:
+    suite = SuiteSpec(
+        suite_id="terminated",
+        tasks=[str(VALID_TASK_PATH)],
+        agent_configs=[AgentConfig(label="one-step", provider="fixture", max_steps=1)],
+    )
+
+    summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(suite)
+
+    assert summary.entries[0].status == "terminated"
+    assert summary.aggregates.total == 1
+    assert summary.aggregates.completed == 0
+    assert summary.aggregates.terminated == 1
+    assert summary.aggregates.errored == 0
+    assert summary.aggregates.pass_rate is None
+    assert summary.aggregates.by_agent["one-step"]["terminated"] == 1
 
 
 def test_batch_isolates_setup_failure(tmp_path: Path) -> None:

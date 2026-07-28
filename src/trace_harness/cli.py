@@ -546,12 +546,14 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
     print()
     _print("total runs:", str(agg.total))
     _print("completed:", str(agg.completed))
+    _print("terminated:", str(agg.terminated))
     _print("passed / failed:", f"{agg.verifier_passed} / {agg.verifier_failed}")
     _print("errored:", str(agg.errored))
+    _print("known cost:", f"${agg.known_cost_usd:.6f} ({agg.cost_recorded}/{agg.total} runs)")
     _print("pass_rate:", "n/a" if agg.pass_rate is None else f"{agg.pass_rate:.0%}")
     _print("summary:", str(summary_path(store.runs_dir, summary.batch_id)))
 
-    if args.fail_on_verifier and (agg.verifier_failed > 0 or agg.errored > 0):
+    if args.fail_on_verifier and (agg.verifier_failed > 0 or agg.terminated > 0 or agg.errored > 0):
         return 1
     return 0
 

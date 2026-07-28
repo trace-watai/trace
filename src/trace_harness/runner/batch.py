@@ -12,8 +12,9 @@ Outputs:
       referencing those run ids, with per-run metadata and aggregates for the
       dashboard.
 
-Cost is intentionally out of scope for now (fixture runs have none; real-cost
-capture is a follow-up). Latency is recorded from run timestamps.
+Fixture cost is recorded as exactly zero. Providers that do not expose usage
+telemetry record ``null`` instead of inventing a number; aggregate coverage
+makes that missing telemetry visible.
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ class BatchRunEntry(BaseModel):
     verifier_id: str | None = None
     severity: str | None = None
     latency_ms: float | None = None
+    cost_usd: float | None = None
     error: str | None = None
 
 
@@ -67,9 +69,12 @@ class BatchAggregates(BaseModel):
 
     total: int
     completed: int
+    terminated: int
     errored: int
     verifier_passed: int
     verifier_failed: int
+    cost_recorded: int
+    known_cost_usd: float
     pass_rate: float | None = None  # None when no completed run had a verdict
     by_agent: dict[str, dict[str, int]] = Field(default_factory=dict)
 
@@ -167,6 +172,7 @@ def _entry_from_pipeline(
         verifier_id=(verifier.verifier_id if verifier is not None else None),
         severity=(verifier.severity.value if verifier and verifier.severity else None),
         latency_ms=latency_ms,
+        cost_usd=0.0 if result.run_config.provider == "fixture" else None,
         error=run.error,
     )
 
@@ -187,30 +193,40 @@ def _setup_error_entry(config: AgentConfig, task_path: str, exc: Exception) -> B
 
 def _aggregate(entries: list[BatchRunEntry]) -> BatchAggregates:
     completed = [e for e in entries if e.status == str(RunStatus.COMPLETED)]
+    terminated = sum(1 for e in entries if e.status == str(RunStatus.TERMINATED))
     # Pass/fail counts consider only completed runs: an incomplete run that
     # recorded no violations is not a genuine pass (mirrors the CLI's CI gate).
     passed = sum(1 for e in completed if e.verifier_passed is True)
     failed = sum(1 for e in completed if e.verifier_passed is False)
     errored = sum(1 for e in entries if e.status in _ERROR_STATUSES)
+    recorded_costs = [e.cost_usd for e in entries if e.cost_usd is not None]
     verdicts = passed + failed
     pass_rate = round(passed / verdicts, 4) if verdicts else None
 
     by_agent: dict[str, dict[str, int]] = {}
     for e in entries:
-        bucket = by_agent.setdefault(e.agent_label, {"passed": 0, "failed": 0, "errored": 0})
+        bucket = by_agent.setdefault(
+            e.agent_label,
+            {"passed": 0, "failed": 0, "terminated": 0, "errored": 0},
+        )
         if e.status == str(RunStatus.COMPLETED) and e.verifier_passed is True:
             bucket["passed"] += 1
         elif e.status == str(RunStatus.COMPLETED) and e.verifier_passed is False:
             bucket["failed"] += 1
+        if e.status == str(RunStatus.TERMINATED):
+            bucket["terminated"] += 1
         if e.status in _ERROR_STATUSES:
             bucket["errored"] += 1
 
     return BatchAggregates(
         total=len(entries),
         completed=len(completed),
+        terminated=terminated,
         errored=errored,
         verifier_passed=passed,
         verifier_failed=failed,
+        cost_recorded=len(recorded_costs),
+        known_cost_usd=round(sum(recorded_costs), 6),
         pass_rate=pass_rate,
         by_agent=by_agent,
     )

@@ -12,6 +12,7 @@ whether a run came from ``run-pipeline`` or ``run-suite``.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.verifiers.base import VerifierInput, VerifierResult, merge_verifier_results
 from trace_harness.verifiers.registry import get_verifier
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -121,6 +124,13 @@ def _verify_run(store: ArtifactStore, run_id: str, task: TaskSpec) -> VerifierRe
     ]
     merged = merge_verifier_results(results)
     store.write_json(run_id, names.VERIFIER_RESULT, merged)
+    try:
+        store.enrich_index_entry_with_verifier(run_id)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "run index verifier enrich failed for %s; verifier_result is the source of truth",
+            run_id,
+        )
     return merged
 
 
