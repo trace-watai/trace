@@ -1,0 +1,60 @@
+name: Integration CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend
+        run: python -m pip install -e ".[dev]"
+
+      - name: Check repository
+        run: ./scripts/check_repo.sh
+
+      - name: Run integrated offline demo
+        run: TRACE_RUNS_DIR="${RUNNER_TEMP}/trace-demo" ./scripts/demo.sh
+
+  dashboard:
+    name: Dashboard gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/dashboard/package-lock.json
+
+      - name: Install dashboard
+        run: npm ci
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Lint dashboard
+        run: npm run lint
+
+      - name: Type-check dashboard
+        run: npm run typecheck
+
+      - name: Test dashboard
+        run: npm run test:run
+
+      - name: Build dashboard
+        run: npm run build
