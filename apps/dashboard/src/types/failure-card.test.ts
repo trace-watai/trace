@@ -9,7 +9,7 @@ import {
 // A real `failure_card.json` produced by `trace-harness run-pipeline`. Parsing
 // it here guards the wire contract: if the Python schema drifts from these TS
 // types, this test breaks instead of the UI silently rendering wrong.
-import sampleArtifact from "@/data/sample-failure-card.json";
+import sampleArtifact from "@/fixtures/refund-failure/failure_card.json";
 
 const raw = sampleArtifact as unknown as RawFailureCard;
 

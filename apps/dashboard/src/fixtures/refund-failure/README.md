@@ -4,6 +4,11 @@ This bundle is the complete output of the deterministic
 `fixtures/tasks/refund_policy_failure.json` pipeline run. It gives the dashboard
 a realistic failed run for offline development and contract testing.
 
+`src/data/refund-failure-fixture.ts` is the dashboard's single loader for this
+bundle. It parses the seven typed run/analysis artifacts, reads the canonical
+JSONL trace, and exposes the task/config/state records without creating a
+parallel sample format.
+
 Regenerate all files from the repository root:
 
 ```bash
