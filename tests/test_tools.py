@@ -14,9 +14,8 @@ Side-effect contract under test:
 
 from __future__ import annotations
 
-import pytest
-
 from trace_harness.environment.registry import default_support_registry
+from trace_harness.environment.retrieval import RetrievedChunk
 from trace_harness.environment.state import Doc, DocStatus, Order, RefundType, SupportState
 from trace_harness.environment.tools import (
     CreateTicketArgs,
@@ -26,8 +25,6 @@ from trace_harness.environment.tools import (
     SearchDocsArgs,
     ToolSideEffect,
 )
-from trace_harness.environment.retrieval import RetrievedChunk
-
 
 # ---------------------------------------------------------------------------
 # Helpers

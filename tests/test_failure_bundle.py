@@ -15,8 +15,10 @@ from trace_harness.verifiers.registry import get_verifier
 def bundle_inputs(failure_run):
     verifier_result = get_verifier(failure_run.task.verifier_ids[0]).verify(
         VerifierInput.from_parts(
-            task=failure_run.task, trace=failure_run.trace,
-            final_state=failure_run.final_state, run_id=failure_run.run_id,
+            task=failure_run.task,
+            trace=failure_run.trace,
+            final_state=failure_run.final_state,
+            run_id=failure_run.run_id,
         )
     )
     attribution = HeuristicAttributor().attribute(
@@ -143,8 +145,10 @@ def test_bundle_refuses_passing_runs(valid_run):
 
     verifier_result = get_verifier(valid_run.task.verifier_ids[0]).verify(
         VerifierInput.from_parts(
-            task=valid_run.task, trace=valid_run.trace,
-            final_state=valid_run.final_state, run_id=valid_run.run_id,
+            task=valid_run.task,
+            trace=valid_run.trace,
+            final_state=valid_run.final_state,
+            run_id=valid_run.run_id,
         )
     )
     assert verifier_result.passed
@@ -158,6 +162,30 @@ def test_bundle_refuses_passing_runs(valid_run):
             final_state=valid_run.final_state,
             initial_state=valid_run.initial_state,
         )
+
+
+def test_blast_radius_reports_escalation_only_runs(failure_run):
+    """TRA-79: an escalation-only final state must not read as 'nothing happened'."""
+    final_state = dict(failure_run.initial_state)
+    final_state["refunds"] = []
+    final_state["tickets"] = []
+    final_state["escalations"] = [
+        {
+            "escalation_id": "ESC-0001",
+            "customer_name": "Jordan Blake",
+            "reason": "unverified manager approval claim",
+            "created_at_step": 3,
+        }
+    ]
+
+    blast_radius = FailureBundleGenerator()._blast_radius(final_state)
+
+    assert blast_radius.escalation_count == 1
+    assert blast_radius.refund_count == 0
+    assert blast_radius.ticket_count == 0
+    assert blast_radius.customers_affected == ["Jordan Blake"]
+    assert "1 escalation(s) opened" in blast_radius.summary
+    assert "1 customer(s) affected" in blast_radius.summary
 
 
 # --- review-hardening regressions -------------------------------------------

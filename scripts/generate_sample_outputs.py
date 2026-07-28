@@ -40,6 +40,7 @@ OUTPUT_DIR = REPO_ROOT / "fixtures" / "expected"
 # Shared builders (mirrors the test helpers, kept self-contained here)
 # ---------------------------------------------------------------------------
 
+
 def _current_policy_doc() -> Doc:
     return Doc(
         doc_id="refund_policy_v4",
@@ -89,6 +90,7 @@ def _task() -> TaskSpec:
 # Scenario 1: PASSING — agent issues a valid cash refund within 30 days
 # ---------------------------------------------------------------------------
 
+
 def build_passing_scenario() -> dict:
     order = Order(
         order_id="ORD-2001",
@@ -131,7 +133,10 @@ def build_passing_scenario() -> dict:
     verifier = RefundPolicyVerifier()
     result = verifier.verify(
         VerifierInput.from_parts(
-            task=_task(), trace=trace, final_state=state.snapshot(), run_id="run_pass_001",
+            task=_task(),
+            trace=trace,
+            final_state=state.snapshot(),
+            run_id="run_pass_001",
         )
     )
     return json.loads(result.model_dump_json(indent=2))
@@ -142,6 +147,7 @@ def build_passing_scenario() -> dict:
 #              without manager approval, cites deprecated policy, and creates
 #              a ticket with an unsupported outage claim.
 # ---------------------------------------------------------------------------
+
 
 def build_failing_scenario() -> dict:
     order = Order(
@@ -208,11 +214,7 @@ def build_failing_scenario() -> dict:
             run_id="run_fail_001",
             step_id=5,
             event_type=TraceEventType.MODEL_ACTION,
-            payload={
-                "reasoning": (
-                    "Based on refund_policy_v2, issuing cash refund now."
-                )
-            },
+            payload={"reasoning": ("Based on refund_policy_v2, issuing cash refund now.")},
         ),
         # Tool call to issue the refund
         TraceEvent(
@@ -246,7 +248,10 @@ def build_failing_scenario() -> dict:
     verifier = RefundPolicyVerifier()
     result = verifier.verify(
         VerifierInput.from_parts(
-            task=_task(), trace=trace, final_state=state.snapshot(), run_id="run_fail_001",
+            task=_task(),
+            trace=trace,
+            final_state=state.snapshot(),
+            run_id="run_fail_001",
         )
     )
     return json.loads(result.model_dump_json(indent=2))
@@ -256,6 +261,7 @@ def build_failing_scenario() -> dict:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -263,17 +269,21 @@ def main():
     passing_path = OUTPUT_DIR / "sample_passing_result.json"
     passing_path.write_text(json.dumps(passing, indent=2) + "\n")
     print(f"[OK] Passing result -> {passing_path}")
-    print(f"     passed={passing['passed']}, "
-          f"failed_checks={len(passing['failed_checks'])}, "
-          f"warnings={len(passing['warnings'])}")
+    print(
+        f"     passed={passing['passed']}, "
+        f"failed_checks={len(passing['failed_checks'])}, "
+        f"warnings={len(passing['warnings'])}"
+    )
 
     failing = build_failing_scenario()
     failing_path = OUTPUT_DIR / "sample_failing_result.json"
     failing_path.write_text(json.dumps(failing, indent=2) + "\n")
     print(f"[OK] Failing result -> {failing_path}")
-    print(f"     passed={failing['passed']}, "
-          f"failed_checks={len(failing['failed_checks'])}, "
-          f"warnings={len(failing['warnings'])}")
+    print(
+        f"     passed={failing['passed']}, "
+        f"failed_checks={len(failing['failed_checks'])}, "
+        f"warnings={len(failing['warnings'])}"
+    )
     print(f"     check_ids: {[c['check_id'] for c in failing['failed_checks']]}")
 
 

@@ -28,13 +28,28 @@ Revisit if the CLI grows rich help/completions needs.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from trace_harness.config import HarnessConfig, load_env_file
+from trace_harness.environment.guardrails import unauthorized_cash_refund_guardrail
+from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.tools import ToolResult
 from trace_harness.models import create_model_adapter
+from trace_harness.models.base import ToolCall
+from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
+from trace_harness.regression.replay import (
+    describe_action_drift,
+    describe_state_drift,
+    pinned_initial_state,
+)
+from trace_harness.regression.replay import pinned_script as build_pinned_script
+from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import RunConfig
@@ -109,17 +124,39 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _run_fixture(args: argparse.Namespace, store: ArtifactStore) -> RunResult:
+def _run_fixture(
+    args: argparse.Namespace,
+    store: ArtifactStore,
+    extra_hooks: list[Callable[[ToolCall, SupportState], ToolResult | None]] | None = None,
+    pinned_initial_state: dict[str, Any] | None = None,
+    pinned_script: FixtureScript | None = None,
+) -> RunResult:
     task_path = Path(args.task_path).resolve()
     task = load_task(task_path)
-    docs = load_docs_for_task(task, task_path)
+    metadata: dict[str, str] = {"task_fixture_path": _repo_relative(task_path)}
+
+    if pinned_initial_state is None:
+        docs = load_docs_for_task(task, task_path)
+    else:
+        # Regression replay: the artifact's pinned snapshot is the world, docs
+        # included, so the live docs fixture is deliberately never read.
+        task = task.model_copy(update={"initial_state": pinned_initial_state})
+        docs = None
+        metadata["replay_pinned_state"] = "true"
 
     environment = SupportEnvironment.from_task(task, docs=docs)
-    metadata: dict[str, str] = {"task_fixture_path": _repo_relative(task_path)}
+    for hook in extra_hooks or []:
+        environment.register_pre_execute_hook(hook)
 
     # The fixture provider replays a script; real providers (gemini) drive the
     # agent live and need no script — only the fixture path is required.
-    if args.provider == "fixture":
+    if args.provider == "fixture" and pinned_script is not None:
+        # Replaying pinned actions: the script file is not consulted at all, so
+        # editing it cannot change what an existing regression asserts.
+        adapter = FixtureModelAdapter(pinned_script)
+        model = f"scripted:{pinned_script.script_id}"
+        metadata["replay_pinned_script"] = "true"
+    elif args.provider == "fixture":
         script_path = _resolve_script_path(task, task_path, args.script)
         adapter = create_model_adapter("fixture", script_path=script_path)
         model = f"scripted:{script_path.stem}"
@@ -290,6 +327,182 @@ def _bundle(run_dir: Path) -> bool:
     return True
 
 
+def _replay_drift_notes(
+    artifact: RegressionArtifact,
+    task: TaskSpec,
+    task_path: Path,
+    pinned_state: dict[str, Any],
+) -> list[str]:
+    """Report how the fixture's world and script differ from what was pinned.
+
+    Best-effort and never fatal: the replay uses the pinned inputs either way,
+    so a docs fixture or script that has since moved must not break the run.
+    A load problem is reported as a drift note instead.
+    """
+    notes: list[str] = []
+    try:
+        live_state = SupportState.from_task(task, docs=load_docs_for_task(task, task_path))
+        notes += describe_state_drift(pinned_state, live_state.snapshot())
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        notes.append(f"could not rebuild the fixture's world to compare: {exc}")
+
+    if artifact.pinned_agent_actions:
+        try:
+            script_path = _resolve_script_path(task, task_path, None)
+            live_script = FixtureScript.model_validate(
+                json.loads(script_path.read_text(encoding="utf-8"))
+            )
+            notes += describe_action_drift(
+                artifact.pinned_agent_actions,
+                [action.model_dump(mode="json", exclude={"raw"}) for action in live_script.actions],
+            )
+        except (FileNotFoundError, KeyError, ValueError) as exc:
+            notes.append(f"could not read the fixture script to compare: {exc}")
+    return notes
+
+
+def _replay(artifact_path: Path, store: ArtifactStore, *, apply_control: bool = False) -> int:
+    """Replay a regression artifact and assert the gate conditions hold.
+
+    1. Re-runs the scenario **from the artifact's pinned inputs** — state,
+       docs, and (schema 0.2.0+) the agent's recorded actions — not from the
+       fixture files' current contents. The task fixture is still read for the
+       two things no artifact pins: the tool subset and the verifier ids.
+       Drift between pinned and current is reported but never changes the
+       verdict.
+    2. Asserts the verifier still reproduces the pinned failure — or, with
+       ``apply_control``, that it no longer does.
+    3. Runs each positive sibling fixture and asserts it passes (always,
+       regardless of ``apply_control`` — a guardrail must not break
+       legitimate behavior either). Siblings are named by path only, so they
+       run from their live fixtures; nothing about them is pinned.
+
+    Without ``apply_control``: this is a plain regression check. "Gate
+    clear" means the known failure still reproduces exactly as pinned — the
+    normal meaning for a regression suite, since a bug silently stopping
+    reproduction usually means the fixture broke, not that the bug got fixed.
+
+    With ``apply_control``: installs the reference guardrails (environment.
+    guardrails) on the environment before every run in this replay, and
+    inverts the assertion — "gate clear" now requires that every pinned check
+    stopped firing *and* that the control introduced no new blocking failure
+    of its own. Both halves matter: a guardrail that blocks a harmful action
+    while leaving the agent asserting it happened has moved the failure, not
+    removed it, and must not read as a clear gate.
+
+    A control only affects checks its guardrails actually cover (today:
+    unauthorized_cash_refund). A fixture whose failure also depends on
+    downstream narration (a ticket, a final answer) that the scripted agent
+    repeats unconditionally will still fail on those other checks, because a
+    guardrail can only change what happens in *state*, not what a fixed
+    script says. See docs/regression_contract.md#control-flip-demo for a
+    fixture built so that isn't a problem.
+
+    Returns 0 if all assertions hold, 1 if the regression gate fires.
+    """
+    data = json.loads(artifact_path.read_text(encoding="utf-8"))
+    artifact = RegressionArtifact.model_validate(data)
+    pinned_state = pinned_initial_state(artifact)
+    # The task fixture is a hard requirement (tool subset + verifier ids), so a
+    # missing one is a usage error (exit 2), not something to replay around.
+    task_path = Path(artifact.task_fixture).resolve()
+    task = load_task(task_path)
+    script = build_pinned_script(artifact, task.task_id)
+
+    print(f"\nReplaying regression: {artifact.test_name}")
+    _print("source_run_id:", artifact.source_run_id)
+    _print("severity:", str(artifact.severity))
+    _print("blocks_release:", str(artifact.blocks_release))
+    _print("apply_control:", str(apply_control))
+    _print("pinned inputs:", "state + docs" + (" + agent actions" if script else " (no actions)"))
+
+    for note in _replay_drift_notes(artifact, task, task_path, pinned_state):
+        print(f"  ⚠ fixture drift — {note}")
+
+    hooks = [unauthorized_cash_refund_guardrail] if apply_control else []
+    gate_failed = False
+
+    def _fixture_args(task_path: str) -> argparse.Namespace:
+        return argparse.Namespace(
+            task_path=task_path,
+            script=None,
+            provider="fixture",
+            model=None,
+            max_steps=16,
+            timeout=120.0,
+        )
+
+    # Step 1: re-run the pinned scenario; verifier must produce the expected failures.
+    print(f"\n[1/2] Replaying pinned scenario (script from {artifact.task_fixture})")
+    result = _run_fixture(
+        _fixture_args(artifact.task_fixture),
+        store,
+        extra_hooks=hooks,
+        pinned_initial_state=pinned_state,
+        pinned_script=script,
+    )
+    run_dir = store.run_dir(result.run_id)
+    merged, _ = _verify(run_dir)
+
+    actual_ids = {c.check_id for c in merged.failed_checks}
+    expected_ids = set(artifact.verifier_checks)
+
+    if apply_control:
+        # With a control installed, "gate clear" flips: the pinned checks must
+        # be GONE. But absence alone isn't enough — a guardrail that trades one
+        # blocking failure for another hasn't fixed anything, so any new
+        # blocking check fires the gate too.
+        still_firing = expected_ids & actual_ids
+        introduced = sorted(
+            check.check_id
+            for check in merged.failed_checks
+            if check.check_id not in expected_ids and check.blocks_release
+        )
+        if still_firing:
+            print(
+                f"  FAIL: control was applied but {sorted(still_firing)} still fired "
+                "— the guardrail did not eliminate this failure"
+            )
+            gate_failed = True
+        else:
+            print(f"  PASS: control eliminated {sorted(expected_ids)}; check(s) did not reproduce")
+        if introduced:
+            print(
+                f"  FAIL: blocking check(s) {introduced} fired that this artifact never "
+                "pinned — the control moved the failure rather than removing it"
+            )
+            gate_failed = True
+    else:
+        missing = expected_ids - actual_ids
+        if merged.passed:
+            print(f"  FAIL: expected verifier to fail on {sorted(expected_ids)} but run passed")
+            gate_failed = True
+        elif missing:
+            print(f"  FAIL: expected checks {sorted(missing)} to fail — not seen in result")
+            gate_failed = True
+        else:
+            print("  PASS: all expected checks failed as expected")
+
+    # Step 2: each positive sibling must pass.
+    if artifact.positive_sibling_tests:
+        print(f"\n[2/2] Running {len(artifact.positive_sibling_tests)} positive sibling(s)")
+        for i, sibling in enumerate(artifact.positive_sibling_tests, 1):
+            print(f"  [{i}] {sibling.test_name}: {sibling.task_fixture}")
+            sib_result = _run_fixture(_fixture_args(sibling.task_fixture), store, extra_hooks=hooks)
+            sib_dir = store.run_dir(sib_result.run_id)
+            sib_merged, _ = _verify(sib_dir)
+            if not sib_merged.passed:
+                failed = sorted(c.check_id for c in sib_merged.failed_checks)
+                print(f"      FAIL: sibling must pass but failed on {failed}")
+                gate_failed = True
+            else:
+                print("      PASS")
+
+    status = "FAIL — regression gate fired" if gate_failed else "PASS — regression gate clear"
+    print(f"\nReplay result: {status}\n")
+    return 1 if gate_failed else 0
+
+
 def _list_runs(store: ArtifactStore) -> None:
     """Print a one-line summary per run, newest last (chronological)."""
     summaries = RunReader(store).list_runs()
@@ -419,6 +632,24 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("list-runs", parents=[common], help="list stored runs with one-line summaries")
 
+    p_replay = sub.add_parser(
+        "replay",
+        parents=[common],
+        help="replay a regression artifact and assert the gate conditions hold",
+    )
+    p_replay.add_argument(
+        "artifact_path",
+        help="path to a regression_artifact.json produced by the bundle stage",
+    )
+    p_replay.add_argument(
+        "--apply-control",
+        action="store_true",
+        help=(
+            "install the reference guardrails (trace_harness.environment.guardrails) "
+            "before replaying, to demonstrate a repair control flipping the gate"
+        ),
+    )
+
     p_pipe = sub.add_parser(
         "run-pipeline",
         parents=[common],
@@ -476,6 +707,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
     if args.command == "bundle":
         _bundle(_resolve_run_dir(args.run_path, store.runs_dir))
         return 0
+    if args.command == "replay":
+        return _replay(Path(args.artifact_path), store, apply_control=args.apply_control)
     if args.command == "run-pipeline":
         result = _run_fixture(args, store)
         run_dir = store.run_dir(result.run_id)
