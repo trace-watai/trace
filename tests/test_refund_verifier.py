@@ -290,8 +290,10 @@ def test_failure_fixture_matches_pinned_expectations(failure_run):
     verifier = get_verifier(failure_run.task.verifier_ids[0])
     result = verifier.verify(
         VerifierInput.from_parts(
-            task=failure_run.task, trace=failure_run.trace,
-            final_state=failure_run.final_state, run_id=failure_run.run_id,
+            task=failure_run.task,
+            trace=failure_run.trace,
+            final_state=failure_run.final_state,
+            run_id=failure_run.run_id,
         )
     )
     expected = json.loads(EXPECTED_VERIFIER_PATH.read_text())["expected"]
@@ -314,8 +316,10 @@ def test_valid_fixture_passes_verifier(valid_run):
     verifier = get_verifier(valid_run.task.verifier_ids[0])
     result = verifier.verify(
         VerifierInput.from_parts(
-            task=valid_run.task, trace=valid_run.trace,
-            final_state=valid_run.final_state, run_id=valid_run.run_id,
+            task=valid_run.task,
+            trace=valid_run.trace,
+            final_state=valid_run.final_state,
+            run_id=valid_run.run_id,
         )
     )
     assert result.passed, [c.check_id for c in result.failed_checks]

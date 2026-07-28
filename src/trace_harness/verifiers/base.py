@@ -48,7 +48,7 @@ class VerifierInput(BaseModel):
 
     schema_version: str = VERIFIER_INPUT_SCHEMA_VERSION
     task: TaskSpec
-    trace: list["TraceEvent"]
+    trace: list[TraceEvent]
     initial_state: dict[str, Any] = Field(default_factory=dict)
     final_state: dict[str, Any]
     run_id: str
@@ -59,12 +59,12 @@ class VerifierInput(BaseModel):
         cls,
         *,
         task: TaskSpec,
-        trace: list["TraceEvent"],
+        trace: list[TraceEvent],
         final_state: dict[str, Any],
         run_id: str,
         initial_state: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> "VerifierInput":
+    ) -> VerifierInput:
         """Convenience factory mirroring the old verify() signature."""
         return cls(
             task=task,
