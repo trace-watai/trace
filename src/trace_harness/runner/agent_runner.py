@@ -306,6 +306,15 @@ class AgentRunner:
                     break
 
                 steps_taken = step_id
+                # Real adapters stash the provider's raw response in action.raw;
+                # record that provider event before the normalized model_action.
+                # Fixture runs leave raw=None and emit nothing.
+                if action.raw is not None:
+                    recorder.record(
+                        TraceEventType.MODEL_RESPONSE,
+                        step_id=step_id,
+                        payload={"raw": action.raw},
+                    )
                 recorder.record(
                     TraceEventType.MODEL_ACTION,
                     step_id=step_id,

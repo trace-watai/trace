@@ -12,8 +12,10 @@ from pathlib import Path
 import pytest
 
 from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, VALID_TASK_PATH
+from trace_harness.models.base import ActionKind, AgentAction
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.batch import BatchRunner, BatchSummary, summary_path
+from trace_harness.runner.pipeline import run_task_pipeline
 from trace_harness.runner.suite import AgentConfig, SuiteLoadError, SuiteSpec, load_suite
 from trace_harness.tracing.artifact_store import ArtifactStore
 
@@ -173,3 +175,50 @@ def test_multiple_agent_configs_cross_product(tmp_path: Path) -> None:
     assert len(summary.entries) == 2  # 1 task x 2 configs
     assert {e.agent_label for e in summary.entries} == {"a", "b"}
     assert set(summary.aggregates.by_agent.keys()) == {"a", "b"}
+
+
+def test_live_adapter_receives_recorded_agent_knobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FinalAnswerAdapter:
+        name = "gemini"
+
+        def next_action(self, transcript, tools):
+            return AgentAction(kind=ActionKind.FINAL_ANSWER, final_answer="done")
+
+    def fake_create_model_adapter(provider: str, **kwargs):
+        captured.update({"provider": provider, **kwargs})
+        return _FinalAnswerAdapter()
+
+    monkeypatch.setattr(
+        "trace_harness.runner.pipeline.create_model_adapter",
+        fake_create_model_adapter,
+    )
+    config = AgentConfig(
+        label="live",
+        provider="gemini",
+        model="gemini-3.6-flash",
+        temperature=0.2,
+        seed=7,
+        timeout_seconds=17.0,
+    )
+
+    result = run_task_pipeline(
+        VALID_TASK_PATH,
+        config,
+        ArtifactStore(tmp_path / "runs"),
+        bundle_on_fail=False,
+    )
+
+    assert captured == {
+        "provider": "gemini",
+        "model": "gemini-3.6-flash",
+        "temperature": 0.2,
+        "seed": 7,
+        "timeout_seconds": 17.0,
+    }
+    assert result.run_config.temperature == 0.2
+    assert result.run_config.seed == 7
+    assert result.run_config.timeout_seconds == 17.0

@@ -95,22 +95,28 @@ irreversible action step 5), the generated failure bundle, and a passing
 positive sibling proving no overblocking. Plus typed, versioned schemas
 for every contract and a sub-second offline test suite.
 
-## What's intentionally scaffolded (not faked)
+## What's implemented, and what's intentionally incomplete
 
-- **Gemini adapter** — config-checked scaffold; the provider call raises
-  `NotImplementedError` with the intended design. Fixture provider is the
-  default everywhere; tests never need keys.
-- **Refund guardrails** — deliberately absent so the verifier has real
-  failures to catch; the installation seam is marked in
-  `environment/support_env.py` and prescribed by the generated repair
-  package.
+- **Gemini adapter** — implemented for native function calling. Install the
+  extra and set a key, then select it per run:
+  `pip install -e ".[gemini]"`, put `GEMINI_API_KEY` in `.env` (free keys:
+  https://aistudio.google.com/apikey), and run
+  `trace-harness run-fixture <task> --provider gemini --model gemini-3.6-flash`.
+  Fixture provider stays the default everywhere; tests never need a key or the
+  SDK. (JSON tool-mode fallback is still TODO.)
+- **Refund guardrails** — off by default so the canonical failure remains real;
+  regression replay can apply the generated deterministic pre-execution
+  control and prove that positive sibling cases are not overblocked.
 - **Attribution** — rule-based, confidence-capped; the LLM judge comes
   later and must beat this baseline.
-- **API & dashboard** — contracts and start conditions only:
+- **API & dashboard** — the first failure card and aligned artifact contracts
+  are implemented; multi-run loading, the trace timeline, repair/regression
+  panels, and an API wrapper over `RunReader` remain:
   [docs/future_api.md](docs/future_api.md),
   [docs/future_dashboard.md](docs/future_dashboard.md).
-- **Replay** — regression artifacts re-run their originating fixture;
-  replay-from-pinned-state is a named next step.
+- **Replay** — pinned state, documents, normalized agent actions, verifier
+  checks, controls, and positive siblings are executable. Wider task-family
+  coverage is still incomplete.
 
 Observability stance: TRACE-native artifacts (`trace.jsonl` + run JSON)
 are the source of truth; Langfuse/Phoenix/OpenTelemetry are optional

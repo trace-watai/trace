@@ -56,22 +56,22 @@ Rupert on transcript shape); wire `validate-fixtures` into `check_repo.sh`/CI
 **What belongs here:** the provider-neutral contract types (`Message`,
 `ToolSpec`, `ToolCall`, `AgentAction`), the `ModelAdapter` protocol, and
 its implementations: `FixtureModelAdapter` (deterministic scripted agent —
-the default everywhere) and `GeminiModelAdapter` (scaffold; the provider
-call is an explicit `NotImplementedError` with the intended design in its
-docstring).
+the default everywhere) and `GeminiModelAdapter` (native function calling
+through the optional `google-genai` SDK, normalized into the same
+single-action contract).
 
 **Exposes:** `ModelAdapter.next_action(transcript, tools) -> AgentAction`;
 `create_model_adapter(provider, ...)` — the only place provider strings are
 interpreted.
 
 **Rules:** no code path may make tests need an API key. No tool execution
-(environment), no prompt construction (runner), no retry frameworks until
-the first real adapter forces a deliberate design.
+(environment) and no prompt construction (runner). Provider errors become
+`ModelAdapterError`; multiple parallel calls must fail explicitly until the
+shared action contract supports them.
 
-**Build next:** implement `GeminiModelAdapter.next_action` (recorded-
-response tests only, never live calls); decide the parallel-tool-call story
-(`AgentAction` grows a list form behind a schema bump); a `replay` adapter
-that re-feeds a recorded trace's actions.
+**Build next:** add bounded retry/backoff and token/cost extraction; decide the
+parallel-tool-call story (`AgentAction` grows a list form behind a schema
+bump); keep one controlled key-backed acceptance run outside CI.
 
 ## environment/ — the sandboxed world *(Evan Yang)*
 

@@ -26,11 +26,11 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.5",
 ]
-# Optional: the Gemini adapter scaffold will use the google-genai SDK once it
-# is implemented. Installing this extra does NOT make tests require an API
-# key — the fixture provider stays the default everywhere.
+# Optional: the Gemini adapter uses the google-genai SDK. Installing this extra
+# does NOT make tests require an API key — the fixture provider stays the
+# default everywhere and the offline test suite never needs the SDK.
 gemini = [
-    "google-genai>=1.0",
+    "google-genai>=1.33,<2",
 ]
 
 [project.scripts]

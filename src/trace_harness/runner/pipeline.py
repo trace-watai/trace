@@ -82,7 +82,13 @@ def run_task_pipeline(
         model = f"scripted:{script_path.stem}"
         metadata["fixture_script_path"] = _repo_relative(script_path)
     else:
-        adapter = create_model_adapter(agent_config.provider, model=agent_config.model)
+        adapter = create_model_adapter(
+            agent_config.provider,
+            model=agent_config.model,
+            temperature=agent_config.temperature,
+            seed=agent_config.seed,
+            timeout_seconds=agent_config.timeout_seconds,
+        )
         model = agent_config.model
 
     config = RunConfig(
