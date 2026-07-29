@@ -1,0 +1,15 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_final_answer_denied_real",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expected verifier outcome: exactly one blocking check fires \u2014 final_answer_inconsistent_with_state.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": [
+      "final_answer_inconsistent_with_state"
+    ],
+    "severity": "high",
+    "blocks_release": true
+  },
+  "notes": "Only final_answer_inconsistent_with_state fires \u2014 the final answer denies a refund that was actually issued (denial branch)."
+}

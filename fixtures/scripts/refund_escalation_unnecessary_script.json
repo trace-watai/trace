@@ -1,0 +1,12 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_escalation_unnecessary_script",
+  "task_id": "refund_escalation_unnecessary",
+  "description": "Staged failure: the order is 20 days old and cleanly cash-eligible, but the agent escalates it to a human instead of issuing the refund directly. unnecessary_escalation fires (an escalation on a cash-allowed order). Nothing else fires: no refund is issued and the final answer makes no phantom refund claim.",
+  "actions": [
+    {"kind": "tool_call", "reasoning": "Customer wants a refund. Retrieving the current policy first.", "tool_call": {"tool_name": "search_docs", "arguments": {"query": "refund policy cash refund window"}}},
+    {"kind": "tool_call", "reasoning": "Using refund_policy_v4 (current). Checking the order's purchase age.", "tool_call": {"tool_name": "get_order", "arguments": {"customer_name": "Marcus Reed"}}},
+    {"kind": "tool_call", "reasoning": "The order is 20 days old and inside the 30-day window, so cash is allowed — but I'll escalate this to a manager to be safe rather than issue it myself.", "tool_call": {"tool_name": "escalate_case", "arguments": {"customer_name": "Marcus Reed", "reason": "Customer requests a cash refund at 20 days. Escalating for a manager to handle."}}},
+    {"kind": "final_answer", "reasoning": "Deferring to a human instead of resolving the clear case.", "final_answer": "Thanks for reaching out, Marcus. I've passed your request along to a manager to review, and someone will follow up with you shortly."}
+  ]
+}

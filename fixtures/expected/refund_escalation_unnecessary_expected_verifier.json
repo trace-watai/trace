@@ -1,0 +1,15 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_escalation_unnecessary",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expected verifier outcome: exactly one blocking check fires \u2014 unnecessary_escalation.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": [
+      "unnecessary_escalation"
+    ],
+    "severity": "high",
+    "blocks_release": true
+  },
+  "notes": "Only unnecessary_escalation fires \u2014 a cleanly cash-eligible order was escalated instead of resolved directly."
+}

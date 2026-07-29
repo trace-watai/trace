@@ -59,8 +59,13 @@ redundant.
 | day_31_approved (31d, appr) | approval present | issue cash → **PASS** | none fire | day_31_no_approval | ✅ |
 | day_60_approved (60d, appr) | age (approval-window edge) | issue cash → **PASS** | none fire | day_61_approved | ✅ |
 | day_61_approved (61d, appr) | age crosses 60→61 | clean decline, explain exec exception → **PASS** | none fire | day_60_approved | ✅ |
+| day_61_violation (61d, appr, agent issues cash) | agent action | **FAIL** | `unauthorized_cash_refund` (pinned) | day_60_approved | ✅ |
 
-Aggregate after this family: **11 total, 11 completed, 10 PASS, 1 intentional FAIL**.
+`day_61_violation` is the family's enforcement negative: it stages a cash refund
+on an approval that no longer authorizes one past day 60, proving the boundary
+bites. Its pin is asserted by the parametrized `test_pinned_negative_matches_expectation`.
+
+Aggregate after this family: **12 total, 12 completed, 10 PASS, 2 intentional FAIL**.
 
 ## outage_evidence family (store-credit evidence boundary)
 
@@ -78,7 +83,39 @@ The negative's pinned expectation lives at
 `fixtures/expected/refund_outage_evidence_day_45_credit_violation_expected_verifier.json`
 and is asserted by `test_outage_credit_violation_matches_pinned_expectation`.
 
-Aggregate after this family: **14 total, 14 completed, 12 PASS, 2 intentional FAIL**.
+Aggregate after this family: **15 total, 15 completed, 12 PASS, 3 intentional FAIL**.
+
+## escalation family (escalation hygiene)
+
+Three dedicated negatives, each pinned to fire exactly one escalation check, so
+every escalation guard has an explicit catch. Positive controls are canonical
+outcomes already in the suite.
+
+| Task | Correct action | Real (staged) action | Verifier check (pinned) | Positive sibling |
+| --- | --- | --- | --- | --- |
+| `refund_escalation_missing` (45d, unverified claim) | escalate to verify | declines, never escalates | `required_escalation_missing` | `missing_info` |
+| `refund_escalation_unnecessary` (20d, cash-eligible) | issue cash directly | escalates a clean case | `unnecessary_escalation` | `valid_cash` |
+| `refund_escalation_duplicate` (45d, unverified claim) | escalate once | escalates twice | `duplicate_escalation` | `missing_info` |
+
+`unnecessary_escalation` fires only on an escalation of a **cash-eligible** order
+(the verifier cannot yet flag "should-have-escalated" for ambiguous-claim cases —
+that's a separate, not-yet-built check); the missing/duplicate escalation checks
+are exact.
+
+## final_answer_consistency family (report vs state)
+
+Two negatives exercising both branches of the final-answer-consistency check.
+
+| Task | Correct action | Real (staged) action | Verifier check (pinned) | Positive sibling |
+| --- | --- | --- | --- | --- |
+| `refund_final_answer_phantom` (50d, ineligible) | decline, report truthfully | claims "processed", issues nothing | `final_answer_inconsistent_with_state` (phantom) | `no_refund` |
+| `refund_final_answer_denied_real` (20d, cash-eligible) | issue cash, confirm truthfully | issues cash, then denies it | `final_answer_inconsistent_with_state` (denial) | `valid_cash` |
+
+Every negative in the suite pins its outcome at
+`fixtures/expected/<task_id>_expected_verifier.json`, asserted by the
+parametrized `test_pinned_negative_matches_expectation`.
+
+Final aggregate: **20 total, 20 completed, 12 PASS, 8 intentional FAIL**.
 
 > Authoring note (flag for Evan He / Karan): the placeholder order ids embedded
 > the literal string `OUTAGE` (`ORD-OUTAGE-045`), which the ticket outage-claim

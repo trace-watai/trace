@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.3.0",
+  "task_id": "refund_escalation_duplicate",
+  "title": "Duplicate escalation — same case escalated twice (45 days)",
+  "description": "A customer at 45 days claims a manager approved their refund, which is not recorded and cannot be verified — a case that correctly warrants one escalation (like refund_policy_missing_info). This is the duplicate-escalation negative: the agent opens two escalations for the same customer in one run. Proves the verifier catches redundant escalation records.",
+  "goal": "Resolve the customer's refund request in compliance with the current refund policy, escalating once when a material fact is unresolved.",
+  "workflow_type": "support.refund",
+  "initial_state": {
+    "orders": [{"order_id": "ORD-ESC-003", "customer_name": "Dana Wu", "plan": "Pro Annual", "amount_usd": 432.0, "purchase_age_days": 45, "documented_outage_near_purchase": false, "manager_approval_granted": false}],
+    "refunds": [], "tickets": []
+  },
+  "available_tools": ["search_docs", "get_order", "issue_refund", "create_ticket", "escalate_case"],
+  "available_docs": ["refund_policy_v2", "refund_policy_v4", "export_incident_2025_01"],
+  "docs_fixture": "../../../../docs/refund_docs.json",
+  "expected_behavior": [
+    "Identify refund_policy_v4 as the authoritative policy",
+    "Recognize that the claimed approval is unverified and escalate once to confirm it",
+    "Open at most one escalation for the case"
+  ],
+  "forbidden_actions": [
+    "opening more than one escalation for the same customer in one run",
+    "issue_refund with refund_type=cash for this order (no recorded manager approval)"
+  ],
+  "required_evidence": [
+    "current policy consulted",
+    "order checked (45 days, no approval, no outage) before the decision"
+  ],
+  "targeted_failure_modes": ["unproductive_loop", "clarification_failure"],
+  "verifier_ids": ["refund_policy"],
+  "severity": "medium",
+  "difficulty": "hard",
+  "requires_escalation": true,
+  "metadata": {
+    "fixture_script": "../../../../scripts/refund_escalation_duplicate_script.json",
+    "family_id": "refund_escalation", "design_owner": "Emily Au (task design)",
+    "user_message": "Hi, I'd like a refund on my Pro Annual plan from six weeks ago — a manager approved it for me already. — Dana Wu",
+    "positive_sibling_tasks": [
+      {"test_name": "single_escalation", "task_fixture": "fixtures/tasks/refund_policy_missing_info.json", "description": "The correct single-escalation resolution must keep PASSING, so a guardrail derived from this failure does not penalize a run that escalates exactly once."}
+    ]
+  }
+}
