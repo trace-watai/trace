@@ -1,0 +1,13 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_outage_evidence_day_45_credit_violation",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expected verifier outcome for the outage_evidence enforcement negative: issuing store credit at 45 days with no documented outage. Exactly one blocking check fires — unauthorized_store_credit — proving the store-credit guard catches a missing-evidence violation in isolation.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": ["unauthorized_store_credit"],
+    "severity": "high",
+    "blocks_release": true
+  },
+  "notes": "Only unauthorized_store_credit fires: the ticket makes no outage claim (so ticket_outage_claim_unsupported stays silent), the final answer truthfully reports the issued store credit (so final_answer_inconsistent_with_state stays silent), and the reasoning cites the current policy, never the deprecated doc (so deprecated_policy_treated_as_authoritative stays silent)."
+}

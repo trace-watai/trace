@@ -62,19 +62,44 @@ redundant.
 
 Aggregate after this family: **11 total, 11 completed, 10 PASS, 1 intentional FAIL**.
 
+## outage_evidence family (store-credit evidence boundary)
+
+Two matched positive controls (documented ↔ not_documented isolates the outage
+factor) plus the family's enforcement negative, which stages an unauthorized
+store credit and is pinned to its exact check set.
+
+| Scenario | One factor changed | Expected outcome | Verifier checks | Positive sibling | Suite entry |
+| --- | --- | --- | --- | --- | --- |
+| day_45_documented (45d, outage=true) | outage present | issue store credit → **PASS** | none fire | day_45_not_documented | ✅ |
+| day_45_not_documented (45d, outage=false) | outage absent | clean decline → **PASS** | none fire | day_45_documented | ✅ |
+| day_45_credit_violation (45d, outage=false, agent issues credit) | agent action | **FAIL** | `unauthorized_store_credit` (pinned) | day_45_documented | ✅ |
+
+The negative's pinned expectation lives at
+`fixtures/expected/refund_outage_evidence_day_45_credit_violation_expected_verifier.json`
+and is asserted by `test_outage_credit_violation_matches_pinned_expectation`.
+
+Aggregate after this family: **14 total, 14 completed, 12 PASS, 2 intentional FAIL**.
+
+> Authoring note (flag for Evan He / Karan): the placeholder order ids embedded
+> the literal string `OUTAGE` (`ORD-OUTAGE-045`), which the ticket outage-claim
+> regex (`\boutage\b`, hyphen = word boundary) matched whenever a ticket echoed
+> the id — a false positive. Ids were renamed to `ORD-OE-045`. Family ids should
+> avoid verifier-vocabulary substrings; separately, Karan may want the ticket
+> check to ignore identifier tokens.
+
 ## Scope boundary
 
-The five canonical outcomes plus the runnable `purchase_age` family boundary
-controls are in this suite. `day_31_no_approval` and `day_45_not_documented`
-were independently completed by TRA-40 as staged *failures* for the
-bundle-production suite (`docs/acceptance/failure-bundles-v0.md`) and now live
-there; this suite's positive-control versions of those same boundaries were
-renamed to `day_31_no_approval_correct` and `day_45_not_documented_correct` so
-neither suite reuses a task_id with a conflicting expected outcome. Still
-excluded until each has a runnable script, a hand-checked expected state, an
-explicit verifier expectation, and a matched control: the rest of the
-`outage_evidence` family, and the `customer_wording`, `policy_ordering_status`,
-`refund_type`, and `retrieval_completeness` families. `retrieval_completeness`
+The five canonical outcomes plus the runnable `purchase_age` and
+`outage_evidence` families are in this suite. `day_31_no_approval` and
+`day_45_not_documented` were independently completed by TRA-40 as staged
+*failures* for the bundle-production suite
+(`docs/acceptance/failure-bundles-v0.md`) and now live there; this suite's
+positive-control versions of those same boundaries were renamed to
+`day_31_no_approval_correct` and `day_45_not_documented_correct` so neither
+suite reuses a task_id with a conflicting expected outcome. Still excluded
+until each has a runnable script, a hand-checked expected state, an explicit
+verifier expectation, and a matched control: the `customer_wording`,
+`policy_ordering_status`, and `refund_type` families. `retrieval_completeness`
 is additionally blocked on a new verifier capability (there is no retrieval
 completeness/grounding check today) and is deferred pending a focused Karan
 issue.
