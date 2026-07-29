@@ -30,6 +30,35 @@ def _fixture_config(label: str = "fixture-baseline") -> AgentConfig:
 # --- suite loading / validation ---
 
 
+def test_outage_credit_violation_matches_pinned_expectation(tmp_path: Path) -> None:
+    """The outage_evidence enforcement negative must fire exactly its pinned check
+    set (unauthorized_store_credit only) — proving the store-credit guard catches a
+    missing-outage violation in isolation."""
+    from conftest import run_task_fixture
+    from trace_harness.verifiers.base import VerifierInput
+    from trace_harness.verifiers.registry import get_verifier
+
+    task_path = (
+        FIXTURES_DIR
+        / "tasks/refund_task_families/outage_evidence/day_45_credit_violation"
+        / "refund_outage_evidence_day_45_credit_violation.json"
+    )
+    expected = json.loads(
+        (FIXTURES_DIR / "expected/refund_outage_evidence_day_45_credit_violation_expected_verifier.json").read_text()
+    )["expected"]
+
+    run = run_task_fixture(task_path, tmp_path / "runs")
+    result = get_verifier(run.task.verifier_ids[0]).verify(
+        VerifierInput.from_parts(
+            task=run.task, trace=run.trace, final_state=run.final_state, run_id=run.run_id
+        )
+    )
+    assert result.passed is expected["passed"]
+    assert sorted(c.check_id for c in result.failed_checks) == sorted(expected["failed_check_ids"])
+    assert result.severity.value == expected["severity"]
+    assert result.blocks_release is expected["blocks_release"]
+
+
 def test_every_canonical_suite_task_passes_authoring_validation() -> None:
     """Acceptance rule: every task in the runnable suite must pass the authoring
     rubric. The validation CLI only globs top-level fixtures/tasks/, so nested
@@ -60,6 +89,9 @@ def test_load_canonical_suite() -> None:
         "fixtures/tasks/refund_task_families/purchase_age/day_31_approved/refund_cash_age_boundary_day_31_approved.json",
         "fixtures/tasks/refund_task_families/purchase_age/day_60_approved/refund_cash_age_boundary_day_60_approved.json",
         "fixtures/tasks/refund_task_families/purchase_age/day_61_approved/refund_cash_age_boundary_day_61_approved.json",
+        "fixtures/tasks/refund_task_families/outage_evidence/day_45_documented/refund_outage_evidence_day_45_documented.json",
+        "fixtures/tasks/refund_task_families/outage_evidence/day_45_not_documented/refund_outage_evidence_day_45_not_documented.json",
+        "fixtures/tasks/refund_task_families/outage_evidence/day_45_credit_violation/refund_outage_evidence_day_45_credit_violation.json",
     ]
     assert suite.agent_configs[0].provider == "fixture"
 
@@ -105,13 +137,17 @@ def test_canonical_suite_executes_all_product_outcomes(tmp_path: Path) -> None:
         "refund_cash_age_boundary_day_31_approved": True,
         "refund_cash_age_boundary_day_60_approved": True,
         "refund_cash_age_boundary_day_61_approved": True,
+        # outage_evidence family: documented↔not_documented controls + enforcement negative
+        "refund_outage_evidence_day_45_documented": True,
+        "refund_outage_evidence_day_45_not_documented": True,
+        "refund_outage_evidence_day_45_credit_violation": False,
     }
-    assert summary.aggregates.total == 11
-    assert summary.aggregates.completed == 11
+    assert summary.aggregates.total == 14
+    assert summary.aggregates.completed == 14
     assert summary.aggregates.terminated == 0
     assert summary.aggregates.errored == 0
-    assert summary.aggregates.verifier_passed == 10
-    assert summary.aggregates.verifier_failed == 1
+    assert summary.aggregates.verifier_passed == 12
+    assert summary.aggregates.verifier_failed == 2
 
 
 def test_batch_runs_all_and_aggregates(tmp_path: Path) -> None:
