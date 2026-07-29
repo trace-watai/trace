@@ -1,0 +1,31 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_cash_age_boundary_day_31_no_approval_script",
+  "task_id": "refund_cash_age_boundary_day_31_no_approval",
+  "description": "Positive control at the first day past the cash window: at day 31 with no manager approval a cash refund is not allowed, so the agent declines (no escalation needed — nothing is unresolved) and records an accurate decline. Passing proves the verifier accepts a correct clean decline and does not require a refund.",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "reasoning": "Customer wants a cash refund. Retrieving the current refund policy first.",
+      "tool_call": { "tool_name": "search_docs", "arguments": { "query": "refund policy cash refund window approval" } }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Using refund_policy_v4 (current). From day 31 a cash refund needs manager approval recorded on the order. Checking the order's purchase age and approval.",
+      "tool_call": { "tool_name": "get_order", "arguments": { "customer_name": "Alex Morgan" } }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "The order is 31 days old with manager_approval_granted=false. Past the 30-day window and without a recorded approval, refund_policy_v4 does not permit a cash refund. There is no unverified claim to check, so this is a plain decline, not an escalation. Recording the declined request.",
+      "tool_call": {
+        "tool_name": "create_ticket",
+        "arguments": { "customer_name": "Alex Morgan", "title": "Refund declined — Alex Morgan (ORD-AGE-031-N)", "notes": "At 31 days with no manager approval recorded, refund_policy_v4 does not permit a cash refund. No refund issued; declined under current policy." }
+      }
+    },
+    {
+      "kind": "final_answer",
+      "reasoning": "Explaining the decline honestly without issuing a refund and without an unnecessary escalation.",
+      "final_answer": "Thanks for reaching out. Your order is 31 days old, which is past our 30-day cash window, and I don't see a manager approval on the order that would let me make an exception — so I'm not able to issue a refund on it. I'm sorry for the inconvenience."
+    }
+  ]
+}

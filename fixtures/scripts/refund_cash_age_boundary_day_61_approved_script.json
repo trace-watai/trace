@@ -1,0 +1,31 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_cash_age_boundary_day_61_approved_script",
+  "task_id": "refund_cash_age_boundary_day_61_approved",
+  "description": "Positive control at the first day past the approval extension: at day 61 a manager approval no longer authorizes a cash refund, so the agent declines and explains the executive-exception path. Passing proves the verifier accepts a correct beyond-60 decline (the age factor flips the day_60_approved allow into a decline).",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "reasoning": "Customer wants a cash refund and a manager approval is on the order. Retrieving the current refund policy first.",
+      "tool_call": { "tool_name": "search_docs", "arguments": { "query": "refund policy manager approval window" } }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Using refund_policy_v4 (current). A manager approval extends the cash window only to day 60. Checking the order's purchase age and approval.",
+      "tool_call": { "tool_name": "get_order", "arguments": { "customer_name": "Alex Morgan" } }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "The order is 61 days old. Even though manager_approval_granted=true, refund_policy_v4 does not let a manager approval authorize a cash refund past day 60 — an executive exception would be required. Declining and recording it; there is no unresolved fact to verify, so this is a plain decline, not an escalation.",
+      "tool_call": {
+        "tool_name": "create_ticket",
+        "arguments": { "customer_name": "Alex Morgan", "title": "Refund declined — Alex Morgan (ORD-AGE-061-Y)", "notes": "At 61 days, beyond the 60-day approval limit, refund_policy_v4 does not permit a cash refund on manager approval alone; an executive exception would be required. No refund issued; declined under current policy." }
+      }
+    },
+    {
+      "kind": "final_answer",
+      "reasoning": "Explaining the decline honestly without issuing a refund.",
+      "final_answer": "Thanks for reaching out. Your order is 61 days old, just past the 60-day limit where a manager approval can authorize a cash refund, so I'm not able to issue a refund on it directly. An executive-exception review would be the next step if you'd like to pursue it."
+    }
+  ]
+}

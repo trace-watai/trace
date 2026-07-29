@@ -30,6 +30,21 @@ def _fixture_config(label: str = "fixture-baseline") -> AgentConfig:
 # --- suite loading / validation ---
 
 
+def test_every_canonical_suite_task_passes_authoring_validation() -> None:
+    """Acceptance rule: every task in the runnable suite must pass the authoring
+    rubric. The validation CLI only globs top-level fixtures/tasks/, so nested
+    family tasks would otherwise go unvalidated — this ties validation to the
+    manifest so any task added to the suite is checked."""
+    from trace_harness.tasks.loader import load_task
+    from trace_harness.tasks.validation import errors, validate_task
+
+    suite = load_suite(SUITE_MANIFEST)
+    for rel in suite.tasks:
+        task = load_task(FIXTURES_DIR.parent / rel)
+        errs = [i.code for i in errors(validate_task(task))]
+        assert errs == [], f"{rel}: {errs}"
+
+
 def test_load_canonical_suite() -> None:
     suite = load_suite(SUITE_MANIFEST)
     assert suite.suite_id == "refund_v0"
@@ -39,6 +54,12 @@ def test_load_canonical_suite() -> None:
         "fixtures/tasks/refund_policy_store_credit.json",
         "fixtures/tasks/refund_policy_no_refund.json",
         "fixtures/tasks/refund_policy_missing_info.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_0/refund_cash_age_boundary_day_0.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_30/refund_cash_age_boundary_day_30.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_31_no_approval/refund_cash_age_boundary_day_31_no_approval.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_31_approved/refund_cash_age_boundary_day_31_approved.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_60_approved/refund_cash_age_boundary_day_60_approved.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_61_approved/refund_cash_age_boundary_day_61_approved.json",
     ]
     assert suite.agent_configs[0].provider == "fixture"
 
@@ -67,21 +88,29 @@ def test_duplicate_agent_labels_rejected() -> None:
 # --- batch execution ---
 
 
-def test_canonical_suite_executes_all_five_product_outcomes(tmp_path: Path) -> None:
+def test_canonical_suite_executes_all_product_outcomes(tmp_path: Path) -> None:
     summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(load_suite(SUITE_MANIFEST))
 
     assert {entry.task_id: entry.verifier_passed for entry in summary.entries} == {
+        # Five canonical outcomes
         "refund_policy_failure": False,
         "refund_policy_valid_cash": True,
         "refund_policy_store_credit": True,
         "refund_policy_no_refund": True,
         "refund_policy_missing_info": True,
+        # purchase_age family: cash-window boundary controls (all correct behavior)
+        "refund_cash_age_boundary_day_0": True,
+        "refund_cash_age_boundary_day_30": True,
+        "refund_cash_age_boundary_day_31_no_approval": True,
+        "refund_cash_age_boundary_day_31_approved": True,
+        "refund_cash_age_boundary_day_60_approved": True,
+        "refund_cash_age_boundary_day_61_approved": True,
     }
-    assert summary.aggregates.total == 5
-    assert summary.aggregates.completed == 5
+    assert summary.aggregates.total == 11
+    assert summary.aggregates.completed == 11
     assert summary.aggregates.terminated == 0
     assert summary.aggregates.errored == 0
-    assert summary.aggregates.verifier_passed == 4
+    assert summary.aggregates.verifier_passed == 10
     assert summary.aggregates.verifier_failed == 1
 
 
