@@ -1,0 +1,15 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_escalation_duplicate",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expected verifier outcome: exactly one blocking check fires \u2014 duplicate_escalation.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": [
+      "duplicate_escalation"
+    ],
+    "severity": "high",
+    "blocks_release": true
+  },
+  "notes": "Only duplicate_escalation fires \u2014 two escalations were opened for the same customer in one run."
+}

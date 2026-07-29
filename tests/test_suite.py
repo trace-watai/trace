@@ -30,22 +30,35 @@ def _fixture_config(label: str = "fixture-baseline") -> AgentConfig:
 # --- suite loading / validation ---
 
 
-def test_outage_credit_violation_matches_pinned_expectation(tmp_path: Path) -> None:
-    """The outage_evidence enforcement negative must fire exactly its pinned check
-    set (unauthorized_store_credit only) — proving the store-credit guard catches a
-    missing-outage violation in isolation."""
+def _suite_task_paths_by_id() -> dict[str, Path]:
+    """task_id -> absolute fixture path, for every task in the canonical manifest."""
+    from trace_harness.tasks.loader import load_task
+
+    out: dict[str, Path] = {}
+    for rel in load_suite(SUITE_MANIFEST).tasks:
+        p = FIXTURES_DIR.parent / rel
+        out[load_task(p).task_id] = p
+    return out
+
+
+# Every negative in the suite pins its exact verifier outcome under fixtures/expected/.
+_PINNED_EXPECTED = sorted((FIXTURES_DIR / "expected").glob("*_expected_verifier.json"))
+
+
+@pytest.mark.parametrize("expected_path", _PINNED_EXPECTED, ids=lambda p: p.stem)
+def test_pinned_negative_matches_expectation(expected_path: Path, tmp_path: Path) -> None:
+    """Each pinned expected-verifier file must match a real run of its task: same
+    pass/fail, same failed-check set, same severity and blocks_release. This is the
+    exact-outcome contract for every suite negative (deliverable #2)."""
     from conftest import run_task_fixture
     from trace_harness.verifiers.base import VerifierInput
     from trace_harness.verifiers.registry import get_verifier
 
-    task_path = (
-        FIXTURES_DIR
-        / "tasks/refund_task_families/outage_evidence/day_45_credit_violation"
-        / "refund_outage_evidence_day_45_credit_violation.json"
-    )
-    expected = json.loads(
-        (FIXTURES_DIR / "expected/refund_outage_evidence_day_45_credit_violation_expected_verifier.json").read_text()
-    )["expected"]
+    doc = json.loads(expected_path.read_text())
+    task_id, expected = doc["task_id"], doc["expected"]
+    task_path = _suite_task_paths_by_id().get(task_id)
+    if task_path is None:
+        pytest.skip(f"{task_id} is pinned but not in the canonical suite manifest")
 
     run = run_task_fixture(task_path, tmp_path / "runs")
     result = get_verifier(run.task.verifier_ids[0]).verify(
@@ -89,9 +102,15 @@ def test_load_canonical_suite() -> None:
         "fixtures/tasks/refund_task_families/purchase_age/day_31_approved/refund_cash_age_boundary_day_31_approved.json",
         "fixtures/tasks/refund_task_families/purchase_age/day_60_approved/refund_cash_age_boundary_day_60_approved.json",
         "fixtures/tasks/refund_task_families/purchase_age/day_61_approved/refund_cash_age_boundary_day_61_approved.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_61_violation/refund_cash_age_boundary_day_61_violation.json",
         "fixtures/tasks/refund_task_families/outage_evidence/day_45_documented/refund_outage_evidence_day_45_documented.json",
         "fixtures/tasks/refund_task_families/outage_evidence/day_45_not_documented/refund_outage_evidence_day_45_not_documented.json",
         "fixtures/tasks/refund_task_families/outage_evidence/day_45_credit_violation/refund_outage_evidence_day_45_credit_violation.json",
+        "fixtures/tasks/refund_task_families/escalation/escalation_missing/refund_escalation_missing.json",
+        "fixtures/tasks/refund_task_families/escalation/escalation_unnecessary/refund_escalation_unnecessary.json",
+        "fixtures/tasks/refund_task_families/escalation/escalation_duplicate/refund_escalation_duplicate.json",
+        "fixtures/tasks/refund_task_families/final_answer_consistency/phantom_claim/refund_final_answer_phantom.json",
+        "fixtures/tasks/refund_task_families/final_answer_consistency/denied_real_refund/refund_final_answer_denied_real.json",
     ]
     assert suite.agent_configs[0].provider == "fixture"
 
@@ -141,13 +160,21 @@ def test_canonical_suite_executes_all_product_outcomes(tmp_path: Path) -> None:
         "refund_outage_evidence_day_45_documented": True,
         "refund_outage_evidence_day_45_not_documented": True,
         "refund_outage_evidence_day_45_credit_violation": False,
+        # escalation family negatives (slice 3)
+        "refund_escalation_missing": False,
+        "refund_escalation_unnecessary": False,
+        "refund_escalation_duplicate": False,
+        # final_answer_consistency family + >60 cash-boundary negatives (slice 4)
+        "refund_final_answer_phantom": False,
+        "refund_final_answer_denied_real": False,
+        "refund_cash_age_boundary_day_61_violation": False,
     }
-    assert summary.aggregates.total == 14
-    assert summary.aggregates.completed == 14
+    assert summary.aggregates.total == 20
+    assert summary.aggregates.completed == 20
     assert summary.aggregates.terminated == 0
     assert summary.aggregates.errored == 0
     assert summary.aggregates.verifier_passed == 12
-    assert summary.aggregates.verifier_failed == 2
+    assert summary.aggregates.verifier_failed == 8
 
 
 def test_batch_runs_all_and_aggregates(tmp_path: Path) -> None:
