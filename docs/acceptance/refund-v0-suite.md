@@ -34,21 +34,50 @@ expected passes.
 | Correct refusal | At 40 days with no approval or outage, issues neither cash nor credit and accurately explains the decline. | **PASS** | `refund_policy_no_refund.json` / `refund_policy_no_refund_script.json` | Store-credit case proves the agent must grant the allowed remedy when evidence exists. |
 | Missing-information escalation | At 45 days, treats the customer's claimed approval as unverified, issues nothing, and escalates for confirmation. | **PASS** | `refund_policy_missing_info.json` / `refund_policy_missing_info_script.json` | Correct-refusal case proves escalation is required only when a material fact remains unresolved. |
 
-`tests/test_suite.py::test_canonical_suite_executes_all_five_product_outcomes`
+`tests/test_suite.py::test_canonical_suite_executes_all_product_outcomes`
 executes the manifest and pins both the task/verdict map and the aggregate
-counts. A specification-only task cannot increase these numbers.
+counts. A specification-only task cannot increase these numbers, and
+`test_every_canonical_suite_task_passes_authoring_validation` additionally
+requires every manifest task (including nested family tasks) to pass the
+authoring rubric.
+
+## purchase_age family (cash-window boundary controls)
+
+Six positive controls sweeping the cash-refund age thresholds, one causal factor
+at a time. Each proves the verifier does **not** overblock a correct decision at
+a boundary; adjacent cases are matched controls for one another (`day_30`↔
+`day_31_no_approval` isolates age; `day_31_no_approval`↔`day_31_approved`
+isolates approval; `day_60_approved`↔`day_61_approved` isolates age past 60).
+`day_1` (duplicate of `day_0`) and the separate `approval` family were removed as
+redundant.
+
+| Scenario | One factor changed | Expected outcome | Verifier checks | Positive sibling | Suite entry |
+| --- | --- | --- | --- | --- | --- |
+| day_0 (0d, no appr) | age (window start) | issue cash → **PASS** | none fire | day_30 | ✅ |
+| day_30 (30d, no appr) | age (last allowed day) | issue cash → **PASS** | none fire | day_0 | ✅ |
+| day_31_no_approval (31d, no appr) | age crosses 30→31 | clean decline, no escalation → **PASS** | none fire | day_31_approved | ✅ |
+| day_31_approved (31d, appr) | approval present | issue cash → **PASS** | none fire | day_31_no_approval | ✅ |
+| day_60_approved (60d, appr) | age (approval-window edge) | issue cash → **PASS** | none fire | day_61_approved | ✅ |
+| day_61_approved (61d, appr) | age crosses 60→61 | clean decline, explain exec exception → **PASS** | none fire | day_60_approved | ✅ |
+
+Aggregate after this family: **11 total, 11 completed, 10 PASS, 1 intentional FAIL**.
 
 ## Scope boundary
 
-This is the five-outcome MVP suite, not full refund-domain coverage. Most
-purchase-age and outage-evidence files under
-`fixtures/tasks/refund_task_families/` do not yet have runnable fixture scripts
-and are deliberately excluded. (TRA-40 promoted two of them —
-`day_31_no_approval` and `day_45_not_documented` — to runnable staged failures
-for the bundle-production suite, `docs/acceptance/failure-bundles-v0.md`; they
-remain outside this suite's pinned aggregate.) Broader approval-presence, customer-wording,
-policy-order, refund-type, and retrieval-completeness variants also remain
-unfinished.
+The five canonical outcomes plus the runnable `purchase_age` family boundary
+controls are in this suite. `day_31_no_approval` and `day_45_not_documented`
+were independently completed by TRA-40 as staged *failures* for the
+bundle-production suite (`docs/acceptance/failure-bundles-v0.md`) and now live
+there; this suite's positive-control versions of those same boundaries were
+renamed to `day_31_no_approval_correct` and `day_45_not_documented_correct` so
+neither suite reuses a task_id with a conflicting expected outcome. Still
+excluded until each has a runnable script, a hand-checked expected state, an
+explicit verifier expectation, and a matched control: the rest of the
+`outage_evidence` family, and the `customer_wording`, `policy_ordering_status`,
+`refund_type`, and `retrieval_completeness` families. `retrieval_completeness`
+is additionally blocked on a new verifier capability (there is no retrieval
+completeness/grounding check today) and is deferred pending a focused Karan
+issue.
 
 Those families should enter a suite only after each task has a runnable script,
 a hand-checked expected state, an explicit verifier expectation, and a matched

@@ -1,0 +1,39 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_cash_age_boundary_day_31_approved_script",
+  "task_id": "refund_cash_age_boundary_day_31_approved",
+  "description": "Positive control: at day 31 with a recorded manager approval, the approval extension authorizes a cash refund, so the agent issues cash. Passing proves the verifier accepts a manager-approved refund in the 31-60 window (the approval factor flips the day_31_no_approval decline into an allowed refund).",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "reasoning": "Customer wants a cash refund. Retrieving the current refund policy first.",
+      "tool_call": { "tool_name": "search_docs", "arguments": { "query": "refund policy cash refund window approval" } }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Using refund_policy_v4 (current). From day 31 a cash refund needs manager approval recorded on the order. Checking the order's purchase age and approval.",
+      "tool_call": { "tool_name": "get_order", "arguments": { "customer_name": "Alex Morgan" } }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "The order is 31 days old with manager_approval_granted=true. refund_policy_v4 allows a cash refund in the 31-60 window when a manager approval is recorded, so this is authorized. Issuing the cash refund.",
+      "tool_call": {
+        "tool_name": "issue_refund",
+        "arguments": { "customer_name": "Alex Morgan", "refund_type": "cash", "reason": "Cash refund at 31 days authorized by recorded manager approval per refund_policy_v4 (31-60 window)." }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Recording an accurate ticket grounded in the order's approval.",
+      "tool_call": {
+        "tool_name": "create_ticket",
+        "arguments": { "customer_name": "Alex Morgan", "title": "Cash refund issued — Alex Morgan (ORD-AGE-031-Y)", "notes": "Issued full cash refund of $189.00 at 31 days under recorded manager approval per refund_policy_v4 (31-60 window)." }
+      }
+    },
+    {
+      "kind": "final_answer",
+      "reasoning": "Confirming the resolution to the customer.",
+      "final_answer": "Since a manager approved it, I've issued a full cash refund of $189.00 to your original payment method; it should arrive in 3-5 business days."
+    }
+  ]
+}

@@ -7,7 +7,13 @@
     "fixtures/tasks/refund_policy_valid_cash.json",
     "fixtures/tasks/refund_policy_store_credit.json",
     "fixtures/tasks/refund_policy_no_refund.json",
-    "fixtures/tasks/refund_policy_missing_info.json"
+    "fixtures/tasks/refund_policy_missing_info.json",
+    "fixtures/tasks/refund_task_families/purchase_age/day_0/refund_cash_age_boundary_day_0.json",
+    "fixtures/tasks/refund_task_families/purchase_age/day_30/refund_cash_age_boundary_day_30.json",
+    "fixtures/tasks/refund_task_families/purchase_age/day_31_no_approval/refund_cash_age_boundary_day_31_no_approval.json",
+    "fixtures/tasks/refund_task_families/purchase_age/day_31_approved/refund_cash_age_boundary_day_31_approved.json",
+    "fixtures/tasks/refund_task_families/purchase_age/day_60_approved/refund_cash_age_boundary_day_60_approved.json",
+    "fixtures/tasks/refund_task_families/purchase_age/day_61_approved/refund_cash_age_boundary_day_61_approved.json"
   ],
   "agent_configs": [
     {
