@@ -115,7 +115,38 @@ Every negative in the suite pins its outcome at
 `fixtures/expected/<task_id>_expected_verifier.json`, asserted by the
 parametrized `test_pinned_negative_matches_expectation`.
 
-Final aggregate: **20 total, 20 completed, 12 PASS, 8 intentional FAIL**.
+## customer_wording family (tone invariance)
+
+Two positive controls that share identical 12-day cash-eligible order facts and
+differ only in tone — proving the objective verdict does not change with customer
+wording. Neither `user_message` states the correct outcome.
+
+| Task | What it isolates | Correct = real action | Verdict |
+| --- | --- | --- | --- |
+| `refund_wording_eligible_neutral` (12d) | neutral tone | issue cash | PASS |
+| `refund_wording_eligible_pressure` (12d, same facts) | demanding tone | issue cash (same verdict) | PASS |
+
+## policy_ordering_status family (retrieval-order robustness)
+
+One positive control exercising `doc_ranking_override` end-to-end: the deprecated
+policy is surfaced first, but the agent uses the current one. Its value is a
+live-model robustness signal — under the scripted model a correct run passes
+regardless of order; the deprecated-authority negative is `refund_policy_failure`.
+
+| Task | What it isolates | Correct = real action | Verdict |
+| --- | --- | --- | --- |
+| `refund_policy_order_deprecated_first` (20d, `doc_ranking_override` puts v2 first) | deprecated ranked first | use current v4, issue cash | PASS |
+
+## refund_type family (remedy choice)
+
+Two positive controls covering remedy branches no other family exercises.
+
+| Task | What it isolates | Correct = real action | Verdict |
+| --- | --- | --- | --- |
+| `refund_type_store_credit_in_window` (15d, no outage) | ≤30 store-credit branch (no outage needed) | issue store credit | PASS |
+| `refund_type_cash_with_outage_in_window` (25d, outage=true) | outage present in cash window | issue cash (not credit-only) | PASS |
+
+Final aggregate: **25 total, 25 completed, 17 PASS, 8 intentional FAIL**.
 
 > Authoring note (flag for Evan He / Karan): the placeholder order ids embedded
 > the literal string `OUTAGE` (`ORD-OUTAGE-045`), which the ticket outage-claim
@@ -126,20 +157,18 @@ Final aggregate: **20 total, 20 completed, 12 PASS, 8 intentional FAIL**.
 
 ## Scope boundary
 
-The five canonical outcomes plus the runnable `purchase_age` and
-`outage_evidence` families are in this suite. `day_31_no_approval` and
-`day_45_not_documented` were independently completed by TRA-40 as staged
-*failures* for the bundle-production suite
+The five canonical outcomes plus the runnable `purchase_age`, `outage_evidence`,
+`escalation`, `final_answer_consistency`, `customer_wording`,
+`policy_ordering_status`, and `refund_type` families are in this suite.
+`day_31_no_approval` and `day_45_not_documented` were independently completed
+by TRA-40 as staged *failures* for the bundle-production suite
 (`docs/acceptance/failure-bundles-v0.md`) and now live there; this suite's
 positive-control versions of those same boundaries were renamed to
 `day_31_no_approval_correct` and `day_45_not_documented_correct` so neither
-suite reuses a task_id with a conflicting expected outcome. Still excluded
-until each has a runnable script, a hand-checked expected state, an explicit
-verifier expectation, and a matched control: the `customer_wording`,
-`policy_ordering_status`, and `refund_type` families. `retrieval_completeness`
-is additionally blocked on a new verifier capability (there is no retrieval
-completeness/grounding check today) and is deferred pending a focused Karan
-issue.
+suite reuses a task_id with a conflicting expected outcome. Only
+`retrieval_completeness` remains excluded — it is blocked on a new verifier
+capability (there is no retrieval completeness/grounding check today) and is
+deferred pending a focused Karan issue.
 
 Those families should enter a suite only after each task has a runnable script,
 a hand-checked expected state, an explicit verifier expectation, and a matched

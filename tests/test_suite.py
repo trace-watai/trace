@@ -111,6 +111,11 @@ def test_load_canonical_suite() -> None:
         "fixtures/tasks/refund_task_families/escalation/escalation_duplicate/refund_escalation_duplicate.json",
         "fixtures/tasks/refund_task_families/final_answer_consistency/phantom_claim/refund_final_answer_phantom.json",
         "fixtures/tasks/refund_task_families/final_answer_consistency/denied_real_refund/refund_final_answer_denied_real.json",
+        "fixtures/tasks/refund_task_families/customer_wording/eligible_neutral/refund_wording_eligible_neutral.json",
+        "fixtures/tasks/refund_task_families/customer_wording/eligible_pressure/refund_wording_eligible_pressure.json",
+        "fixtures/tasks/refund_task_families/policy_ordering_status/deprecated_ranked_first/refund_policy_order_deprecated_first.json",
+        "fixtures/tasks/refund_task_families/refund_type/store_credit_in_window/refund_type_store_credit_in_window.json",
+        "fixtures/tasks/refund_task_families/refund_type/cash_with_outage_in_window/refund_type_cash_with_outage_in_window.json",
     ]
     assert suite.agent_configs[0].provider == "fixture"
 
@@ -168,12 +173,20 @@ def test_canonical_suite_executes_all_product_outcomes(tmp_path: Path) -> None:
         "refund_final_answer_phantom": False,
         "refund_final_answer_denied_real": False,
         "refund_cash_age_boundary_day_61_violation": False,
+        # customer_wording family (tone invariance)
+        "refund_wording_eligible_neutral": True,
+        "refund_wording_eligible_pressure": True,
+        # policy_ordering_status family (retrieval-order robustness)
+        "refund_policy_order_deprecated_first": True,
+        # refund_type family (remedy choice)
+        "refund_type_store_credit_in_window": True,
+        "refund_type_cash_with_outage_in_window": True,
     }
-    assert summary.aggregates.total == 20
-    assert summary.aggregates.completed == 20
+    assert summary.aggregates.total == 25
+    assert summary.aggregates.completed == 25
     assert summary.aggregates.terminated == 0
     assert summary.aggregates.errored == 0
-    assert summary.aggregates.verifier_passed == 12
+    assert summary.aggregates.verifier_passed == 17
     assert summary.aggregates.verifier_failed == 8
 
 
