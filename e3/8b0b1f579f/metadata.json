@@ -4,20 +4,37 @@
   "strategy": "manual-commit",
   "branch": "trace-harness/tra-86-typed-retrieval-items",
   "checkpoints_count": 0,
-  "files_touched": null,
+  "files_touched": [
+    "apps/dashboard/src/fixtures/refund-failure/regression_artifact.json",
+    "apps/dashboard/src/fixtures/refund-failure/trace.jsonl",
+    "apps/dashboard/src/types/trace-event.test.ts",
+    "apps/dashboard/src/types/trace-event.ts",
+    "docs/trace_schema.md",
+    "src/trace_harness/attribution/heuristic.py",
+    "src/trace_harness/tracing/events.py",
+    "src/trace_harness/tracing/payloads.py",
+    "src/trace_harness/verifiers/refund_policy.py",
+    "tests/test_tracing_payloads.py"
+  ],
   "sessions": [
     {
       "metadata": "/e3/8b0b1f579f/0/metadata.json",
       "transcript": "/e3/8b0b1f579f/0/full.jsonl",
       "content_hash": "/e3/8b0b1f579f/0/content_hash.txt",
       "prompt": "/e3/8b0b1f579f/0/prompt.txt"
+    },
+    {
+      "metadata": "/e3/8b0b1f579f/1/metadata.json",
+      "transcript": "/e3/8b0b1f579f/1/full.jsonl",
+      "content_hash": "/e3/8b0b1f579f/1/content_hash.txt",
+      "prompt": "/e3/8b0b1f579f/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 23633,
-    "cache_creation_tokens": 278056,
-    "cache_read_tokens": 3645090,
-    "output_tokens": 31750,
-    "api_call_count": 51
+    "input_tokens": 31778,
+    "cache_creation_tokens": 498249,
+    "cache_read_tokens": 5603651,
+    "output_tokens": 55058,
+    "api_call_count": 87
   }
 }

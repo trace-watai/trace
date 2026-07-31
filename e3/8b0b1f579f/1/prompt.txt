@@ -1,0 +1,5 @@
+docs/superpowers/handoffs/pr3-typed-retrieval-items.m
+
+---
+
+docs/superpowers/handoffs/pr3-typed-retrieval-items.md

@@ -1,0 +1,68 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "e38b0b1f579f",
+  "session_id": "d8122a97-821a-4c21-83cf-6307a69e7306",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-31T23:26:15.18777Z",
+  "branch": "trace-harness/tra-86-typed-retrieval-items",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "apps/dashboard/src/fixtures/refund-failure/regression_artifact.json",
+    "apps/dashboard/src/fixtures/refund-failure/trace.jsonl",
+    "apps/dashboard/src/types/trace-event.test.ts",
+    "apps/dashboard/src/types/trace-event.ts",
+    "docs/trace_schema.md",
+    "src/trace_harness/attribution/heuristic.py",
+    "src/trace_harness/tracing/events.py",
+    "src/trace_harness/tracing/payloads.py",
+    "src/trace_harness/verifiers/refund_policy.py",
+    "tests/test_tracing_payloads.py"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8",
+  "turn_id": "92e051d1bbc8",
+  "token_usage": {
+    "input_tokens": 8145,
+    "cache_creation_tokens": 220193,
+    "cache_read_tokens": 1958561,
+    "output_tokens": 23308,
+    "api_call_count": 36
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-31T23:26:15.174442Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 82,
+    "human_modified": 68,
+    "human_removed": 0,
+    "total_committed": 82,
+    "total_lines_changed": 150,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 2846,
+      "user_lines_removed": 1,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/commands/sync-repos.md": 59,
+        ".claude/commands/wrap.md": 89,
+        "CLAUDE.md": 95,
+        "TRACE_AutoLab_AutoResearch_Design.md": 1204,
+        "docs/superpowers/handoffs/pr2-batch-id-run-index.md": 289,
+        "docs/superpowers/handoffs/pr3-typed-retrieval-items.md": 343,
+        "kb/.wrap-state.json": 49,
+        "kb/code-changes/AGENTS.md": 384,
+        "kb/meetings/AGENTS.md": 7,
+        "kb/misc/AGENTS.md": 320,
+        "src/trace_harness/tracing/run_index.py": 7
+      },
+      "user_removed_per_file": {
+        "src/trace_harness/tracing/run_index.py": 1
+      }
+    }
+  ]
+}
