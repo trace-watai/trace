@@ -1,0 +1,17 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_policy_failure",
+  "provider": "fixture",
+  "model": "scripted:refund_policy_failure_script",
+  "max_steps": 16,
+  "timeout_seconds": 120.0,
+  "temperature": null,
+  "seed": null,
+  "prompt_version": "v0",
+  "tool_mode": "native",
+  "metadata": {
+    "task_fixture_path": "fixtures\\tasks\\refund_policy_failure.json",
+    "agent_label": "fixture-baseline",
+    "fixture_script_path": "fixtures\\scripts\\refund_policy_failure_script.json"
+  }
+}
