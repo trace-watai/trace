@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from trace_harness.runner.result import RunResult
 
-RUN_INDEX_SCHEMA_VERSION = "0.2.0"
+RUN_INDEX_SCHEMA_VERSION = "0.3.0"
 
 
 class RunIndexEntry(BaseModel):
@@ -30,6 +30,11 @@ class RunIndexEntry(BaseModel):
     ``verifier_passed``/``failed_check_count`` are populated by
     :meth:`ArtifactStore.enrich_index_entry_with_verifier` after the verify
     stage runs; they are ``None`` until then.
+
+    ``batch_id`` is set by :meth:`ArtifactStore.enrich_index_entry_with_batch`
+    when a run is part of a suite batch; it is ``None`` for single runs and for
+    entries reconstructed by :meth:`ArtifactStore.rebuild_index` (which reads
+    only ``run_result.json``, which doesn't carry batch membership).
     """
 
     run_id: str
@@ -42,6 +47,7 @@ class RunIndexEntry(BaseModel):
     error: str | None = None
     verifier_passed: bool | None = None
     failed_check_count: int | None = None
+    batch_id: str | None = None
 
     @classmethod
     def from_result(cls, result: RunResult) -> RunIndexEntry:

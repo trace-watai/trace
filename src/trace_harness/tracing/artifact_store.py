@@ -255,6 +255,19 @@ class ArtifactStore:
         )
         self.upsert_index_entry(updated)
 
+    def enrich_index_entry_with_batch(self, run_id: str, batch_id: str) -> None:
+        """Set ``batch_id`` on the run's index entry.
+
+        Called by :class:`BatchRunner` after each cell completes. A missing
+        entry is a safe no-op — the batch summary is the authoritative source
+        for batch membership; this field is a convenience for cheap filtering.
+        """
+        index = self.read_index()
+        existing = next((e for e in index.entries if e.run_id == run_id), None)
+        if existing is None:
+            return
+        self.upsert_index_entry(existing.model_copy(update={"batch_id": batch_id}))
+
     def rebuild_index(self) -> RunIndex:
         """Reconstruct the index by scanning run dirs for ``run_result.json``.
 

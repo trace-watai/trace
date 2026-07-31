@@ -113,14 +113,15 @@ class BatchRunner:
 
     def run(self, suite: SuiteSpec) -> BatchSummary:
         started_at = utc_now()
+        batch_id = new_batch_id()  # generated before the loop so cells can tag their entries
         entries: list[BatchRunEntry] = []
         for config in suite.agent_configs:
             for task_path in suite.tasks:
-                entries.append(self._run_cell(config, task_path))
+                entries.append(self._run_cell(config, task_path, batch_id))
         finished_at = utc_now()
 
         summary = BatchSummary(
-            batch_id=new_batch_id(),
+            batch_id=batch_id,
             suite_id=suite.suite_id,
             started_at=started_at,
             finished_at=finished_at,
@@ -131,9 +132,13 @@ class BatchRunner:
         self._write_summary(summary)
         return summary
 
-    def _run_cell(self, config: AgentConfig, task_path: str) -> BatchRunEntry:
+    def _run_cell(self, config: AgentConfig, task_path: str, batch_id: str) -> BatchRunEntry:
         try:
             result = run_task_pipeline(task_path, config, self.store)
+            try:
+                self.store.enrich_index_entry_with_batch(result.run_result.run_id, batch_id)
+            except Exception:  # noqa: BLE001 — index tagging is a convenience; never abort the cell
+                logger.warning("batch index enrich failed for %s", result.run_result.run_id)
             return _entry_from_pipeline(result, config, task_path)
         except Exception as exc:  # noqa: BLE001 — isolate the cell; the batch goes on
             logger.warning(

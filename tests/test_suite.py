@@ -118,6 +118,26 @@ def test_batch_runs_all_and_aggregates(tmp_path: Path) -> None:
     }
 
 
+def test_batch_tags_run_index_entries_with_batch_id(tmp_path: Path) -> None:
+    """Every completed cell's index entry carries the batch's id, and the
+    RunReader batch filter returns exactly those runs."""
+    suite = SuiteSpec(
+        suite_id="tagged",
+        tasks=[str(FAILURE_TASK_PATH), str(VALID_TASK_PATH)],
+        agent_configs=[_fixture_config()],
+    )
+    store = ArtifactStore(tmp_path / "runs")
+    summary = BatchRunner(store).run(suite)
+
+    reader = RunReader(store)
+    summaries = reader.list_runs()
+    assert {s.batch_id for s in summaries} == {summary.batch_id}
+
+    filtered = reader.list_runs_for_batch(summary.batch_id)
+    assert {s.run_id for s in filtered} == {s.run_id for s in summaries}
+    assert reader.list_runs_for_batch("batch_absent") == []
+
+
 def test_batch_counts_terminated_runs_separately(tmp_path: Path) -> None:
     suite = SuiteSpec(
         suite_id="terminated",

@@ -61,6 +61,7 @@ class RunSummary(BaseModel):
     ``status``/``termination_reason`` are plain strings (the source uses
     StrEnums; the value on the wire is identical). ``verifier_passed`` and
     ``failed_check_count`` are ``None`` until the verify stage has run.
+    ``batch_id`` is set only for runs that came from a suite batch.
     """
 
     run_id: str
@@ -73,6 +74,7 @@ class RunSummary(BaseModel):
     error: str | None = None
     verifier_passed: bool | None = None
     failed_check_count: int | None = None
+    batch_id: str | None = None
 
     @classmethod
     def from_result(cls, result: RunResult) -> RunSummary:
@@ -100,6 +102,7 @@ class RunSummary(BaseModel):
             error=entry.error,
             verifier_passed=entry.verifier_passed,
             failed_check_count=entry.failed_check_count,
+            batch_id=entry.batch_id,
         )
 
 
@@ -132,6 +135,10 @@ class RunReader:
         if indexed_run_ids != listable_run_ids:
             index = self.store.rebuild_index()
         return [RunSummary.from_entry(entry) for entry in index.entries]
+
+    def list_runs_for_batch(self, batch_id: str) -> list[RunSummary]:
+        """All runs tagged with ``batch_id``, oldest-first (chronological)."""
+        return [s for s in self.list_runs() if s.batch_id == batch_id]
 
     # --- single run ---
 

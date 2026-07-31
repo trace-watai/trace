@@ -34,7 +34,7 @@ def test_upsert_round_trip_sorted_and_valid_json(tmp_path):
         "run_20260101T000000Z_aaaa",
         "run_20260102T000000Z_bbbb",
     ]
-    assert index.schema_version == "0.2.0"
+    assert index.schema_version == "0.3.0"
 
     # On disk at the runs-dir root, valid newline-terminated JSON.
     raw = store.index_path().read_text()
@@ -86,7 +86,7 @@ def test_old_schema_index_rebuilds_at_current_version(tmp_path):
 
     index = store.read_index()
 
-    assert index.schema_version == "0.2.0"
+    assert index.schema_version == "0.3.0"
     assert [entry.run_id for entry in index.entries] == [run_id]
 
 
@@ -239,3 +239,27 @@ def test_rebuild_includes_verifier_verdict_when_present(tmp_path):
     assert len(index.entries) == 1
     assert index.entries[0].verifier_passed is True
     assert index.entries[0].failed_check_count == 0
+
+
+def test_single_run_has_no_batch_id(tmp_path):
+    """A run from the single-run pipeline is not part of a batch."""
+    run = run_task_fixture(FAILURE_TASK_PATH, tmp_path / "runs")
+    entry = next(e for e in run.store.read_index().entries if e.run_id == run.result.run_id)
+    assert entry.batch_id is None
+
+
+def test_enrich_index_entry_with_batch_sets_batch_id(tmp_path):
+    store = ArtifactStore(tmp_path / "runs")
+    run_id = "run_20260101T000000Z_bat"
+    store.upsert_index_entry(_entry(run_id))
+    store.enrich_index_entry_with_batch(run_id, "batch_20260101T000000Z_abcd1234")
+
+    entry = next(e for e in store.read_index().entries if e.run_id == run_id)
+    assert entry.batch_id == "batch_20260101T000000Z_abcd1234"
+
+
+def test_enrich_index_entry_with_batch_noop_when_entry_missing(tmp_path):
+    """A missing entry is a safe no-op — the batch summary is authoritative."""
+    store = ArtifactStore(tmp_path / "runs")
+    store.enrich_index_entry_with_batch("run_does_not_exist", "batch_x")  # must not raise
+    assert store.read_index().entries == []
