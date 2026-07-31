@@ -1,0 +1,65 @@
+{
+  "schema_version": "0.2.0",
+  "entries": [
+    {
+      "run_id": "run_20260731T150052Z_2ee5ca90",
+      "task_id": "refund_policy_missing_info",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 4,
+      "started_at": "2026-07-31T15:00:52.781930Z",
+      "finished_at": "2026-07-31T15:00:52.813545Z",
+      "error": null,
+      "verifier_passed": true,
+      "failed_check_count": 0
+    },
+    {
+      "run_id": "run_20260731T150052Z_6dfc2408",
+      "task_id": "refund_policy_no_refund",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 4,
+      "started_at": "2026-07-31T15:00:52.690441Z",
+      "finished_at": "2026-07-31T15:00:52.723925Z",
+      "error": null,
+      "verifier_passed": true,
+      "failed_check_count": 0
+    },
+    {
+      "run_id": "run_20260731T150052Z_727ce309",
+      "task_id": "refund_policy_store_credit",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 5,
+      "started_at": "2026-07-31T15:00:52.594747Z",
+      "finished_at": "2026-07-31T15:00:52.630268Z",
+      "error": null,
+      "verifier_passed": true,
+      "failed_check_count": 0
+    },
+    {
+      "run_id": "run_20260731T150052Z_74d767c9",
+      "task_id": "refund_policy_valid_cash",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 5,
+      "started_at": "2026-07-31T15:00:52.504108Z",
+      "finished_at": "2026-07-31T15:00:52.539852Z",
+      "error": null,
+      "verifier_passed": true,
+      "failed_check_count": 0
+    },
+    {
+      "run_id": "run_20260731T150052Z_8949b19c",
+      "task_id": "refund_policy_failure",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 7,
+      "started_at": "2026-07-31T15:00:52.361078Z",
+      "finished_at": "2026-07-31T15:00:52.404061Z",
+      "error": null,
+      "verifier_passed": false,
+      "failed_check_count": 4
+    }
+  ]
+}

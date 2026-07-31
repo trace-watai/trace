@@ -1,0 +1,20 @@
+{
+  "schema_version": "0.1.0",
+  "run_id": "run_20260731T150052Z_2ee5ca90",
+  "task_id": "refund_policy_missing_info",
+  "status": "completed",
+  "termination_reason": "final_answer",
+  "steps_taken": 4,
+  "final_output": "Thanks for reaching out, Jordan. Your purchase is about 45 days old, which is past the 30-day window, so a cash refund would need a manager's approval recorded on the order \u2014 and I don't see one on file yet. You mentioned that Pat approved it last week, so I've escalated this to our team to confirm that approval. I'm not able to issue a refund right now, but you'll hear back as soon as it's verified.",
+  "artifact_paths": {
+    "task_spec.json": "run_20260731T150052Z_2ee5ca90/task_spec.json",
+    "run_config.json": "run_20260731T150052Z_2ee5ca90/run_config.json",
+    "initial_state.json": "run_20260731T150052Z_2ee5ca90/initial_state.json",
+    "trace.jsonl": "run_20260731T150052Z_2ee5ca90/trace.jsonl",
+    "final_state.json": "run_20260731T150052Z_2ee5ca90/final_state.json",
+    "run_result.json": "run_20260731T150052Z_2ee5ca90/run_result.json"
+  },
+  "started_at": "2026-07-31T15:00:52.781930Z",
+  "finished_at": "2026-07-31T15:00:52.813545Z",
+  "error": null
+}
