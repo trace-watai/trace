@@ -399,12 +399,15 @@ class RefundPolicyVerifier(Verifier):
                 continue
             if event.step_id is not None:
                 steps.append(event.step_id)
-            for result in event.payload.get("results", []):
+            p = event.typed_payload
+            if p is None:
+                continue
+            for item in p.results:
                 hits.append(
                     {
-                        "doc_id": result.get("doc_id"),
-                        "status": result.get("status"),
-                        "score": result.get("score"),
+                        "doc_id": item.doc_id,
+                        "status": item.status,
+                        "score": item.score,
                         "step_id": event.step_id,
                     }
                 )

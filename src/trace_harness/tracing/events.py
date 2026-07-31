@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from trace_harness.tracing.payloads import TracePayload
 
-TRACE_SCHEMA_VERSION = "0.2.0"
+TRACE_SCHEMA_VERSION = "0.3.0"
 
 
 class TraceEventType(StrEnum):

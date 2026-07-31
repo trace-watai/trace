@@ -2,7 +2,7 @@
  * Trace-event data contract.
  *
  * Mirrors `TraceEvent` in `src/trace_harness/tracing/events.py`
- * (TRACE_SCHEMA_VERSION 0.2.0), serialized as `runs/{run_id}/trace.jsonl`
+ * (TRACE_SCHEMA_VERSION 0.3.0), serialized as `runs/{run_id}/trace.jsonl`
  * (one JSON object per line).
  *
  * The structured log of what happened during a run. Every `stepId` referenced
@@ -13,7 +13,7 @@
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
-export const TRACE_SCHEMA_VERSION = "0.2.0";
+export const TRACE_SCHEMA_VERSION = "0.3.0";
 
 /**
  * Every kind of event a run may emit (mirrors the backend `TraceEventType`
@@ -100,10 +100,18 @@ export interface RawToolObservationPayload {
   error?: string | null;
 }
 
+export interface RawRetrievalResultItem {
+  doc_id: string;
+  status: string;
+  title?: string | null;
+  score?: number | null;
+  source?: string | null;
+}
+
 export interface RawRetrievalResultPayload {
   query?: string | null;
   result_count: number;
-  results: Record<string, unknown>[];
+  results: RawRetrievalResultItem[];
 }
 
 export interface RawFinalAnswerPayload {
