@@ -1,0 +1,15 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_escalation_missing",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expected verifier outcome: exactly one blocking check fires \u2014 required_escalation_missing.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": [
+      "required_escalation_missing"
+    ],
+    "severity": "high",
+    "blocks_release": true
+  },
+  "notes": "Only required_escalation_missing fires \u2014 required escalation was omitted: the task requires escalation and no escalation was recorded."
+}

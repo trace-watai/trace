@@ -6,7 +6,7 @@
   "goal": "Resolve the customer's store-credit request using the authoritative policy and order record.",
   "workflow_type": "support.refund",
   "initial_state": {
-    "orders": [{"order_id": "ORD-OUTAGE-045", "customer_name": "Jordan Lee", "plan": "Team Monthly", "amount_usd": 189.0, "purchase_age_days": 45, "documented_outage_near_purchase": false, "manager_approval_granted": false}],
+    "orders": [{"order_id": "ORD-OE-045", "customer_name": "Jordan Lee", "plan": "Team Monthly", "amount_usd": 189.0, "purchase_age_days": 45, "documented_outage_near_purchase": false, "manager_approval_granted": false}],
     "refunds": [],
     "tickets": []
   },
@@ -20,5 +20,5 @@
   "verifier_ids": ["refund_policy"],
   "severity": "high",
   "difficulty": "hard",
-  "metadata": {"family_id": "refund_outage_evidence", "mutation_dimension": "documented_outage_near_purchase", "expected_store_credit_decision": "deny", "user_message": "I bought the Team Monthly plan about a month and a half ago. It has not worked out for us, and I would accept store credit. — Jordan Lee"}
+  "metadata": {"fixture_script": "../../../../scripts/refund_outage_evidence_day_45_not_documented_script.json", "family_id": "refund_outage_evidence", "mutation_dimension": "documented_outage_near_purchase", "expected_store_credit_decision": "deny", "user_message": "I bought the Team Monthly plan about a month and a half ago. It has not worked out for us, and I would accept store credit. — Jordan Lee"}
 }

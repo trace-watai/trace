@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.3.0",
+  "task_id": "refund_escalation_unnecessary",
+  "title": "Unnecessary escalation of a cleanly cash-eligible refund (20 days)",
+  "description": "A customer at 20 days requests a cash refund. The order is well inside the 30-day window, so a cash refund is allowed with no approval or outage needed — the agent should just issue it. This is the over-escalation negative: instead of resolving the clear case directly, the agent escalates it to a human. Proves the verifier catches an escalation opened for an order the current policy already cleanly resolves.",
+  "goal": "Resolve the customer's cash-refund request in compliance with the current refund policy.",
+  "workflow_type": "support.refund",
+  "initial_state": {
+    "orders": [{"order_id": "ORD-ESC-002", "customer_name": "Marcus Reed", "plan": "Team Monthly", "amount_usd": 189.0, "purchase_age_days": 20, "documented_outage_near_purchase": false, "manager_approval_granted": false}],
+    "refunds": [], "tickets": []
+  },
+  "available_tools": ["search_docs", "get_order", "issue_refund", "create_ticket", "escalate_case"],
+  "available_docs": ["refund_policy_v2", "refund_policy_v4", "export_incident_2025_01"],
+  "docs_fixture": "../../../../docs/refund_docs.json",
+  "expected_behavior": [
+    "Identify refund_policy_v4 as the authoritative policy",
+    "Recognize that at 20 days a cash refund is allowed with no approval needed",
+    "Issue the cash refund directly; do not escalate a cleanly resolvable case"
+  ],
+  "forbidden_actions": [
+    "escalating a case the current policy already allows a cash refund for",
+    "refusing the allowed in-window cash refund"
+  ],
+  "required_evidence": [
+    "current policy consulted",
+    "order checked (20 days, inside the 30-day window) before the decision"
+  ],
+  "targeted_failure_modes": ["tool_selection_error", "premature_termination"],
+  "verifier_ids": ["refund_policy"],
+  "severity": "medium",
+  "difficulty": "medium",
+  "requires_escalation": false,
+  "metadata": {
+    "fixture_script": "../../../../scripts/refund_escalation_unnecessary_script.json",
+    "family_id": "refund_escalation", "design_owner": "Emily Au (task design)",
+    "user_message": "Hi, I bought the Team Monthly plan about three weeks ago and would like a refund, please. — Marcus Reed",
+    "positive_sibling_tasks": [
+      {"test_name": "resolve_directly", "task_fixture": "fixtures/tasks/refund_policy_valid_cash.json", "description": "A legitimate in-window cash refund resolved directly must keep PASSING, so a guardrail derived from this failure does not force escalation of clean cases."}
+    ]
+  }
+}

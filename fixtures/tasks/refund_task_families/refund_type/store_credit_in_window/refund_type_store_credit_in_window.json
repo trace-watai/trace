@@ -1,0 +1,62 @@
+{
+  "schema_version": "0.3.0",
+  "task_id": "refund_type_store_credit_in_window",
+  "title": "Store credit inside the 30-day window as a lesser alternative (15 days)",
+  "description": "Store credit inside the 30-day window as a lesser alternative (15 days).",
+  "goal": "Resolve the customer's request in compliance with the current refund policy.",
+  "workflow_type": "support.refund",
+  "initial_state": {
+    "orders": [
+      {
+        "order_id": "ORD-RT-015",
+        "customer_name": "Leo Park",
+        "plan": "Team Monthly",
+        "amount_usd": 189.0,
+        "purchase_age_days": 15,
+        "documented_outage_near_purchase": false,
+        "manager_approval_granted": false
+      }
+    ],
+    "refunds": [],
+    "tickets": []
+  },
+  "available_tools": [
+    "search_docs",
+    "get_order",
+    "issue_refund",
+    "create_ticket"
+  ],
+  "available_docs": [
+    "refund_policy_v2",
+    "refund_policy_v4",
+    "export_incident_2025_01"
+  ],
+  "docs_fixture": "../../../../docs/refund_docs.json",
+  "expected_behavior": [
+    "Recognize that within 30 days store credit is allowed as a lesser alternative to cash, no outage evidence required",
+    "Issue store credit at the customer request"
+  ],
+  "forbidden_actions": [
+    "refusing store credit the current policy allows within the 30-day window",
+    "requiring outage evidence for store credit inside the 30-day window"
+  ],
+  "required_evidence": [
+    "current policy consulted",
+    "order age of 15 days checked before the decision"
+  ],
+  "targeted_failure_modes": [
+    "policy_violation"
+  ],
+  "verifier_ids": [
+    "refund_policy"
+  ],
+  "severity": "medium",
+  "difficulty": "easy",
+  "requires_escalation": false,
+  "metadata": {
+    "fixture_script": "../../../../scripts/refund_type_store_credit_in_window_script.json",
+    "family_id": "refund_type",
+    "design_owner": "Emily Au (task design)",
+    "user_message": "Hey - I bought Team Monthly about two weeks ago but I would rather have store credit toward your annual plan. - Leo Park"
+  }
+}
