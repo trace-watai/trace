@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "e38b0b1f579f",
+  "session_id": "5eae649e-3c01-4e3d-9ed3-cbd7743d1828",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-31T23:26:05.106515Z",
+  "branch": "trace-harness/tra-86-typed-retrieval-items",
+  "checkpoints_count": 0,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-4-6",
+  "turn_id": "8f6902bff05b",
+  "token_usage": {
+    "input_tokens": 23633,
+    "cache_creation_tokens": 278056,
+    "cache_read_tokens": 3645090,
+    "output_tokens": 31750,
+    "api_call_count": 51
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 2496,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/commands/sync-repos.md": 59,
+        ".claude/commands/wrap.md": 89,
+        "CLAUDE.md": 95,
+        "TRACE_AutoLab_AutoResearch_Design.md": 1204,
+        "docs/superpowers/handoffs/pr2-batch-id-run-index.md": 289,
+        "kb/.wrap-state.json": 49,
+        "kb/code-changes/AGENTS.md": 384,
+        "kb/meetings/AGENTS.md": 7,
+        "kb/misc/AGENTS.md": 320
+      }
+    }
+  ]
+}
