@@ -1,0 +1,19 @@
+/sync-repos
+
+---
+
+i'm talking main
+
+---
+
+Tell me three things, three PRs, or whatever, that can have extremely high impact but are quite straightforward to implement. Once again, I am Samrath, so things I own in the evaluation systems or core side, or whatever. For this week, I want to contribute something that will significantly push the project forward in a way such that we will actually significantly progress towards a very definitive state, a new phase, or a new step, for example. For example, something that is extremely impactful and not the hardest thing to build out. I guess:
+- three PRs
+- three issues or tickets from Linear that I can use here or make my own
+- things that I know I have to work on Look at the knowledge base, look at everything, and based on that, determine the priority of things to do, and then let me know what you think we can accomplish by this week.
+
+---
+
+Tell me three things, three PRs, or whatever, that can have extremely high impact but are quite straightforward to implement. Once again, I am Samrath, so things I own in the evaluation systems or core side, or whatever. For this week, I want to contribute something that will significantly push the project forward in a way such that we will actually significantly progress towards a very definitive state, a new phase, or a new step, for example. For example, something that is extremely impactful and not the hardest thing to build out. I guess:
+- three PRs
+- three issues or tickets from Linear that I can use here or make my own
+- things that I know I have to work on Look at the knowledge base, look at everything, and based on that, determine the priority of things to do, and then let me know what you think we can accomplish by this week.

@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "d3668a7fa3bd",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-84-inspect-cli",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/trace_harness/cli.py",
+    "tests/test_cli.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d3/668a7fa3bd/0/metadata.json",
+      "transcript": "/d3/668a7fa3bd/0/full.jsonl",
+      "content_hash": "/d3/668a7fa3bd/0/content_hash.txt",
+      "prompt": "/d3/668a7fa3bd/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 583,
+    "cache_creation_tokens": 137379,
+    "cache_read_tokens": 4861528,
+    "output_tokens": 30804,
+    "api_call_count": 50
+  }
+}
