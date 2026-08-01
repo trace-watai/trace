@@ -590,19 +590,19 @@ def _inspect_run(run_dir: Path, step_filter: int | None, as_json: bool) -> None:
     store, run_id = ArtifactStore.for_run_path(run_dir)
     events = store.read_trace(run_id)
 
+    if step_filter is not None:
+        events = [e for e in events if e.step_id == step_filter]
+
     if as_json:
         print(json.dumps([e.model_dump(mode="json") for e in events], indent=2))
         return
 
     if not events:
-        print(f"no events in trace for {run_id}")
-        return
-
-    if step_filter is not None:
-        events = [e for e in events if e.step_id == step_filter]
-        if not events:
+        if step_filter is not None:
             print(f"no events for step {step_filter} in {run_id}")
-            return
+        else:
+            print(f"no events in trace for {run_id}")
+        return
 
     # child events (those with a parent) are printed recursively under their parent
     child_event_ids: set[str] = {e.event_id for e in events if e.parent_event_id}
@@ -623,7 +623,7 @@ def _inspect_run(run_dir: Path, step_filter: int | None, as_json: bool) -> None:
     for e in events:
         if e.event_id in child_event_ids:
             continue
-        if e.step_id is not current_step:
+        if e.step_id != current_step:
             current_step = e.step_id
             label = "run-level" if current_step is None else f"step {current_step}"
             bar = "─" * max(0, 52 - len(label))

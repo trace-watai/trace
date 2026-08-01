@@ -287,6 +287,16 @@ def test_inspect_json_flag_emits_valid_json(tmp_path, capsys):
     assert all("event_type" in e and "event_id" in e for e in events)
 
 
+def test_inspect_json_respects_step_filter(tmp_path, capsys):
+    runs_dir, run_id = _setup_run(tmp_path)
+    capsys.readouterr()  # discard run-fixture output
+    assert main(["--runs-dir", str(runs_dir), "inspect", run_id, "--step", "1", "--json"]) == 0
+
+    events = json.loads(capsys.readouterr().out)
+    assert events
+    assert {event["step_id"] for event in events} == {1}
+
+
 def test_inspect_step_filter_shows_only_that_step(tmp_path, capsys):
     runs_dir, run_id = _setup_run(tmp_path)
     assert main(["--runs-dir", str(runs_dir), "inspect", run_id, "--step", "1"]) == 0
@@ -301,3 +311,17 @@ def test_inspect_invalid_step_exits_cleanly(tmp_path, capsys):
     # step 999 doesn't exist — should exit 0 with a message, not traceback
     assert main(["--runs-dir", str(runs_dir), "inspect", run_id, "--step", "999"]) == 0
     assert "no events" in capsys.readouterr().out
+
+
+def test_inspect_groups_large_step_ids_once(tmp_path, capsys):
+    runs_dir, run_id = _setup_run(tmp_path)
+    trace_path = runs_dir / run_id / names.TRACE
+    events = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    for event in events:
+        if event["step_id"] is not None:
+            event["step_id"] = 1000
+    trace_path.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+
+    capsys.readouterr()  # discard run-fixture output
+    assert main(["--runs-dir", str(runs_dir), "inspect", run_id]) == 0
+    assert capsys.readouterr().out.count("── step 1000") == 1
