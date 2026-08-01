@@ -192,6 +192,17 @@ class ArtifactStore:
     def index_path(self) -> Path:
         return self.runs_dir / RUN_INDEX
 
+    def batch_summary_path(self, batch_id: str) -> Path:
+        return self.runs_dir / BATCHES_DIR / batch_id / BATCH_SUMMARY
+
+    def write_batch_summary(self, batch_id: str, payload: BaseModel | dict) -> Path:
+        """Atomically persist the authoritative summary for one batch."""
+        data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
+        path = self.batch_summary_path(batch_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(path, json.dumps(data, indent=2) + "\n")
+        return path
+
     def read_index(self) -> RunIndex:
         """Load the run index; missing or corrupt indexes are rebuildable."""
         path = self.index_path()

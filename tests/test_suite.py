@@ -198,6 +198,21 @@ def test_summary_written_and_reparses(tmp_path: Path) -> None:
     assert len(reloaded.entries) == 1
 
 
+def test_summary_is_durable_before_index_enrichment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suite = SuiteSpec(suite_id="ordered", tasks=[str(VALID_TASK_PATH)])
+    store = ArtifactStore(tmp_path / "runs")
+    original = store.enrich_index_entry_with_batch
+
+    def assert_summary_exists(run_id: str, batch_id: str) -> None:
+        assert store.batch_summary_path(batch_id).is_file()
+        original(run_id, batch_id)
+
+    monkeypatch.setattr(store, "enrich_index_entry_with_batch", assert_summary_exists)
+    BatchRunner(store).run(suite)
+
+
 def test_agent_config_metadata_recorded(tmp_path: Path) -> None:
     suite = SuiteSpec(
         suite_id="cfg",

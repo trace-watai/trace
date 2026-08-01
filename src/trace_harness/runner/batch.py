@@ -19,7 +19,6 @@ makes that missing telemetry visible.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import datetime
@@ -30,11 +29,7 @@ from pydantic import BaseModel, Field
 from trace_harness.runner.pipeline import PipelineResult, run_task_pipeline
 from trace_harness.runner.result import RunStatus
 from trace_harness.runner.suite import AgentConfig, SuiteSpec
-from trace_harness.tracing.artifact_store import (
-    BATCH_SUMMARY,
-    BATCHES_DIR,
-    ArtifactStore,
-)
+from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import utc_now
 
 logger = logging.getLogger(__name__)
@@ -101,11 +96,11 @@ def new_batch_id() -> str:
 
 
 def batch_dir(runs_dir: Path, batch_id: str) -> Path:
-    return runs_dir / BATCHES_DIR / batch_id
+    return summary_path(runs_dir, batch_id).parent
 
 
 def summary_path(runs_dir: Path, batch_id: str) -> Path:
-    return batch_dir(runs_dir, batch_id) / BATCH_SUMMARY
+    return ArtifactStore(runs_dir).batch_summary_path(batch_id)
 
 
 class BatchRunner:
@@ -120,7 +115,7 @@ class BatchRunner:
         entries: list[BatchRunEntry] = []
         for config in suite.agent_configs:
             for task_path in suite.tasks:
-                entries.append(self._run_cell(config, task_path, batch_id))
+                entries.append(self._run_cell(config, task_path))
         finished_at = utc_now()
 
         summary = BatchSummary(
@@ -133,15 +128,12 @@ class BatchRunner:
             aggregates=_aggregate(entries),
         )
         self._write_summary(summary)
+        self._enrich_index_entries(summary)
         return summary
 
-    def _run_cell(self, config: AgentConfig, task_path: str, batch_id: str) -> BatchRunEntry:
+    def _run_cell(self, config: AgentConfig, task_path: str) -> BatchRunEntry:
         try:
             result = run_task_pipeline(task_path, config, self.store)
-            try:
-                self.store.enrich_index_entry_with_batch(result.run_result.run_id, batch_id)
-            except Exception:  # noqa: BLE001 — index tagging is a convenience; never abort the cell
-                logger.warning("batch index enrich failed for %s", result.run_result.run_id)
             return _entry_from_pipeline(result, config, task_path)
         except Exception as exc:  # noqa: BLE001 — isolate the cell; the batch goes on
             logger.warning(
@@ -150,12 +142,17 @@ class BatchRunner:
             return _setup_error_entry(config, task_path, exc)
 
     def _write_summary(self, summary: BatchSummary) -> Path:
-        path = summary_path(self.store.runs_dir, summary.batch_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(summary.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8"
-        )
-        return path
+        return self.store.write_batch_summary(summary.batch_id, summary)
+
+    def _enrich_index_entries(self, summary: BatchSummary) -> None:
+        """Tag completed cells after their authoritative summary is durable."""
+        for entry in summary.entries:
+            if entry.run_id is None:
+                continue
+            try:
+                self.store.enrich_index_entry_with_batch(entry.run_id, summary.batch_id)
+            except Exception:  # noqa: BLE001 — index is rebuildable from the summary
+                logger.warning("batch index enrich failed for %s", entry.run_id)
 
 
 def _entry_from_pipeline(
