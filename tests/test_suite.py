@@ -137,6 +137,12 @@ def test_batch_tags_run_index_entries_with_batch_id(tmp_path: Path) -> None:
     assert {s.run_id for s in filtered} == {s.run_id for s in summaries}
     assert reader.list_runs_for_batch("batch_absent") == []
 
+    # The index is derived state: deleting/rebuilding it must preserve batch
+    # membership from the authoritative batch summary.
+    store.index_path().unlink()
+    rebuilt = store.rebuild_index()
+    assert {entry.batch_id for entry in rebuilt.entries} == {summary.batch_id}
+
 
 def test_batch_counts_terminated_runs_separately(tmp_path: Path) -> None:
     suite = SuiteSpec(

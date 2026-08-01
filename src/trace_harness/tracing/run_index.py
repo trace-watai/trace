@@ -1,8 +1,8 @@
 """RunIndex: a runs-dir-level summary so consumers can list runs cheaply.
 
-One entry per run, denormalized from each run's ``run_result.json`` and (when
-available) its ``verifier_result.json``. The index is a *derived convenience*
-— it can always be rebuilt by scanning the run directories (see
+One entry per run, denormalized from each run's ``run_result.json``, optional
+``verifier_result.json``, and persisted batch summaries. The index is a
+*derived convenience* — it can always be rebuilt from those artifacts (see
 :meth:`ArtifactStore.rebuild_index`), so a missing or corrupt index is
 recoverable, never fatal.
 """
@@ -32,9 +32,8 @@ class RunIndexEntry(BaseModel):
     stage runs; they are ``None`` until then.
 
     ``batch_id`` is set by :meth:`ArtifactStore.enrich_index_entry_with_batch`
-    when a run is part of a suite batch; it is ``None`` for single runs and for
-    entries reconstructed by :meth:`ArtifactStore.rebuild_index` (which reads
-    only ``run_result.json``, which doesn't carry batch membership).
+    when a run is part of a suite batch. Rebuilds recover it from persisted
+    batch summaries; it is ``None`` for single runs.
     """
 
     run_id: str

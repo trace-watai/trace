@@ -61,6 +61,8 @@ REGRESSION_ARTIFACT = "regression_artifact.json"
 
 # Runs-dir-level (not per-run): a derived, rebuildable index of all runs.
 RUN_INDEX = "index.json"
+BATCHES_DIR = "batches"
+BATCH_SUMMARY = "batch_summary.json"
 
 ALL_ARTIFACTS = (
     TASK_SPEC,
@@ -269,12 +271,14 @@ class ArtifactStore:
         self.upsert_index_entry(existing.model_copy(update={"batch_id": batch_id}))
 
     def rebuild_index(self) -> RunIndex:
-        """Reconstruct the index by scanning run dirs for ``run_result.json``.
+        """Reconstruct the index from run artifacts and batch summaries.
 
         Runs without a result (crashed before finalize) are skipped. Each entry
         is enriched with the verifier verdict when ``verifier_result.json``
-        exists. The result is written back atomically and returned.
+        exists and with batch membership when a batch summary references it.
+        The result is written back atomically and returned.
         """
+        batch_memberships = self._read_batch_memberships()
         entries: list[RunIndexEntry] = []
         for run_id in self.list_runs():
             if not self.exists(run_id, RUN_RESULT):
@@ -291,10 +295,39 @@ class ArtifactStore:
                         "failed_check_count": verifier_fields[1],
                     }
                 )
+            batch_id = batch_memberships.get(run_id)
+            if batch_id is not None:
+                entry = entry.model_copy(update={"batch_id": batch_id})
             entries.append(entry)
         index = RunIndex(entries=sorted(entries, key=lambda e: e.run_id))
         self._write_index(index)
         return index
+
+    def _read_batch_memberships(self) -> dict[str, str]:
+        """Map run ids to batch ids from valid persisted batch summaries."""
+        batches_dir = self.runs_dir / BATCHES_DIR
+        if not batches_dir.is_dir():
+            return {}
+
+        memberships: dict[str, str] = {}
+        for path in sorted(batches_dir.glob(f"*/{BATCH_SUMMARY}")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            batch_id = data.get("batch_id")
+            entries = data.get("entries")
+            if not isinstance(batch_id, str) or not isinstance(entries, list):
+                continue
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                run_id = item.get("run_id")
+                if isinstance(run_id, str):
+                    memberships[run_id] = batch_id
+        return memberships
 
     def _read_verifier_index_fields(self, run_id: str) -> tuple[bool, int] | None:
         """Read only validated verdict fields without importing verifier models."""

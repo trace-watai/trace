@@ -30,13 +30,16 @@ from pydantic import BaseModel, Field
 from trace_harness.runner.pipeline import PipelineResult, run_task_pipeline
 from trace_harness.runner.result import RunStatus
 from trace_harness.runner.suite import AgentConfig, SuiteSpec
-from trace_harness.tracing.artifact_store import ArtifactStore
+from trace_harness.tracing.artifact_store import (
+    BATCH_SUMMARY,
+    BATCHES_DIR,
+    ArtifactStore,
+)
 from trace_harness.tracing.events import utc_now
 
 logger = logging.getLogger(__name__)
 
 BATCH_SUMMARY_SCHEMA_VERSION = "0.1.0"
-BATCH_SUMMARY = "batch_summary.json"
 
 # Entry statuses that mean "did not produce a usable, completed run".
 _ERROR_STATUSES = ("error", "setup_error")
@@ -98,7 +101,7 @@ def new_batch_id() -> str:
 
 
 def batch_dir(runs_dir: Path, batch_id: str) -> Path:
-    return runs_dir / "batches" / batch_id
+    return runs_dir / BATCHES_DIR / batch_id
 
 
 def summary_path(runs_dir: Path, batch_id: str) -> Path:
