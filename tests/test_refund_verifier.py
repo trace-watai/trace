@@ -496,3 +496,194 @@ def test_evidence_kind_is_constrained_enum():
 
     with pytest.raises(ValidationError):
         EvidenceItem(kind="not_a_real_kind", description="x")
+
+
+# --- retrieval completeness --------------------------------------------------
+
+
+def _task_with_retrieval() -> TaskSpec:
+    """A task that includes search_docs — required for retrieval checks to fire."""
+    return TaskSpec(
+        task_id="unit_task_retrieval",
+        title="unit",
+        description="unit",
+        goal="unit",
+        workflow_type="support.refund",
+        initial_state={},
+        available_tools=["search_docs", "get_order", "issue_refund", "escalate_case"],
+        available_docs=[],
+        verifier_ids=["refund_policy"],
+        severity=Severity.HIGH,
+    )
+
+
+def _verify_retrieval(state: SupportState, trace: list[TraceEvent] | None = None):
+    return RefundPolicyVerifier().verify(
+        VerifierInput.from_parts(
+            task=_task_with_retrieval(),
+            trace=trace or [],
+            final_state=state.snapshot(),
+            run_id="run_test",
+        )
+    )
+
+
+def _tool_executed_event(
+    tool_name: str, step: int, *, status: str = "ok", event_id: str | None = None
+) -> TraceEvent:
+    return TraceEvent(
+        event_id=event_id or f"evt_exec_{tool_name}_{step}",
+        run_id="run_test",
+        step_id=step,
+        event_type=TraceEventType.TOOL_CALL_EXECUTED,
+        payload={"tool_name": tool_name, "status": status},
+    )
+
+
+def _retrieval_result_event(
+    step: int, doc_ids: list[str], *, statuses: list[str] | None = None
+) -> TraceEvent:
+    if statuses is None:
+        statuses = ["current"] * len(doc_ids)
+    return TraceEvent(
+        event_id=f"evt_retr_{step}",
+        run_id="run_test",
+        step_id=step,
+        event_type=TraceEventType.RETRIEVAL_RESULT,
+        payload={
+            "query": "refund policy",
+            "result_count": len(doc_ids),
+            "results": [
+                {"doc_id": did, "status": st, "score": 3.0}
+                for did, st in zip(doc_ids, statuses)
+            ],
+        },
+    )
+
+
+def test_policy_not_retrieved_before_action_fires():
+    """issue_refund at step 2 with no search_docs at all → fails."""
+    trace = [_tool_executed_event("issue_refund", step=2)]
+    result = _verify_retrieval(
+        _state(_order(12), refunds=[_refund(RefundType.CASH)]),
+        trace=trace,
+    )
+    assert "policy_not_retrieved_before_action" in _failed_ids(result)
+    check = next(
+        c for c in result.failed_checks if c.check_id == "policy_not_retrieved_before_action"
+    )
+    assert check.severity is Severity.HIGH
+    assert check.blocks_release
+    assert check.step_ids == [2]
+
+
+def test_policy_not_retrieved_before_escalation_fires():
+    """escalate_case at step 2 with no search_docs → fails too."""
+    trace = [_tool_executed_event("escalate_case", step=2)]
+    result = _verify_retrieval(
+        _state(_order(45), escalations=[_escalation(step=2)]),
+        trace=trace,
+    )
+    assert "policy_not_retrieved_before_action" in _failed_ids(result)
+
+
+def test_search_docs_before_action_passes():
+    """Happy path: search_docs at step 1 returns current policy, issue_refund at step 3."""
+    trace = [
+        _tool_executed_event("search_docs", step=1),
+        _retrieval_result_event(step=1, doc_ids=["policy_current", "policy_old"]),
+        _tool_executed_event("issue_refund", step=3),
+    ]
+    result = _verify_retrieval(
+        _state(_order(12), refunds=[_refund(RefundType.CASH)]),
+        trace=trace,
+    )
+    assert "policy_not_retrieved_before_action" not in _failed_ids(result)
+    assert "incomplete_retrieval_coverage" not in _failed_ids(result)
+
+
+def test_incomplete_retrieval_coverage_fires():
+    """search_docs was called but returned only the deprecated doc, not the current one."""
+    trace = [
+        _tool_executed_event("search_docs", step=1),
+        _retrieval_result_event(
+            step=1,
+            doc_ids=["policy_old"],
+            statuses=["deprecated"],
+        ),
+        _tool_executed_event("issue_refund", step=3),
+    ]
+    result = _verify_retrieval(
+        _state(_order(12), refunds=[_refund(RefundType.CASH)]),
+        trace=trace,
+    )
+    assert "incomplete_retrieval_coverage" in _failed_ids(result)
+    assert "policy_not_retrieved_before_action" not in _failed_ids(result)
+    check = next(
+        c for c in result.failed_checks if c.check_id == "incomplete_retrieval_coverage"
+    )
+    assert check.severity is Severity.HIGH
+    assert check.blocks_release
+    assert "policy_current" in check.message
+
+
+def test_no_decision_action_skips_retrieval_checks():
+    """Run with no issue_refund or escalate_case → retrieval checks are silent."""
+    trace = []
+    result = _verify_retrieval(_state(_order(12)), trace=trace)
+    assert "policy_not_retrieved_before_action" not in _failed_ids(result)
+    assert "incomplete_retrieval_coverage" not in _failed_ids(result)
+
+
+def test_search_docs_after_action_does_not_count():
+    """search_docs at step 5 does not satisfy the pre-action retrieval requirement
+    when issue_refund is at step 3."""
+    trace = [
+        _tool_executed_event("issue_refund", step=3),
+        _tool_executed_event("search_docs", step=5),
+        _retrieval_result_event(step=5, doc_ids=["policy_current"]),
+    ]
+    result = _verify_retrieval(
+        _state(_order(12), refunds=[_refund(RefundType.CASH)]),
+        trace=trace,
+    )
+    assert "policy_not_retrieved_before_action" in _failed_ids(result)
+
+
+def test_failed_decision_tool_call_is_ignored():
+    """A decision tool call with status='error' should not trigger retrieval checks."""
+    trace = [
+        _tool_executed_event("issue_refund", step=2, status="error"),
+    ]
+    result = _verify_retrieval(_state(_order(12)), trace=trace)
+    assert "policy_not_retrieved_before_action" not in _failed_ids(result)
+
+
+def test_retrieval_coverage_with_no_current_policy_doc_warns():
+    """If state has no current policy doc with rules, retrieval coverage
+    cannot be evaluated — issues a warning instead of failing."""
+    trace = [
+        _tool_executed_event("search_docs", step=1),
+        _retrieval_result_event(step=1, doc_ids=["some_doc"]),
+        _tool_executed_event("issue_refund", step=3),
+    ]
+    result = _verify_retrieval(
+        _state(_order(12), refunds=[_refund(RefundType.CASH)], docs=[_deprecated_doc()]),
+        trace=trace,
+    )
+    assert "incomplete_retrieval_coverage" not in _failed_ids(result)
+    assert any("retrieval coverage" in w for w in result.warnings)
+
+
+def test_retrieval_checks_skipped_when_search_docs_not_available():
+    """Tasks without search_docs in available_tools skip retrieval checks entirely."""
+    trace = [_tool_executed_event("issue_refund", step=2)]
+    # Use _verify which uses _task() with available_tools=[]
+    result = _verify(
+        _state(_order(12), refunds=[_refund(RefundType.CASH)]),
+        trace=trace,
+    )
+    assert "policy_not_retrieved_before_action" not in _failed_ids(result)
+    assert "incomplete_retrieval_coverage" not in _failed_ids(result)
+
+
