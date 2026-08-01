@@ -611,12 +611,15 @@ def _inspect_run(run_dir: Path, step_filter: int | None, as_json: bool) -> None:
         if e.parent_event_id:
             children.setdefault(e.parent_event_id, []).append(e)
 
-    run_result = store.read_json(run_id, names.RUN_RESULT)
-    print(
-        f"\nRun:  {run_id}"
-        f"\nTask: {run_result.get('task_id')} · status: {run_result.get('status')}"
-        f" · {run_result.get('steps_taken')} steps"
-    )
+    print(f"\nRun:  {run_id}")
+    if store.exists(run_id, names.RUN_RESULT):
+        run_result = store.read_json(run_id, names.RUN_RESULT)
+        print(
+            f"Task: {run_result.get('task_id')} · status: {run_result.get('status')}"
+            f" · {run_result.get('steps_taken')} steps"
+        )
+    else:
+        print("Result: unavailable (partial run)")
 
     sentinel = object()
     current_step: object = sentinel

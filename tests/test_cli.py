@@ -325,3 +325,14 @@ def test_inspect_groups_large_step_ids_once(tmp_path, capsys):
     capsys.readouterr()  # discard run-fixture output
     assert main(["--runs-dir", str(runs_dir), "inspect", run_id]) == 0
     assert capsys.readouterr().out.count("── step 1000") == 1
+
+
+def test_inspect_supports_partial_run_without_result(tmp_path, capsys):
+    runs_dir, run_id = _setup_run(tmp_path)
+    (runs_dir / run_id / names.RUN_RESULT).unlink()
+
+    capsys.readouterr()  # discard run-fixture output
+    assert main(["--runs-dir", str(runs_dir), "inspect", run_id]) == 0
+    out = capsys.readouterr().out
+    assert "Result: unavailable (partial run)" in out
+    assert "model_prompt" in out
