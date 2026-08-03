@@ -40,10 +40,13 @@ counts. A specification-only task cannot increase these numbers.
 
 ## Scope boundary
 
-This is the five-outcome MVP suite, not full refund-domain coverage. The
+This is the five-outcome MVP suite, not full refund-domain coverage. Most
 purchase-age and outage-evidence files under
 `fixtures/tasks/refund_task_families/` do not yet have runnable fixture scripts
-and are deliberately excluded. Broader approval-presence, customer-wording,
+and are deliberately excluded. (TRA-40 promoted two of them —
+`day_31_no_approval` and `day_45_not_documented` — to runnable staged failures
+for the bundle-production suite, `docs/acceptance/failure-bundles-v0.md`; they
+remain outside this suite's pinned aggregate.) Broader approval-presence, customer-wording,
 policy-order, refund-type, and retrieval-completeness variants also remain
 unfinished.
 
