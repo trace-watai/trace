@@ -349,7 +349,7 @@ class RefundPolicyVerifier(Verifier):
             failed.append(final_answer_check)
 
         # Checks 8 & 9: retrieval completeness.
-        failed.extend(self._check_retrieval_completeness(task, state, trace, warnings))
+        failed.extend(self._check_retrieval_completeness(task, rules_doc_id, trace, warnings))
 
         return build_result(
             verifier_id=self.verifier_id,
@@ -739,7 +739,7 @@ class RefundPolicyVerifier(Verifier):
     def _check_retrieval_completeness(
         self,
         task: TaskSpec,
-        state: SupportState,
+        rules_doc_id: str,
         trace: list[TraceEvent],
         warnings: list[str],
     ) -> list[FailedCheck]:
@@ -790,9 +790,7 @@ class RefundPolicyVerifier(Verifier):
             ):
                 search_steps.append(event.step_id)
 
-        decision_step_ids = (
-            [first_decision_step] if first_decision_step is not None else []
-        )
+        decision_step_ids = [first_decision_step] if first_decision_step is not None else []
         entry_no_retrieval = SEVERITY_MAP["policy_not_retrieved_before_action"]
         entry_incomplete = SEVERITY_MAP["incomplete_retrieval_coverage"]
 
@@ -833,16 +831,10 @@ class RefundPolicyVerifier(Verifier):
             )
             return failed
 
-        # Check 9: search_docs was called — did the current policy doc appear?
-        current_doc_ids = {
-            doc.doc_id
-            for doc in state.docs
-            if doc.status is DocStatus.CURRENT
-            and isinstance(doc.metadata.get("rules"), dict)
-        }
-        if not current_doc_ids:
+        # Check 9: search_docs was called — did the policy in effect appear?
+        if rules_doc_id == "built-in defaults":
             warnings.append(
-                "no current-status policy doc in state; retrieval coverage "
+                "no authoritative current policy doc in state; retrieval coverage "
                 "check cannot determine which doc should have been retrieved"
             )
             return failed
@@ -864,7 +856,7 @@ class RefundPolicyVerifier(Verifier):
                     if doc_id:
                         retrieved_doc_ids.add(doc_id)
 
-        missing = current_doc_ids - retrieved_doc_ids
+        missing = {rules_doc_id} - retrieved_doc_ids
         if missing:
             failed.append(
                 FailedCheck(
