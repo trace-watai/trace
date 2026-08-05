@@ -555,7 +555,7 @@ def _retrieval_result_event(
             "result_count": len(doc_ids),
             "results": [
                 {"doc_id": did, "status": st, "score": 3.0}
-                for did, st in zip(doc_ids, statuses)
+                for did, st in zip(doc_ids, statuses, strict=True)
             ],
         },
     )
@@ -619,12 +619,33 @@ def test_incomplete_retrieval_coverage_fires():
     )
     assert "incomplete_retrieval_coverage" in _failed_ids(result)
     assert "policy_not_retrieved_before_action" not in _failed_ids(result)
-    check = next(
-        c for c in result.failed_checks if c.check_id == "incomplete_retrieval_coverage"
-    )
+    check = next(c for c in result.failed_checks if c.check_id == "incomplete_retrieval_coverage")
     assert check.severity is Severity.HIGH
     assert check.blocks_release
     assert "policy_current" in check.message
+
+
+def test_retrieval_coverage_uses_selected_current_policy_doc():
+    """Only the newest current policy doc must be retrieved."""
+    newer = _current_policy_doc()
+    newer.doc_id = "policy_v10"
+    newer.last_updated = "2026-05-01"
+    older = _current_policy_doc()
+    older.doc_id = "policy_v4"
+    older.last_updated = "2026-04-01"
+    trace = [
+        _tool_executed_event("search_docs", step=1),
+        _retrieval_result_event(step=1, doc_ids=["policy_v10"]),
+        _tool_executed_event("issue_refund", step=3),
+    ]
+
+    result = _verify_retrieval(
+        _state(_order(12), refunds=[_refund(RefundType.CASH)], docs=[newer, older]),
+        trace=trace,
+    )
+
+    assert result.metadata["rules_source_doc_id"] == "policy_v10"
+    assert "incomplete_retrieval_coverage" not in _failed_ids(result)
 
 
 def test_no_decision_action_skips_retrieval_checks():
@@ -685,5 +706,3 @@ def test_retrieval_checks_skipped_when_search_docs_not_available():
     )
     assert "policy_not_retrieved_before_action" not in _failed_ids(result)
     assert "incomplete_retrieval_coverage" not in _failed_ids(result)
-
-
