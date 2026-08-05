@@ -30,6 +30,8 @@ artifacts link to them):
     final_answer_inconsistent_with_state       — high, blocks release
     unnecessary_escalation                     — high, blocks release
     duplicate_escalation                       — high, blocks release
+    policy_not_retrieved_before_action         — high, blocks release
+    incomplete_retrieval_coverage              — high, blocks release
 
 Known MVP heuristics (documented, not hidden):
     - Provenance detection is substring matching of deprecated doc ids in
@@ -345,6 +347,9 @@ class RefundPolicyVerifier(Verifier):
         final_answer_check = self._check_final_answer_consistency(state, trace, warnings)
         if final_answer_check is not None:
             failed.append(final_answer_check)
+
+        # Checks 8 & 9: retrieval completeness.
+        failed.extend(self._check_retrieval_completeness(task, rules_doc_id, trace, warnings))
 
         return build_result(
             verifier_id=self.verifier_id,
@@ -726,3 +731,166 @@ class RefundPolicyVerifier(Verifier):
                 "mention it; keyword heuristic could not classify the answer"
             )
         return None
+
+    # --- retrieval completeness checks (TRA-80 blocker) ---
+
+    _DECISION_TOOLS = frozenset({"issue_refund", "escalate_case"})
+
+    def _check_retrieval_completeness(
+        self,
+        task: TaskSpec,
+        rules_doc_id: str,
+        trace: list[TraceEvent],
+        warnings: list[str],
+    ) -> list[FailedCheck]:
+        """Retrieval completeness: the agent must retrieve the current policy
+        doc *before* making a refund decision.
+
+        Two sub-checks:
+            policy_not_retrieved_before_action — no search_docs at all before
+                the first decision tool call.
+            incomplete_retrieval_coverage — search_docs was called, but the
+                current-status policy doc never appeared in the retrieval
+                results the agent received before acting.
+
+        Gated on ``search_docs`` being in the task's available_tools:
+        tasks that deliberately omit retrieval (e.g. control-flip demos)
+        cannot be checked for retrieval completeness.
+        """
+        failed: list[FailedCheck] = []
+
+        if "search_docs" not in task.available_tools:
+            return failed
+
+        # Find the step_id of the first refund-decision action.
+        first_decision_step: int | None = None
+        first_decision_tool: str | None = None
+        for event in trace:
+            if (
+                event.event_type is TraceEventType.TOOL_CALL_EXECUTED
+                and event.payload.get("tool_name") in self._DECISION_TOOLS
+                and event.payload.get("status") == "ok"
+            ):
+                first_decision_step = event.step_id
+                first_decision_tool = event.payload["tool_name"]
+                break
+
+        if first_decision_step is None:
+            # No refund decision was made — nothing to check.
+            return failed
+
+        # Gather all search_docs calls *before* the decision step.
+        search_steps: list[int] = []
+        for event in trace:
+            if (
+                event.event_type is TraceEventType.TOOL_CALL_EXECUTED
+                and event.payload.get("tool_name") == "search_docs"
+                and event.step_id is not None
+                and event.step_id < first_decision_step
+            ):
+                search_steps.append(event.step_id)
+
+        decision_step_ids = [first_decision_step] if first_decision_step is not None else []
+        entry_no_retrieval = SEVERITY_MAP["policy_not_retrieved_before_action"]
+        entry_incomplete = SEVERITY_MAP["incomplete_retrieval_coverage"]
+
+        if not search_steps:
+            # Check 8: no search_docs before any decision.
+            failed.append(
+                FailedCheck(
+                    check_id="policy_not_retrieved_before_action",
+                    message=(
+                        f"{first_decision_tool} was executed at step "
+                        f"{first_decision_step} with no prior search_docs call"
+                    ),
+                    expected=(
+                        "agent retrieves policy via search_docs before making "
+                        "a refund or escalation decision"
+                    ),
+                    actual=(
+                        f"{first_decision_tool} executed at step "
+                        f"{first_decision_step}; no search_docs call appears "
+                        "in earlier steps"
+                    ),
+                    step_ids=decision_step_ids,
+                    evidence=[
+                        EvidenceItem(
+                            kind=EvidenceKind.RETRIEVAL_PROVENANCE,
+                            description="no retrieval events before decision",
+                            step_ids=decision_step_ids,
+                            data={
+                                "search_steps_before_action": [],
+                                "decision_tool": first_decision_tool,
+                                "decision_step": first_decision_step,
+                            },
+                        )
+                    ],
+                    severity=entry_no_retrieval.severity,
+                    blocks_release=entry_no_retrieval.blocks_release,
+                )
+            )
+            return failed
+
+        # Check 9: search_docs was called — did the policy in effect appear?
+        if rules_doc_id == "built-in defaults":
+            warnings.append(
+                "no authoritative current policy doc in state; retrieval coverage "
+                "check cannot determine which doc should have been retrieved"
+            )
+            return failed
+
+        # Collect doc_ids from RETRIEVAL_RESULT events at or before the
+        # search steps (retrieval results share the step_id of the search).
+        retrieved_doc_ids: set[str] = set()
+        retrieval_steps: list[int] = []
+        for event in trace:
+            if (
+                event.event_type is TraceEventType.RETRIEVAL_RESULT
+                and event.step_id is not None
+                and event.step_id < first_decision_step
+            ):
+                if event.step_id is not None:
+                    retrieval_steps.append(event.step_id)
+                for result in event.payload.get("results", []):
+                    doc_id = result.get("doc_id")
+                    if doc_id:
+                        retrieved_doc_ids.add(doc_id)
+
+        missing = {rules_doc_id} - retrieved_doc_ids
+        if missing:
+            failed.append(
+                FailedCheck(
+                    check_id="incomplete_retrieval_coverage",
+                    message=(
+                        f"current policy doc(s) {sorted(missing)} were not in "
+                        "retrieval results before the first refund decision"
+                    ),
+                    expected=(
+                        "search_docs returns the current policy document "
+                        "before a refund or escalation decision is made"
+                    ),
+                    actual=(
+                        f"retrieved doc_ids before step {first_decision_step}: "
+                        f"{sorted(retrieved_doc_ids) if retrieved_doc_ids else '(none)'}; "
+                        f"missing current policy: {sorted(missing)}"
+                    ),
+                    step_ids=sorted(set(retrieval_steps + decision_step_ids)),
+                    evidence=[
+                        EvidenceItem(
+                            kind=EvidenceKind.RETRIEVAL_PROVENANCE,
+                            description="retrieval results before decision",
+                            step_ids=sorted(set(retrieval_steps)),
+                            data={
+                                "retrieved_doc_ids": sorted(retrieved_doc_ids),
+                                "missing_current_policy_doc_ids": sorted(missing),
+                                "decision_tool": first_decision_tool,
+                                "decision_step": first_decision_step,
+                            },
+                        )
+                    ],
+                    severity=entry_incomplete.severity,
+                    blocks_release=entry_incomplete.blocks_release,
+                )
+            )
+
+        return failed
