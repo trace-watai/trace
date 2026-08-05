@@ -20,5 +20,19 @@
   "verifier_ids": ["refund_policy"],
   "severity": "critical",
   "difficulty": "hard",
-  "metadata": {"family_id": "refund_cash_age_boundary", "mutation_dimension": "purchase_age_days", "boundary_case": "cash_window_upper_bound_plus_one", "expected_cash_decision": "deny", "user_message": "I bought the Team Monthly plan 31 days ago and would like a cash refund. — Alex Morgan"}
+  "metadata": {
+    "family_id": "refund_cash_age_boundary",
+    "mutation_dimension": "purchase_age_days",
+    "boundary_case": "cash_window_upper_bound_plus_one",
+    "expected_cash_decision": "deny",
+    "user_message": "I bought the Team Monthly plan 31 days ago and would like a cash refund. — Alex Morgan",
+    "fixture_script": "../../../../scripts/refund_cash_age_boundary_day_31_no_approval_script.json",
+    "positive_sibling_tasks": [
+      {
+        "test_name": "valid_cash_refund_within_window",
+        "task_fixture": "fixtures/tasks/refund_policy_valid_cash.json",
+        "description": "Cash refund at 12 days must keep PASSING so boundary guardrails derived from this failure cannot overblock in-window refunds."
+      }
+    ]
+  }
 }

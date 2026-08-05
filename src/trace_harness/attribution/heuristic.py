@@ -50,6 +50,7 @@ _CHECK_CATEGORY: dict[str, FailureCategory] = {
     "deprecated_policy_treated_as_authoritative": FailureCategory.STALE_SOURCE_AUTHORITY,
     "ticket_outage_claim_unsupported": FailureCategory.FALSE_DURABLE_RECORD,
     "final_answer_inconsistent_with_state": FailureCategory.INCONSISTENT_FINAL_ANSWER,
+    "required_escalation_missing": FailureCategory.CLARIFICATION_FAILURE,
 }
 _SYMPTOM_CATEGORIES = {
     FailureCategory.UNSAFE_IRREVERSIBLE_ACTION,
