@@ -507,18 +507,22 @@ def _replay(artifact_path: Path, store: ArtifactStore, *, apply_control: bool = 
     return 1 if gate_failed else 0
 
 
-def _list_runs(store: ArtifactStore) -> None:
+def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
     """Print a one-line summary per run, newest last (chronological)."""
-    summaries = RunReader(store).list_runs()
+    reader = RunReader(store)
+    summaries = reader.list_runs_for_batch(batch_id) if batch_id else reader.list_runs()
+    where = f"batch {batch_id}" if batch_id else str(store.runs_dir)
     if not summaries:
-        print(f"no runs found in {store.runs_dir}")
+        print(f"no runs found in {where}")
         return
     for s in summaries:
         detail = f"{s.status} ({s.termination_reason}) · {s.steps_taken} steps · {s.task_id}"
         if s.verifier_passed is not None:
             detail += f" · {'PASS' if s.verifier_passed else 'FAIL'}"
+        if s.batch_id:
+            detail += f" · batch={s.batch_id}"
         _print(s.run_id, detail)
-    print(f"\n{len(summaries)} run(s) in {store.runs_dir}")
+    print(f"\n{len(summaries)} run(s) in {where}")
 
 
 def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
@@ -636,7 +640,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_bundle.add_argument("run_path")
 
-    sub.add_parser("list-runs", parents=[common], help="list stored runs with one-line summaries")
+    p_list = sub.add_parser(
+        "list-runs", parents=[common], help="list stored runs with one-line summaries"
+    )
+    p_list.add_argument(
+        "--batch",
+        default=None,
+        metavar="BATCH_ID",
+        help="filter to runs from a specific batch",
+    )
 
     p_replay = sub.add_parser(
         "replay",
@@ -702,7 +714,7 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         _run_fixture(args, store)
         return 0
     if args.command == "list-runs":
-        _list_runs(store)
+        _list_runs(store, batch_id=getattr(args, "batch", None))
         return 0
     if args.command == "verify":
         merged, run_completed = _verify(_resolve_run_dir(args.run_path, store.runs_dir))

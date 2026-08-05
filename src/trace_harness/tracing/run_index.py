@@ -1,8 +1,8 @@
 """RunIndex: a runs-dir-level summary so consumers can list runs cheaply.
 
-One entry per run, denormalized from each run's ``run_result.json`` and (when
-available) its ``verifier_result.json``. The index is a *derived convenience*
-— it can always be rebuilt by scanning the run directories (see
+One entry per run, denormalized from each run's ``run_result.json``, optional
+``verifier_result.json``, and persisted batch summaries. The index is a
+*derived convenience* — it can always be rebuilt from those artifacts (see
 :meth:`ArtifactStore.rebuild_index`), so a missing or corrupt index is
 recoverable, never fatal.
 """
@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from trace_harness.runner.result import RunResult
 
-RUN_INDEX_SCHEMA_VERSION = "0.2.0"
+RUN_INDEX_SCHEMA_VERSION = "0.3.0"
 
 
 class RunIndexEntry(BaseModel):
@@ -30,6 +30,10 @@ class RunIndexEntry(BaseModel):
     ``verifier_passed``/``failed_check_count`` are populated by
     :meth:`ArtifactStore.enrich_index_entry_with_verifier` after the verify
     stage runs; they are ``None`` until then.
+
+    ``batch_id`` is set by :meth:`ArtifactStore.enrich_index_entry_with_batch`
+    when a run is part of a suite batch. Rebuilds recover it from persisted
+    batch summaries; it is ``None`` for single runs.
     """
 
     run_id: str
@@ -42,6 +46,7 @@ class RunIndexEntry(BaseModel):
     error: str | None = None
     verifier_passed: bool | None = None
     failed_check_count: int | None = None
+    batch_id: str | None = None
 
     @classmethod
     def from_result(cls, result: RunResult) -> RunIndexEntry:
