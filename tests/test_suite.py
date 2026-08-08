@@ -72,6 +72,24 @@ def test_pinned_negative_matches_expectation(expected_path: Path, tmp_path: Path
     assert result.blocks_release is expected["blocks_release"]
 
 
+def test_every_failing_suite_task_has_a_pinned_expectation(tmp_path: Path) -> None:
+    """
+    Covers the inverse of test_pinned_negative_matches_expectation: run the suite,
+    take the task_ids that actually failed verification, and assert every one of 
+    them has a matching pinned file.
+    """
+    summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(load_suite(SUITE_MANIFEST))
+
+    failing_task_ids = {entry.task_id for entry in summary.entries if not entry.verifier_passed}
+    pinned_task_ids = {json.loads(p.read_text())["task_id"] for p in _PINNED_EXPECTED}
+
+    missing_pins = failing_task_ids - pinned_task_ids
+    assert not missing_pins, (
+        "suite task(s) fail verification but have no pinned "
+        f"fixtures/expected/*_expected_verifier.json file: {sorted(missing_pins)}"
+    )
+
+
 def test_every_canonical_suite_task_passes_authoring_validation() -> None:
     """Acceptance rule: every task in the runnable suite must pass the authoring
     rubric. The validation CLI only globs top-level fixtures/tasks/, so nested
