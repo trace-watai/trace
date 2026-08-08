@@ -250,3 +250,89 @@ def test_bare_run_id_resolves_under_runs_dir(tmp_path):
     assert main(["--runs-dir", str(runs_dir), "run-fixture", str(VALID_TASK_PATH)]) == 0
     run_id = _only_run_dir(runs_dir).name
     assert main(["--runs-dir", str(runs_dir), "verify", run_id]) == 0
+
+
+# --- inspect ---
+
+
+def _setup_run(tmp_path, task_path=None):
+    """Run a fixture and return (runs_dir, run_id)."""
+    task_path = task_path or FAILURE_TASK_PATH
+    runs_dir = tmp_path / "runs"
+    main(["--runs-dir", str(runs_dir), "run-fixture", str(task_path)])
+    return runs_dir, _only_run_dir(runs_dir).name
+
+
+def test_inspect_prints_trace_timeline(tmp_path, capsys):
+    runs_dir, run_id = _setup_run(tmp_path)
+    assert main(["--runs-dir", str(runs_dir), "inspect", run_id]) == 0
+
+    out = capsys.readouterr().out
+    assert run_id in out
+    assert "step 1" in out
+    assert "model_prompt" in out
+    assert "tool_call_requested" in out
+    assert "run_finished" in out
+
+
+def test_inspect_json_flag_emits_valid_json(tmp_path, capsys):
+    runs_dir, run_id = _setup_run(tmp_path)
+    capsys.readouterr()  # discard run-fixture output
+    assert main(["--runs-dir", str(runs_dir), "inspect", run_id, "--json"]) == 0
+
+    out = capsys.readouterr().out
+    events = json.loads(out)
+    assert isinstance(events, list)
+    assert len(events) > 0
+    assert all("event_type" in e and "event_id" in e for e in events)
+
+
+def test_inspect_json_respects_step_filter(tmp_path, capsys):
+    runs_dir, run_id = _setup_run(tmp_path)
+    capsys.readouterr()  # discard run-fixture output
+    assert main(["--runs-dir", str(runs_dir), "inspect", run_id, "--step", "1", "--json"]) == 0
+
+    events = json.loads(capsys.readouterr().out)
+    assert events
+    assert {event["step_id"] for event in events} == {1}
+
+
+def test_inspect_step_filter_shows_only_that_step(tmp_path, capsys):
+    runs_dir, run_id = _setup_run(tmp_path)
+    assert main(["--runs-dir", str(runs_dir), "inspect", run_id, "--step", "1"]) == 0
+
+    out = capsys.readouterr().out
+    assert "step 1" in out
+    assert "step 2" not in out
+
+
+def test_inspect_invalid_step_exits_cleanly(tmp_path, capsys):
+    runs_dir, run_id = _setup_run(tmp_path)
+    # step 999 doesn't exist — should exit 0 with a message, not traceback
+    assert main(["--runs-dir", str(runs_dir), "inspect", run_id, "--step", "999"]) == 0
+    assert "no events" in capsys.readouterr().out
+
+
+def test_inspect_groups_large_step_ids_once(tmp_path, capsys):
+    runs_dir, run_id = _setup_run(tmp_path)
+    trace_path = runs_dir / run_id / names.TRACE
+    events = [json.loads(line) for line in trace_path.read_text().splitlines()]
+    for event in events:
+        if event["step_id"] is not None:
+            event["step_id"] = 1000
+    trace_path.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+
+    capsys.readouterr()  # discard run-fixture output
+    assert main(["--runs-dir", str(runs_dir), "inspect", run_id]) == 0
+    assert capsys.readouterr().out.count("── step 1000") == 1
+
+
+def test_inspect_supports_partial_run_without_result(tmp_path, capsys):
+    runs_dir, run_id = _setup_run(tmp_path)
+    (runs_dir / run_id / names.RUN_RESULT).unlink()
+
+    capsys.readouterr()  # discard run-fixture output
+    assert main(["--runs-dir", str(runs_dir), "inspect", run_id]) == 0
+    out = capsys.readouterr().out
+    assert "Result: unavailable (partial run)" in out
+    assert "model_prompt" in out
