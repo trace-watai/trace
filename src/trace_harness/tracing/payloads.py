@@ -82,10 +82,18 @@ class ToolCallExecutedPayload(_IgnoreExtra):
     error: str | None = None
 
 
+class RetrievalResultItem(_IgnoreExtra):
+    doc_id: str
+    status: str
+    title: str | None = None
+    score: float | None = None
+    source: str | None = None
+
+
 class RetrievalResultPayload(_IgnoreExtra):
     query: str | None = None
     result_count: int
-    results: list[dict[str, Any]]
+    results: list[RetrievalResultItem]
 
 
 class ToolObservationPayload(_IgnoreExtra):
