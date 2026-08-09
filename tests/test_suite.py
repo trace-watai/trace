@@ -75,7 +75,7 @@ def test_pinned_negative_matches_expectation(expected_path: Path, tmp_path: Path
 def test_every_failing_suite_task_has_a_pinned_expectation(tmp_path: Path) -> None:
     """
     Covers the inverse of test_pinned_negative_matches_expectation: run the suite,
-    take the task_ids that actually failed verification, and assert every one of 
+    take the task_ids that actually failed verification, and assert every one of
     them has a matching pinned file.
     """
     summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(load_suite(SUITE_MANIFEST))
