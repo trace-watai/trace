@@ -1,6 +1,6 @@
 {
   "schema_version": "0.3.0",
-  "run_id": "run_20260731T150052Z_8949b19c",
+  "run_id": "run_20260808T221533Z_bf8d1af8",
   "task_id": "refund_policy_failure",
   "summary": "5 control(s) addressing failed checks ['required_escalation_missing', 'unauthorized_cash_refund', 'ticket_outage_claim_unsupported', 'deprecated_policy_treated_as_authoritative'] (severity: critical). Deterministic guardrails first; prompt fixes alone are not controls.",
   "controls": [

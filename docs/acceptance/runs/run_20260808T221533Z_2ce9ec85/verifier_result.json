@@ -1,10 +1,12 @@
 {
   "schema_version": "0.3.0",
   "verifier_id": "refund_policy",
-  "run_id": "run_20260731T150052Z_2ee5ca90",
+  "run_id": "run_20260808T221533Z_2ce9ec85",
   "passed": true,
   "failed_checks": [],
-  "warnings": [],
+  "warnings": [
+    "deprecated policy doc was referenced but no policy violation occurred; treating as correctly-identified stale source"
+  ],
   "severity": null,
   "blocks_release": false,
   "evidence": [
@@ -33,15 +35,21 @@
       "data": {
         "hits": [
           {
-            "doc_id": "refund_policy_v2",
-            "status": "deprecated",
-            "score": 10.0,
+            "doc_id": "refund_policy_v4",
+            "status": "current",
+            "score": 13.0,
             "step_id": 1
           },
           {
-            "doc_id": "refund_policy_v4",
-            "status": "current",
-            "score": 9.0,
+            "doc_id": "refund_policy_v2",
+            "status": "deprecated",
+            "score": 7.0,
+            "step_id": 1
+          },
+          {
+            "doc_id": "export_incident_2025_01",
+            "status": "resolved",
+            "score": 1.0,
             "step_id": 1
           }
         ]
@@ -49,7 +57,7 @@
     }
   ],
   "metadata": {
-    "task_id": "refund_policy_missing_info",
+    "task_id": "refund_policy_store_credit",
     "rules_source_doc_id": "refund_policy_v4"
   }
 }
