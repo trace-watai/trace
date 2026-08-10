@@ -152,6 +152,25 @@ _REFUND_DENIAL_PHRASES = (
     "declined",
     "denied",
 )
+_POLICY_DENIAL_TERMS = ("policy", "window", "eligible")
+_POLICY_WINDOW_DENIAL_RE = re.compile(
+    r"\b(?<!not )(?<!isn't )(?<!never )(?:outside|past|beyond)\b"
+    r"[^.!?\n]{0,40}\b(?:refund\s+)?window\b",
+    re.IGNORECASE,
+)
+
+
+def _is_policy_based_refund_denial(text: str) -> bool:
+    """True when a final answer denies a refund using a policy rationale."""
+    lower = text.lower()
+    return "refund" in lower and (
+        (
+            any(phrase in lower for phrase in _REFUND_DENIAL_PHRASES)
+            and any(term in lower for term in _POLICY_DENIAL_TERMS)
+        )
+        # "Outside the refund window" is itself an unambiguous policy denial.
+        or _POLICY_WINDOW_DENIAL_RE.search(lower) is not None
+    )
 
 
 def _claims_outage(text: str) -> bool:
@@ -762,7 +781,8 @@ class RefundPolicyVerifier(Verifier):
         if "search_docs" not in task.available_tools:
             return failed
 
-        # Find the step_id of the first refund-decision action.
+        # Find the step_id of the first refund decision. A policy-based
+        # final-answer denial is a decision even when no side-effecting tool runs.
         first_decision_step: int | None = None
         first_decision_tool: str | None = None
         for event in trace:
@@ -773,6 +793,14 @@ class RefundPolicyVerifier(Verifier):
             ):
                 first_decision_step = event.step_id
                 first_decision_tool = event.payload["tool_name"]
+                break
+            if (
+                event.event_type is TraceEventType.FINAL_ANSWER
+                and event.step_id is not None
+                and _is_policy_based_refund_denial(str(event.payload.get("final_answer", "")))
+            ):
+                first_decision_step = event.step_id
+                first_decision_tool = "final_answer"
                 break
 
         if first_decision_step is None:

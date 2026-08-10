@@ -587,6 +587,23 @@ def test_policy_not_retrieved_before_escalation_fires():
     assert "policy_not_retrieved_before_action" in _failed_ids(result)
 
 
+def test_policy_denial_final_answer_without_retrieval_fires():
+    """An outside-the-refund-window final answer is a policy-based decision."""
+    result = _verify_retrieval(
+        _state(_order(75)),
+        trace=[_final_answer_event("Your purchase is outside the refund window.")],
+    )
+
+    assert "policy_not_retrieved_before_action" in _failed_ids(result)
+    check = next(
+        c for c in result.failed_checks if c.check_id == "policy_not_retrieved_before_action"
+    )
+    assert check.severity is Severity.HIGH
+    assert check.blocks_release
+    assert check.step_ids == [7]
+    assert check.evidence[0].data["decision_tool"] == "final_answer"
+
+
 def test_search_docs_before_action_passes():
     """Happy path: search_docs at step 1 returns current policy, issue_refund at step 3."""
     trace = [
