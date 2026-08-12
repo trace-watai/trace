@@ -33,4 +33,6 @@ SEVERITY_MAP: dict[str, SeverityEntry] = {
         Severity.HIGH, blocks_release=False
     ),
     "required_escalation_missing": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "policy_not_retrieved_before_action": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "incomplete_retrieval_coverage": SeverityEntry(Severity.HIGH, blocks_release=True),
 }
