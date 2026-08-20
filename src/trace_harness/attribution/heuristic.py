@@ -243,9 +243,12 @@ class HeuristicAttributor:
         for event in trace:
             if event.event_type is not TraceEventType.RETRIEVAL_RESULT:
                 continue
-            for result in event.payload.get("results", []):
-                if result.get("status") == "deprecated" and result.get("doc_id"):
-                    ids.add(result["doc_id"])
+            p = event.typed_payload
+            if p is None:
+                continue
+            for item in p.results:
+                if item.status == "deprecated" and item.doc_id:
+                    ids.add(item.doc_id)
         return ids
 
     def _first_reasoning_citing(self, actions: list[TraceEvent], doc_ids: set[str]) -> int | None:

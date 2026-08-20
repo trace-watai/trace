@@ -5,13 +5,13 @@ The trace is the evidence record of a run: an append-only sequence of
 `runs/{run_id}/trace.jsonl`. Everything downstream — verifiers,
 attribution, failure bundles, the dashboard — consumes traces. Owner:
 Samrath. Schema: `trace_harness/tracing/events.py`
-(`TRACE_SCHEMA_VERSION = 0.2.0`).
+(`TRACE_SCHEMA_VERSION = 0.3.0`).
 
 ## Event envelope
 
 ```json
 {
-  "schema_version": "0.2.0",
+  "schema_version": "0.3.0",
   "event_id": "evt_000007",        // unique within the run, ordered
   "run_id": "run_20260611T025555Z_99032a0d",
   "step_id": 3,                    // decision step; null for run-level events
@@ -47,7 +47,7 @@ that caused a child.
 | `tool_call_validated` | step | tool_name, valid, error? |
 | `tool_call_executed` | step | tool_name, arguments, status, **side_effect**, error? — only emitted for valid calls |
 | `tool_observation` | step | tool_name, status, result (full, incl. doc content), error? — what the agent saw |
-| `retrieval_result` | step | query, result_count, results: [{doc_id, **status**, title, score, source}] (content lives in the observation) |
+| `retrieval_result` | step | query, result_count, results: `list[RetrievalResultItem]` = [{doc_id, **status**, title?, score?, source?}] (content lives in the observation) |
 | `final_answer` | step | final_answer |
 | `run_finished` | null | status, termination_reason, steps_taken |
 | `error` | step? | error, kind (model_timeout \| script_exhausted \| model_error \| internal_error), traceback? |
