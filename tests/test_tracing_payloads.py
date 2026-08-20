@@ -20,6 +20,7 @@ from trace_harness.tracing.payloads import (
     ModelActionPayload,
     ModelPromptPayload,
     ModelResponsePayload,
+    RetrievalResultItem,
     RetrievalResultPayload,
     RunFinishedPayload,
     RunStartedPayload,
@@ -35,8 +36,8 @@ from trace_harness.tracing.recorder import TraceRecorder
 # --- Schema version ---
 
 
-def test_schema_version_bumped_to_0_2_0() -> None:
-    assert TRACE_SCHEMA_VERSION == "0.2.0"
+def test_schema_version_bumped_to_0_3_0() -> None:
+    assert TRACE_SCHEMA_VERSION == "0.3.0"
 
 
 def test_new_event_carries_schema_version() -> None:
@@ -45,7 +46,7 @@ def test_new_event_carries_schema_version() -> None:
         TraceEventType.RUN_FINISHED,
         payload={"status": "completed", "termination_reason": "final_answer", "steps_taken": 2},
     )
-    assert event.schema_version == "0.2.0"
+    assert event.schema_version == "0.3.0"
 
 
 # --- PAYLOAD_TYPES coverage ---
@@ -137,10 +138,35 @@ def test_tool_call_executed_payload_validates() -> None:
 
 def test_retrieval_result_payload_validates() -> None:
     p = RetrievalResultPayload.model_validate(
-        {"query": "refund policy", "result_count": 1, "results": [{"doc_id": "d1"}]}
+        {
+            "query": "refund policy",
+            "result_count": 1,
+            "results": [
+                {
+                    "doc_id": "refund_policy_v4",
+                    "status": "current",
+                    "score": 6.0,
+                    "title": "Refund Policy v4",
+                }
+            ],
+        }
     )
     assert p.result_count == 1
     assert p.query == "refund policy"
+    assert len(p.results) == 1
+    item = p.results[0]
+    assert item.doc_id == "refund_policy_v4"
+    assert item.status == "current"
+    assert item.score == 6.0
+
+
+def test_retrieval_result_item_ignores_unknown_fields() -> None:
+    # future runners may add fields; old readers must not fail
+    item = RetrievalResultItem.model_validate(
+        {"doc_id": "d1", "status": "current", "score": 1.0, "new_future_field": "ignored"}
+    )
+    assert item.doc_id == "d1"
+    assert not hasattr(item, "new_future_field")
 
 
 def test_tool_observation_payload_validates() -> None:
