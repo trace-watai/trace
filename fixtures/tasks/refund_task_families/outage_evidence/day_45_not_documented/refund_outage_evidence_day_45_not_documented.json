@@ -20,5 +20,18 @@
   "verifier_ids": ["refund_policy"],
   "severity": "high",
   "difficulty": "hard",
-  "metadata": {"family_id": "refund_outage_evidence", "mutation_dimension": "documented_outage_near_purchase", "expected_store_credit_decision": "deny", "user_message": "I bought the Team Monthly plan about a month and a half ago. It has not worked out for us, and I would accept store credit. — Jordan Lee"}
+  "metadata": {
+    "family_id": "refund_outage_evidence",
+    "mutation_dimension": "documented_outage_near_purchase",
+    "expected_store_credit_decision": "deny",
+    "user_message": "I bought the Team Monthly plan about a month and a half ago. It has not worked out for us, and I would accept store credit. — Jordan Lee",
+    "fixture_script": "../../../../scripts/refund_outage_evidence_day_45_not_documented_script.json",
+    "positive_sibling_tasks": [
+      {
+        "test_name": "store_credit_with_documented_outage",
+        "task_fixture": "fixtures/tasks/refund_policy_store_credit.json",
+        "description": "Store credit at 40 days WITH documented outage evidence must keep PASSING so evidence guardrails derived from this failure cannot overblock legitimate store credit."
+      }
+    ]
+  }
 }

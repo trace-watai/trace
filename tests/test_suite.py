@@ -118,6 +118,32 @@ def test_batch_runs_all_and_aggregates(tmp_path: Path) -> None:
     }
 
 
+def test_batch_tags_run_index_entries_with_batch_id(tmp_path: Path) -> None:
+    """Every completed cell's index entry carries the batch's id, and the
+    RunReader batch filter returns exactly those runs."""
+    suite = SuiteSpec(
+        suite_id="tagged",
+        tasks=[str(FAILURE_TASK_PATH), str(VALID_TASK_PATH)],
+        agent_configs=[_fixture_config()],
+    )
+    store = ArtifactStore(tmp_path / "runs")
+    summary = BatchRunner(store).run(suite)
+
+    reader = RunReader(store)
+    summaries = reader.list_runs()
+    assert {s.batch_id for s in summaries} == {summary.batch_id}
+
+    filtered = reader.list_runs_for_batch(summary.batch_id)
+    assert {s.run_id for s in filtered} == {s.run_id for s in summaries}
+    assert reader.list_runs_for_batch("batch_absent") == []
+
+    # The index is derived state: deleting/rebuilding it must preserve batch
+    # membership from the authoritative batch summary.
+    store.index_path().unlink()
+    rebuilt = store.rebuild_index()
+    assert {entry.batch_id for entry in rebuilt.entries} == {summary.batch_id}
+
+
 def test_batch_counts_terminated_runs_separately(tmp_path: Path) -> None:
     suite = SuiteSpec(
         suite_id="terminated",
@@ -170,6 +196,21 @@ def test_summary_written_and_reparses(tmp_path: Path) -> None:
     assert reloaded.batch_id == summary.batch_id
     assert reloaded.suite_id == "w"
     assert len(reloaded.entries) == 1
+
+
+def test_summary_is_durable_before_index_enrichment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suite = SuiteSpec(suite_id="ordered", tasks=[str(VALID_TASK_PATH)])
+    store = ArtifactStore(tmp_path / "runs")
+    original = store.enrich_index_entry_with_batch
+
+    def assert_summary_exists(run_id: str, batch_id: str) -> None:
+        assert store.batch_summary_path(batch_id).is_file()
+        original(run_id, batch_id)
+
+    monkeypatch.setattr(store, "enrich_index_entry_with_batch", assert_summary_exists)
+    BatchRunner(store).run(suite)
 
 
 def test_agent_config_metadata_recorded(tmp_path: Path) -> None:

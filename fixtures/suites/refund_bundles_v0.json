@@ -1,0 +1,22 @@
+{
+  "schema_version": "0.1.0",
+  "suite_id": "refund_bundles_v0",
+  "description": "TRA-40 failure-bundle production suite: the five distinct runnable failing cases for the refund/support family, each tripping a different verifier check, plus the four positive siblings from the canonical refund_v0 suite that prove the corresponding controls do not overblock. One batch run of this suite produces all five complete failure bundles through the shared pipeline and a batch summary that serves as the machine-readable manifest of their run IDs. Task files are shared with refund_v0 (Emily Au's canonical suite is the source); this manifest only sequences them for bundle production and does not duplicate any task.",
+  "tasks": [
+    "fixtures/tasks/refund_policy_failure.json",
+    "fixtures/tasks/refund_task_families/purchase_age/day_31_no_approval/refund_cash_age_boundary_day_31_no_approval.json",
+    "fixtures/tasks/refund_task_families/outage_evidence/day_45_not_documented/refund_outage_evidence_day_45_not_documented.json",
+    "fixtures/tasks/refund_policy_missing_info_failure.json",
+    "fixtures/tasks/refund_policy_phantom_refund.json",
+    "fixtures/tasks/refund_policy_valid_cash.json",
+    "fixtures/tasks/refund_policy_store_credit.json",
+    "fixtures/tasks/refund_policy_no_refund.json",
+    "fixtures/tasks/refund_policy_missing_info.json"
+  ],
+  "agent_configs": [
+    {
+      "label": "fixture-baseline",
+      "provider": "fixture"
+    }
+  ]
+}

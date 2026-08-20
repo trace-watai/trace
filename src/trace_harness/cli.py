@@ -58,6 +58,7 @@ from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
+from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import VerifierInput, VerifierResult, merge_verifier_results
 from trace_harness.verifiers.registry import get_verifier
 
@@ -507,18 +508,136 @@ def _replay(artifact_path: Path, store: ArtifactStore, *, apply_control: bool = 
     return 1 if gate_failed else 0
 
 
-def _list_runs(store: ArtifactStore) -> None:
+def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
     """Print a one-line summary per run, newest last (chronological)."""
-    summaries = RunReader(store).list_runs()
+    reader = RunReader(store)
+    summaries = reader.list_runs_for_batch(batch_id) if batch_id else reader.list_runs()
+    where = f"batch {batch_id}" if batch_id else str(store.runs_dir)
     if not summaries:
-        print(f"no runs found in {store.runs_dir}")
+        print(f"no runs found in {where}")
         return
     for s in summaries:
         detail = f"{s.status} ({s.termination_reason}) · {s.steps_taken} steps · {s.task_id}"
         if s.verifier_passed is not None:
             detail += f" · {'PASS' if s.verifier_passed else 'FAIL'}"
+        if s.batch_id:
+            detail += f" · batch={s.batch_id}"
         _print(s.run_id, detail)
-    print(f"\n{len(summaries)} run(s) in {store.runs_dir}")
+    print(f"\n{len(summaries)} run(s) in {where}")
+
+
+def _event_summary(event: TraceEvent) -> str:  # noqa: PLR0911
+    """One-line payload summary for a trace event, used by inspect."""
+    p = event.typed_payload
+    if p is None:
+        return ""
+    match event.event_type:
+        case TraceEventType.RUN_STARTED:
+            return f"task={p.task_id} provider={p.provider} model={p.model}"
+        case TraceEventType.TASK_LOADED:
+            return f"task_id={p.task.get('task_id', '?')}"
+        case TraceEventType.STATE_SNAPSHOT:
+            return f"phase={p.phase}"
+        case TraceEventType.MODEL_PROMPT:
+            return f"transcript_len={p.transcript_length} new_msgs={len(p.new_messages)}"
+        case TraceEventType.MODEL_RESPONSE:
+            return "raw=<present>" if p.raw else "raw=<none>"
+        case TraceEventType.MODEL_ACTION:
+            if p.tool_call:
+                return f"kind={p.kind} tool={p.tool_call.get('tool_name', '?')}"
+            if p.final_answer:
+                ans = p.final_answer[:50] + ("…" if len(p.final_answer) > 50 else "")
+                return f"kind={p.kind} answer={ans!r}"
+            return f"kind={p.kind}"
+        case TraceEventType.TOOL_CALL_REQUESTED:
+            return f"tool={p.tool_name} args={list(p.arguments.keys())}"
+        case TraceEventType.TOOL_CALL_VALIDATED:
+            status = "valid" if p.valid else f"INVALID: {p.error or ''}"
+            return f"tool={p.tool_name} {status}"
+        case TraceEventType.TOOL_CALL_EXECUTED:
+            parts = [f"tool={p.tool_name}", f"status={p.status}"]
+            if p.side_effect:
+                parts.append(f"side_effect={p.side_effect}")
+            if p.error:
+                parts.append(f"error={p.error}")
+            return " ".join(parts)
+        case TraceEventType.RETRIEVAL_RESULT:
+            q = f"query={p.query[:40]!r} " if p.query else ""
+            return f"{q}results={p.result_count}"
+        case TraceEventType.TOOL_OBSERVATION:
+            parts = [f"tool={p.tool_name}", f"status={p.status}"]
+            if p.error:
+                parts.append(f"error={p.error}")
+            return " ".join(parts)
+        case TraceEventType.FINAL_ANSWER:
+            ans = p.final_answer[:60] + ("…" if len(p.final_answer) > 60 else "")
+            return repr(ans)
+        case TraceEventType.RUN_FINISHED:
+            return f"status={p.status} termination={p.termination_reason} steps={p.steps_taken}"
+        case TraceEventType.ERROR:
+            err = p.error[:60] + ("…" if len(p.error) > 60 else "")
+            return f"kind={p.kind} error={err}"
+        case _:
+            return ""
+
+
+def _print_event(event: TraceEvent, children: dict[str, list[TraceEvent]], indent: int) -> None:
+    prefix = "    " * indent
+    etype = event.event_type.ljust(28)
+    print(f"{prefix}  {etype} {_event_summary(event)}")
+    for child in children.get(event.event_id, []):
+        _print_event(child, children, indent + 1)
+
+
+def _inspect_run(run_dir: Path, step_filter: int | None, as_json: bool) -> None:
+    """Print a human-readable timeline of a run's trace events."""
+    store, run_id = ArtifactStore.for_run_path(run_dir)
+    events = store.read_trace(run_id)
+
+    if step_filter is not None:
+        events = [e for e in events if e.step_id == step_filter]
+
+    if as_json:
+        print(json.dumps([e.model_dump(mode="json") for e in events], indent=2))
+        return
+
+    if not events:
+        if step_filter is not None:
+            print(f"no events for step {step_filter} in {run_id}")
+        else:
+            print(f"no events in trace for {run_id}")
+        return
+
+    # child events (those with a parent) are printed recursively under their parent
+    child_event_ids: set[str] = {e.event_id for e in events if e.parent_event_id}
+    children: dict[str, list[TraceEvent]] = {}
+    for e in events:
+        if e.parent_event_id:
+            children.setdefault(e.parent_event_id, []).append(e)
+
+    print(f"\nRun:  {run_id}")
+    if store.exists(run_id, names.RUN_RESULT):
+        run_result = store.read_json(run_id, names.RUN_RESULT)
+        print(
+            f"Task: {run_result.get('task_id')} · status: {run_result.get('status')}"
+            f" · {run_result.get('steps_taken')} steps"
+        )
+    else:
+        print("Result: unavailable (partial run)")
+
+    sentinel = object()
+    current_step: object = sentinel
+    for e in events:
+        if e.event_id in child_event_ids:
+            continue
+        if e.step_id != current_step:
+            current_step = e.step_id
+            label = "run-level" if current_step is None else f"step {current_step}"
+            bar = "─" * max(0, 52 - len(label))
+            print(f"\n── {label} {bar}")
+        _print_event(e, children, indent=0)
+
+    print(f"\n{len(events)} event(s)")
 
 
 def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
@@ -636,7 +755,35 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_bundle.add_argument("run_path")
 
-    sub.add_parser("list-runs", parents=[common], help="list stored runs with one-line summaries")
+    p_list = sub.add_parser(
+        "list-runs", parents=[common], help="list stored runs with one-line summaries"
+    )
+    p_list.add_argument(
+        "--batch",
+        default=None,
+        metavar="BATCH_ID",
+        help="filter to runs from a specific batch",
+    )
+
+    p_inspect = sub.add_parser(
+        "inspect",
+        parents=[common],
+        help="print a human-readable timeline of events in a run's trace",
+    )
+    p_inspect.add_argument("run_path", help="run directory path or bare run id")
+    p_inspect.add_argument(
+        "--step",
+        type=int,
+        default=None,
+        metavar="N",
+        help="show only events for agent decision step N",
+    )
+    p_inspect.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="emit raw JSON array of events (for piping)",
+    )
 
     p_replay = sub.add_parser(
         "replay",
@@ -702,7 +849,10 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         _run_fixture(args, store)
         return 0
     if args.command == "list-runs":
-        _list_runs(store)
+        _list_runs(store, batch_id=getattr(args, "batch", None))
+        return 0
+    if args.command == "inspect":
+        _inspect_run(_resolve_run_dir(args.run_path, store.runs_dir), args.step, args.as_json)
         return 0
     if args.command == "verify":
         merged, run_completed = _verify(_resolve_run_dir(args.run_path, store.runs_dir))
