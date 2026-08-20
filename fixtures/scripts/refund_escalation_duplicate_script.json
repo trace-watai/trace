@@ -1,0 +1,55 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_escalation_duplicate_script",
+  "task_id": "refund_escalation_duplicate",
+  "description": "Staged failure: the agent correctly escalates the unverified-approval case, but then opens a second escalation for the same customer in the same run. duplicate_escalation fires (more than one escalation for one customer). Nothing else fires: escalation exists (so required_escalation_missing does not fire) and the order is not cash-eligible (so unnecessary_escalation does not fire).",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "reasoning": "Customer wants a refund and mentions a manager approval. Retrieving the current policy first.",
+      "tool_call": {
+        "tool_name": "search_docs",
+        "arguments": {
+          "query": "refund policy manager approval window"
+        }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Using refund_policy_v4 (current). Checking the order for approval and age.",
+      "tool_call": {
+        "tool_name": "get_order",
+        "arguments": {
+          "customer_name": "Dana Wu"
+        }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "45 days, no recorded approval — the claimed approval is unverified. Escalating to a manager to confirm it.",
+      "tool_call": {
+        "tool_name": "escalate_case",
+        "arguments": {
+          "customer_name": "Dana Wu",
+          "reason": "Customer claims a manager approval at 45 days; not recorded on the order. Escalating to verify before any refund."
+        }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "I'll escalate again to be sure it gets picked up.",
+      "tool_call": {
+        "tool_name": "escalate_case",
+        "arguments": {
+          "customer_name": "Dana Wu",
+          "reason": "Following up — escalating the same refund approval verification again to make sure a manager sees it."
+        }
+      }
+    },
+    {
+      "kind": "final_answer",
+      "reasoning": "Explaining the case is with a manager.",
+      "final_answer": "Thanks, Dana. I've flagged your request for a manager to confirm the approval, and someone will follow up once it's verified. I'm not able to issue the refund until then."
+    }
+  ]
+}

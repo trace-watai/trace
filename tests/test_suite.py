@@ -30,6 +30,81 @@ def _fixture_config(label: str = "fixture-baseline") -> AgentConfig:
 # --- suite loading / validation ---
 
 
+def _suite_task_paths_by_id() -> dict[str, Path]:
+    """task_id -> absolute fixture path, for every task in the canonical manifest."""
+    from trace_harness.tasks.loader import load_task
+
+    out: dict[str, Path] = {}
+    for rel in load_suite(SUITE_MANIFEST).tasks:
+        p = FIXTURES_DIR.parent / rel
+        out[load_task(p).task_id] = p
+    return out
+
+
+# Every negative in the suite pins its exact verifier outcome under fixtures/expected/.
+_PINNED_EXPECTED = sorted((FIXTURES_DIR / "expected").glob("*_expected_verifier.json"))
+
+
+@pytest.mark.parametrize("expected_path", _PINNED_EXPECTED, ids=lambda p: p.stem)
+def test_pinned_negative_matches_expectation(expected_path: Path, tmp_path: Path) -> None:
+    """Each pinned expected-verifier file must match a real run of its task: same
+    pass/fail, same failed-check set, same severity and blocks_release. This is the
+    exact-outcome contract for every suite negative (deliverable #2)."""
+    from conftest import run_task_fixture
+    from trace_harness.verifiers.base import VerifierInput
+    from trace_harness.verifiers.registry import get_verifier
+
+    doc = json.loads(expected_path.read_text())
+    task_id, expected = doc["task_id"], doc["expected"]
+    task_path = _suite_task_paths_by_id().get(task_id)
+    if task_path is None:
+        pytest.skip(f"{task_id} is pinned but not in the canonical suite manifest")
+
+    run = run_task_fixture(task_path, tmp_path / "runs")
+    result = get_verifier(run.task.verifier_ids[0]).verify(
+        VerifierInput.from_parts(
+            task=run.task, trace=run.trace, final_state=run.final_state, run_id=run.run_id
+        )
+    )
+    assert result.passed is expected["passed"]
+    assert sorted(c.check_id for c in result.failed_checks) == sorted(expected["failed_check_ids"])
+    assert result.severity.value == expected["severity"]
+    assert result.blocks_release is expected["blocks_release"]
+
+
+def test_every_failing_suite_task_has_a_pinned_expectation(tmp_path: Path) -> None:
+    """
+    Covers the inverse of test_pinned_negative_matches_expectation: run the suite,
+    take the task_ids that actually failed verification, and assert every one of
+    them has a matching pinned file.
+    """
+    summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(load_suite(SUITE_MANIFEST))
+
+    failing_task_ids = {entry.task_id for entry in summary.entries if not entry.verifier_passed}
+    pinned_task_ids = {json.loads(p.read_text())["task_id"] for p in _PINNED_EXPECTED}
+
+    missing_pins = failing_task_ids - pinned_task_ids
+    assert not missing_pins, (
+        "suite task(s) fail verification but have no pinned "
+        f"fixtures/expected/*_expected_verifier.json file: {sorted(missing_pins)}"
+    )
+
+
+def test_every_canonical_suite_task_passes_authoring_validation() -> None:
+    """Acceptance rule: every task in the runnable suite must pass the authoring
+    rubric. The validation CLI only globs top-level fixtures/tasks/, so nested
+    family tasks would otherwise go unvalidated — this ties validation to the
+    manifest so any task added to the suite is checked."""
+    from trace_harness.tasks.loader import load_task
+    from trace_harness.tasks.validation import errors, validate_task
+
+    suite = load_suite(SUITE_MANIFEST)
+    for rel in suite.tasks:
+        task = load_task(FIXTURES_DIR.parent / rel)
+        errs = [i.code for i in errors(validate_task(task))]
+        assert errs == [], f"{rel}: {errs}"
+
+
 def test_load_canonical_suite() -> None:
     suite = load_suite(SUITE_MANIFEST)
     assert suite.suite_id == "refund_v0"
@@ -39,6 +114,26 @@ def test_load_canonical_suite() -> None:
         "fixtures/tasks/refund_policy_store_credit.json",
         "fixtures/tasks/refund_policy_no_refund.json",
         "fixtures/tasks/refund_policy_missing_info.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_0/refund_cash_age_boundary_day_0.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_30/refund_cash_age_boundary_day_30.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_31_no_approval_correct/refund_cash_age_boundary_day_31_no_approval_correct.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_31_approved/refund_cash_age_boundary_day_31_approved.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_60_approved/refund_cash_age_boundary_day_60_approved.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_61_approved/refund_cash_age_boundary_day_61_approved.json",
+        "fixtures/tasks/refund_task_families/purchase_age/day_61_violation/refund_cash_age_boundary_day_61_violation.json",
+        "fixtures/tasks/refund_task_families/outage_evidence/day_45_documented/refund_outage_evidence_day_45_documented.json",
+        "fixtures/tasks/refund_task_families/outage_evidence/day_45_not_documented_correct/refund_outage_evidence_day_45_not_documented_correct.json",
+        "fixtures/tasks/refund_task_families/outage_evidence/day_45_credit_violation/refund_outage_evidence_day_45_credit_violation.json",
+        "fixtures/tasks/refund_task_families/escalation/escalation_missing/refund_escalation_missing.json",
+        "fixtures/tasks/refund_task_families/escalation/escalation_unnecessary/refund_escalation_unnecessary.json",
+        "fixtures/tasks/refund_task_families/escalation/escalation_duplicate/refund_escalation_duplicate.json",
+        "fixtures/tasks/refund_task_families/final_answer_consistency/phantom_claim/refund_final_answer_phantom.json",
+        "fixtures/tasks/refund_task_families/final_answer_consistency/denied_real_refund/refund_final_answer_denied_real.json",
+        "fixtures/tasks/refund_task_families/customer_wording/eligible_neutral/refund_wording_eligible_neutral.json",
+        "fixtures/tasks/refund_task_families/customer_wording/eligible_pressure/refund_wording_eligible_pressure.json",
+        "fixtures/tasks/refund_task_families/policy_ordering_status/deprecated_ranked_first/refund_policy_order_deprecated_first.json",
+        "fixtures/tasks/refund_task_families/refund_type/store_credit_in_window/refund_type_store_credit_in_window.json",
+        "fixtures/tasks/refund_task_families/refund_type/cash_with_outage_in_window/refund_type_cash_with_outage_in_window.json",
     ]
     assert suite.agent_configs[0].provider == "fixture"
 
@@ -67,22 +162,50 @@ def test_duplicate_agent_labels_rejected() -> None:
 # --- batch execution ---
 
 
-def test_canonical_suite_executes_all_five_product_outcomes(tmp_path: Path) -> None:
+def test_canonical_suite_executes_all_product_outcomes(tmp_path: Path) -> None:
     summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(load_suite(SUITE_MANIFEST))
 
     assert {entry.task_id: entry.verifier_passed for entry in summary.entries} == {
+        # Five canonical outcomes
         "refund_policy_failure": False,
         "refund_policy_valid_cash": True,
         "refund_policy_store_credit": True,
         "refund_policy_no_refund": True,
         "refund_policy_missing_info": True,
+        # purchase_age family: cash-window boundary controls (all correct behavior)
+        "refund_cash_age_boundary_day_0": True,
+        "refund_cash_age_boundary_day_30": True,
+        "refund_cash_age_boundary_day_31_no_approval_correct": True,
+        "refund_cash_age_boundary_day_31_approved": True,
+        "refund_cash_age_boundary_day_60_approved": True,
+        "refund_cash_age_boundary_day_61_approved": True,
+        # outage_evidence family: documented↔not_documented controls + enforcement negative
+        "refund_outage_evidence_day_45_documented": True,
+        "refund_outage_evidence_day_45_not_documented_correct": True,
+        "refund_outage_evidence_day_45_credit_violation": False,
+        # escalation family negatives (slice 3)
+        "refund_escalation_missing": False,
+        "refund_escalation_unnecessary": False,
+        "refund_escalation_duplicate": False,
+        # final_answer_consistency family + >60 cash-boundary negatives (slice 4)
+        "refund_final_answer_phantom": False,
+        "refund_final_answer_denied_real": False,
+        "refund_cash_age_boundary_day_61_violation": False,
+        # customer_wording family (tone invariance)
+        "refund_wording_eligible_neutral": True,
+        "refund_wording_eligible_pressure": True,
+        # policy_ordering_status family (retrieval-order robustness)
+        "refund_policy_order_deprecated_first": True,
+        # refund_type family (remedy choice)
+        "refund_type_store_credit_in_window": True,
+        "refund_type_cash_with_outage_in_window": True,
     }
-    assert summary.aggregates.total == 5
-    assert summary.aggregates.completed == 5
+    assert summary.aggregates.total == 25
+    assert summary.aggregates.completed == 25
     assert summary.aggregates.terminated == 0
     assert summary.aggregates.errored == 0
-    assert summary.aggregates.verifier_passed == 4
-    assert summary.aggregates.verifier_failed == 1
+    assert summary.aggregates.verifier_passed == 17
+    assert summary.aggregates.verifier_failed == 8
 
 
 def test_batch_runs_all_and_aggregates(tmp_path: Path) -> None:

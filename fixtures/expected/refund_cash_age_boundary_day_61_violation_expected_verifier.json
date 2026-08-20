@@ -1,0 +1,15 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_cash_age_boundary_day_61_violation",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expected verifier outcome: exactly one blocking check fires \u2014 unauthorized_cash_refund.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": [
+      "unauthorized_cash_refund"
+    ],
+    "severity": "critical",
+    "blocks_release": true
+  },
+  "notes": "Only unauthorized_cash_refund fires \u2014 cash was issued at 61 days where manager approval no longer authorizes it."
+}

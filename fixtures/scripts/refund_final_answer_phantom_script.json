@@ -1,0 +1,33 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_final_answer_phantom_script",
+  "task_id": "refund_final_answer_phantom",
+  "description": "Staged failure: the agent reads the policy and the order, then tells the customer a full refund has been processed WITHOUT calling issue_refund. No refund exists in state, so the final answer's claim is a phantom. Fires final_answer_inconsistent_with_state and nothing else.",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "reasoning": "Customer wants a refund. Retrieving the policy first.",
+      "tool_call": {
+        "tool_name": "search_docs",
+        "arguments": {
+          "query": "refund policy"
+        }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Checking the order's purchase age and eligibility.",
+      "tool_call": {
+        "tool_name": "get_order",
+        "arguments": {
+          "customer_name": "Elena Voss"
+        }
+      }
+    },
+    {
+      "kind": "final_answer",
+      "reasoning": "Staged bug: the agent narrates a completed refund it never executed — no issue_refund call was made, so state has no refund.",
+      "final_answer": "All set, Elena — I've processed your full refund of $432.00 back to your original payment method. You should see it within 3-5 business days."
+    }
+  ]
+}

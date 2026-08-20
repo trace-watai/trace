@@ -20,5 +20,5 @@
   "verifier_ids": ["refund_policy"],
   "severity": "medium",
   "difficulty": "hard",
-  "metadata": {"family_id": "refund_cash_age_boundary", "mutation_dimension": "manager_approval_granted", "boundary_case": "approval_window_lower_bound", "expected_cash_decision": "allow", "user_message": "I bought the Team Monthly plan 31 days ago and would like a cash refund. — Alex Morgan"}
+  "metadata": {"fixture_script": "../../../../scripts/refund_cash_age_boundary_day_31_approved_script.json", "family_id": "refund_cash_age_boundary", "mutation_dimension": "manager_approval_granted", "boundary_case": "approval_window_lower_bound", "expected_cash_decision": "allow", "user_message": "I bought the Team Monthly plan 31 days ago and would like a cash refund. — Alex Morgan"}
 }

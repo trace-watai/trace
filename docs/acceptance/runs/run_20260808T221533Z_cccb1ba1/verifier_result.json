@@ -1,0 +1,57 @@
+{
+  "schema_version": "0.3.0",
+  "verifier_id": "refund_policy",
+  "run_id": "run_20260808T221533Z_cccb1ba1",
+  "passed": true,
+  "failed_checks": [],
+  "warnings": [
+    "deprecated policy doc was referenced but no policy violation occurred; treating as correctly-identified stale source"
+  ],
+  "severity": null,
+  "blocks_release": false,
+  "evidence": [
+    {
+      "kind": "policy_rules",
+      "description": "policy rules in effect (source: refund_policy_v4)",
+      "step_ids": [],
+      "data": {
+        "source_doc_id": "refund_policy_v4",
+        "rules": {
+          "cash_refund_window_days": 30,
+          "manager_approval_extends_cash_to_days": 60,
+          "store_credit_window_start_day": 31,
+          "store_credit_window_end_day": 60,
+          "store_credit_requires_documented_outage": true,
+          "store_credit_allowed_in_cash_window": true
+        }
+      }
+    },
+    {
+      "kind": "retrieval_provenance",
+      "description": "documents surfaced to the agent by retrieval, with status",
+      "step_ids": [
+        1
+      ],
+      "data": {
+        "hits": [
+          {
+            "doc_id": "refund_policy_v4",
+            "status": "current",
+            "score": 6.0,
+            "step_id": 1
+          },
+          {
+            "doc_id": "refund_policy_v2",
+            "status": "deprecated",
+            "score": 5.0,
+            "step_id": 1
+          }
+        ]
+      }
+    }
+  ],
+  "metadata": {
+    "task_id": "refund_policy_valid_cash",
+    "rules_source_doc_id": "refund_policy_v4"
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "schema_version": "0.3.0",
+  "entries": [
+    {
+      "run_id": "run_20260808T221533Z_2ce9ec85",
+      "task_id": "refund_policy_store_credit",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 5,
+      "started_at": "2026-08-08T22:15:33.964408Z",
+      "finished_at": "2026-08-08T22:15:33.998667Z",
+      "error": null,
+      "verifier_passed": true,
+      "failed_check_count": 0,
+      "batch_id": "batch_20260808T221533Z_3b3316fa"
+    },
+    {
+      "run_id": "run_20260808T221533Z_bf8d1af8",
+      "task_id": "refund_policy_failure",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 7,
+      "started_at": "2026-08-08T22:15:33.721371Z",
+      "finished_at": "2026-08-08T22:15:33.765615Z",
+      "error": null,
+      "verifier_passed": false,
+      "failed_check_count": 4,
+      "batch_id": "batch_20260808T221533Z_3b3316fa"
+    },
+    {
+      "run_id": "run_20260808T221533Z_cccb1ba1",
+      "task_id": "refund_policy_valid_cash",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 5,
+      "started_at": "2026-08-08T22:15:33.867693Z",
+      "finished_at": "2026-08-08T22:15:33.901840Z",
+      "error": null,
+      "verifier_passed": true,
+      "failed_check_count": 0,
+      "batch_id": "batch_20260808T221533Z_3b3316fa"
+    },
+    {
+      "run_id": "run_20260808T221534Z_4f5d4fdc",
+      "task_id": "refund_policy_no_refund",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 4,
+      "started_at": "2026-08-08T22:15:34.078586Z",
+      "finished_at": "2026-08-08T22:15:34.109082Z",
+      "error": null,
+      "verifier_passed": true,
+      "failed_check_count": 0,
+      "batch_id": "batch_20260808T221533Z_3b3316fa"
+    },
+    {
+      "run_id": "run_20260808T221534Z_c00cb582",
+      "task_id": "refund_policy_missing_info",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 4,
+      "started_at": "2026-08-08T22:15:34.181730Z",
+      "finished_at": "2026-08-08T22:15:34.211823Z",
+      "error": null,
+      "verifier_passed": true,
+      "failed_check_count": 0,
+      "batch_id": "batch_20260808T221533Z_3b3316fa"
+    }
+  ]
+}
