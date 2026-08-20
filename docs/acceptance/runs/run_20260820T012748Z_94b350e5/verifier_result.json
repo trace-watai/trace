@@ -1,10 +1,12 @@
 {
   "schema_version": "0.3.0",
   "verifier_id": "refund_policy",
-  "run_id": "run_20260808T221534Z_4f5d4fdc",
+  "run_id": "run_20260820T012748Z_94b350e5",
   "passed": true,
   "failed_checks": [],
-  "warnings": [],
+  "warnings": [
+    "deprecated policy doc was referenced but no policy violation occurred; treating as correctly-identified stale source"
+  ],
   "severity": null,
   "blocks_release": false,
   "evidence": [
@@ -49,7 +51,7 @@
     }
   ],
   "metadata": {
-    "task_id": "refund_policy_no_refund",
+    "task_id": "refund_policy_valid_cash",
     "rules_source_doc_id": "refund_policy_v4"
   }
 }

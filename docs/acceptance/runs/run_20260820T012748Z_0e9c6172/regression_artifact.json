@@ -1,7 +1,7 @@
 {
   "schema_version": "0.2.0",
   "test_name": "regression_refund_policy_failure",
-  "source_run_id": "run_20260808T221533Z_bf8d1af8",
+  "source_run_id": "run_20260820T012748Z_0e9c6172",
   "task_fixture": "fixtures\\tasks\\refund_policy_failure.json",
   "initial_state": {
     "schema_version": "0.2.0",
@@ -233,7 +233,7 @@
     "schema_versions": {
       "task": "0.3.0",
       "state": "0.2.0",
-      "trace": "0.2.0",
+      "trace": "0.3.0",
       "verifier_result": "0.3.0",
       "harness": "unknown"
     }

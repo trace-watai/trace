@@ -27,7 +27,11 @@
     "fixtures/tasks/refund_task_families/customer_wording/eligible_pressure/refund_wording_eligible_pressure.json",
     "fixtures/tasks/refund_task_families/policy_ordering_status/deprecated_ranked_first/refund_policy_order_deprecated_first.json",
     "fixtures/tasks/refund_task_families/refund_type/store_credit_in_window/refund_type_store_credit_in_window.json",
-    "fixtures/tasks/refund_task_families/refund_type/cash_with_outage_in_window/refund_type_cash_with_outage_in_window.json"
+    "fixtures/tasks/refund_task_families/refund_type/cash_with_outage_in_window/refund_type_cash_with_outage_in_window.json",
+    "fixtures/tasks/refund_task_families/retrieval_completeness/full_retrieval/refund_retrieval_full.json",
+    "fixtures/tasks/refund_task_families/retrieval_completeness/skipped_retrieval/refund_retrieval_skipped.json",
+    "fixtures/tasks/refund_task_families/retrieval_completeness/missed_current_policy/refund_retrieval_missed_current.json",
+    "fixtures/tasks/refund_task_families/retrieval_completeness/decline_ungrounded/refund_retrieval_decline_ungrounded.json"
   ],
   "agent_configs": [
     {

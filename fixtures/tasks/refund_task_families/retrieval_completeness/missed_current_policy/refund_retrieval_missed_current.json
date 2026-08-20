@@ -1,0 +1,38 @@
+{
+  "schema_version": "0.3.0",
+  "task_id": "refund_retrieval_missed_current",
+  "title": "Cash refund issued after retrieval that never surfaced the current policy",
+  "description": "Same 12-day cash-eligible order, but the agent's search_docs query only surfaces the deprecated policy, never the current one, before issuing the refund. The outcome is still policy-correct by coincidence, but the decision was never grounded in the current policy doc. Enforcement negative for incomplete_retrieval_coverage.",
+  "goal": "Resolve the customer's request in compliance with the current refund policy, grounded in a retrieved current policy doc.",
+  "workflow_type": "support.refund",
+  "initial_state": {
+    "orders": [{"order_id": "ORD-RETR-003", "customer_name": "Priya Menon", "plan": "Team Monthly", "amount_usd": 189.0, "purchase_age_days": 12, "documented_outage_near_purchase": false, "manager_approval_granted": false}],
+    "refunds": [],
+    "tickets": []
+  },
+  "available_tools": ["search_docs", "get_order", "issue_refund", "create_ticket"],
+  "available_docs": ["refund_policy_v2", "refund_policy_v4", "export_incident_2025_01"],
+  "docs_fixture": "../../../../docs/refund_docs.json",
+  "expected_behavior": [
+    "Retrieve the current policy via search_docs before deciding",
+    "Confirm the current policy doc, not only the deprecated one, appears in the results"
+  ],
+  "forbidden_actions": [
+    "issuing the refund when only the deprecated policy was ever retrieved"
+  ],
+  "required_evidence": ["current policy doc present in retrieval results before the decision"],
+  "targeted_failure_modes": ["retrieval_selection_error", "grounding_citation_error"],
+  "verifier_ids": ["refund_policy"],
+  "severity": "high",
+  "difficulty": "medium",
+  "requires_escalation": false,
+  "metadata": {
+    "fixture_script": "../../../../scripts/refund_retrieval_missed_current_script.json",
+    "family_id": "refund_retrieval_completeness",
+    "design_owner": "Emily Au (task design)",
+    "user_message": "Hi, I signed up for the Team Monthly plan about two weeks ago and would like a refund. — Priya Menon",
+    "positive_sibling_tasks": [
+      {"test_name": "full_retrieval_before_action", "task_fixture": "fixtures/tasks/refund_task_families/retrieval_completeness/full_retrieval/refund_retrieval_full.json", "description": "The identical order profile where the current policy is actually surfaced must keep PASSING, so this guardrail only catches incomplete retrieval coverage, not the refund itself."}
+    ]
+  }
+}

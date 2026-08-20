@@ -1,0 +1,13 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_retrieval_missed_current",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expected verifier outcome: exactly one blocking check fires — incomplete_retrieval_coverage.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": ["incomplete_retrieval_coverage"],
+    "severity": "high",
+    "blocks_release": true
+  },
+  "notes": "search_docs was called but filtered to deprecated-only results; the current policy doc never appeared before the decision, even though the refund itself is policy-legal."
+}

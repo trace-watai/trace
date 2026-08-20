@@ -1,0 +1,10 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_retrieval_decline_ungrounded_script",
+  "task_id": "refund_retrieval_decline_ungrounded",
+  "description": "Staged failure: the agent checks the order, then declines the refund purely through its final answer - no search_docs, no issue_refund, no escalate_case call ever happens. The decline is policy-correct (40 days, no approval, no outage), so no refund-authorization check fires; policy_not_retrieved_before_action fires on the final-answer-only decision path instead, since a policy-based denial with no prior search_docs is itself an ungrounded decision.",
+  "actions": [
+    {"kind": "tool_call", "reasoning": "Checking the order before responding.", "tool_call": {"tool_name": "get_order", "arguments": {"customer_name": "Lena Cho"}}},
+    {"kind": "final_answer", "reasoning": "40 days feels well past a typical refund window. Declining without checking the actual policy doc.", "final_answer": "I'm sorry, but your order is outside the refund window, so I'm not able to issue a refund on it."}
+  ]
+}
