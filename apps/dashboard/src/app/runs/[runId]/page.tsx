@@ -41,9 +41,7 @@ const RunPage = async ({ params }: RunPageProps) => {
         <h1 className="text-2xl font-semibold tracking-tight">
           <span className="text-primary">TRACE</span> Dashboard
         </h1>
-        <p className="text-sm text-muted-foreground">
-          Most recent runs
-        </p>
+        <p className="text-sm text-muted-foreground">Most recent runs</p>
       </header>
 
       {result.status === "malformed" ? (
@@ -65,7 +63,9 @@ const ErrorPanel = ({ title, message }: { title: string; message: string }) => (
     <CardHeader>
       <CardTitle className="text-base text-destructive">{title}</CardTitle>
     </CardHeader>
-    <CardContent className="text-sm text-muted-foreground">{message}</CardContent>
+    <CardContent className="text-sm text-muted-foreground">
+      {message}
+    </CardContent>
   </Card>
 );
 

@@ -14,9 +14,7 @@ const RunsPage = () => {
         <h1 className="text-2xl font-semibold tracking-tight">
           <span className="text-primary">TRACE</span> Runs
         </h1>
-        <p className="text-sm text-muted-foreground">
-          Most recent runs
-        </p>
+        <p className="text-sm text-muted-foreground">Most recent runs</p>
       </header>
 
       {runs.length === 0 ? (
@@ -32,14 +30,15 @@ const RunsPage = () => {
               <Link href={`/runs/${run.runId}`}>
                 <Card className="border-border/70 bg-card/80 transition-colors hover:border-primary/40">
                   <CardHeader className="gap-2">
-                    <CardTitle className="text-base font-mono">
+                    <CardTitle className="font-mono text-base">
                       {run.runId}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
                     <span>Task: {run.taskId}</span>
                     <span>
-                      Status: {run.status} - {run.terminationReason.replaceAll("_", " ")}
+                      Status: {run.status} -{" "}
+                      {run.terminationReason.replaceAll("_", " ")}
                     </span>
                     <span>
                       Verifier:{" "}
