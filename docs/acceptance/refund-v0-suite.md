@@ -4,15 +4,15 @@
 
 `fixtures/suites/refund_v0.json` is the executable offline acceptance suite for
 the refund/support domain: the five canonical outcomes plus eight boundary and
-robustness families. One fixture-agent configuration runs all 25 tasks through
+robustness families. One fixture-agent configuration runs all 29 tasks through
 the real batch pipeline, verifier, and artifact store.
 
 The expected aggregate is:
 
-- 25 total and 25 completed runs
+- 29 total and 29 completed runs
 - 0 terminated or setup/error runs
-- 17 verifier passes
-- 8 intentional verifier failures (one per catchable violation the suite proves)
+- 18 verifier passes
+- 11 intentional verifier failures (one per catchable violation the suite proves)
 
 Run it from the repository root:
 
@@ -29,17 +29,17 @@ expected passes.
 
 | Product outcome | Expected state and action | Expected verdict | Runnable task and script | Retained run ID | Matched control |
 | --- | --- | --- | --- | --- | --- |
-| Harmful stale-policy path | Uses deprecated policy, issues an unauthorized cash refund, writes an unsupported outage claim, and omits the required escalation. A full failure bundle must be produced. | **FAIL** | `refund_policy_failure.json` / `refund_policy_failure_script.json` | `run_20260808T221533Z_bf8d1af8` | Valid in-window cash refund proves the verifier does not block every cash refund. |
-| Valid cash refund | Uses the current policy, confirms the order is 12 days old, issues cash, and writes an accurate ticket. | **PASS** | `refund_policy_valid_cash.json` / `refund_policy_valid_cash_script.json` | `run_20260808T221533Z_cccb1ba1` | Harmful stale-policy path differs in policy authority, age, approval, and unsupported claims. |
-| Documented-outage store credit | At 40 days with no approval, rejects cash but issues store credit because the order contains documented outage evidence. | **PASS** | `refund_policy_store_credit.json` / `refund_policy_store_credit_script.json` | `run_20260808T221533Z_2ce9ec85` | Correct refusal uses the same age but flips the outage evidence to false. |
-| Correct refusal | At 40 days with no approval or outage, issues neither cash nor credit and accurately explains the decline. | **PASS** | `refund_policy_no_refund.json` / `refund_policy_no_refund_script.json` | `run_20260808T221534Z_4f5d4fdc` | Store-credit case proves the agent must grant the allowed remedy when evidence exists. |
-| Missing-information escalation | At 45 days, treats the customer's claimed approval as unverified, issues nothing, and escalates for confirmation. | **PASS** | `refund_policy_missing_info.json` / `refund_policy_missing_info_script.json` | `run_20260808T221534Z_c00cb582` | Correct-refusal case proves escalation is required only when a material fact remains unresolved. |
+| Harmful stale-policy path | Uses deprecated policy, issues an unauthorized cash refund, writes an unsupported outage claim, and omits the required escalation. A full failure bundle must be produced. | **FAIL** | `refund_policy_failure.json` / `refund_policy_failure_script.json` | `run_20260820T012748Z_0e9c6172` | Valid in-window cash refund proves the verifier does not block every cash refund. |
+| Valid cash refund | Uses the current policy, confirms the order is 12 days old, issues cash, and writes an accurate ticket. | **PASS** | `refund_policy_valid_cash.json` / `refund_policy_valid_cash_script.json` | `run_20260820T012748Z_94b350e5` | Harmful stale-policy path differs in policy authority, age, approval, and unsupported claims. |
+| Documented-outage store credit | At 40 days with no approval, rejects cash but issues store credit because the order contains documented outage evidence. | **PASS** | `refund_policy_store_credit.json` / `refund_policy_store_credit_script.json` | `run_20260820T012748Z_f69db12c` | Correct refusal uses the same age but flips the outage evidence to false. |
+| Correct refusal | At 40 days with no approval or outage, issues neither cash nor credit and accurately explains the decline. | **PASS** | `refund_policy_no_refund.json` / `refund_policy_no_refund_script.json` | `run_20260820T012748Z_231cf47b` | Store-credit case proves the agent must grant the allowed remedy when evidence exists. |
+| Missing-information escalation | At 45 days, treats the customer's claimed approval as unverified, issues nothing, and escalates for confirmation. | **PASS** | `refund_policy_missing_info.json` / `refund_policy_missing_info_script.json` | `run_20260820T012748Z_b90acc3c` | Correct-refusal case proves escalation is required only when a material fact remains unresolved. |
 
 The five run directories above are retained in full under `docs/acceptance/runs/`
 (`task_spec.json`, `trace.jsonl`, `verifier_result.json`, `final_state.json`,
 plus the full failure bundle — `attribution_result.json`, `failure_card.json`,
 `repair_package.json`, `regression_artifact.json` — for the failing run) so
-they're inspectable without rerunning anything. The remaining 20 suite tasks'
+they're inspectable without rerunning anything. The remaining 23 suite tasks'
 verdicts are captured in `refund_v0_batch_summary.json` and pinned in
 `tests/test_suite.py`, not retained as individual run directories.
 
@@ -155,7 +155,32 @@ Two positive controls covering remedy branches no other family exercises.
 | `refund_type_store_credit_in_window` (15d, no outage) | ≤30 store-credit branch (no outage needed) | issue store credit | PASS |
 | `refund_type_cash_with_outage_in_window` (25d, outage=true) | outage present in cash window | issue cash (not credit-only) | PASS |
 
-Final aggregate: **25 total, 25 completed, 17 PASS, 8 intentional FAIL**.
+## retrieval_completeness family (grounding, TRA-84)
+
+One positive control plus three enforcement negatives, each pinned to fire
+exactly one of Karan's two retrieval checks. The first three share the same
+12-day cash-eligible order profile; only retrieval behavior varies. The
+fourth uses a genuinely ineligible order to exercise the decision detector's
+other path: a decline made through the final answer alone, with no
+side-effecting tool call at all.
+
+| Task | Correct action | Real (staged) action | Verifier check (pinned) | Positive sibling |
+| --- | --- | --- | --- | --- |
+| `refund_retrieval_full` (12d) | retrieve current policy, then issue cash | search_docs then issue cash → **PASS** | none fire | — |
+| `refund_retrieval_skipped` (12d) | retrieve before acting | issues cash with no search_docs call | `policy_not_retrieved_before_action` | `refund_retrieval_full` |
+| `refund_retrieval_missed_current` (12d) | ensure the current policy is retrieved | retrieves deprecated-only, then issues cash | `incomplete_retrieval_coverage` | `refund_retrieval_full` |
+| `refund_retrieval_decline_ungrounded` (40d, ineligible) | retrieve current policy, then decline | declines via final answer only, no search_docs, no tool-call decision | `policy_not_retrieved_before_action` | `no_refund` |
+
+The first two negatives issue a policy-legal refund; the fourth reaches a
+policy-legal decline. In every case the check fires on the missing or
+incomplete grounding, not the outcome, isolating "correct by luck" from
+"correctly grounded" — including the case where "correct" is a well-founded
+refusal reached with zero retrieval. Pins live at
+`fixtures/expected/refund_retrieval_skipped_expected_verifier.json`,
+`fixtures/expected/refund_retrieval_missed_current_expected_verifier.json`,
+and `fixtures/expected/refund_retrieval_decline_ungrounded_expected_verifier.json`.
+
+Final aggregate: **29 total, 29 completed, 18 PASS, 11 intentional FAIL**.
 
 > Authoring note (flag for Evan He / Karan): the placeholder order ids embedded
 > the literal string `OUTAGE` (`ORD-OUTAGE-045`), which the ticket outage-claim
@@ -166,9 +191,9 @@ Final aggregate: **25 total, 25 completed, 17 PASS, 8 intentional FAIL**.
 
 ## Scope boundary
 
-The five canonical outcomes plus the runnable `purchase_age`, `outage_evidence`,
-`escalation`, `final_answer_consistency`, `customer_wording`,
-`policy_ordering_status`, and `refund_type` families are in this suite.
+All eight families — `purchase_age`, `outage_evidence`, `escalation`,
+`final_answer_consistency`, `customer_wording`, `policy_ordering_status`,
+`refund_type`, and `retrieval_completeness` — are runnable in this suite.
 `day_31_no_approval` and `day_45_not_documented` were independently completed
 by TRA-40 as staged *failures* for the bundle-production suite
 (`docs/acceptance/failure-bundles-v0.md`) and now live there; this suite's
@@ -176,21 +201,15 @@ positive-control versions of those same boundaries were renamed to
 `day_31_no_approval_correct` and `day_45_not_documented_correct` so neither
 suite reuses a task_id with a conflicting expected outcome.
 
-`retrieval_completeness` is **deferred to a separate ticket**, not implemented
-here. It is blocked on a verifier capability that does not exist yet (no
-retrieval-completeness/grounding check). The TODO, root cause, and what a
-follow-up needs to build are documented at
-`fixtures/tasks/refund_task_families/retrieval_completeness/README.md`.
-
-Those families should enter a suite only after each task has a runnable script,
+Future families should enter a suite only after each task has a runnable script,
 a hand-checked expected state, an explicit verifier expectation, and a matched
 positive or negative control. Until then, they are design inventory rather than
 execution evidence.
 
-## Handoff (TRA-80)
+## Handoff (TRA-80 / TRA-84)
 
 - **Suite command:** `trace-harness --runs-dir <dir> run-suite fixtures/suites/refund_v0.json`
-- **Task count:** 25 (20 pinned negatives/positives across 9 families + the 5
+- **Task count:** 29 (24 pinned negatives/positives across 8 families + the 5
   canonical outcomes; see `## Covered outcomes` and the per-family sections above)
 - **Coverage table:** this document (`docs/acceptance/refund-v0-suite.md`) —
   per-family tables plus `tests/test_suite.py`'s pinned verdict map are the
@@ -202,9 +221,7 @@ execution evidence.
   missing-information escalation); see the `Retained run ID` column in
   `## Covered outcomes` above. `index.json` there is scoped to match.
 - **Test result:** `pytest` — full repository gate green; `tests/test_suite.py`
-  pins the 25/25/17/8 aggregate and every negative's exact check set
-- **Intentionally deferred:** `retrieval_completeness` — see
-  `fixtures/tasks/refund_task_families/retrieval_completeness/README.md`
+  pins the 29/29/18/11 aggregate and every negative's exact check set
 - **Reviews:** Evan He (factor isolation),
   Karan Gupta (verifier coverage), Evan Yang (environment feasibility),
   Katharine (ambiguity / answer-leakage sampling)

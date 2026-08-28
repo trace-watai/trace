@@ -134,6 +134,10 @@ def test_load_canonical_suite() -> None:
         "fixtures/tasks/refund_task_families/policy_ordering_status/deprecated_ranked_first/refund_policy_order_deprecated_first.json",
         "fixtures/tasks/refund_task_families/refund_type/store_credit_in_window/refund_type_store_credit_in_window.json",
         "fixtures/tasks/refund_task_families/refund_type/cash_with_outage_in_window/refund_type_cash_with_outage_in_window.json",
+        "fixtures/tasks/refund_task_families/retrieval_completeness/full_retrieval/refund_retrieval_full.json",
+        "fixtures/tasks/refund_task_families/retrieval_completeness/skipped_retrieval/refund_retrieval_skipped.json",
+        "fixtures/tasks/refund_task_families/retrieval_completeness/missed_current_policy/refund_retrieval_missed_current.json",
+        "fixtures/tasks/refund_task_families/retrieval_completeness/decline_ungrounded/refund_retrieval_decline_ungrounded.json",
     ]
     assert suite.agent_configs[0].provider == "fixture"
 
@@ -199,13 +203,18 @@ def test_canonical_suite_executes_all_product_outcomes(tmp_path: Path) -> None:
         # refund_type family (remedy choice)
         "refund_type_store_credit_in_window": True,
         "refund_type_cash_with_outage_in_window": True,
+        # retrieval_completeness family (TRA-84)
+        "refund_retrieval_full": True,
+        "refund_retrieval_skipped": False,
+        "refund_retrieval_missed_current": False,
+        "refund_retrieval_decline_ungrounded": False,
     }
-    assert summary.aggregates.total == 25
-    assert summary.aggregates.completed == 25
+    assert summary.aggregates.total == 29
+    assert summary.aggregates.completed == 29
     assert summary.aggregates.terminated == 0
     assert summary.aggregates.errored == 0
-    assert summary.aggregates.verifier_passed == 17
-    assert summary.aggregates.verifier_failed == 8
+    assert summary.aggregates.verifier_passed == 18
+    assert summary.aggregates.verifier_failed == 11
 
 
 def test_batch_runs_all_and_aggregates(tmp_path: Path) -> None:

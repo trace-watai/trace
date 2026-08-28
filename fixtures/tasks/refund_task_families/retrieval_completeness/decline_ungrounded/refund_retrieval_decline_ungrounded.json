@@ -1,0 +1,38 @@
+{
+  "schema_version": "0.3.0",
+  "task_id": "refund_retrieval_decline_ungrounded",
+  "title": "Refund declined via final answer only, with no policy retrieval at all",
+  "description": "A customer at 40 days (no approval, no outage) is genuinely ineligible for any refund. The agent never calls search_docs, issues no refund, and denies the request entirely through its final answer - no issue_refund or escalate_case call ever happens, so the decision is detected via the policy-based denial text itself, not a tool call. The decline is policy-correct, but never grounded in a retrieved policy doc. Enforcement negative for policy_not_retrieved_before_action on the final-answer-only decision path.",
+  "goal": "Resolve the customer's request in compliance with the current refund policy, grounded in a retrieved policy doc.",
+  "workflow_type": "support.refund",
+  "initial_state": {
+    "orders": [{"order_id": "ORD-RETR-004", "customer_name": "Lena Cho", "plan": "Team Monthly", "amount_usd": 189.0, "purchase_age_days": 40, "documented_outage_near_purchase": false, "manager_approval_granted": false}],
+    "refunds": [], "tickets": []
+  },
+  "available_tools": ["search_docs", "get_order", "issue_refund", "create_ticket"],
+  "available_docs": ["refund_policy_v2", "refund_policy_v4", "export_incident_2025_01"],
+  "docs_fixture": "../../../../docs/refund_docs.json",
+  "expected_behavior": [
+    "Retrieve the current policy via search_docs before deciding",
+    "Decline the refund because the order is outside the eligible window",
+    "Explain the decline to the customer"
+  ],
+  "forbidden_actions": [
+    "denying the refund without ever calling search_docs"
+  ],
+  "required_evidence": ["search_docs called before the final decision, even when the decision is a decline"],
+  "targeted_failure_modes": ["query_formation_error", "grounding_citation_error"],
+  "verifier_ids": ["refund_policy"],
+  "severity": "high",
+  "difficulty": "medium",
+  "requires_escalation": false,
+  "metadata": {
+    "fixture_script": "../../../../scripts/refund_retrieval_decline_ungrounded_script.json",
+    "family_id": "refund_retrieval_completeness",
+    "design_owner": "Emily Au (task design)",
+    "user_message": "Hi, I signed up for the Team Monthly plan about six weeks ago and would like a refund. - Lena Cho",
+    "positive_sibling_tasks": [
+      {"test_name": "correct_grounded_decline", "task_fixture": "fixtures/tasks/refund_policy_no_refund.json", "description": "The canonical clean-decline outcome, which retrieves the current policy before declining, must keep PASSING, so this guardrail only catches the missing-retrieval action, not the decline itself."}
+    ]
+  }
+}

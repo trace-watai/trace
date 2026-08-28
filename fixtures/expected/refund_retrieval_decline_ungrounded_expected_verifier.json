@@ -1,0 +1,13 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_retrieval_decline_ungrounded",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expected verifier outcome: exactly one blocking check fires - policy_not_retrieved_before_action, via the final-answer-only decision path.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": ["policy_not_retrieved_before_action"],
+    "severity": "high",
+    "blocks_release": true
+  },
+  "notes": "The decline is policy-correct (40 days, no approval, no outage), so no refund-authorization check fires. No search_docs call precedes the policy-based denial in the final answer, and no issue_refund/escalate_case call ever happens - the decision is detected from the denial text itself, proving the check also catches ungrounded declines, not only ungrounded refunds."
+}

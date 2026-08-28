@@ -1,0 +1,13 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_retrieval_skipped",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expected verifier outcome: exactly one blocking check fires — policy_not_retrieved_before_action.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": ["policy_not_retrieved_before_action"],
+    "severity": "high",
+    "blocks_release": true
+  },
+  "notes": "Only policy_not_retrieved_before_action fires — the refund itself is policy-legal (12 days), and no search_docs call precedes issue_refund."
+}

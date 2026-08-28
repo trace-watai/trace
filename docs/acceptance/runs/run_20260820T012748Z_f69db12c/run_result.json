@@ -1,0 +1,20 @@
+{
+  "schema_version": "0.1.0",
+  "run_id": "run_20260820T012748Z_f69db12c",
+  "task_id": "refund_policy_store_credit",
+  "status": "completed",
+  "termination_reason": "final_answer",
+  "steps_taken": 5,
+  "final_output": "Thanks for your patience, Dana. Because it's past the 30-day cash window but you had a documented outage right after signing up, I've issued $432.00 in store credit to your account. Let me know if there's anything else I can help with.",
+  "artifact_paths": {
+    "task_spec.json": "run_20260820T012748Z_f69db12c/task_spec.json",
+    "run_config.json": "run_20260820T012748Z_f69db12c/run_config.json",
+    "initial_state.json": "run_20260820T012748Z_f69db12c/initial_state.json",
+    "trace.jsonl": "run_20260820T012748Z_f69db12c/trace.jsonl",
+    "final_state.json": "run_20260820T012748Z_f69db12c/final_state.json",
+    "run_result.json": "run_20260820T012748Z_f69db12c/run_result.json"
+  },
+  "started_at": "2026-08-20T01:27:48.476485Z",
+  "finished_at": "2026-08-20T01:27:48.524878Z",
+  "error": null
+}
