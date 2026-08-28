@@ -16,6 +16,8 @@ build/
 .venv/
 venv/
 .env
+.env.local
+.env*.local
 
 # OS / editor noise
 .DS_Store
