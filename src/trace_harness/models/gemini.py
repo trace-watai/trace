@@ -52,6 +52,7 @@ tool calls, streaming.
 
 from __future__ import annotations
 
+import base64
 import os
 from typing import TYPE_CHECKING, Any
 
@@ -69,6 +70,11 @@ if TYPE_CHECKING:  # typing only — the runtime import stays lazy inside method
     from google import genai
 
 DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+
+# Key under AgentAction.provider_state / Message.metadata["provider_state"]
+# holding the base64-encoded thought signature Gemini attached to a
+# function-call part. Stored as text so it survives the JSON trace.
+THOUGHT_SIGNATURE_KEY = "thought_signature"
 
 
 class GeminiNotConfiguredError(RuntimeError):
@@ -97,10 +103,12 @@ def _transcript_to_contents(
         USER       -> {"role": "user",  "parts": [{"text": msg.content}]}
         ASSISTANT  -> if metadata["tool_call"]:
                           {"role": "model", "parts": [{"function_call":
-                              {"name": tc["tool_name"], "args": tc["arguments"]}}]}
+                              {"name": tc["tool_name"], "args": tc["arguments"]},
+                            "thought_signature": <bytes, if the provider_state
+                              recorded one for this turn>}]}
                       else (final answer / reasoning text):
                           {"role": "model", "parts": [{"text": msg.content}]}
-        TOOL       -> {"role": "tool", "parts": [{"function_response":
+        TOOL       -> {"role": "user", "parts": [{"function_response":
                           {"name": metadata["tool_name"],
                            "response": {"result": metadata["result"],
                                         "error": metadata["error"]}}}]}
@@ -118,26 +126,30 @@ def _transcript_to_contents(
         elif msg.role is MessageRole.ASSISTANT:
             tool_call = msg.metadata.get("tool_call")
             if tool_call:
-                contents.append(
-                    {
-                        "role": "model",
-                        "parts": [
-                            {
-                                "function_call": {
-                                    "name": tool_call["tool_name"],
-                                    "args": tool_call.get("arguments", {}),
-                                }
-                            }
-                        ],
+                part: dict[str, Any] = {
+                    "function_call": {
+                        "name": tool_call["tool_name"],
+                        "args": tool_call.get("arguments", {}),
                     }
-                )
+                }
+                # Gemini 3 models require the thought_signature that arrived on
+                # the function-call part to be sent back on that same part, or
+                # the next call fails with 400 INVALID_ARGUMENT (TRA-81).
+                signature = (msg.metadata.get("provider_state") or {}).get(THOUGHT_SIGNATURE_KEY)
+                if signature:
+                    part["thought_signature"] = base64.b64decode(signature)
+                contents.append({"role": "model", "parts": [part]})
             else:
                 contents.append({"role": "model", "parts": [{"text": msg.content}]})
         elif msg.role is MessageRole.TOOL:
+            # Gemini has no "tool" content role: function responses are sent
+            # back under the "user" role (the API rejects "tool" with
+            # 400 INVALID_ARGUMENT, observed live on TRA-81). The part type
+            # (function_response) is what tells Gemini this is a tool result.
             md = msg.metadata
             contents.append(
                 {
-                    "role": "tool",
+                    "role": "user",
                     "parts": [
                         {
                             "function_response": {
@@ -204,11 +216,13 @@ def _normalize_response(response: Any) -> AgentAction:
         )
     if function_calls:
         call = function_calls[0]
+        signature = _thought_signature_from_candidate_parts(response)
         return AgentAction(
             kind=ActionKind.TOOL_CALL,
             tool_call=ToolCall(tool_name=call.name, arguments=dict(call.args or {})),
             reasoning=_text_from_candidate_parts(response),
             raw=raw,
+            provider_state={THOUGHT_SIGNATURE_KEY: signature} if signature else None,
         )
     text = _safe_text(response)
     if text:
@@ -244,6 +258,30 @@ def _text_from_candidate_parts(response: Any) -> str | None:
     parts = getattr(content, "parts", None) or []
     text = "\n".join(part_text for part in parts if (part_text := getattr(part, "text", None)))
     return text or None
+
+
+def _thought_signature_from_candidate_parts(response: Any) -> str | None:
+    """Return the base64 text of the thought signature on the function-call part.
+
+    Gemini 3 attaches a ``thought_signature`` (bytes) to the part carrying the
+    function call and requires it to be echoed back on the next request.
+    Encoded to base64 text so it can live in the JSON trace and transcript.
+    Returns None when the response carries no signature (older models, fakes).
+    """
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return None
+    content = getattr(candidates[0], "content", None)
+    parts = getattr(content, "parts", None) or []
+    for part in parts:
+        if getattr(part, "function_call", None) is None:
+            continue
+        signature = getattr(part, "thought_signature", None)
+        if signature:
+            if isinstance(signature, str):
+                return signature
+            return base64.b64encode(bytes(signature)).decode("ascii")
+    return None
 
 
 def _response_to_dict(response: Any) -> dict[str, Any]:

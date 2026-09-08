@@ -76,6 +76,11 @@ class AgentAction(BaseModel):
     reasoning: str | None = None
     # Provider-specific raw response payload, for debugging real adapters.
     raw: dict[str, Any] | None = None
+    # Opaque, JSON-safe state the provider requires echoed back verbatim on the
+    # next turn (e.g. Gemini 3 thought signatures on function-call parts).
+    # The runner copies it into the assistant Message's metadata without
+    # interpreting it; only the adapter that produced it reads it back.
+    provider_state: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _payload_matches_kind(self) -> AgentAction:

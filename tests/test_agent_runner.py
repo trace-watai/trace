@@ -70,3 +70,26 @@ def test_fixture_run_emits_no_model_response(tmp_path: Path) -> None:
     run: FixtureRun = run_task_fixture(VALID_TASK_PATH, tmp_path / "runs")
     responses = [e for e in run.trace if e.event_type is TraceEventType.MODEL_RESPONSE]
     assert responses == []
+
+
+def test_action_provider_state_is_copied_into_assistant_message_metadata() -> None:
+    """Opaque provider state (e.g. Gemini thought signatures) must reach the
+    transcript so the adapter can echo it back next turn — without the runner
+    interpreting it (TRA-81)."""
+    from trace_harness.models.base import MessageRole, ToolCall
+    from trace_harness.runner.agent_runner import _action_to_assistant_message
+
+    action = AgentAction(
+        kind=ActionKind.TOOL_CALL,
+        tool_call=ToolCall(tool_name="get_order", arguments={"customer_name": "Riley"}),
+        provider_state={"thought_signature": "c2ln"},
+    )
+    msg = _action_to_assistant_message(action)
+    assert msg.role is MessageRole.ASSISTANT
+    assert msg.metadata["tool_call"]["tool_name"] == "get_order"
+    assert msg.metadata["provider_state"] == {"thought_signature": "c2ln"}
+
+    plain = _action_to_assistant_message(
+        AgentAction(kind=ActionKind.FINAL_ANSWER, final_answer="done")
+    )
+    assert "provider_state" not in plain.metadata

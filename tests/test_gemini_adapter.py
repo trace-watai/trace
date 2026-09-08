@@ -9,11 +9,14 @@ that path is verified manually (``--provider gemini``), never here.
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 
 from trace_harness.models.base import ActionKind, Message, MessageRole, ModelAdapterError, ToolSpec
 from trace_harness.models.gemini import (
     DEFAULT_GEMINI_MODEL,
+    THOUGHT_SIGNATURE_KEY,
     GeminiModelAdapter,
     GeminiNotConfiguredError,
     _normalize_response,
@@ -94,8 +97,52 @@ def test_transcript_to_contents_maps_roles_and_extracts_system() -> None:
         "role": "model",
         "parts": [{"function_call": {"name": "get_order", "args": {"order_id": 42}}}],
     }
-    assert contents[2]["role"] == "tool"
+    # Gemini rejects a "tool" role with 400 INVALID_ARGUMENT; function
+    # responses must be sent under the "user" role (TRA-81 live acceptance).
+    assert contents[2]["role"] == "user"
     assert contents[2]["parts"][0]["function_response"]["name"] == "get_order"
+    assert "tool" not in {c["role"] for c in contents}
+
+
+def test_transcript_to_contents_echoes_thought_signature_on_function_call() -> None:
+    # Gemini 3 requires the thought_signature it attached to a function-call
+    # part to come back on that same part (TRA-81 live acceptance).
+    raw_sig = bytes([1, 2]) + b"signature-bytes" + bytes([255])
+    transcript = [
+        Message(role=MessageRole.USER, content="refund please"),
+        Message(
+            role=MessageRole.ASSISTANT,
+            content="",
+            metadata={
+                "kind": "tool_call",
+                "tool_call": {"tool_name": "get_order", "arguments": {}},
+                "provider_state": {
+                    THOUGHT_SIGNATURE_KEY: base64.b64encode(raw_sig).decode("ascii")
+                },
+            },
+        ),
+    ]
+
+    _, contents = _transcript_to_contents(transcript)
+
+    part = contents[1]["parts"][0]
+    assert part["function_call"] == {"name": "get_order", "args": {}}
+    assert part["thought_signature"] == raw_sig
+
+
+def test_transcript_to_contents_omits_thought_signature_when_absent() -> None:
+    transcript = [
+        Message(
+            role=MessageRole.ASSISTANT,
+            content="",
+            metadata={
+                "kind": "tool_call",
+                "tool_call": {"tool_name": "get_order", "arguments": {}},
+            },
+        ),
+    ]
+    _, contents = _transcript_to_contents(transcript)
+    assert "thought_signature" not in contents[0]["parts"][0]
 
 
 def test_transcript_to_contents_no_system_returns_none() -> None:
@@ -114,12 +161,36 @@ class _FakeFunctionCall:
         self.args = args
 
 
+class _FakePart:
+    def __init__(self, *, function_call=None, text=None, thought_signature=None) -> None:
+        self.function_call = function_call
+        self.text = text
+        self.thought_signature = thought_signature
+
+
+class _FakeContent:
+    def __init__(self, parts: list) -> None:
+        self.parts = parts
+
+
+class _FakeCandidate:
+    def __init__(self, parts: list) -> None:
+        self.content = _FakeContent(parts)
+
+
 class _FakeResponse:
     """Stands in for google.genai's GenerateContentResponse."""
 
-    def __init__(self, *, function_calls: list | None = None, text: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        function_calls: list | None = None,
+        text: str | None = None,
+        parts: list | None = None,
+    ) -> None:
         self.function_calls = function_calls or []
         self.text = text
+        self.candidates = [_FakeCandidate(parts)] if parts is not None else []
 
     def model_dump(self, mode: str = "json") -> dict:
         return {"function_calls": bool(self.function_calls), "text": self.text}
@@ -135,6 +206,27 @@ def test_normalize_response_tool_call() -> None:
     assert action.tool_call.tool_name == "get_order"
     assert action.tool_call.arguments == {"order_id": 42}
     assert action.raw is not None
+
+
+def test_normalize_response_captures_thought_signature_as_provider_state() -> None:
+    call = _FakeFunctionCall("get_order", {"order_id": 42})
+    raw_sig = bytes([0]) + b"sig" + bytes([127])
+    resp = _FakeResponse(
+        function_calls=[call],
+        parts=[_FakePart(function_call=call, thought_signature=raw_sig)],
+    )
+
+    action = _normalize_response(resp)
+
+    assert action.provider_state == {
+        THOUGHT_SIGNATURE_KEY: base64.b64encode(raw_sig).decode("ascii")
+    }
+
+
+def test_normalize_response_without_signature_has_no_provider_state() -> None:
+    call = _FakeFunctionCall("get_order", {})
+    resp = _FakeResponse(function_calls=[call], parts=[_FakePart(function_call=call)])
+    assert _normalize_response(resp).provider_state is None
 
 
 def test_normalize_response_rejects_parallel_tool_calls() -> None:
