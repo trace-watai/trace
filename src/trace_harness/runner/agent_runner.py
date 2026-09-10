@@ -152,6 +152,8 @@ def _action_to_assistant_message(action: AgentAction) -> Message:
     metadata: dict[str, Any] = {"kind": action.kind.value}
     if action.tool_call is not None:
         metadata["tool_call"] = action.tool_call.model_dump(mode="json")
+    if action.provider_state:
+        metadata["provider_state"] = dict(action.provider_state)
     content = action.final_answer or action.reasoning or ""
     return Message(role=MessageRole.ASSISTANT, content=content, metadata=metadata)
 
