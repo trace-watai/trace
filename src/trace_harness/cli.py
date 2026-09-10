@@ -277,7 +277,8 @@ def _attribute(run_dir: Path) -> bool:
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
     if verifier_result.verdict is not VerifierVerdict.FAIL:
         print(
-            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value}; nothing to attribute."
+            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value}; "
+            "nothing to attribute."
         )
         return False
 
@@ -310,7 +311,8 @@ def _bundle(run_dir: Path) -> bool:
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
     if verifier_result.verdict is not VerifierVerdict.FAIL:
         print(
-            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value}; no failure bundle to generate."
+            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value}; "
+            "no failure bundle to generate."
         )
         return False
     attribution = AttributionResult.model_validate(
