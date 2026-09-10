@@ -57,9 +57,7 @@ export const TraceStepCard = ({ step }: TraceStepCardProps) => {
         {step.runError && (
           <div className="space-y-1 rounded-md border border-destructive/40 bg-destructive/10 p-3">
             <FieldLabel>Run error ({step.runError.kind})</FieldLabel>
-            <p className="text-sm text-destructive">
-              {step.runError.message}
-            </p>
+            <p className="text-sm text-destructive">{step.runError.message}</p>
           </div>
         )}
 
