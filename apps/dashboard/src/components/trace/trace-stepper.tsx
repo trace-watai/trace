@@ -1,3 +1,4 @@
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import Link from "next/link";
 
 import { TraceStepCard } from "@/components/trace/trace-step-card";
@@ -58,20 +59,32 @@ interface StepNavLinkProps {
 /** Renders as a disabled placeholder (same size, no-op) when there's no such step. */
 const StepNavLink = ({ runId, step, direction }: StepNavLinkProps) => {
   const isNext = direction === "next";
-  const label = isNext ? "Next step →" : "← Previous step";
+  const label = isNext ? "Next step" : "Previous step";
   const baseClassName =
-    "flex w-24 items-center justify-center rounded-md border px-3 py-2 text-sm font-medium transition-colors sm:w-28";
+    "flex w-10 shrink-0 items-center justify-center gap-1 rounded-md border px-2 py-2 text-sm font-medium transition-colors sm:w-28 sm:px-3";
+  const content = isNext ? (
+    <>
+      <span className="hidden sm:inline">{label}</span>
+      <ChevronRight aria-hidden className="h-4 w-4 shrink-0" />
+    </>
+  ) : (
+    <>
+      <ChevronLeft aria-hidden className="h-4 w-4 shrink-0" />
+      <span className="hidden sm:inline">{label}</span>
+    </>
+  );
 
   if (!step) {
     return (
       <span
         aria-disabled="true"
+        aria-label={label}
         className={cn(
           baseClassName,
           "cursor-not-allowed border-border/40 text-muted-foreground/40",
         )}
       >
-        {label}
+        {content}
       </span>
     );
   }
@@ -79,12 +92,13 @@ const StepNavLink = ({ runId, step, direction }: StepNavLinkProps) => {
   return (
     <Link
       href={`/runs/${runId}/trace?step=${step.stepId}`}
+      aria-label={label}
       className={cn(
         baseClassName,
         "border-border/70 text-foreground hover:border-primary/40",
       )}
     >
-      {label}
+      {content}
     </Link>
   );
 };

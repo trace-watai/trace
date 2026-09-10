@@ -21,6 +21,7 @@ interface TraceStepCardProps {
  */
 export const TraceStepCard = ({ step }: TraceStepCardProps) => {
   const hasFailedChecks = step.failedChecks.length > 0;
+  const hasRunError = step.runError !== null;
   const evidenceCount = step.retrievalResults.length + step.failedChecks.length;
 
   return (
@@ -28,7 +29,8 @@ export const TraceStepCard = ({ step }: TraceStepCardProps) => {
       id={`step-${step.stepId}`}
       className={cn(
         "flex h-[70vh] min-h-[24rem] min-w-0 scroll-mt-6 flex-col",
-        hasFailedChecks && "border-destructive/40 bg-destructive/[0.03]",
+        (hasFailedChecks || hasRunError) &&
+          "border-destructive/40 bg-destructive/[0.03]",
       )}
     >
       <CardHeader className="shrink-0 gap-3">
@@ -52,6 +54,15 @@ export const TraceStepCard = ({ step }: TraceStepCardProps) => {
       </CardHeader>
 
       <CardContent className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+        {step.runError && (
+          <div className="space-y-1 rounded-md border border-destructive/40 bg-destructive/10 p-3">
+            <FieldLabel>Run error ({step.runError.kind})</FieldLabel>
+            <p className="text-sm text-destructive">
+              {step.runError.message}
+            </p>
+          </div>
+        )}
+
         {step.reasoning && (
           <div className="space-y-1">
             <FieldLabel>Reasoning</FieldLabel>

@@ -129,6 +129,37 @@ describe("buildTraceSteps", () => {
       expect(step.failedChecks).toEqual([]);
     }
   });
+
+  it("surfaces a run-level error instead of an empty step when the model call itself fails", () => {
+    const trace = parseTrace([
+      {
+        schema_version: "0.3.0",
+        event_id: "evt-error-1",
+        run_id: "run-failed",
+        step_id: 3,
+        timestamp: "2026-01-01T00:00:00Z",
+        metadata: {},
+        parent_event_id: null,
+        event_type: "error",
+        payload: {
+          error: "model call timed out after 30s",
+          kind: "model_timeout",
+          traceback: null,
+        },
+      },
+    ]);
+
+    const steps = buildTraceSteps(trace, null, null);
+    const step = stepById(steps, 3);
+
+    expect(step.action).toEqual({ kind: "none" });
+    expect(step.observation).toBeNull();
+    expect(step.runError).toEqual({
+      kind: "model_timeout",
+      message: "model call timed out after 30s",
+    });
+    expect(stepTitle(step)).toBe("Run error");
+  });
 });
 
 describe("stepTitle", () => {
@@ -138,6 +169,7 @@ describe("stepTitle", () => {
       reasoning: null,
       action: { kind: "none" },
       observation: null,
+      runError: null,
       retrievalResults: [],
       markers: [],
       failedChecks: [],

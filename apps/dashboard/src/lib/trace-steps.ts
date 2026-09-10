@@ -34,11 +34,17 @@ export interface StepObservation {
   error: string | null;
 }
 
+export interface StepRunError {
+  kind: string;
+  message: string;
+}
+
 export interface TraceStep {
   stepId: number;
   reasoning: string | null;
   action: StepAction;
   observation: StepObservation | null;
+  runError: StepRunError | null;
   retrievalResults: RetrievalResultItem[];
   markers: StepMarker[];
   failedChecks: FailedCheck[];
@@ -90,6 +96,7 @@ const buildStep = (
   const toolCallRequested = findEvent(events, "tool_call_requested");
   const observationEvent = findEvent(events, "tool_observation");
   const finalAnswerEvent = findEvent(events, "final_answer");
+  const errorEvent = findEvent(events, "error");
   const retrievalResults = findEvents(events, "retrieval_result").flatMap(
     (event) => event.payload.results,
   );
@@ -117,6 +124,9 @@ const buildStep = (
           result: observationEvent.payload.result,
           error: observationEvent.payload.error ?? null,
         }
+      : null,
+    runError: errorEvent
+      ? { kind: errorEvent.payload.kind, message: errorEvent.payload.error }
       : null,
     retrievalResults,
     markers: markersForStep(stepId, attribution),
@@ -161,7 +171,7 @@ export const stepTitle = (step: TraceStep): string => {
     case "final_answer":
       return "Final answer";
     default:
-      return `Step ${step.stepId}`;
+      return step.runError ? "Run error" : `Step ${step.stepId}`;
   }
 };
 
