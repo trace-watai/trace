@@ -1,3 +1,4 @@
+import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -46,12 +47,11 @@ export const BlastRadiusSummary = ({
         (customersAffected.length >= CUSTOMER_LIST_COLLAPSE_THRESHOLD ? (
           <details className="group">
             <summary className="flex cursor-pointer list-none items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground">
-              <span
+              <ChevronRight
                 aria-hidden
-                className="transition-transform group-open:rotate-90"
-              >
-                ▸
-              </span>
+                strokeWidth={3}
+                className="h-3.5 w-3.5 transition-transform group-open:rotate-90"
+              />
               {customersAffected.length} customers affected
             </summary>
             <CustomerBadges customers={customersAffected} className="mt-2" />
