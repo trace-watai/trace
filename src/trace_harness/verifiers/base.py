@@ -24,12 +24,14 @@ from abc import ABC, abstractmethod
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from trace_harness.tasks.schemas import Severity, TaskSpec, max_severity
 from trace_harness.tracing.events import TraceEvent
 
-VERIFIER_RESULT_SCHEMA_VERSION = "0.3.0"  # 0.3.0: EvidenceKind gained ESCALATION_RECORD
+VERIFIER_RESULT_SCHEMA_VERSION = (
+    "0.4.0"  # 0.4.0: verdict (pass/fail/incomplete); 0.3.0: EvidenceKind gained ESCALATION_RECORD
+)
 VERIFIER_INPUT_SCHEMA_VERSION = "0.1.0"
 
 
@@ -122,6 +124,16 @@ class FailedCheck(BaseModel):
     blocks_release: bool = True
 
 
+class VerifierVerdict(StrEnum):
+    """Three states, not two. ``incomplete`` is a run that never reached a
+    final answer: it recorded no violations, which is not the same as passing.
+    Consumers that count passes must count ``verdict``, not ``passed``."""
+
+    PASS = "pass"
+    FAIL = "fail"
+    INCOMPLETE = "incomplete"
+
+
 class VerifierResult(BaseModel):
     """The verdict for one run from one verifier (or a merge of several)."""
 
@@ -129,6 +141,10 @@ class VerifierResult(BaseModel):
     verifier_id: str
     run_id: str
     passed: bool
+    # pass / fail / incomplete. Derived from ``passed`` when absent (pre-0.4.0
+    # files); set to ``incomplete`` by :func:`mark_incomplete` when the run
+    # never completed, in which case ``passed`` is forced to False.
+    verdict: VerifierVerdict | None = None
     failed_checks: list[FailedCheck] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     # Highest severity among failed checks; None when passed.
@@ -137,6 +153,38 @@ class VerifierResult(BaseModel):
     # Run-level evidence not tied to a single check (e.g. retrieval provenance).
     evidence: list[EvidenceItem] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _derive_verdict(self) -> VerifierResult:
+        if self.verdict is None:
+            self.verdict = VerifierVerdict.PASS if self.passed else VerifierVerdict.FAIL
+        elif self.verdict is VerifierVerdict.INCOMPLETE and self.passed:
+            raise ValueError("an incomplete verdict cannot have passed=True")
+        return self
+
+
+def mark_incomplete(
+    result: VerifierResult, *, status: str, termination_reason: str
+) -> VerifierResult:
+    """Return ``result`` re-labelled as ``incomplete`` because the run never completed.
+
+    Keeps ``failed_checks``, ``severity`` and ``blocks_release`` exactly as the
+    checks computed them (a violation before the run died is still a
+    violation); forces ``passed`` to False so nothing counting ``passed``
+    treats a dead run as a pass; and records why in ``warnings`` so the
+    artifact carries the reason, not just the CLI output.
+    """
+    note = (
+        f"run did not complete (status={status}, termination={termination_reason}); "
+        "verdict is incomplete: no violations were recorded, which is not a pass"
+    )
+    return result.model_copy(
+        update={
+            "verdict": VerifierVerdict.INCOMPLETE,
+            "passed": False,
+            "warnings": [*result.warnings, note],
+        }
+    )
 
 
 def build_result(

@@ -59,7 +59,13 @@ from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEvent, TraceEventType
-from trace_harness.verifiers.base import VerifierInput, VerifierResult, merge_verifier_results
+from trace_harness.verifiers.base import (
+    VerifierInput,
+    VerifierResult,
+    VerifierVerdict,
+    mark_incomplete,
+    merge_verifier_results,
+)
 from trace_harness.verifiers.registry import get_verifier
 
 logger = logging.getLogger("trace_harness")
@@ -230,6 +236,12 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
         for verifier_id in task.verifier_ids
     ]
     merged = merge_verifier_results(results)
+    if not run_completed:
+        merged = mark_incomplete(
+            merged,
+            status=run_result.status.value,
+            termination_reason=run_result.termination_reason.value,
+        )
     store.write_json(run_id, names.VERIFIER_RESULT, merged)
     try:
         store.enrich_index_entry_with_verifier(run_id)
@@ -239,7 +251,7 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
             run_id,
         )
 
-    verdict = "PASS" if merged.passed else "FAIL"
+    verdict = merged.verdict.value.upper()
     print(f"\nVerifier verdict for {run_id}: {verdict}")
     _print("verifier_id:", merged.verifier_id)
     _print("blocks_release:", str(merged.blocks_release))
@@ -251,13 +263,6 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
         print(f"      actual:   {check.actual}")
     for warning in merged.warnings:
         print(f"  ⚠ {warning}")
-    if not run_completed:
-        print(
-            f"  ⚠ run did not complete (status={run_result.status.value}, "
-            f"termination={run_result.termination_reason.value}); a PASS only means "
-            "no violations were recorded — the --fail-on-verifier gate treats "
-            "incomplete runs as failures"
-        )
     _print("written:", str(store.artifact_path(run_id, names.VERIFIER_RESULT)))
     return merged, run_completed
 
@@ -270,8 +275,10 @@ def _attribute(run_dir: Path) -> bool:
     task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
     trace = store.read_trace(run_id)
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
-    if verifier_result.passed:
-        print(f"\nVerifier passed for {run_id}; nothing to attribute.")
+    if verifier_result.verdict is not VerifierVerdict.FAIL:
+        print(
+            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value}; nothing to attribute."
+        )
         return False
 
     attribution = HeuristicAttributor().attribute(task, trace, verifier_result)
@@ -301,8 +308,10 @@ def _bundle(run_dir: Path) -> bool:
     run_result = RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT))
     trace = store.read_trace(run_id)
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
-    if verifier_result.passed:
-        print(f"\nVerifier passed for {run_id}; no failure bundle to generate.")
+    if verifier_result.verdict is not VerifierVerdict.FAIL:
+        print(
+            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value}; no failure bundle to generate."
+        )
         return False
     attribution = AttributionResult.model_validate(
         store.read_json(run_id, names.ATTRIBUTION_RESULT)
@@ -518,7 +527,9 @@ def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
         return
     for s in summaries:
         detail = f"{s.status} ({s.termination_reason}) · {s.steps_taken} steps · {s.task_id}"
-        if s.verifier_passed is not None:
+        if s.verdict is not None:
+            detail += f" · {s.verdict.upper()}"
+        elif s.verifier_passed is not None:
             detail += f" · {'PASS' if s.verifier_passed else 'FAIL'}"
         if s.batch_id:
             detail += f" · batch={s.batch_id}"

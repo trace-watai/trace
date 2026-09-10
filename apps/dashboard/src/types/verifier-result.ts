@@ -2,7 +2,7 @@
  * Verifier-result data contract.
  *
  * Mirrors `VerifierResult` in `src/trace_harness/verifiers/base.py`
- * (VERIFIER_RESULT_SCHEMA_VERSION 0.3.0), serialized as `verifier_result.json`.
+ * (VERIFIER_RESULT_SCHEMA_VERSION 0.4.0), serialized as `verifier_result.json`.
  *
  * The verdict for one run from one verifier (or a merge of several). The
  * verifier is the authority on pass/fail: it returns structured evidence and
@@ -14,7 +14,14 @@ import { camelizeKeys, type Camelize } from "@/lib/casing";
 import type { RawEvidenceItem } from "@/types/evidence";
 import type { Severity } from "@/types/severity";
 
-export const VERIFIER_RESULT_SCHEMA_VERSION = "0.3.0";
+export const VERIFIER_RESULT_SCHEMA_VERSION = "0.4.0";
+
+/**
+ * Three states, not two. `incomplete` is a run that never reached a final
+ * answer: it recorded no violations, which is not a pass. Count verdicts,
+ * never `passed`, when reporting pass rates.
+ */
+export type VerifierVerdict = "pass" | "fail" | "incomplete";
 
 /**
  * Wire shape of one deterministic check that failed, defined in the backend
@@ -43,6 +50,8 @@ export interface RawVerifierResult {
   verifier_id: string;
   run_id: string;
   passed: boolean;
+  /** pass | fail | incomplete. `passed` is always false for `incomplete`. */
+  verdict: VerifierVerdict;
   failed_checks: RawFailedCheck[];
   warnings: string[];
   /** Highest severity among failed checks; `null` when passed. */

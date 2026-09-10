@@ -107,6 +107,24 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def _with_verdict(entry: RunIndexEntry, fields: tuple[bool, int, str | None]) -> RunIndexEntry:
+    """Apply verifier fields to an index entry, deriving the three-state verdict.
+
+    The run's own ``status`` wins: a run that did not complete is
+    ``incomplete`` even if an old verifier file says ``passed: true``, and
+    ``verifier_passed`` is forced to False for it so nothing counting passes
+    is fooled by a pre-0.4.0 artifact.
+    """
+    passed, failed_count, file_verdict = fields
+    if entry.status != "completed":
+        verdict, passed = "incomplete", False
+    else:
+        verdict = file_verdict or ("pass" if passed else "fail")
+    return entry.model_copy(
+        update={"verifier_passed": passed, "failed_check_count": failed_count, "verdict": verdict}
+    )
+
+
 class ArtifactStore:
     """Reads and writes run artifacts under a single runs directory."""
 
@@ -260,13 +278,7 @@ class ArtifactStore:
         verifier_fields = self._read_verifier_index_fields(run_id)
         if verifier_fields is None:
             return
-        updated = existing.model_copy(
-            update={
-                "verifier_passed": verifier_fields[0],
-                "failed_check_count": verifier_fields[1],
-            }
-        )
-        self.upsert_index_entry(updated)
+        self.upsert_index_entry(_with_verdict(existing, verifier_fields))
 
     def enrich_index_entry_with_batch(self, run_id: str, batch_id: str) -> None:
         """Set ``batch_id`` on the run's index entry.
@@ -300,12 +312,7 @@ class ArtifactStore:
                 continue
             verifier_fields = self._read_verifier_index_fields(run_id)
             if verifier_fields is not None:
-                entry = entry.model_copy(
-                    update={
-                        "verifier_passed": verifier_fields[0],
-                        "failed_check_count": verifier_fields[1],
-                    }
-                )
+                entry = _with_verdict(entry, verifier_fields)
             batch_id = batch_memberships.get(run_id)
             if batch_id is not None:
                 entry = entry.model_copy(update={"batch_id": batch_id})
@@ -340,8 +347,12 @@ class ArtifactStore:
                     memberships[run_id] = batch_id
         return memberships
 
-    def _read_verifier_index_fields(self, run_id: str) -> tuple[bool, int] | None:
-        """Read only validated verdict fields without importing verifier models."""
+    def _read_verifier_index_fields(self, run_id: str) -> tuple[bool, int, str | None] | None:
+        """Read only validated verdict fields without importing verifier models.
+
+        Returns ``(passed, failed_check_count, verdict)``; ``verdict`` is None
+        for files written before verifier schema 0.4.0.
+        """
         if not self.exists(run_id, VERIFIER_RESULT):
             return None
         try:
@@ -354,7 +365,8 @@ class ArtifactStore:
         failed_checks = data.get("failed_checks")
         if not isinstance(passed, bool) or not isinstance(failed_checks, list):
             return None
-        return passed, len(failed_checks)
+        verdict = data.get("verdict")
+        return passed, len(failed_checks), verdict if isinstance(verdict, str) else None
 
     def _write_index(self, index: RunIndex) -> None:
         self.runs_dir.mkdir(parents=True, exist_ok=True)

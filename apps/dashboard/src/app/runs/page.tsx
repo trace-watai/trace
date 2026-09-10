@@ -42,11 +42,14 @@ const RunsPage = () => {
                     </span>
                     <span>
                       Verifier:{" "}
-                      {run.verifierPassed === null
-                        ? "not yet verified"
-                        : run.verifierPassed
+                      {run.verdict === "incomplete"
+                        ? `INCOMPLETE (${run.terminationReason.replaceAll("_", " ")})`
+                        : run.verdict === "pass" || run.verifierPassed === true
                           ? "PASS"
-                          : `FAIL (${run.failedCheckCount} checks)`}
+                          : run.verdict === "fail" ||
+                              run.verifierPassed === false
+                            ? `FAIL (${run.failedCheckCount} checks)`
+                            : "not yet verified"}
                     </span>
                   </CardContent>
                 </Card>
