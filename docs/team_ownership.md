@@ -23,6 +23,10 @@ match reality, change the row.
 - A PR that changes a **shared contract** (a schema version, an artifact
   file, a trace event, a CLI flag, a TypeScript mirror) also gets a
   reviewer from the **consuming lane**.
+- **Project lead exception.** PRs authored by the project lead (TPM lane)
+  need one reviewer, from the owning lane, not two. Docs-only PRs from the
+  project lead merge on green gates without a review. The lead still cannot
+  approve their own PR; that is a GitHub rule, not ours.
 - Review turnaround target: one day. PRs stay under roughly 300 lines with
   one contract change each; split otherwise.
 - Branch protection on `main` requires the two CI gates and an up-to-date

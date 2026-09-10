@@ -55,7 +55,9 @@ work is mostly seams.
 3. **Ownership moves from named module owners to five lanes.** Evaluation
    Core, Evaluation Systems, Frontend, Research and QA, TPM. Each lane owns
    a set of modules and has a reviewer pool; a change to a shared contract
-   gets a second reviewer from the consuming lane. Any ticket untouched for
+   gets a second reviewer from the consuming lane, except that PRs authored
+   by the project lead need one reviewer and docs-only ones from the lead
+   merge on green gates. Any ticket untouched for
    48 hours is open to anyone in its lane. Review turnaround target is one
    day; PRs stay under roughly 300 lines with one contract change each.
    Tickets carry a lane, not a person; assignee fields on open tickets are
