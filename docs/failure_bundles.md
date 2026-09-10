@@ -124,6 +124,23 @@ Every control in a repair package must fully specify all required fields. A cont
 | `priority` | `str` | yes | See control priority ranking below |
 | `linked_verifier_checks` | `list[str]` | no (defaults `[]`) | The check IDs from the verifier result that this control addresses |
 
+### Prescribed control ↔ executable control
+
+A repair package *prescribes* controls by name. Whether one can actually be
+installed is recorded in `environment/controls.py::MATERIALIZABLE_REPAIR_CONTROLS`,
+which maps each prescribed `RepairControl.name` to the `guardrail_ref` that
+implements it, or to `None` when nothing does yet. Per-control validation
+reports the latter as `skipped: not_materializable` rather than pretending.
+
+| Prescribed `RepairControl.name` | Executable `guardrail_ref` |
+|---|---|
+| `deterministic_pre_call_refund_guardrail` | `unauthorized_cash_refund_guardrail` (installed by `ctl_refund_window_v1`) |
+| `current_policy_source_precedence` | none yet |
+| `ticket_claim_grounding_check` | none yet |
+| `final_answer_state_grounding_check` | none yet |
+| `required_escalation_enforcement` | none yet |
+| `regression_test_ci_gate` | not an environment guardrail; a CI control |
+
 ### `RepairPackage` fields
 
 | Field | Type | Required | Description |

@@ -77,14 +77,18 @@ bump); keep one controlled key-backed acceptance run outside CI.
 
 **What belongs here:** typed state (`state.py`), tool definitions with
 declared side-effect classes (`tools.py`), the tool registry
-(`registry.py`), deterministic keyword retrieval (`retrieval.py`), and the
+(`registry.py`), deterministic keyword retrieval (`retrieval.py`), reference
+guardrails (`guardrails.py`), controls as data (`controls.py`), and the
 environment facade the runner drives (`support_env.py`).
 
 **Exposes:** `SupportEnvironment` (satisfies the runner's `ToolEnvironment`
 protocol: `tool_specs`, `validate_call`, `execute`, `side_effect_for`,
 `snapshot_state`); `SupportState` (snapshots become
 `initial_state.json`/`final_state.json`); `ToolDefinition`/`ToolRegistry`;
-`search_docs()`.
+`search_docs()`; `ControlInstance` + `GUARDRAIL_REGISTRY` + `reference_controls()`
+(`controls.py`) and `SupportEnvironment.install_control` /
+`uninstall_control` / `installed_controls` — the only way a guardrail gets
+installed by id, with an unknown `guardrail_ref` failing at install time.
 
 **Rules:** every tool declares a side-effect class (`read_only` /
 `external_durable` / `external_irreversible`) — attribution depends on it.
@@ -96,8 +100,9 @@ has something real to catch; the future guardrail seam is marked in
 pass/fail judgment here (verifiers), no prompt text (runner), no vector DB
 until keyword retrieval demonstrably fails a real task.
 
-**Build next:** pre/post execution hooks so guardrails compose (first
-consumer: the refund guardrail from the repair package); doc chunking and
+**Build next:** a `blocked_by` control id on `ToolResult` and the executed/
+observation trace events so a block is machine-identifiable (TRA-91 part 2);
+post-execute hooks; doc chunking and
 pluggable scorers behind the same `search_docs` signature; a second
 workflow environment to force the generic/support split.
 
