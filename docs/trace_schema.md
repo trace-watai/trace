@@ -5,13 +5,13 @@ The trace is the evidence record of a run: an append-only sequence of
 `runs/{run_id}/trace.jsonl`. Everything downstream — verifiers,
 attribution, failure bundles, the dashboard — consumes traces. Owner:
 Samrath. Schema: `trace_harness/tracing/events.py`
-(`TRACE_SCHEMA_VERSION = 0.3.0`).
+(`TRACE_SCHEMA_VERSION = 0.4.0`).
 
 ## Event envelope
 
 ```json
 {
-  "schema_version": "0.3.0",
+  "schema_version": "0.4.0",
   "event_id": "evt_000007",        // unique within the run, ordered
   "run_id": "run_20260611T025555Z_99032a0d",
   "step_id": 3,                    // decision step; null for run-level events
@@ -45,8 +45,8 @@ that caused a child.
 | `model_action` | step | kind, reasoning?, tool_call?, final_answer? (normalized `AgentAction` minus `raw`) |
 | `tool_call_requested` | step | tool_name, arguments |
 | `tool_call_validated` | step | tool_name, valid, error? |
-| `tool_call_executed` | step | tool_name, arguments, status, **side_effect**, error? — only emitted for valid calls |
-| `tool_observation` | step | tool_name, status, result (full, incl. doc content), error? — what the agent saw |
+| `tool_call_executed` | step | tool_name, arguments, status, **side_effect**, error?, **blocked_by**? — only emitted for valid calls |
+| `tool_observation` | step | tool_name, status, result (full, incl. doc content), error?, blocked_by? — what the agent saw |
 | `retrieval_result` | step | query, result_count, results: `list[RetrievalResultItem]` = [{doc_id, **status**, title?, score?, source?}] (content lives in the observation) |
 | `final_answer` | step | final_answer |
 | `run_finished` | null | status, termination_reason, steps_taken |
@@ -57,6 +57,15 @@ Two payload fields are load-bearing downstream: `side_effect` on
 `tool_call_executed` (attribution finds the first irreversible action by
 it) and `status` on retrieval results (verifier provenance and the
 dashboard's status badges).
+
+**Control blocks (0.4.0):** when an installed control's guardrail stops a
+call before its handler runs, `tool_call_executed` and `tool_observation`
+carry `blocked_by` set to that control's `control_id` (e.g.
+`ctl_refund_window_v1`). Every other call carries `blocked_by: null`, as do
+blocks by raw pre-execute hooks, which have no control id. A block keeps
+`status: "error"`, so status-based consumers see no change, and attribution
+never counts a blocked irreversible call as the first irreversible action
+(it requires `status == "ok"`).
 
 Each event type has a Pydantic payload model in
 `trace_harness.tracing.payloads`. `TraceEvent.payload` remains the lossless raw
@@ -76,6 +85,8 @@ from newer runners without discarding the raw data.
   (`TraceRecorder.read_jsonl` round-trips, tested).
 - **Backward-readable envelope:** traces written before 0.2.0 remain readable;
   `parent_event_id` defaults to `null`.
+- **Backward-readable payloads:** traces written before 0.4.0 have no
+  `blocked_by`; the typed payloads default it to `null`.
 
 ## Intended evolution
 

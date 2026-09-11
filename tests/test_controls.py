@@ -31,6 +31,8 @@ from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.failure_bundles import generator as bundle_generator
 from trace_harness.models.base import ToolCall
 from trace_harness.tracing import artifact_store as names
+from trace_harness.tracing.artifact_store import ArtifactStore
+from trace_harness.tracing.events import TraceEventType
 
 CONTROL_DEMO_TASK_PATH = FIXTURES_DIR / "tasks" / "refund_policy_control_demo.json"
 
@@ -241,6 +243,29 @@ def test_replay_apply_control_with_explicit_control_id_flips_clean(tmp_path, cap
     assert code == 0
     assert REFUND_WINDOW_CONTROL_ID in out  # the installed control id is printed
     assert "regression gate clear" in out
+
+
+def test_replay_with_control_writes_blocked_by_into_trace(tmp_path) -> None:
+    """A control block is machine-identifiable in trace.jsonl and names its control."""
+    artifact = _bundle_artifact(tmp_path)
+    replay_dir = tmp_path / "runs_replay"
+    assert main(["--runs-dir", str(replay_dir), "replay", str(artifact), "--apply-control"]) == 0
+
+    store = ArtifactStore(replay_dir)
+    (run_id,) = store.list_runs()  # the control demo has no positive siblings
+    tool_types = {TraceEventType.TOOL_CALL_EXECUTED, TraceEventType.TOOL_OBSERVATION}
+    tool_events = [e for e in store.read_trace(run_id) if e.event_type in tool_types]
+    blocked = [e for e in tool_events if e.payload["blocked_by"] is not None]
+
+    # the refund step's executed + observation events, both naming the control
+    assert {e.event_type for e in blocked} == tool_types
+    assert len({e.step_id for e in blocked}) == 1
+    for event in blocked:
+        assert event.payload["tool_name"] == "issue_refund"
+        assert event.payload["status"] == "error"
+        assert event.typed_payload.blocked_by == REFUND_WINDOW_CONTROL_ID
+    # every other tool event carries an explicit null, not a missing key
+    assert all(e.payload["blocked_by"] is None for e in tool_events if e not in blocked)
 
 
 def test_replay_unknown_control_id_is_a_usage_error(tmp_path, capsys) -> None:
