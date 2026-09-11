@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import FIXTURES_DIR
+from conftest import FIXTURES_DIR, VALID_TASK_PATH, run_task_fixture
 from trace_harness.cli import main
 from trace_harness.environment.controls import (
     GUARDRAIL_REGISTRY,
     MATERIALIZABLE_REPAIR_CONTROLS,
     REFUND_WINDOW_CONTROL_ID,
     ControlInstance,
+    RegisteredGuardrail,
     RuleRef,
     RuleRefMismatchError,
     UnknownGuardrailError,
@@ -28,6 +29,7 @@ from trace_harness.environment.controls import (
 from trace_harness.environment.guardrails import unauthorized_cash_refund_guardrail
 from trace_harness.environment.state import Order, SupportState
 from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.tools import ToolResult
 from trace_harness.failure_bundles import generator as bundle_generator
 from trace_harness.models.base import ToolCall
 from trace_harness.tracing import artifact_store as names
@@ -214,6 +216,49 @@ def test_every_prescribed_repair_control_has_a_materializability_entry() -> None
     )
     assert guardrail_ref_for_repair_control("current_policy_source_precedence") is None
     assert guardrail_ref_for_repair_control("not_a_control") is None
+
+
+# --- positive sibling gate ---
+
+
+def _block_every_refund(call: ToolCall, state: SupportState) -> ToolResult | None:
+    if call.tool_name != "issue_refund":
+        return None
+    return ToolResult(tool_name="issue_refund", status="error", error="blocked: every refund")
+
+
+def _sibling_failed_checks(tmp_path, controls: list[ControlInstance]) -> list[str]:
+    runs_dir = tmp_path / "runs"
+    run = run_task_fixture(VALID_TASK_PATH, runs_dir, controls=controls)
+    main(["--runs-dir", str(runs_dir), "verify", str(run.store.run_dir(run.run_id))])
+    verdict = run.store.read_json(run.run_id, names.VERIFIER_RESULT)
+    return [check["check_id"] for check in verdict["failed_checks"]]
+
+
+def test_reference_control_keeps_positive_sibling_passing(tmp_path) -> None:
+    assert _sibling_failed_checks(tmp_path, reference_controls()) == []
+
+
+def test_overblocking_control_fails_positive_sibling(tmp_path, monkeypatch) -> None:
+    """Tripwire: the sibling gate must catch a control that blocks a legitimate refund.
+
+    Today it is caught only because the scripted sibling still claims the
+    refund in its final answer. An agent that refused politely instead would
+    pass until expected-action verification lands (GitHub #143 / TRA-85).
+    """
+    monkeypatch.setitem(
+        GUARDRAIL_REGISTRY,
+        "block_every_refund",
+        RegisteredGuardrail(fn=_block_every_refund, rule_source="none", rule_keys=frozenset()),
+    )
+    overblocking = ControlInstance(
+        control_id="ctl_block_every_refund",
+        guardrail_ref="block_every_refund",
+        rule_ref=RuleRef(source="none"),
+    )
+    assert _sibling_failed_checks(tmp_path, [overblocking]) == [
+        "final_answer_inconsistent_with_state"
+    ]
 
 
 # --- CLI: registry path, per-control selection, usage errors ---
