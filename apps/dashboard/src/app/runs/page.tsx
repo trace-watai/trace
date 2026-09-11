@@ -27,14 +27,14 @@ const RunsPage = () => {
         <ul className="space-y-3">
           {runs.map((run) => (
             <li key={run.runId}>
-              <Link href={`/runs/${run.runId}`}>
-                <Card className="border-border/70 bg-card/80 transition-colors hover:border-primary/40">
-                  <CardHeader className="gap-2">
-                    <CardTitle className="font-mono text-base">
-                      {run.runId}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
+              <Card className="border-border/70 bg-card/80">
+                <CardHeader className="gap-2">
+                  <CardTitle className="font-mono text-base">
+                    {run.runId}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
                     <span>Task: {run.taskId}</span>
                     <span>
                       Status: {run.status} -{" "}
@@ -51,9 +51,23 @@ const RunsPage = () => {
                             ? `FAIL (${run.failedCheckCount} checks)`
                             : "not yet verified"}
                     </span>
-                  </CardContent>
-                </Card>
-              </Link>
+                  </div>
+                  <div className="flex gap-4 border-t border-border/60 pt-3 text-sm font-medium">
+                    <Link
+                      href={`/runs/${run.runId}`}
+                      className="text-primary hover:underline"
+                    >
+                      Failure card →
+                    </Link>
+                    <Link
+                      href={`/runs/${run.runId}/trace`}
+                      className="text-primary hover:underline"
+                    >
+                      View trace →
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
             </li>
           ))}
         </ul>

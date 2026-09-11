@@ -1,14 +1,6 @@
 /**
- * Typed reads over a single `runs/{run_id}` directory — the TypeScript
- * counterpart to `trace_harness.run_reader.RunReader`
- * (`src/trace_harness/run_reader.py`), read directly off disk instead of
- * through the fixture bundle in `@/data/refund-failure-fixture`.
- *
- * Method-for-method mirror so pending dashboard views (trace, verifier,
- * attribution, repair) can extend this without rework, and so a future API
- * server (see docs/future_api.md) only ever requires changing the body of
- * these functions, never the call sites.
- *
+ * Loads a single run from backend
+ * 
  * Missing-artifact states, same semantics as `RunReader`:
  *   - unknown run id                          -> throws RunNotFoundError
  *   - a not-yet-produced downstream artifact   -> returns null
@@ -19,6 +11,7 @@
 import {
   ARTIFACT_NAMES,
   artifactExists,
+  MalformedArtifactError,
   readArtifactJson,
   readArtifactLines,
   readRunIndexEntries,
@@ -124,9 +117,13 @@ export const getTask = (runId: string): TaskSpecSummary => {
 
 export const getTrace = (runId: string): TraceEvent[] => {
   requireRun(runId);
-  const rawEvents = readArtifactLines(runId, ARTIFACT_NAMES.trace).map(
-    (line) => JSON.parse(line) as RawTraceEvent,
-  );
+  const rawEvents = readArtifactLines(runId, ARTIFACT_NAMES.trace).map((line) => {
+    try {
+      return JSON.parse(line) as RawTraceEvent;
+    } catch (cause) {
+      throw new MalformedArtifactError(runId, ARTIFACT_NAMES.trace, cause);
+    }
+  });
   return parseTrace(rawEvents);
 };
 
