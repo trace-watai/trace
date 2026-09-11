@@ -56,6 +56,12 @@ class ToolResult(BaseModel):
     ``result`` is what the agent observes. ``retrieval`` is a structured
     side channel for retrieval tools so the runner can emit a dedicated
     ``retrieval_result`` trace event without parsing tool output.
+
+    ``blocked_by`` is the ``control_id`` of the installed control whose
+    guardrail stopped this call before its handler ran. It is ``None`` for
+    every call that reached its handler, and for blocks by raw pre-execute
+    hooks, which have no control id. A block keeps ``status="error"``, so
+    consumers that only check status see no change.
     """
 
     tool_name: str
@@ -63,6 +69,7 @@ class ToolResult(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     retrieval: list[RetrievedChunk] | None = None
+    blocked_by: str | None = None
 
 
 # --- Argument models (extra="forbid" so misspelled arguments fail validation) ---

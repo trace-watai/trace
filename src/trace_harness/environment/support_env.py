@@ -122,9 +122,16 @@ class SupportEnvironment:
         if instance.control_id in self._installed_controls:
             raise ValueError(f"control {instance.control_id!r} is already installed")
         guardrail = resolve_control(instance)
+        control_id = instance.control_id
 
+        # One closure per control, even when two controls share a guardrail,
+        # so uninstall_control removes exactly this one. It also stamps each
+        # block with the control that caused it.
         def hook(call: ToolCall, state: SupportState) -> ToolResult | None:
-            return guardrail(call, state)
+            result = guardrail(call, state)
+            if result is None:
+                return None
+            return result.model_copy(update={"blocked_by": control_id})
 
         self._installed_controls[instance.control_id] = (instance, hook)
         self.register_pre_execute_hook(hook)

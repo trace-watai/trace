@@ -179,7 +179,11 @@ def test_reference_control_reproduces_guardrail_exactly() -> None:
     env.install_control(reference_controls()[0])
     via_control = env.execute(_cash_call())
     assert direct is not None
-    assert via_control.model_dump() == direct.model_dump()
+    # identical except that the control stamps itself on the block
+    assert via_control.blocked_by == REFUND_WINDOW_CONTROL_ID
+    assert via_control.model_dump(exclude={"blocked_by"}) == direct.model_dump(
+        exclude={"blocked_by"}
+    )
 
 
 # --- selection ---
