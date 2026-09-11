@@ -1,7 +1,8 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { FailureCard } from "@/components/failure/failure-card";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ErrorPanel } from "@/components/run/error-panel";
 import {
   getBundle,
   MalformedArtifactError,
@@ -37,11 +38,19 @@ const RunPage = async ({ params }: RunPageProps) => {
 
   return (
     <main className="container max-w-4xl py-12">
-      <header className="mb-8 space-y-2">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          <span className="text-primary">TRACE</span> Dashboard
-        </h1>
-        <p className="text-sm text-muted-foreground">Most recent runs</p>
+      <header className="mb-8 flex items-start justify-between gap-4">
+        <div className="space-y-2">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            <span className="text-primary">TRACE</span> Dashboard
+          </h1>
+          <p className="text-sm text-muted-foreground">Most recent runs</p>
+        </div>
+        <Link
+          href={`/runs/${runId}/trace`}
+          className="shrink-0 text-sm font-medium text-primary hover:underline"
+        >
+          View trace →
+        </Link>
       </header>
 
       {result.status === "malformed" ? (
@@ -57,16 +66,5 @@ const RunPage = async ({ params }: RunPageProps) => {
     </main>
   );
 };
-
-const ErrorPanel = ({ title, message }: { title: string; message: string }) => (
-  <Card className="border-destructive/40 bg-destructive/5">
-    <CardHeader>
-      <CardTitle className="text-base text-destructive">{title}</CardTitle>
-    </CardHeader>
-    <CardContent className="text-sm text-muted-foreground">
-      {message}
-    </CardContent>
-  </Card>
-);
 
 export default RunPage;
