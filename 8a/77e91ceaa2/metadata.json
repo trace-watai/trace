@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "8a77e91ceaa2",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-87-block-events",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/trace_harness/environment/support_env.py",
+    "src/trace_harness/environment/tools.py",
+    "tests/test_controls.py",
+    "tests/test_support_env.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/8a/77e91ceaa2/0/metadata.json",
+      "transcript": "/8a/77e91ceaa2/0/full.jsonl",
+      "content_hash": "/8a/77e91ceaa2/0/content_hash.txt",
+      "prompt": "/8a/77e91ceaa2/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 194,
+    "cache_creation_tokens": 21146,
+    "cache_read_tokens": 1355226,
+    "output_tokens": 11933,
+    "api_call_count": 7
+  }
+}
