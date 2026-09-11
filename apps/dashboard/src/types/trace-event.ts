@@ -2,7 +2,7 @@
  * Trace-event data contract.
  *
  * Mirrors `TraceEvent` in `src/trace_harness/tracing/events.py`
- * (TRACE_SCHEMA_VERSION 0.3.0), serialized as `runs/{run_id}/trace.jsonl`
+ * (TRACE_SCHEMA_VERSION 0.4.0), serialized as `runs/{run_id}/trace.jsonl`
  * (one JSON object per line).
  *
  * The structured log of what happened during a run. Every `stepId` referenced
@@ -13,7 +13,7 @@
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
-export const TRACE_SCHEMA_VERSION = "0.3.0";
+export const TRACE_SCHEMA_VERSION = "0.4.0";
 
 /**
  * Every kind of event a run may emit (mirrors the backend `TraceEventType`
@@ -91,6 +91,12 @@ export interface RawToolCallExecutedPayload {
   status: string;
   side_effect?: string | null;
   error?: string | null;
+  /**
+   * control_id of the installed control that blocked this call before its
+   * handler ran (0.4.0+). null when the call was not blocked by a control;
+   * absent in traces written before 0.4.0.
+   */
+  blocked_by?: string | null;
 }
 
 export interface RawToolObservationPayload {
@@ -98,6 +104,8 @@ export interface RawToolObservationPayload {
   status: string;
   result?: unknown;
   error?: string | null;
+  /** Same as `RawToolCallExecutedPayload.blocked_by`. */
+  blocked_by?: string | null;
 }
 
 export interface RawRetrievalResultItem {
