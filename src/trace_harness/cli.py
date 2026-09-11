@@ -415,6 +415,11 @@ def _replay(
 
     Returns 0 if all assertions hold, 1 if the regression gate fires.
     """
+    # Flag and control-id errors are usage errors: fail before any output.
+    if control_ids and not apply_control:
+        raise CliInputError("--control requires --apply-control")
+    controls = select_controls(control_ids) if apply_control else []
+
     data = json.loads(artifact_path.read_text(encoding="utf-8"))
     artifact = RegressionArtifact.model_validate(data)
     pinned_state = pinned_initial_state(artifact)
@@ -434,9 +439,6 @@ def _replay(
     for note in _replay_drift_notes(artifact, task, task_path, pinned_state):
         print(f"  ⚠ fixture drift — {note}")
 
-    if control_ids and not apply_control:
-        raise ValueError("--control requires --apply-control")
-    controls = select_controls(control_ids) if apply_control else []
     if controls:
         _print("controls:", ", ".join(c.control_id for c in controls))
     gate_failed = False

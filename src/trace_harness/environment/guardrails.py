@@ -2,9 +2,13 @@
 
 These implement the repair controls the failure bundle generator prescribes
 (see ``failure_bundles/generator.py::_control_refund_guardrail``) so the
-control can actually be demonstrated, not just described. A caller wires one
-in with ``SupportEnvironment.register_pre_execute_hook`` — nothing here is
-registered by default (see the "Guardrail seam" note in tools.py).
+control can actually be demonstrated, not just described. A caller installs
+one as a data-defined control: a ``ControlInstance`` whose ``guardrail_ref``
+names it in ``controls.GUARDRAIL_REGISTRY``, passed to
+``SupportEnvironment.install_control``. Each guardrail declares the
+``metadata.rules`` keys it reads so install can check the control's
+``rule_ref`` against them. Nothing here is installed by default (see the
+"Guardrail seam" note in tools.py).
 
 Why this doesn't import trace_harness.verifiers
     ``verifiers.refund_policy`` already imports ``environment.state``. If a

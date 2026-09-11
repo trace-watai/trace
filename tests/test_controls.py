@@ -241,6 +241,7 @@ def test_replay_apply_control_with_explicit_control_id_flips_clean(tmp_path, cap
 
 def test_replay_unknown_control_id_is_a_usage_error(tmp_path, capsys) -> None:
     artifact = _bundle_artifact(tmp_path)
+    capsys.readouterr()  # drop the run-pipeline output
     code = main(
         [
             "--runs-dir",
@@ -252,12 +253,15 @@ def test_replay_unknown_control_id_is_a_usage_error(tmp_path, capsys) -> None:
             "ctl_nope",
         ]
     )
+    captured = capsys.readouterr()
     assert code == 2
-    assert "unknown control id" in capsys.readouterr().err
+    assert "unknown control id" in captured.err
+    assert captured.out == ""  # fails before the replay header prints
 
 
 def test_replay_control_without_apply_control_is_a_usage_error(tmp_path, capsys) -> None:
     artifact = _bundle_artifact(tmp_path)
+    capsys.readouterr()  # drop the run-pipeline output
     code = main(
         [
             "--runs-dir",
@@ -268,5 +272,7 @@ def test_replay_control_without_apply_control_is_a_usage_error(tmp_path, capsys)
             REFUND_WINDOW_CONTROL_ID,
         ]
     )
+    captured = capsys.readouterr()
     assert code == 2
-    assert "requires --apply-control" in capsys.readouterr().err
+    assert "requires --apply-control" in captured.err
+    assert captured.out == ""  # fails before the replay header prints
