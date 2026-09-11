@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "26a17b97c5f6",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-87-block-events",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/failure_bundles.md",
+    "docs/modules.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/26/a17b97c5f6/0/metadata.json",
+      "transcript": "/26/a17b97c5f6/0/full.jsonl",
+      "content_hash": "/26/a17b97c5f6/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1982,
+    "cache_creation_tokens": 234743,
+    "cache_read_tokens": 12912636,
+    "output_tokens": 129815,
+    "api_call_count": 88
+  }
+}
