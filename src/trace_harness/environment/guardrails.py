@@ -26,6 +26,17 @@ from trace_harness.models.base import ToolCall
 _DEFAULT_CASH_REFUND_WINDOW_DAYS = 30
 _DEFAULT_MANAGER_APPROVAL_EXTENDS_CASH_TO_DAYS = 60
 
+_CASH_REFUND_WINDOW_KEY = "cash_refund_window_days"
+_MANAGER_APPROVAL_EXTENDS_KEY = "manager_approval_extends_cash_to_days"
+
+# The ``metadata.rules`` keys unauthorized_cash_refund_guardrail reads from the
+# current-status policy doc. Declared here, next to the code that reads them,
+# so a claim about which rules the guardrail enforces can be checked against
+# what it actually reads.
+UNAUTHORIZED_CASH_REFUND_RULE_KEYS = frozenset(
+    {_CASH_REFUND_WINDOW_KEY, _MANAGER_APPROVAL_EXTENDS_KEY}
+)
+
 
 def _cash_refund_limits(state: SupportState) -> tuple[int, int]:
     """(cash_refund_window_days, manager_approval_extends_cash_to_days).
@@ -45,10 +56,10 @@ def _cash_refund_limits(state: SupportState) -> tuple[int, int]:
     doc = sorted(candidates, key=lambda d: (d.last_updated or "", d.doc_id))[-1]
     rules = doc.metadata["rules"]
     return (
-        int(rules.get("cash_refund_window_days", _DEFAULT_CASH_REFUND_WINDOW_DAYS)),
+        int(rules.get(_CASH_REFUND_WINDOW_KEY, _DEFAULT_CASH_REFUND_WINDOW_DAYS)),
         int(
             rules.get(
-                "manager_approval_extends_cash_to_days",
+                _MANAGER_APPROVAL_EXTENDS_KEY,
                 _DEFAULT_MANAGER_APPROVAL_EXTENDS_CASH_TO_DAYS,
             )
         ),

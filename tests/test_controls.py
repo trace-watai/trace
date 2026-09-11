@@ -1,4 +1,4 @@
-"""Controls as data (TRA-91): registry, install/uninstall, selection, parity, CLI.
+"""Controls as data (TRA-87): registry, install/uninstall, selection, parity, CLI.
 
 Unit tests build a bare SupportEnvironment the way test_guardrails.py builds a
 bare SupportState; the CLI tests reuse the control-demo fixture the way
@@ -18,6 +18,7 @@ from trace_harness.environment.controls import (
     REFUND_WINDOW_CONTROL_ID,
     ControlInstance,
     RuleRef,
+    RuleRefMismatchError,
     UnknownGuardrailError,
     guardrail_ref_for_repair_control,
     reference_controls,
@@ -54,13 +55,16 @@ def _cash_call() -> ToolCall:
     )
 
 
+_REFUND_RULES = ["cash_refund_window_days", "manager_approval_extends_cash_to_days"]
+
+
 def _instance(
     control_id: str = "ctl_test", guardrail_ref: str = "unauthorized_cash_refund_guardrail"
 ):
     return ControlInstance(
         control_id=control_id,
         guardrail_ref=guardrail_ref,
-        rule_ref=RuleRef(source="current_policy_doc", rules=["cash_refund_window_days"]),
+        rule_ref=RuleRef(source="current_policy_doc", rules=_REFUND_RULES),
     )
 
 
@@ -68,10 +72,10 @@ def _instance(
 
 
 def test_registry_resolves_shipped_guardrail() -> None:
-    assert (
-        resolve_guardrail("unauthorized_cash_refund_guardrail")
-        is unauthorized_cash_refund_guardrail
-    )
+    registered = resolve_guardrail("unauthorized_cash_refund_guardrail")
+    assert registered.fn is unauthorized_cash_refund_guardrail
+    assert registered.rule_source == "current_policy_doc"
+    assert registered.rule_keys == set(_REFUND_RULES)
     assert "unauthorized_cash_refund_guardrail" in GUARDRAIL_REGISTRY
 
 
@@ -83,6 +87,50 @@ def test_unknown_guardrail_ref_is_a_model_value_but_fails_at_install() -> None:
     assert env.installed_controls == []
     # and dispatch is untouched: no hook was half-registered
     assert env.execute(_cash_call()).status == "ok"
+
+
+# --- rule_ref must match what the guardrail reads ---
+
+
+@pytest.mark.parametrize(
+    "rule_ref",
+    [
+        pytest.param(
+            RuleRef(source="deprecated_policy_doc", rules=_REFUND_RULES), id="wrong_source"
+        ),
+        pytest.param(
+            RuleRef(source="current_policy_doc", rules=["cash_refund_window_days"]),
+            id="missing_key",
+        ),
+        pytest.param(
+            RuleRef(source="current_policy_doc", rules=[*_REFUND_RULES, "not_read_by_guardrail"]),
+            id="extra_key",
+        ),
+    ],
+)
+def test_rule_ref_mismatch_fails_at_install(rule_ref: RuleRef) -> None:
+    env = _env_with_late_order()
+    with pytest.raises(RuleRefMismatchError, match="does not match guardrail"):
+        env.install_control(_instance().model_copy(update={"rule_ref": rule_ref}))
+    assert env.installed_controls == []
+    assert env.execute(_cash_call()).status == "ok"  # nothing half-registered
+
+
+def test_rule_ref_key_order_does_not_matter() -> None:
+    env = _env_with_late_order()
+    reordered = RuleRef(source="current_policy_doc", rules=list(reversed(_REFUND_RULES)))
+    env.install_control(_instance().model_copy(update={"rule_ref": reordered}))
+    assert [c.control_id for c in env.installed_controls] == ["ctl_test"]
+
+
+def test_every_reference_control_installs() -> None:
+    # a shipped control whose rule_ref drifts from its guardrail fails here
+    env = _env_with_late_order()
+    for control in reference_controls():
+        env.install_control(control)
+    assert [c.control_id for c in env.installed_controls] == [
+        c.control_id for c in reference_controls()
+    ]
 
 
 # --- install / uninstall ---

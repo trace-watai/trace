@@ -1,4 +1,4 @@
-"""Controls as data: typed, installable guardrail instances (TRA-91).
+"""Controls as data: typed, installable guardrail instances (TRA-87).
 
 A *control* is a guardrail that a repair package prescribed and a human (or,
 later, the control library) decided to install. Until this module existed a
@@ -12,7 +12,9 @@ This module makes a control a value:
   (``guardrail_ref``, a key in :data:`GUARDRAIL_REGISTRY`), the policy rules it
   enforces, what it does on failure, and where it came from.
 - :data:`GUARDRAIL_REGISTRY` is the only place a ``guardrail_ref`` becomes a
-  function. Unknown refs fail at install time, never at dispatch time.
+  function, and records which policy rules each guardrail reads. Unknown refs,
+  and a ``rule_ref`` that doesn't match what its guardrail reads, fail at
+  install time, never at dispatch time.
 - :func:`reference_controls` returns the controls the repository ships today,
   which is exactly what ``replay --apply-control`` installs by default.
 
@@ -25,11 +27,15 @@ anonymous callables. The guardrail functions themselves stay in
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from trace_harness.environment.guardrails import unauthorized_cash_refund_guardrail
+from trace_harness.environment.guardrails import (
+    UNAUTHORIZED_CASH_REFUND_RULE_KEYS,
+    unauthorized_cash_refund_guardrail,
+)
 from trace_harness.environment.state import SupportState
 from trace_harness.environment.tools import ToolResult
 from trace_harness.models.base import ToolCall
@@ -38,15 +44,38 @@ CONTROL_SCHEMA_VERSION = "0.1.0"
 
 GuardrailFn = Callable[[ToolCall, SupportState], ToolResult | None]
 
+
+@dataclass(frozen=True)
+class RegisteredGuardrail:
+    """A guardrail implementation and the policy rules it reads.
+
+    A ``ControlInstance``'s ``rule_ref`` must match ``rule_source`` and
+    ``rule_keys`` exactly to install: a control may neither claim rules its
+    guardrail ignores nor leave out rules it enforces.
+    """
+
+    fn: GuardrailFn
+    rule_source: str
+    rule_keys: frozenset[str]
+
+
 # guardrail_ref -> implementation. Seeded with the one guardrail the repository
 # ships. New guardrails register here; nothing else imports them by name.
-GUARDRAIL_REGISTRY: dict[str, GuardrailFn] = {
-    "unauthorized_cash_refund_guardrail": unauthorized_cash_refund_guardrail,
+GUARDRAIL_REGISTRY: dict[str, RegisteredGuardrail] = {
+    "unauthorized_cash_refund_guardrail": RegisteredGuardrail(
+        fn=unauthorized_cash_refund_guardrail,
+        rule_source="current_policy_doc",
+        rule_keys=UNAUTHORIZED_CASH_REFUND_RULE_KEYS,
+    ),
 }
 
 
 class UnknownGuardrailError(ValueError):
     """A ``ControlInstance`` names a ``guardrail_ref`` that is not registered."""
+
+
+class RuleRefMismatchError(ValueError):
+    """A ``ControlInstance``'s ``rule_ref`` differs from what its guardrail reads."""
 
 
 class RuleRef(BaseModel):
@@ -82,14 +111,33 @@ class ControlInstance(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-def resolve_guardrail(guardrail_ref: str) -> GuardrailFn:
-    """Return the implementation for ``guardrail_ref`` or raise at install time."""
+def resolve_guardrail(guardrail_ref: str) -> RegisteredGuardrail:
+    """Return the registry entry for ``guardrail_ref`` or raise at install time."""
     try:
         return GUARDRAIL_REGISTRY[guardrail_ref]
     except KeyError:
         raise UnknownGuardrailError(
             f"unknown guardrail_ref {guardrail_ref!r}; registered: {sorted(GUARDRAIL_REGISTRY)}"
         ) from None
+
+
+def resolve_control(instance: ControlInstance) -> GuardrailFn:
+    """The guardrail ``instance`` installs, checked now rather than at dispatch.
+
+    Raises ``UnknownGuardrailError`` for an unregistered ``guardrail_ref`` and
+    ``RuleRefMismatchError`` unless ``rule_ref`` names exactly the source and
+    rule keys the guardrail reads (key order doesn't matter).
+    """
+    registered = resolve_guardrail(instance.guardrail_ref)
+    claimed = set(instance.rule_ref.rules)
+    if instance.rule_ref.source != registered.rule_source or claimed != registered.rule_keys:
+        raise RuleRefMismatchError(
+            f"control {instance.control_id!r}: rule_ref "
+            f"{instance.rule_ref.source}:{sorted(claimed)} does not match guardrail "
+            f"{instance.guardrail_ref!r}, which reads "
+            f"{registered.rule_source}:{sorted(registered.rule_keys)}"
+        )
+    return registered.fn
 
 
 # The controls the repository ships. ``replay --apply-control`` installs all of

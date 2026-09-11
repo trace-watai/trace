@@ -101,7 +101,7 @@ pass/fail judgment here (verifiers), no prompt text (runner), no vector DB
 until keyword retrieval demonstrably fails a real task.
 
 **Build next:** a `blocked_by` control id on `ToolResult` and the executed/
-observation trace events so a block is machine-identifiable (TRA-91 part 2);
+observation trace events so a block is machine-identifiable (TRA-87 part 2);
 post-execute hooks; doc chunking and
 pluggable scorers behind the same `search_docs` signature; a second
 workflow environment to force the generic/support split.
