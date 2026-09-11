@@ -9,6 +9,7 @@ the direct-import path it replaces.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from conftest import FIXTURES_DIR
 from trace_harness.cli import main
@@ -222,3 +223,19 @@ def test_replay_control_without_apply_control_is_a_usage_error(tmp_path, capsys)
     )
     assert code == 2
     assert "requires --apply-control" in capsys.readouterr().err
+
+
+# --- unknown fields are rejected (environment/ convention: extra="forbid") ---
+
+
+def test_unknown_field_in_control_record_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="guardrail_reg"):
+        ControlInstance.model_validate(
+            {
+                "control_id": "ctl_typo",
+                "guardrail_reg": "unauthorized_cash_refund_guardrail",
+                "rule_ref": {"source": "current_policy_doc", "rules": []},
+            }
+        )
+    with pytest.raises(ValidationError, match="sources"):
+        RuleRef.model_validate({"sources": "current_policy_doc"})

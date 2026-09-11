@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from trace_harness.environment.guardrails import unauthorized_cash_refund_guardrail
 from trace_harness.environment.state import SupportState
@@ -52,6 +52,8 @@ class UnknownGuardrailError(ValueError):
 class RuleRef(BaseModel):
     """Which policy rules the control enforces, and where it reads them from."""
 
+    model_config = ConfigDict(extra="forbid")
+
     source: str = Field(description="where the rules are read, e.g. 'current_policy_doc'")
     rules: list[str] = Field(
         default_factory=list, description="rule keys, e.g. metadata.rules names"
@@ -59,12 +61,16 @@ class RuleRef(BaseModel):
 
 
 class BehaviorOnFailure(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     action: Literal["block"] = "block"
 
 
 class ControlProvenance(BaseModel):
     """The failure that earned this control. Both fields are optional so an
     authored (not earned) control can still be represented."""
+
+    model_config = ConfigDict(extra="forbid")
 
     run_id: str | None = None
     repair_control: str | None = Field(
@@ -73,6 +79,8 @@ class ControlProvenance(BaseModel):
 
 
 class ControlInstance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     schema_version: str = CONTROL_SCHEMA_VERSION
     control_id: str
     guardrail_ref: str
