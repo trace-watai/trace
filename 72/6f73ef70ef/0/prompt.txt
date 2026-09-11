@@ -1,0 +1,249 @@
+TRA-91: controls as data: registry, provenance, and structured block events
+
+Branch: trace-harness/tra-91-controls-as-data  
+​Owner: Evan Yang (environment) + Samir (repair packages) · Reviewers: Karan (rule semantics), Rupert (runner seam) · needs-tpm (new schema-versioned contract)  
+​Linear: TRA-91 (reserve in Linear; adjust if taken)
+Why
+
+The guardrail seam works and the first reference guardrail proves it (environment/guardrails.py, exercised by replay --apply-control). But controls today are hardcoded functions imported by name (cli.py:39), so the set of installable controls can only grow by editing source, cannot be selected per-control, and carries no record of which failure earned it. This ticket makes controls data: a typed instance that names its guardrail implementation, its rule sources, and its provenance — so the repair package's prescribed controls become referenceable, installable objects rather than prose.
+Scope
+
+    ControlInstance model (schema_version 0.1.0): control_id, guardrail_ref (registry key), rule_ref, behavior_on_failure, provenance (originating run_id + repair-control name).
+
+    Guardrail registry: name → implementation, seeded with unauthorized_cash_refund_guardrail. The direct import in cli.py is replaced by registry lookup; --apply-control gains optional per-control selection (default: all registered, today's behavior).
+
+    Structured block observability: a blocked dispatch is identifiable in the trace as a control block (carrying control_id), not just an error-prose ToolResult. Design decision for review: extend ToolResult (schema bump, consumers updated same-PR) vs. a reserved key in result — the environment/runner/trace seam owners decide.
+
+    Install/uninstall API on the environment; installed set is explicit, inspectable state.
+
+Out of scope
+
+New guardrail implementations, automated repair-package application (TRA-92), persistence (TRA-93).
+Acceptance criteria
+
+    Parity: the data-defined control for the refund window reproduces the reference guardrail's behavior exactly — test_replay_control_flip.py passes unchanged through the registry path.
+
+    Positive sibling still passes with the control installed (existing sibling gate keeps covering this).
+
+    A block in trace.jsonl is machine-identifiable and carries its control_id.
+
+    Unknown guardrail_ref fails at install time, not dispatch time.
+
+Tests
+
+Extend tests/test_guardrails.py + tests/test_support_env.py: registry resolution, install/uninstall symmetry, block-event structure, parity with the direct-import path.
+Docs
+
+docs/modules.md environment section; docs/failure_bundles.md: prescribed control ↔ ControlInstance correspondence.
+Sample artifact
+
+{"schema_version": "0.1.0", "control_id": "ctl_refund_window_v1",
+ "guardrail_ref": "unauthorized_cash_refund_guardrail",
+ "rule_ref": {"source": "current_policy_doc", "rules": ["cash_refund_window_days", "manager_approval_extends_cash_to_days"]},
+ "behavior_on_failure": {"action": "block"},
+ "provenance": {"run_id": "run_20260811T231436Z_4c21574f",
+   "repair_control": "deterministic_pre_call_refund_guardrail"}}
+
+Sequencing: first in the TRA-91 → TRA-92 → TRA-93 chain. Note: the sibling gate this relies on is only as strong as positive verification — ​
+
+​ (expected-action verification) should land first or alongside.
+sarptandoven
+
+Part 1 is up: https://github.com/trace-watai/trace/pull/165 — registry, ControlInstance, install/uninstall on the environment, --control <id> on replay, parity test unchanged, 12 new tests.
+
+Design decision for the seam owners, with a recommendation. The ticket leaves open how a block becomes machine-identifiable in the trace. Three options:
+
+    A reserved key inside ToolResult.result: no schema change, but result is untyped in the payload and the dashboard mirror, so it is a convention every consumer has to know. Not recommended.
+
+    A new tool_call_blocked trace event: the runner cannot tell a block from a handler error unless the environment signals it, so this needs option 3 anyway and then stores the same fact twice.
+
+    Recommended: an optional blocked_by: str | None (the control_id) on ToolResult, stamped by the install wrapper that part 1 added, copied by the runner into both tool_call_executed and tool_observation. status stays error, so nothing that checks status == "ok" changes. Typed payloads and trace-event.ts gain one optional field; trace schema 0.3.0 → 0.4.0 with the offline fixture regenerated in the same PR.
+
+If option 3 is accepted, this ticket owns the trace schema bump and 
+
+ keys on blocked_by with no event of its own.
+
+ read this ticket and explain what is needed in simple terms; what i (evan) should be delivering
+
+---
+
+in 2-3 bullets, give me the scope of the ticket
+
+---
+
+so what files will i be editing
+
+---
+
+Okay. First, give me a step by step plan of what should be done (action steps) to fulfill the requirements of the ticket. Make it more detailed but in plain language to be understandable. Ask me and explain any design choices that should be made in this step
+
+---
+
+i think blocked by field is good, but where is this field living? in the trace schema?
+
+---
+
+Cool, Let's use blocked by. Continue with the next questions
+
+---
+
+put the plan into a temp doc.
+
+---
+
+there is no pr for this yet Why this blocks the suite
+
+Emily's 25-task refund_v0 suite pins all eight negative outcomes to existing deterministic verifier check IDs, but its positive rows only assert verifier_passed == true. The current verifier checks that recorded side effects are authorized; it does not prove that the agent performed the task's expected positive action or selected the requested remedy.
+
+Reproductions
+
+Against the current verifier and Emily's suite fixtures, these wrong behaviors still return PASS with no failed checks:
+
+refund_policy_valid_cash: remove the refund and answer with an honest refusal → PASS, [].
+
+refund_type_cash_with_outage_in_window: replace the requested cash refund with an allowed store-credit refund → PASS, [].
+
+refund_cash_age_boundary_day_31_no_approval: add an escalation to the expected clean-decline case → PASS, [].
+
+These are not forbidden-side-effect violations under the current checks, but they contradict the task expected_behavior / suite coverage claims.
+
+Requested outcome
+
+Add one deterministic expected-action/remedy contract (or an equivalent task-level assertion) that can distinguish at least:
+
+allowed refund omitted or replaced by an incorrect allowed refund type;
+
+a clean decline that contains an unexpected escalation;
+
+the expected final answer/action state for each positive sibling.
+
+Add a negative mutation for each supported branch and keep the positive sibling passing. Until this lands, the affected positive rows should be described as “no policy violation detected,” not as proof that the expected action was completed.
+
+Discovered during review of GitHub issue TRA-80 / TRA-80. Existing negative pins remain backed by: unauthorized_cash_refund, unauthorized_store_credit, required_escalation_missing, unnecessary_escalation, duplicate_escalation, and final_answer_inconsistent_with_state.. check if it is a blocker for the work that needs to be done
+
+---
+
+Cool. Now lets proceed with step one and look over everything in part 1.
+
+---
+
+<task-notification>
+<task-id>ae21a1faefcaa999f</task-id>
+<tool-use-id>toolu_019en3YhvGoqx4BiujaMa31e</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evanzyang-Documents-Projects-TRACE/338373b8-f28f-4ca1-b7b8-e31239d0f0b2/tasks/ae21a1faefcaa999f.output</output-file>
+<status>completed</status>
+<summary>Agent "Spec review of PR #165" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>The core of part 1 matches the spec: registry lookup replaces the direct import, unknown refs fail at install time, and parity holds. Three gaps and one scope-creep item are worth raising. I ran `test_replay_control_flip.py` and `test_controls.py` at the PR head and all 15 tests pass.
+
+**(a) Missing or partial**
+
+1. *"Extend tests/test_guardrails.py + tests/test_support_env.py"*: neither file changes. All 12 tests are in a new `tests/test_controls.py`. The coverage is adequate, but not where the spec asked.
+2. *"provenance (originating run_id + repair-control name)"*: the only shipped control has `run_id=None` (`controls.py:102-113`). The field can hold the sample's `run_id` (I checked), but `ctl_refund_window_v1` doesn't record the run that earned it, although the sample shows it doing so. The code comment defers this to TRA-93.
+3. *"--apply-control gains optional per-control selection (default: all registered)"*: the default is `reference_controls()` (`controls.py:116-123`), not `GUARDRAIL_REGISTRY` (`controls.py:43`). The two match today (one guardrail, one control), but nothing ties them together. A guardrail added to the registry without a matching control would silently not install by default. This is acceptable if "registered" means registered controls, but there's no test guarding against drift.
+
+**(b) Scope creep**
+
+- *"Out of scope: … automated repair-package application (TRA-92)"*: `MATERIALIZABLE_REPAIR_CONTROLS` and `guardrail_ref_for_repair_control` (`controls.py:137-151`) are code nothing in `src/` uses, and the comment says they exist for TRA-92 per-control validation. The spec asked for this mapping only as docs. The new section in `docs/failure_bundles.md` also says, in the present tense, that validation "reports the latter as `skipped: not_materializable`". Nothing does that yet.
+- `ControlInstance.metadata: dict[str, Any]` (`controls.py:82`) is a field the spec doesn't list.
+
+**(c) Implemented but looks wrong**
+
+- *Sample artifact*: it parses, but doesn't round-trip exactly. Dumping it adds `"metadata": {}`. No model sets `extra="forbid"`, so a typo at the top level or inside `rule_ref` is accepted silently. That breaks the repo's "`extra="forbid"` everywhere" rule. `schema_version` also accepts any string, e.g. `"9.9.9"`.
+- *"installed set is explicit, inspectable state"*: `installed_controls` returns the live instances (`support_env.py:140`). Changing `guardrail_ref` on one after install changes what the property reports, but the hook still runs the original guardrail. The inspectable state can end up disagreeing with what runs. Copying the instance on install would fix it.
+
+**Checked and fine**
+
+- *"test_replay_control_flip.py passes unchanged through the registry path"*: the file is not in the diff, it passes, and replay now goes through `select_controls` and `install_control` (`cli.py:439`).
+- *"Unknown guardrail_ref fails at install time"*: resolved before registration (`support_env.py:113-129`) and tested.
+- *"Positive sibling still passes"*: siblings get `controls=controls`.
+- *Install/uninstall symmetry*: I tested these cases directly.
+  - With raw `register_pre_execute_hook` hooks interleaved, uninstalling both controls leaves exactly the raw hooks, in order.
+  - The same guardrail under two `control_id`s gets two distinct wrapper hooks, and uninstalling one removes only its own (`support_env.py:125,137`).
+  - Reinstalling after uninstall works.
+- `--control` without `--apply-control`, and an unknown id, both exit 2 before any run.</result>
+<usage><subagent_tokens>61558</subagent_tokens><tool_uses>7</tool_uses><duration_ms>83626</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ac422b90257211408</task-id>
+<tool-use-id>toolu_01Saz6X1YhctNs5aQUNUsE8A</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-evanzyang-Documents-Projects-TRACE/338373b8-f28f-4ca1-b7b8-e31239d0f0b2/tasks/ac422b90257211408.output</output-file>
+<status>completed</status>
+<summary>Agent "Standards review of PR #165" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I found one hard violation, one soft standards issue and several judgement-call smells. The verdict: fix the missing `extra="forbid"` before merge, and consider deleting the dead `extra_hooks` path.
+
+**Hard violation**
+
+- **`controls.py:52-82`: the four new Pydantic models (`RuleRef`, `BehaviorOnFailure`, `ControlProvenance`, `ControlInstance`) lack `model_config = ConfigDict(extra="forbid")`.** This breaks CLAUDE.md (Environment module, `state.py`: "`extra="forbid"` everywhere — fixture typos fail at load, not silently"). It also breaks the idiom every sibling model follows (`state.py:70-149`, `tools.py:72-104`). I checked it: `ControlInstance.model_validate(...)` with `rule_ref.rulez` and `behaviour_on_failure` is accepted, and both keys are silently dropped. That matters because these models are meant to be loaded from data by the control library (TRA-93).
+
+**Soft standards issues**
+
+- **`cli.py:437-438`:** `raise ValueError("--control requires --apply-control")` should use `CliInputError` (`cli.py:68`), which exists for exactly this kind of user-input error. The check also runs after the header and drift output (`cli.py:427-435`), so the usage error appears only after output has already printed.
+- **`controls.py:95-98, 132-145`:** these comments describe future work (TRA-93, TRA-92, issue #161) with no `TODO(Owner/module, TRA-xxx)` marker. CONTRIBUTING.md:104 says TODOs must carry an owner. This is a judgement call, since the comments are prose rather than TODO markers.
+- **`guardrails.py:5-7`:** the unchanged docstring still says guardrails are wired in through `register_pre_execute_hook`. docs/modules.md now says `install_control` is "the only way a guardrail gets installed by id".
+
+**Smells (all judgement calls)**
+
+- **Possible dead code:** `cli.py:131, 150`. After this change `extra_hooks` has no callers in `src/` or `tests/`.
+- **Possible Duplicated Code:**
+  - The same callable type is defined twice under different names: `GuardrailFn` (`controls.py:39`) and `PreExecuteHook` (`support_env.py:59`). The type is also still written out in full at `support_env.py:73, 101` and `cli.py:131`.
+  - In `tests/test_controls.py`, `_bundle_artifact` repeats `_bundle_and_get_artifact_path` from `test_replay_control_flip.py`.
+  - `_env_with_late_order`, `_cash_call` and the Alice `Order` repeat the helpers in `test_guardrails.py`.
+- **Possible Speculative Generality:**
+  - `MATERIALIZABLE_REPAIR_CONTROLS` and `guardrail_ref_for_repair_control` (`controls.py:137-151`) are only used by tests, pending TRA-92.
+  - `BehaviorOnFailure` wraps a one-value `Literal["block"]`.
+  - `ControlInstance.metadata: dict[str, Any]` has no consumer.
+- **Possible Primitive Obsession / Shotgun Surgery:**
+  - `MATERIALIZABLE_REPAIR_CONTROLS` restates repair-control names as string literals owned by `failure_bundles/generator.py`. Renaming one means editing both files, and only a test catches drift.
+  - That test (`test_controls.py:153-154`) reaches into the private `_CONTROL_BUILDERS` and hardcodes `"regression_test_ci_gate"`.
+- **Possible Middle Man:** the `hook` closure in `support_env.py:125-126` only forwards to `guardrail`. It seems to exist to give each installed control its own identity for `list.remove`, but no comment says so, and it reads as pure delegation.
+- **Mysterious Name (minor):** the `select_controls` docstring (`controls.py:119`) calls its plain `ValueError` "`UnknownGuardrailError`'s sibling", which is confusing.
+
+**Conformant**
+
+- No runner import. The dependency direction is clean: `controls.py` imports `guardrails`, `state` and `tools`; `support_env` imports `controls`; nothing forms a cycle.
+- `CONTROL_SCHEMA_VERSION` is present.
+- No customer names in `src/`.
+- The tests are offline, use real fixtures via `FIXTURES_DIR`, and write only into `tmp_path`.</result>
+<usage><subagent_tokens>74698</subagent_tokens><tool_uses>14</tool_uses><duration_ms>111473</duration_ms></usage>
+</task-notification>
+
+---
+
+Rephrase the hard violation and the softer issues into more concise statements that are easy to read and understand. they should be only 1-2 sentences each and diagnose the issue so that i can comment it on the original pr
+
+---
+
+model_config = ConfigDict(extra="forbid") what does this do?
+
+---
+
+guardrails.py:5-7
+
+▎ The module docstring still says guardrails are wired in with register_pre_execute_hook, but this PR makes install_control the way to install one. Please point the docstring at install_control so the two docs agree.cli.py:437-438
+
+▎ --control without --apply-control raises a plain ValueError; this is a user-input error, so it should raise CliInputError. It should also run before the replay header prints, so the error isn't buried under output. these two should be addressed in the tra 91 plan for part 2
+
+---
+
+how do i open the plan
+
+---
+
+Cool. Now do step 2
+
+---
+
+Do step 2. However, the issue is now tra-87 and not tra-91. change all references and make sure the branch name corresponds
+
+---
+
+no, check again. sarptandoven's pr nam,e should have changed
+
+---
+
+Yes. Do step 3
