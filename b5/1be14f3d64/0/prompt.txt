@@ -1,0 +1,9 @@
+do part c
+
+---
+
+when you're done, you can commit it and then continue with the rest of the steps until step 6. for every commit you make, follow the wording and convention that i used in the past couple commits in this branch. keep them very concise and don't use jarogn or overtechnical language
+
+---
+
+step 6 is inclusive; make a commit for both step 5 and step 6 unpon finishing
