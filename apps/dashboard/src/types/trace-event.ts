@@ -93,8 +93,9 @@ export interface RawToolCallExecutedPayload {
   error?: string | null;
   /**
    * control_id of the installed control that blocked this call before its
-   * handler ran (0.4.0+). null when the call was not blocked by a control;
-   * absent in traces written before 0.4.0.
+   * handler ran (0.4.0+); absent in traces written before 0.4.0. null does
+   * not prove the call wasn't blocked: a block by a raw pre-execute hook
+   * (tests only) also has null and looks like an ordinary tool error.
    */
   blocked_by?: string | null;
 }
