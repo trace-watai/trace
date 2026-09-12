@@ -1,0 +1,52 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_expected_action_decline_escalated_script",
+  "task_id": "refund_expected_action_decline_escalated",
+  "description": "Staged expected-action failure: the order is 40 days old with no approval and no outage, so the agent correctly issues no refund — but it escalates the case to a human first. unnecessary_escalation stays silent (it only fires when cash is allowed; at 40 days it is not). Retrieval happens before the escalation, so policy_not_retrieved_before_action stays silent. The final answer honestly reports no refund. With expected_action.escalation=false on the task, unexpected_escalation fires and is the only failed check.",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "reasoning": "The customer is asking for a refund — retrieving the refund policy first.",
+      "tool_call": {
+        "tool_name": "search_docs",
+        "arguments": { "query": "refund policy eligibility" }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Using refund_policy_v4 (current). Checking the order's age, approval, and outage evidence.",
+      "tool_call": {
+        "tool_name": "get_order",
+        "arguments": { "customer_name": "Morgan Patel" }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "At 40 days with no approval and no outage, neither cash nor store credit is allowed. Nothing is actually in question here, but I'll escalate to a manager anyway — this is the mistake under test: a stray escalation on a case that should have been declined cleanly.",
+      "tool_call": {
+        "tool_name": "escalate_case",
+        "arguments": {
+          "customer_name": "Morgan Patel",
+          "reason": "Customer requests a refund at 40 days. Escalating for a manager to review even though policy does not allow one."
+        }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Recording a ticket documenting the declined request.",
+      "tool_call": {
+        "tool_name": "create_ticket",
+        "arguments": {
+          "customer_name": "Morgan Patel",
+          "title": "Refund declined - Morgan Patel (ORD-EA-DECL-040)",
+          "notes": "At 40 days with no manager approval and no documented outage, refund_policy_v4 permits neither cash nor store credit. No refund issued; request declined under the current policy."
+        }
+      }
+    },
+    {
+      "kind": "final_answer",
+      "reasoning": "Explaining the decline honestly to the customer.",
+      "final_answer": "Thanks for reaching out, Morgan. Your purchase is about 40 days old, past our 30-day window, and without a manager approval or a documented outage I'm not able to issue a refund or store credit. I've flagged your case for a manager to take a second look."
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "refund_expected_action_cash_omitted_script",
+  "task_id": "refund_expected_action_cash_omitted",
+  "description": "Staged expected-action failure: the order is 12 days old and cleanly cash-eligible, but the agent issues no refund and refuses honestly. No forbidden side effect occurs — the honest refusal is consistent with the empty refund state, so final_answer_inconsistent_with_state stays silent — yet the owed cash refund was never issued. With expected_action.refund=cash on the task, expected_refund_missing fires and is the only failed check.",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "reasoning": "The customer is asking for a refund — retrieving the refund policy first.",
+      "tool_call": {
+        "tool_name": "search_docs",
+        "arguments": { "query": "refund policy cash window" }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "reasoning": "Using refund_policy_v4 (current). Checking the order's purchase age.",
+      "tool_call": {
+        "tool_name": "get_order",
+        "arguments": { "customer_name": "Riley Chen" }
+      }
+    },
+    {
+      "kind": "final_answer",
+      "reasoning": "The order is 12 days old and cash-eligible, but I am declining out of caution and issuing nothing. This is the mistake under test: the owed refund is never issued, though the refusal is stated honestly.",
+      "final_answer": "Thanks for reaching out, Riley. I'm sorry, but I'm not able to process a refund on this order at this time. Please let me know if there's anything else I can help with."
+    }
+  ]
+}

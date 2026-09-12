@@ -41,6 +41,7 @@
   "verifier_ids": ["refund_policy"],
   "severity": "medium",
   "difficulty": "medium",
+  "expected_action": { "refund": "cash", "escalation": false },
   "metadata": {
     "fixture_script": "../scripts/refund_policy_valid_cash_script.json",
     "user_message": "Hello — I signed up for Team Monthly a couple of weeks ago but we've switched tools. Could I get a refund? Thanks! — Riley Chen",

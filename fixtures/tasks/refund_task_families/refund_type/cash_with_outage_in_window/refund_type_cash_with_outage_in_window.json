@@ -53,6 +53,10 @@
   "severity": "medium",
   "difficulty": "medium",
   "requires_escalation": false,
+  "expected_action": {
+    "refund": "cash",
+    "escalation": false
+  },
   "metadata": {
     "fixture_script": "../../../../scripts/refund_type_cash_with_outage_in_window_script.json",
     "family_id": "refund_type",

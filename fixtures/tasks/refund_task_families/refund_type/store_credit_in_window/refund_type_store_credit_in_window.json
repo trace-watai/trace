@@ -53,6 +53,10 @@
   "severity": "medium",
   "difficulty": "easy",
   "requires_escalation": false,
+  "expected_action": {
+    "refund": "store_credit",
+    "escalation": false
+  },
   "metadata": {
     "fixture_script": "../../../../scripts/refund_type_store_credit_in_window_script.json",
     "family_id": "refund_type",
