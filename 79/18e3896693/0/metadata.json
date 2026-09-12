@@ -3,38 +3,38 @@
   "checkpoint_id": "7918e3896693",
   "session_id": "8b5a21ad-d05e-441d-ae41-b1118dfdbf08",
   "strategy": "manual-commit",
-  "created_at": "2026-09-12T01:52:29.444801Z",
+  "created_at": "2026-09-12T01:57:15.024034Z",
   "branch": "trace-harness/tra-87-block-events",
   "checkpoints_count": 0,
   "files_touched": [
-    "src/trace_harness/cli.py",
-    "apps/dashboard/src/types/trace-event.ts"
+    "apps/dashboard/src/types/trace-event.ts",
+    "src/trace_harness/cli.py"
   ],
   "agent": "Claude Code",
   "model": "",
-  "turn_id": "8eb9e8a6765d",
-  "checkpoint_transcript_start": 302,
-  "transcript_lines_at_start": 302,
+  "turn_id": "81b4a2c71f9d",
+  "checkpoint_transcript_start": 444,
+  "transcript_lines_at_start": 444,
   "token_usage": {
-    "input_tokens": 228,
-    "cache_creation_tokens": 24542,
-    "cache_read_tokens": 1136090,
-    "output_tokens": 13251,
-    "api_call_count": 9
+    "input_tokens": 98,
+    "cache_creation_tokens": 6120,
+    "cache_read_tokens": 583209,
+    "output_tokens": 3864,
+    "api_call_count": 4
   },
   "session_metrics": {
-    "turn_count": 2
+    "turn_count": 3
   },
   "initial_attribution": {
-    "calculated_at": "2026-09-12T01:52:29.431661Z",
-    "agent_lines": 18,
-    "agent_removed": 11,
+    "calculated_at": "2026-09-12T01:57:14.998515Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
     "human_added": 0,
     "human_modified": 0,
     "human_removed": 0,
-    "total_committed": 18,
-    "total_lines_changed": 29,
-    "agent_percentage": 100,
+    "total_committed": 0,
+    "total_lines_changed": 0,
+    "agent_percentage": 0,
     "metric_version": 2
   },
   "prompt_attributions": [
