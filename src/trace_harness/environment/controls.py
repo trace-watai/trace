@@ -135,6 +135,13 @@ def resolve_control(instance: ControlInstance) -> GuardrailFn:
     Raises ``UnknownGuardrailError`` for an unregistered ``guardrail_ref`` and
     ``RuleRefMismatchError`` unless ``rule_ref`` names exactly the source and
     rule keys the guardrail reads (key order doesn't matter).
+
+    ``rule_ref`` deliberately restates what the registry already records. A
+    control is data that outlives whatever installed it, so it has to describe
+    itself without the registry at hand. Requiring an exact match is what
+    catches a guardrail quietly changing which rules it reads: stored controls
+    that still name the old rules stop installing instead of enforcing
+    something other than what they say.
     """
     registered = resolve_guardrail(instance.guardrail_ref)
     claimed = set(instance.rule_ref.rules)

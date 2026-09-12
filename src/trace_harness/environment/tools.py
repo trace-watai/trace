@@ -62,6 +62,10 @@ class ToolResult(BaseModel):
     every call that reached its handler, and for blocks by raw pre-execute
     hooks, which have no control id. A block keeps ``status="error"``, so
     consumers that only check status see no change.
+
+    Raw pre-execute hooks are for tests, not production: their blocks are
+    indistinguishable from a handler error in the trace. Real guardrails go
+    through ``SupportEnvironment.install_control`` so every block is labeled.
     """
 
     tool_name: str
