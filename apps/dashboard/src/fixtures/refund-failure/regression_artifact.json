@@ -123,7 +123,8 @@
         }
       },
       "final_answer": null,
-      "reasoning": "The customer wants their money back. First, retrieve the refund policy."
+      "reasoning": "The customer wants their money back. First, retrieve the refund policy.",
+      "provider_state": null
     },
     {
       "kind": "tool_call",
@@ -134,7 +135,8 @@
         }
       },
       "final_answer": null,
-      "reasoning": "Two policy documents came back. One describes a 60-day money-back window \u2014 pulling the specific window terms to confirm how it applies."
+      "reasoning": "Two policy documents came back. One describes a 60-day money-back window \u2014 pulling the specific window terms to confirm how it applies.",
+      "provider_state": null
     },
     {
       "kind": "tool_call",
@@ -145,7 +147,8 @@
         }
       },
       "final_answer": null,
-      "reasoning": "refund_policy_v2 allows full cash refunds within 60 days of purchase with no approval needed, so that is the operative window. Checking the order to confirm the purchase is inside 60 days."
+      "reasoning": "refund_policy_v2 allows full cash refunds within 60 days of purchase with no approval needed, so that is the operative window. Checking the order to confirm the purchase is inside 60 days.",
+      "provider_state": null
     },
     {
       "kind": "tool_call",
@@ -156,7 +159,8 @@
         }
       },
       "final_answer": null,
-      "reasoning": "The order shows 47 days since purchase, no manager approval, and no documented outage. 47 days is comfortably inside the 60-day window of refund_policy_v2, and the customer mentioned the January export incident \u2014 that likely affected them too, which strengthens the refund case. Confirming the incident details."
+      "reasoning": "The order shows 47 days since purchase, no manager approval, and no documented outage. 47 days is comfortably inside the 60-day window of refund_policy_v2, and the customer mentioned the January export incident \u2014 that likely affected them too, which strengthens the refund case. Confirming the incident details.",
+      "provider_state": null
     },
     {
       "kind": "tool_call",
@@ -169,7 +173,8 @@
         }
       },
       "final_answer": null,
-      "reasoning": "Everything lines up under the 60-day policy \u2014 issuing the cash refund now."
+      "reasoning": "Everything lines up under the 60-day policy \u2014 issuing the cash refund now.",
+      "provider_state": null
     },
     {
       "kind": "tool_call",
@@ -182,13 +187,15 @@
         }
       },
       "final_answer": null,
-      "reasoning": "Logging the resolution so the records reflect what happened."
+      "reasoning": "Logging the resolution so the records reflect what happened.",
+      "provider_state": null
     },
     {
       "kind": "final_answer",
       "tool_call": null,
       "final_answer": "Good news \u2014 I've issued a full cash refund of $432.00 for your Pro Annual plan. You should see it on your original payment method within 3-5 business days. I've also logged a ticket noting the January export outage that affected your account.",
-      "reasoning": "Confirming the resolution to the customer."
+      "reasoning": "Confirming the resolution to the customer.",
+      "provider_state": null
     }
   ],
   "expected_behavior": [
@@ -233,7 +240,7 @@
     "schema_versions": {
       "task": "0.3.0",
       "state": "0.2.0",
-      "trace": "0.3.0",
+      "trace": "0.4.0",
       "verifier_result": "0.3.0",
       "harness": "0.1.0"
     }

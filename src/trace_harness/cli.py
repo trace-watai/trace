@@ -31,7 +31,6 @@ import argparse
 import json
 import logging
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -39,9 +38,7 @@ from trace_harness.config import HarnessConfig, load_env_file
 from trace_harness.environment.controls import ControlInstance, select_controls
 from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.environment.tools import ToolResult
 from trace_harness.models import create_model_adapter
-from trace_harness.models.base import ToolCall
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.regression.replay import (
     describe_action_drift,
@@ -128,7 +125,6 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
 def _run_fixture(
     args: argparse.Namespace,
     store: ArtifactStore,
-    extra_hooks: list[Callable[[ToolCall, SupportState], ToolResult | None]] | None = None,
     pinned_initial_state: dict[str, Any] | None = None,
     pinned_script: FixtureScript | None = None,
     controls: list[ControlInstance] | None = None,
@@ -147,8 +143,8 @@ def _run_fixture(
         metadata["replay_pinned_state"] = "true"
 
     environment = SupportEnvironment.from_task(task, docs=docs)
-    for hook in extra_hooks or []:
-        environment.register_pre_execute_hook(hook)
+    # Guardrails enter only as installed controls, never raw hooks, so every
+    # block they cause carries blocked_by in the trace.
     for instance in controls or []:
         environment.install_control(instance)
 
@@ -415,6 +411,11 @@ def _replay(
 
     Returns 0 if all assertions hold, 1 if the regression gate fires.
     """
+    # Flag and control-id errors are usage errors: fail before any output.
+    if control_ids and not apply_control:
+        raise CliInputError("--control requires --apply-control")
+    controls = select_controls(control_ids) if apply_control else []
+
     data = json.loads(artifact_path.read_text(encoding="utf-8"))
     artifact = RegressionArtifact.model_validate(data)
     pinned_state = pinned_initial_state(artifact)
@@ -434,9 +435,6 @@ def _replay(
     for note in _replay_drift_notes(artifact, task, task_path, pinned_state):
         print(f"  ⚠ fixture drift — {note}")
 
-    if control_ids and not apply_control:
-        raise ValueError("--control requires --apply-control")
-    controls = select_controls(control_ids) if apply_control else []
     if controls:
         _print("controls:", ", ".join(c.control_id for c in controls))
     gate_failed = False

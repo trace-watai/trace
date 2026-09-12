@@ -12,6 +12,7 @@
   ],
   "primary_failure_category": "stale_source_authority",
   "contributing_failure_categories": [
+    "clarification_failure",
     "unsafe_irreversible_action",
     "false_durable_record",
     "missed_recovery"
