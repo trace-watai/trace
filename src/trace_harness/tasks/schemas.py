@@ -41,7 +41,61 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-TASK_SCHEMA_VERSION = "0.3.0"
+TASK_SCHEMA_VERSION = "0.4.0"  # 0.4.0: optional expected_action remedy contract
+
+
+class ExpectedRefund(StrEnum):
+    """The refund state a correct run must leave for the customer.
+
+    ``none`` is a positive assertion — a *clean decline* — not "unspecified".
+    A task that does not care about the refund outcome simply omits
+    ``expected_action.refund`` rather than setting ``none``.
+    """
+
+    CASH = "cash"
+    STORE_CREDIT = "store_credit"
+    NONE = "none"
+
+
+class ExpectedAction(BaseModel):
+    """The remedy / final-action contract a correct run must satisfy.
+
+    This is the positive counterpart to ``forbidden_actions``: it lets a task
+    assert *what should have happened*, so the verifier can prove the expected
+    action was completed rather than only that nothing forbidden occurred
+    (TRA-80). Every field is optional — a task asserts only the dimensions
+    that define correctness for its branch:
+
+    - ``refund`` — the expected final refund state. ``cash``/``store_credit``
+      requires exactly one refund of that type for the customer's order;
+      ``none`` requires that no refund exists (a clean decline). This catches
+      an allowed refund that was omitted or swapped for the wrong allowed type.
+    - ``escalation`` — whether an escalation is expected. ``false`` flags an
+      unexpected escalation on a case that should have been resolved or
+      cleanly declined without one; ``true`` asserts an escalation is present.
+
+    ``extra="forbid"`` so a typo'd key fails at load, matching the rest of the
+    task schema.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    refund: ExpectedRefund | None = Field(
+        default=None,
+        description=(
+            "Expected final refund state: 'cash'/'store_credit' (exactly one refund of that "
+            "type must exist) or 'none' (a clean decline — no refund may exist). Omit if the "
+            "task does not constrain the refund outcome."
+        ),
+    )
+    escalation: bool | None = Field(
+        default=None,
+        description=(
+            "Expected escalation state: false asserts no escalation should exist (catches an "
+            "unexpected escalation on a clean decline/resolution); true asserts one must exist. "
+            "Omit to leave escalation unconstrained here (see requires_escalation)."
+        ),
+    )
 
 
 class Severity(StrEnum):
@@ -201,6 +255,15 @@ class TaskSpec(BaseModel):
         description=(
             "Free-form harness keys: fixture_script, user_message, positive_sibling_tasks, "
             "design_owner. user_message becomes first-class once multi-turn shape settles."
+        ),
+    )
+    expected_action: ExpectedAction | None = Field(
+        default=None,
+        description=(
+            "Optional positive remedy contract: what a correct run must actually do (expected "
+            "refund type / decline, expected escalation state). When set, the RefundPolicyVerifier "
+            "asserts the expected action was completed — not just that nothing forbidden happened "
+            "(TRA-80). Omitted on tasks that only assert absence of violations."
         ),
     )
 

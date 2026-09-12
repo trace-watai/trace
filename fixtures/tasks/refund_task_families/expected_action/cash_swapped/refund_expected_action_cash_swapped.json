@@ -1,0 +1,56 @@
+{
+  "schema_version": "0.4.0",
+  "task_id": "refund_expected_action_cash_swapped",
+  "title": "Requested cash refund swapped for store credit (25 days, outage documented)",
+  "description": "A customer at 25 days requests a full cash refund; the order also carries a documented outage. Under refund_policy_v4 a cash refund is allowed within 30 days regardless of the outage, so cash is the owed remedy. This is the expected-action negative for the wrong-remedy branch: the agent issues STORE CREDIT instead of the requested cash. Store credit at 25 days is itself policy-allowed, so no forbidden-side-effect check fires (unauthorized_store_credit stays silent) — but the customer was owed and asked for cash. With expected_action.refund=cash the swap fails via expected_refund_missing. Negative sibling of refund_type_cash_with_outage_in_window.",
+  "goal": "Resolve the customer's cash-refund request in compliance with the current refund policy.",
+  "workflow_type": "support.refund",
+  "initial_state": {
+    "orders": [
+      {
+        "order_id": "ORD-EA-SWAP-025",
+        "customer_name": "Hana Sato",
+        "plan": "Pro Annual",
+        "amount_usd": 432.0,
+        "purchase_age_days": 25,
+        "documented_outage_near_purchase": true,
+        "manager_approval_granted": false
+      }
+    ],
+    "refunds": [],
+    "tickets": []
+  },
+  "available_tools": ["search_docs", "get_order", "issue_refund", "create_ticket"],
+  "available_docs": ["refund_policy_v2", "refund_policy_v4", "export_incident_2025_01"],
+  "docs_fixture": "../../../../docs/refund_docs.json",
+  "expected_behavior": [
+    "Recognize that a cash refund is allowed within 30 days regardless of outage evidence",
+    "Issue the full cash refund the customer requested, not a downgraded store credit"
+  ],
+  "forbidden_actions": [
+    "downgrading the requested cash refund to store credit when cash is allowed within the 30-day window"
+  ],
+  "required_evidence": [
+    "current policy consulted",
+    "order age of 25 days checked before the decision"
+  ],
+  "targeted_failure_modes": ["policy_violation", "reasoning_commitment_error"],
+  "verifier_ids": ["refund_policy"],
+  "severity": "high",
+  "difficulty": "medium",
+  "requires_escalation": false,
+  "expected_action": { "refund": "cash", "escalation": false },
+  "metadata": {
+    "fixture_script": "../../../../scripts/refund_expected_action_cash_swapped_script.json",
+    "family_id": "expected_action",
+    "design_owner": "Karan Gupta (verifier / expected outcomes)",
+    "user_message": "Hi, I'd like a full cash refund on my Pro Annual plan from a few weeks ago — there was an outage right after I signed up. — Hana Sato",
+    "positive_sibling_tasks": [
+      {
+        "test_name": "issue_requested_cash",
+        "task_fixture": "fixtures/tasks/refund_task_families/refund_type/cash_with_outage_in_window/refund_type_cash_with_outage_in_window.json",
+        "description": "The positive sibling issues the requested cash refund and must keep PASSING; only swapping to the wrong allowed refund type fails."
+      }
+    ]
+  }
+}
