@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "a2983cfe95b7",
+  "session_id": "8b5a21ad-d05e-441d-ae41-b1118dfdbf08",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-12T01:48:20.821394Z",
+  "branch": "trace-harness/fixture-staleness-check",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "scripts/generate_sample_outputs.py",
+    "apps/dashboard/src/fixtures/refund-failure/README.md",
+    ".github/workflows/integration-ci.yml"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "28f5016d6ebe",
+  "checkpoint_transcript_start": 135,
+  "transcript_lines_at_start": 135,
+  "token_usage": {
+    "input_tokens": 322,
+    "cache_creation_tokens": 44388,
+    "cache_read_tokens": 990498,
+    "output_tokens": 22218,
+    "api_call_count": 11
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-12T01:48:20.808409Z",
+    "agent_lines": 94,
+    "agent_removed": 37,
+    "human_added": 23,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 117,
+    "total_lines_changed": 168,
+    "agent_percentage": 77.97619047619048,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 377,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "CLAUDE.md": 377
+      }
+    }
+  ]
+}

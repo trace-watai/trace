@@ -1,0 +1,16 @@
+what happened
+
+while reviewing #173 we regenerated apps/dashboard/src/fixtures/refund-failure/ and it brought in changes that had nothing to do with that pr:
+
+    clarification_failure showed up in attribution_result.json and failure_card.json
+    provider_state: null on every action in regression_artifact.json
+
+neither of those is wrong, theyre just what the pipeline produces now. the fixture was old. main moved on, the committed copy didnt, and nothing in ci noticed — we only found out because somone happend to regenerate it for an unrelated reason.
+why this matters
+
+that fixture is the only offline evidence the dashboard renders against. fixture-contract.test.ts checks it parses and that a few fields match, so it'll tell you the file is well formed but it has no idea whether its current. it cant tell what the pipeline emits today from what it emitted in july. so the dashboard gate can pass while were rendering a shape the backend stopped producing.
+what to do
+
+add a step to the backend gate in .github/workflows/integration-ci.yml that runs scripts/generate_sample_outputs.py into a temp directory, diffs it against the committed fixture and fails if they differ. the dashboard gate already covers parsing so this only needs to catch staleness.
+
+one thing to sort out first, the generator writes into the fixture directory in place, so it probably needs a --check mode or an output directory arg before this works. make sure this is done
