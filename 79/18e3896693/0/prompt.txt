@@ -1,0 +1,7 @@
+heres what changed under this ticket. #173 (part 2 of #145) is open and adds blocked_by to the tool_call_executed and tool_observation events, set to the control_id of whatever control blocked it, and bumps the trace schema to 0.4.0. no distinct block event type though, so the note above about coordinating the bump so it only happens once is out of date. if you add an event type youll be bumping to 0.5.0 yourself.
+
+so for a block caused by an installed control you can read which control fired and at which step, and status stays "error". the thing you cant do is tell a block apart from an ordinry tool failure in general, because raw register_pre_execute_hook blocks have blocked_by: null and look the same as an error. raw hooks only show up in tests in pratice so every real block does carry an id, but dont assume that in code without checking. make sure this is done as well
+
+---
+
+157 has already been merged. we are just focusing on 173
