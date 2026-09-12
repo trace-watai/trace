@@ -1,0 +1,15 @@
+approving. couple things i checked since they were the risky parts — attribution still cant count a blocked refund as the first irreversible action, heuristic.py:264 requires status == "ok" and your block stays an error. and the regenerated trace fixture is just the schema version plus the two new null fields, nothing else moved.
+
+the not_materializable line you fixed in failure_bundles.md was my overclaim from part 1, nothing ever emitted it. good catch.
+
+few things, none of them blocking:
+
+can you add a line to the resolve_control docstring about why rule_ref duplicates what the registry already knows? since it has to match exactly now, it reads like someone copied the field in by accident. the actual reason is that a control is data that outlives whatever installed it so it has to describe itself, and the exact match is what catches a guardrail quietly changing which rules it reads. also worth putting in the pr description that part 1's helper only claimed one of the two keys — #145's sample artifact lists both, so this is a fix, not you being stricter than needed.
+
+on the schema bump: #157 assumed whoever made blocks identifiable would also add a distinct block event type, so the schema would only bump once. you went with blocked_by, which #145 explicitly allows, so #157 has to bump to 0.5.0 itself later. thats fine, building the outcome event in here would have doubled the size of this pr. ill leave a note over there so nobody gets suprised.
+
+blocks from a raw register_pre_execute_hook come back with blocked_by: null, so theyre indistinguishible from a normal tool error. doesnt matter now since raw hooks only show up in tests, but #157 asks for blocks to be "distinct from a tool error" so mabye put a line in tools.py saying raw hooks arent for production. dont want someone wiring one up and losing the block.
+
+also set(instance.rule_ref.rules) silently collapses duplicate rule keys. not worth changing.
+
+and one thats on me not you — #145 said #143 should land first or alongside this and it hasnt. your overblocking test is honest that it only passes because the scripted sibling still claims the refund in its final answer, which is the right call. just means the sibling gate is weaker than it looks until #143 is done.
