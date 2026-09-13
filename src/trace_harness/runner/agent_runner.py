@@ -481,7 +481,7 @@ class AgentRunner:
         # failure can never abort a run — run_result.json is the source of truth
         # and the index is always rebuildable from it.
         try:
-            store.upsert_index_entry(RunIndexEntry.from_result(result))
+            store.upsert_index_entry(RunIndexEntry.from_result(result, config))
         except Exception:  # noqa: BLE001
             logger.exception(
                 "run index update failed for %s; run_result is the source of truth", run_id

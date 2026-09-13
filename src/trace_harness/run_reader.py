@@ -74,6 +74,11 @@ class RunSummary(BaseModel):
     error: str | None = None
     verifier_passed: bool | None = None
     failed_check_count: int | None = None
+    # "pass" | "fail" | "incomplete"; None until verified.
+    verdict: str | None = None
+    # Which model produced the run; None for pre-0.5.0 index files.
+    provider: str | None = None
+    model: str | None = None
     batch_id: str | None = None
 
     @classmethod
@@ -102,6 +107,9 @@ class RunSummary(BaseModel):
             error=entry.error,
             verifier_passed=entry.verifier_passed,
             failed_check_count=entry.failed_check_count,
+            verdict=entry.verdict,
+            provider=entry.provider,
+            model=entry.model,
             batch_id=entry.batch_id,
         )
 

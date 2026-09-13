@@ -1,8 +1,9 @@
 {
-  "schema_version": "0.3.0",
+  "schema_version": "0.4.0",
   "verifier_id": "refund_policy",
   "run_id": "run_pass_001",
   "passed": true,
+  "verdict": "pass",
   "failed_checks": [],
   "warnings": [
     "no reasoning or tool-argument provenance in trace; cannot assess whether deprecated docs were treated as authoritative"

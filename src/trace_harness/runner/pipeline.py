@@ -20,13 +20,18 @@ from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models import create_model_adapter
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
-from trace_harness.runner.result import RunResult
+from trace_harness.runner.result import RunResult, RunStatus
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
-from trace_harness.verifiers.base import VerifierInput, VerifierResult, merge_verifier_results
+from trace_harness.verifiers.base import (
+    VerifierInput,
+    VerifierResult,
+    mark_incomplete,
+    merge_verifier_results,
+)
 from trace_harness.verifiers.registry import get_verifier
 
 logger = logging.getLogger(__name__)
@@ -104,8 +109,8 @@ def run_task_pipeline(
     )
     run_result = AgentRunner(adapter, environment, store).run(task, config)
 
-    verifier_result = _verify_run(store, run_result.run_id, task)
-    if verifier_result is not None and not verifier_result.passed and bundle_on_fail:
+    verifier_result = _verify_run(store, run_result, task)
+    if verifier_result is not None and verifier_result.has_violations and bundle_on_fail:
         _attribute_and_bundle(store, run_result.run_id, task, run_result)
 
     return PipelineResult(
@@ -116,10 +121,17 @@ def run_task_pipeline(
     )
 
 
-def _verify_run(store: ArtifactStore, run_id: str, task: TaskSpec) -> VerifierResult | None:
-    """Run the task's verifiers and persist the merged result. None if no verifiers."""
+def _verify_run(
+    store: ArtifactStore, run_result: RunResult, task: TaskSpec
+) -> VerifierResult | None:
+    """Run the task's verifiers and persist the merged result. None if no verifiers.
+
+    A run that never completed gets verdict ``incomplete`` (never ``pass``):
+    the checks still run, so a violation before the run died is kept.
+    """
     if not task.verifier_ids:
         return None
+    run_id = run_result.run_id
     trace = store.read_trace(run_id)
     final_state = store.read_json(run_id, names.FINAL_STATE)
     results = [
@@ -129,6 +141,12 @@ def _verify_run(store: ArtifactStore, run_id: str, task: TaskSpec) -> VerifierRe
         for verifier_id in task.verifier_ids
     ]
     merged = merge_verifier_results(results)
+    if run_result.status is not RunStatus.COMPLETED:
+        merged = mark_incomplete(
+            merged,
+            status=run_result.status.value,
+            termination_reason=run_result.termination_reason.value,
+        )
     store.write_json(run_id, names.VERIFIER_RESULT, merged)
     try:
         store.enrich_index_entry_with_verifier(run_id)
