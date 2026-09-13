@@ -135,6 +135,78 @@ def test_fixture_run_writes_matching_index_entry(tmp_path):
     assert entry.steps_taken == run.result.steps_taken
 
 
+# --- provider / model: a reader must be able to tell a live run from a fixture run ---
+
+
+def test_fixture_run_records_provider_and_model(tmp_path):
+    run = run_task_fixture(FAILURE_TASK_PATH, tmp_path / "runs")
+    (entry,) = run.store.read_index().entries
+
+    config = run.store.read_json(run.result.run_id, names.RUN_CONFIG)
+    assert entry.provider == config["provider"] == "fixture"
+    assert entry.model == config["model"]  # None: the fixture provider names no model
+
+
+def test_rebuild_recovers_provider_and_model_from_run_config(tmp_path):
+    """The rebuilt index must match what the runner wrote, not drop the fields."""
+    runs_dir = tmp_path / "runs"
+    run = run_task_fixture(FAILURE_TASK_PATH, runs_dir)
+    written = run.store.read_index().entries[0]
+
+    run.store.index_path().unlink()
+    (rebuilt,) = run.store.rebuild_index().entries
+
+    assert (rebuilt.provider, rebuilt.model) == (written.provider, written.model)
+
+
+def test_rebuild_reports_a_live_provider_run(tmp_path):
+    """A run whose config names a real provider is identifiable in the index."""
+    runs_dir = tmp_path / "runs"
+    run = run_task_fixture(FAILURE_TASK_PATH, runs_dir)
+    run_id = run.result.run_id
+
+    config = run.store.read_json(run_id, names.RUN_CONFIG)
+    config["provider"] = "gemini"
+    config["model"] = "gemini-3.6-flash"
+    run.store.write_json(run_id, names.RUN_CONFIG, config)
+    run.store.index_path().unlink()
+
+    (entry,) = run.store.rebuild_index().entries
+    assert entry.provider == "gemini"
+    assert entry.model == "gemini-3.6-flash"
+
+
+def test_missing_or_malformed_config_leaves_provider_null(tmp_path):
+    """No guessing: an unreadable config yields null fields, not a default."""
+    runs_dir = tmp_path / "runs"
+    run = run_task_fixture(FAILURE_TASK_PATH, runs_dir)
+    run_id = run.result.run_id
+
+    run.store.artifact_path(run_id, names.RUN_CONFIG).write_text("{not json", encoding="utf-8")
+    run.store.index_path().unlink()
+
+    (entry,) = run.store.rebuild_index().entries
+    assert entry.provider is None
+    assert entry.model is None
+
+
+def test_pre_0_5_0_index_entry_without_provider_still_loads(tmp_path):
+    """Backward-readable: older index files have no provider/model keys."""
+    entry = RunIndexEntry.model_validate(
+        {
+            "run_id": "run_old",
+            "task_id": "t1",
+            "status": "completed",
+            "termination_reason": "final_answer",
+            "steps_taken": 3,
+            "started_at": "2026-01-01T00:00:00",
+            "finished_at": "2026-01-01T00:00:05",
+        }
+    )
+    assert entry.provider is None
+    assert entry.model is None
+
+
 def test_index_failure_cannot_break_a_run(tmp_path, monkeypatch):
     """The index is a derived convenience: if upsert raises, the run still
     returns its result and run_result.json is intact (guarded hook)."""

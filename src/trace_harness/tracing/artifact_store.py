@@ -310,6 +310,11 @@ class ArtifactStore:
                 entry = RunIndexEntry.model_validate(self.read_json(run_id, RUN_RESULT))
             except (FileNotFoundError, ValueError):
                 continue
+            config_fields = self._read_config_index_fields(run_id)
+            if config_fields is not None:
+                entry = entry.model_copy(
+                    update={"provider": config_fields[0], "model": config_fields[1]}
+                )
             verifier_fields = self._read_verifier_index_fields(run_id)
             if verifier_fields is not None:
                 entry = _with_verdict(entry, verifier_fields)
@@ -346,6 +351,27 @@ class ArtifactStore:
                 if isinstance(run_id, str):
                     memberships[run_id] = batch_id
         return memberships
+
+    def _read_config_index_fields(self, run_id: str) -> tuple[str, str | None] | None:
+        """Read ``(provider, model)`` from run_config.json without importing RunConfig.
+
+        Mirrors :meth:`_read_verifier_index_fields` so a rebuilt index matches
+        what the runner wrote. Returns None when the config is missing or
+        malformed, leaving both fields null rather than guessing.
+        """
+        if not self.exists(run_id, RUN_CONFIG):
+            return None
+        try:
+            data = self.read_json(run_id, RUN_CONFIG)
+        except (FileNotFoundError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        provider = data.get("provider")
+        if not isinstance(provider, str):
+            return None
+        model = data.get("model")
+        return provider, model if isinstance(model, str) else None
 
     def _read_verifier_index_fields(self, run_id: str) -> tuple[bool, int, str | None] | None:
         """Read only validated verdict fields without importing verifier models.
