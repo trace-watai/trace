@@ -302,9 +302,22 @@ def test_replay_with_control_writes_blocked_by_into_trace(tmp_path) -> None:
     assert main(["--runs-dir", str(replay_dir), "replay", str(artifact), "--apply-control"]) == 0
 
     store = ArtifactStore(replay_dir)
-    (run_id,) = store.list_runs()  # the control demo has no positive siblings
+    # replay re-runs the scenario for the bundle gate and again per control
+    # (#146), and run ids are not ordered by when they ran, so find the run
+    # that recorded the block rather than assuming which one it is.
     tool_types = {TraceEventType.TOOL_CALL_EXECUTED, TraceEventType.TOOL_OBSERVATION}
-    tool_events = [e for e in store.read_trace(run_id) if e.event_type in tool_types]
+    blocked_runs = {
+        rid: [e for e in store.read_trace(rid) if e.event_type in tool_types]
+        for rid in store.list_runs()
+        if store.exists(rid, names.TRACE)
+    }
+    blocked_runs = {
+        rid: events
+        for rid, events in blocked_runs.items()
+        if any(e.payload["blocked_by"] is not None for e in events)
+    }
+    assert blocked_runs, "no replayed run recorded a control block"
+    run_id, tool_events = next(iter(blocked_runs.items()))
     blocked = [e for e in tool_events if e.payload["blocked_by"] is not None]
 
     # the refund step's executed + observation events, both naming the control
