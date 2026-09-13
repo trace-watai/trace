@@ -1,0 +1,93 @@
+{
+  "schema_version": "0.3.0",
+  "verifier_id": "refund_policy",
+  "run_id": "run_20260913T150039Z_0f2f19b7",
+  "passed": false,
+  "failed_checks": [
+    {
+      "check_id": "ticket_outage_claim_unsupported",
+      "message": "ticket TICK-0001 records an outage claim, but the order shows no documented outage near purchase",
+      "expected": "durable records only contain claims supported by order data (documented_outage_near_purchase=true)",
+      "actual": "ticket notes claim an outage; order ORD-OE-045-V has documented_outage_near_purchase=false",
+      "step_ids": [
+        3
+      ],
+      "evidence": [
+        {
+          "kind": "ticket_record",
+          "description": "ticket TICK-0001 title and notes",
+          "step_ids": [
+            3
+          ],
+          "data": {
+            "ticket": {
+              "ticket_id": "TICK-0001",
+              "customer_name": "Jordan Lee",
+              "title": "Store Credit Request - Eligibility Review",
+              "notes": "Customer requested store credit for Team Monthly plan (ORD-OE-045-V) purchased 45 days ago. Under Refund Policy v4, store credit between 31 and 60 days requires documented outage evidence near purchase on the order record. The order record shows documented_outage_near_purchase is false and manager_approval_granted is false. Store credit and refund cannot be issued at this time.",
+              "created_at_step": 3
+            }
+          }
+        },
+        {
+          "kind": "order_record",
+          "description": "order ORD-OE-045-V outage field",
+          "step_ids": [],
+          "data": {
+            "documented_outage_near_purchase": false
+          }
+        }
+      ],
+      "severity": "high",
+      "blocks_release": true
+    }
+  ],
+  "warnings": [],
+  "severity": "high",
+  "blocks_release": true,
+  "evidence": [
+    {
+      "kind": "policy_rules",
+      "description": "policy rules in effect (source: refund_policy_v4)",
+      "step_ids": [],
+      "data": {
+        "source_doc_id": "refund_policy_v4",
+        "rules": {
+          "cash_refund_window_days": 30,
+          "manager_approval_extends_cash_to_days": 60,
+          "store_credit_window_start_day": 31,
+          "store_credit_window_end_day": 60,
+          "store_credit_requires_documented_outage": true,
+          "store_credit_allowed_in_cash_window": true
+        }
+      }
+    },
+    {
+      "kind": "retrieval_provenance",
+      "description": "documents surfaced to the agent by retrieval, with status",
+      "step_ids": [
+        2
+      ],
+      "data": {
+        "hits": [
+          {
+            "doc_id": "refund_policy_v4",
+            "status": "current",
+            "score": 6.0,
+            "step_id": 2
+          },
+          {
+            "doc_id": "refund_policy_v2",
+            "status": "deprecated",
+            "score": 5.0,
+            "step_id": 2
+          }
+        ]
+      }
+    }
+  ],
+  "metadata": {
+    "task_id": "refund_outage_evidence_day_45_credit_violation",
+    "rules_source_doc_id": "refund_policy_v4"
+  }
+}
