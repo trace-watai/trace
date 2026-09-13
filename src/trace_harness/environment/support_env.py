@@ -49,7 +49,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from trace_harness.environment.controls import ControlInstance, resolve_guardrail
+from trace_harness.environment.controls import ControlInstance, resolve_control
 from trace_harness.environment.registry import ToolRegistry, default_support_registry
 from trace_harness.environment.state import Doc, SupportState
 from trace_harness.environment.tools import ToolResult, ToolSideEffect
@@ -72,7 +72,7 @@ class SupportEnvironment:
         self._registry = registry or default_support_registry()
         self._pre_execute_hooks: list[Callable[[ToolCall, SupportState], ToolResult | None]] = []
         # control_id -> (instance, the hook we registered for it). Installed
-        # controls are explicit, inspectable state (TRA-91); raw hooks added
+        # controls are explicit, inspectable state (TRA-87); raw hooks added
         # through register_pre_execute_hook are not tracked here.
         self._installed_controls: dict[str, tuple[ControlInstance, PreExecuteHook]] = {}
         if available_tools is None:
@@ -108,22 +108,30 @@ class SupportEnvironment:
         """
         self._pre_execute_hooks.append(hook)
 
-    # --- controls as data (TRA-91) ---
+    # --- controls as data (TRA-87) ---
 
     def install_control(self, instance: ControlInstance) -> None:
         """Install a data-defined control as a pre-execute hook.
 
-        Resolves ``instance.guardrail_ref`` through the guardrail registry
-        *now*, so an unknown ref fails here, at install time, never later at
-        dispatch. Installing the same ``control_id`` twice is an error: the
-        installed set must stay explicit.
+        Resolves ``instance.guardrail_ref`` through the guardrail registry and
+        checks ``instance.rule_ref`` against the rules that guardrail reads
+        *now*, so an unknown ref or a mismatched ``rule_ref`` fails here, at
+        install time, never later at dispatch. Installing the same
+        ``control_id`` twice is an error: the installed set must stay explicit.
         """
         if instance.control_id in self._installed_controls:
             raise ValueError(f"control {instance.control_id!r} is already installed")
-        guardrail = resolve_guardrail(instance.guardrail_ref)
+        guardrail = resolve_control(instance)
+        control_id = instance.control_id
 
+        # One closure per control, even when two controls share a guardrail,
+        # so uninstall_control removes exactly this one. It also stamps each
+        # block with the control that caused it.
         def hook(call: ToolCall, state: SupportState) -> ToolResult | None:
-            return guardrail(call, state)
+            result = guardrail(call, state)
+            if result is None:
+                return None
+            return result.model_copy(update={"blocked_by": control_id})
 
         self._installed_controls[instance.control_id] = (instance, hook)
         self.register_pre_execute_hook(hook)

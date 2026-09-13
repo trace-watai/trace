@@ -2,9 +2,13 @@
 
 These implement the repair controls the failure bundle generator prescribes
 (see ``failure_bundles/generator.py::_control_refund_guardrail``) so the
-control can actually be demonstrated, not just described. A caller wires one
-in with ``SupportEnvironment.register_pre_execute_hook`` — nothing here is
-registered by default (see the "Guardrail seam" note in tools.py).
+control can actually be demonstrated, not just described. A caller installs
+one as a data-defined control: a ``ControlInstance`` whose ``guardrail_ref``
+names it in ``controls.GUARDRAIL_REGISTRY``, passed to
+``SupportEnvironment.install_control``. Each guardrail declares the
+``metadata.rules`` keys it reads so install can check the control's
+``rule_ref`` against them. Nothing here is installed by default (see the
+"Guardrail seam" note in tools.py).
 
 Why this doesn't import trace_harness.verifiers
     ``verifiers.refund_policy`` already imports ``environment.state``. If a
@@ -26,6 +30,17 @@ from trace_harness.models.base import ToolCall
 _DEFAULT_CASH_REFUND_WINDOW_DAYS = 30
 _DEFAULT_MANAGER_APPROVAL_EXTENDS_CASH_TO_DAYS = 60
 
+_CASH_REFUND_WINDOW_KEY = "cash_refund_window_days"
+_MANAGER_APPROVAL_EXTENDS_KEY = "manager_approval_extends_cash_to_days"
+
+# The ``metadata.rules`` keys unauthorized_cash_refund_guardrail reads from the
+# current-status policy doc. Declared here, next to the code that reads them,
+# so a claim about which rules the guardrail enforces can be checked against
+# what it actually reads.
+UNAUTHORIZED_CASH_REFUND_RULE_KEYS = frozenset(
+    {_CASH_REFUND_WINDOW_KEY, _MANAGER_APPROVAL_EXTENDS_KEY}
+)
+
 
 def _cash_refund_limits(state: SupportState) -> tuple[int, int]:
     """(cash_refund_window_days, manager_approval_extends_cash_to_days).
@@ -45,10 +60,10 @@ def _cash_refund_limits(state: SupportState) -> tuple[int, int]:
     doc = sorted(candidates, key=lambda d: (d.last_updated or "", d.doc_id))[-1]
     rules = doc.metadata["rules"]
     return (
-        int(rules.get("cash_refund_window_days", _DEFAULT_CASH_REFUND_WINDOW_DAYS)),
+        int(rules.get(_CASH_REFUND_WINDOW_KEY, _DEFAULT_CASH_REFUND_WINDOW_DAYS)),
         int(
             rules.get(
-                "manager_approval_extends_cash_to_days",
+                _MANAGER_APPROVAL_EXTENDS_KEY,
                 _DEFAULT_MANAGER_APPROVAL_EXTENDS_CASH_TO_DAYS,
             )
         ),

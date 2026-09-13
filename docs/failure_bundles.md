@@ -130,7 +130,8 @@ A repair package *prescribes* controls by name. Whether one can actually be
 installed is recorded in `environment/controls.py::MATERIALIZABLE_REPAIR_CONTROLS`,
 which maps each prescribed `RepairControl.name` to the `guardrail_ref` that
 implements it, or to `None` when nothing does yet. Per-control validation
-reports the latter as `skipped: not_materializable` rather than pretending.
+(TRA-92, not built yet) is meant to report the latter as
+`skipped: not_materializable` rather than pretending.
 
 | Prescribed `RepairControl.name` | Executable `guardrail_ref` |
 |---|---|

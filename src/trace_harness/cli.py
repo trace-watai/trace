@@ -31,7 +31,6 @@ import argparse
 import json
 import logging
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -39,9 +38,7 @@ from trace_harness.config import HarnessConfig, load_env_file
 from trace_harness.environment.controls import ControlInstance, select_controls
 from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.environment.tools import ToolResult
 from trace_harness.models import create_model_adapter
-from trace_harness.models.base import ToolCall
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.regression.replay import (
     describe_action_drift,
@@ -59,7 +56,12 @@ from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEvent, TraceEventType
-from trace_harness.verifiers.base import VerifierInput, VerifierResult, merge_verifier_results
+from trace_harness.verifiers.base import (
+    VerifierInput,
+    VerifierResult,
+    mark_incomplete,
+    merge_verifier_results,
+)
 from trace_harness.verifiers.registry import get_verifier
 
 logger = logging.getLogger("trace_harness")
@@ -128,7 +130,6 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
 def _run_fixture(
     args: argparse.Namespace,
     store: ArtifactStore,
-    extra_hooks: list[Callable[[ToolCall, SupportState], ToolResult | None]] | None = None,
     pinned_initial_state: dict[str, Any] | None = None,
     pinned_script: FixtureScript | None = None,
     controls: list[ControlInstance] | None = None,
@@ -147,8 +148,8 @@ def _run_fixture(
         metadata["replay_pinned_state"] = "true"
 
     environment = SupportEnvironment.from_task(task, docs=docs)
-    for hook in extra_hooks or []:
-        environment.register_pre_execute_hook(hook)
+    # Guardrails enter only as installed controls, never raw hooks, so every
+    # block they cause carries blocked_by in the trace.
     for instance in controls or []:
         environment.install_control(instance)
 
@@ -233,6 +234,12 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
         for verifier_id in task.verifier_ids
     ]
     merged = merge_verifier_results(results)
+    if not run_completed:
+        merged = mark_incomplete(
+            merged,
+            status=run_result.status.value,
+            termination_reason=run_result.termination_reason.value,
+        )
     store.write_json(run_id, names.VERIFIER_RESULT, merged)
     try:
         store.enrich_index_entry_with_verifier(run_id)
@@ -242,7 +249,7 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
             run_id,
         )
 
-    verdict = "PASS" if merged.passed else "FAIL"
+    verdict = merged.verdict.value.upper()
     print(f"\nVerifier verdict for {run_id}: {verdict}")
     _print("verifier_id:", merged.verifier_id)
     _print("blocks_release:", str(merged.blocks_release))
@@ -254,13 +261,6 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
         print(f"      actual:   {check.actual}")
     for warning in merged.warnings:
         print(f"  ⚠ {warning}")
-    if not run_completed:
-        print(
-            f"  ⚠ run did not complete (status={run_result.status.value}, "
-            f"termination={run_result.termination_reason.value}); a PASS only means "
-            "no violations were recorded — the --fail-on-verifier gate treats "
-            "incomplete runs as failures"
-        )
     _print("written:", str(store.artifact_path(run_id, names.VERIFIER_RESULT)))
     return merged, run_completed
 
@@ -273,8 +273,11 @@ def _attribute(run_dir: Path) -> bool:
     task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
     trace = store.read_trace(run_id)
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
-    if verifier_result.passed:
-        print(f"\nVerifier passed for {run_id}; nothing to attribute.")
+    if not verifier_result.has_violations:
+        print(
+            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value} "
+            f"with no recorded violations; nothing to attribute."
+        )
         return False
 
     attribution = HeuristicAttributor().attribute(task, trace, verifier_result)
@@ -304,8 +307,11 @@ def _bundle(run_dir: Path) -> bool:
     run_result = RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT))
     trace = store.read_trace(run_id)
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
-    if verifier_result.passed:
-        print(f"\nVerifier passed for {run_id}; no failure bundle to generate.")
+    if not verifier_result.has_violations:
+        print(
+            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value} "
+            f"with no recorded violations; no failure bundle to generate."
+        )
         return False
     attribution = AttributionResult.model_validate(
         store.read_json(run_id, names.ATTRIBUTION_RESULT)
@@ -415,6 +421,11 @@ def _replay(
 
     Returns 0 if all assertions hold, 1 if the regression gate fires.
     """
+    # Flag and control-id errors are usage errors: fail before any output.
+    if control_ids and not apply_control:
+        raise CliInputError("--control requires --apply-control")
+    controls = select_controls(control_ids) if apply_control else []
+
     data = json.loads(artifact_path.read_text(encoding="utf-8"))
     artifact = RegressionArtifact.model_validate(data)
     pinned_state = pinned_initial_state(artifact)
@@ -434,9 +445,6 @@ def _replay(
     for note in _replay_drift_notes(artifact, task, task_path, pinned_state):
         print(f"  ⚠ fixture drift — {note}")
 
-    if control_ids and not apply_control:
-        raise ValueError("--control requires --apply-control")
-    controls = select_controls(control_ids) if apply_control else []
     if controls:
         _print("controls:", ", ".join(c.control_id for c in controls))
     gate_failed = False
@@ -532,7 +540,9 @@ def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
         return
     for s in summaries:
         detail = f"{s.status} ({s.termination_reason}) · {s.steps_taken} steps · {s.task_id}"
-        if s.verifier_passed is not None:
+        if s.verdict is not None:
+            detail += f" · {s.verdict.upper()}"
+        elif s.verifier_passed is not None:
             detail += f" · {'PASS' if s.verifier_passed else 'FAIL'}"
         if s.batch_id:
             detail += f" · batch={s.batch_id}"

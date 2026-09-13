@@ -368,6 +368,7 @@ class AgentRunner:
                             "status": observation.status,
                             "side_effect": side_effect.value if side_effect else None,
                             "error": observation.error,
+                            "blocked_by": observation.blocked_by,
                         },
                         parent_event_id=tool_requested.event_id,
                     )
@@ -400,6 +401,7 @@ class AgentRunner:
                         "status": observation.status,
                         "result": observation.result,
                         "error": observation.error,
+                        "blocked_by": observation.blocked_by,
                     },
                     parent_event_id=tool_requested.event_id,
                 )
@@ -479,7 +481,7 @@ class AgentRunner:
         # failure can never abort a run — run_result.json is the source of truth
         # and the index is always rebuildable from it.
         try:
-            store.upsert_index_entry(RunIndexEntry.from_result(result))
+            store.upsert_index_entry(RunIndexEntry.from_result(result, config))
         except Exception:  # noqa: BLE001
             logger.exception(
                 "run index update failed for %s; run_result is the source of truth", run_id
