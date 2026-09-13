@@ -15,9 +15,10 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
+    from trace_harness.runner.config import RunConfig
     from trace_harness.runner.result import RunResult
 
-RUN_INDEX_SCHEMA_VERSION = "0.4.0"  # 0.4.0: verdict (pass/fail/incomplete)
+RUN_INDEX_SCHEMA_VERSION = "0.5.0"  # 0.5.0: provider/model; 0.4.0: verdict
 
 
 class RunIndexEntry(BaseModel):
@@ -50,11 +51,25 @@ class RunIndexEntry(BaseModel):
     # whose status is not "completed" is "incomplete" regardless of what the
     # verifier file says, so pre-0.4.0 files rebuild correctly.
     verdict: str | None = None
+    # Which model actually produced the run. Without these a reader cannot tell
+    # a live provider run from a scripted fixture run, which is the whole point
+    # of retaining live-provider evidence. ``model`` is None for providers that
+    # do not name one (the fixture provider replays a script).
+    provider: str | None = None
+    model: str | None = None
     batch_id: str | None = None
 
     @classmethod
-    def from_result(cls, result: RunResult) -> RunIndexEntry:
+    def from_result(cls, result: RunResult, config: RunConfig | None = None) -> RunIndexEntry:
+        """Build an entry from a finished run.
+
+        ``config`` supplies ``provider``/``model``. It is optional because
+        ``rebuild_index`` reconstructs entries from artifacts instead and reads
+        those two fields from ``run_config.json`` directly.
+        """
         return cls(
+            provider=config.provider if config else None,
+            model=config.model if config else None,
             run_id=result.run_id,
             task_id=result.task_id,
             status=result.status,

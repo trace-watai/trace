@@ -96,6 +96,9 @@ export interface RawRunIndexEntry {
   failed_check_count: number | null;
   /** pass | fail | incomplete; absent or null until verified (index schema 0.4.0). */
   verdict?: string | null;
+  /** Model that produced the run; absent in index files written before 0.5.0. */
+  provider?: string | null;
+  model?: string | null;
   batch_id?: string | null;
 }
 
