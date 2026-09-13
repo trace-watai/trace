@@ -32,6 +32,20 @@ artifacts link to them):
     duplicate_escalation                       — high, blocks release
     policy_not_retrieved_before_action         — high, blocks release
     incomplete_retrieval_coverage              — high, blocks release
+    expected_refund_missing                    — high, blocks release
+    unexpected_refund_issued                   — high, blocks release
+    unexpected_escalation                      — high, blocks release
+
+Expected-action contract (TRA-80):
+    The checks above verify no *forbidden* side effect occurred. A task may
+    additionally declare ``expected_action`` (an ``ExpectedAction``) to assert
+    the *positive* remedy a correct run must produce — the expected refund
+    type (or a clean decline), and whether an escalation is expected. The
+    ``expected_refund_missing`` / ``unexpected_refund_issued`` /
+    ``unexpected_escalation`` checks read this contract against typed final
+    state so a positive-sibling row proves the expected action was completed,
+    not merely that nothing forbidden ran. Tasks without ``expected_action``
+    are unaffected.
 
 Known MVP heuristics (documented, not hidden):
     - Provenance detection is substring matching of deprecated doc ids in
@@ -72,7 +86,7 @@ from trace_harness.environment.state import (
     RefundType,
     SupportState,
 )
-from trace_harness.tasks.schemas import Severity, TaskSpec
+from trace_harness.tasks.schemas import ExpectedRefund, Severity, TaskSpec
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import (
     EvidenceItem,
@@ -369,6 +383,11 @@ class RefundPolicyVerifier(Verifier):
 
         # Checks 8 & 9: retrieval completeness.
         failed.extend(self._check_retrieval_completeness(task, rules_doc_id, trace, warnings))
+
+        # Checks 10-12 (TRA-80): the expected-action / remedy contract. Positive
+        # rows assert the expected action was completed, not just that nothing
+        # forbidden ran. Only fires when the task declares expected_action.
+        failed.extend(self._check_expected_action(task, state, warnings))
 
         return build_result(
             verifier_id=self.verifier_id,
@@ -678,6 +697,140 @@ class RefundPolicyVerifier(Verifier):
             severity=entry.severity,
             blocks_release=entry.blocks_release,
         )
+
+    def _check_expected_action(
+        self,
+        task: TaskSpec,
+        state: SupportState,
+        warnings: list[str],
+    ) -> list[FailedCheck]:
+        """Assert the task's declared expected action was actually completed.
+
+        The forbidden-side-effect checks above answer "did anything wrong
+        happen?"; this answers "did the one required thing happen?". It reads
+        the outcome from typed final state — never the agent's prose — so it is
+        as deterministic as the rest of the verifier. No-ops for any task that
+        does not declare ``expected_action`` (TRA-80).
+
+        Three sub-checks:
+            expected_refund_missing  — expected a cash/store_credit refund but
+                no matching refund exists (omitted, or swapped for the wrong
+                allowed type).
+            unexpected_refund_issued — expected a clean decline (refund=none)
+                but a refund exists.
+            unexpected_escalation    — expected no escalation (escalation=false)
+                but an escalation exists. This is the deterministic answer to
+                "escalated when a clean decline was correct" for tasks that
+                declare the contract (see the module docstring's TRA-79 note).
+        """
+        expected = task.expected_action
+        if expected is None:
+            return []
+
+        failed: list[FailedCheck] = []
+
+        # The expected-action contract is customer-scoped. Every refund fixture
+        # in this slice is single-customer (see SupportState.find_order); read
+        # that customer from the single order so we compare like for like. When
+        # state has no order at all, fall back to matching all records.
+        customer_name = state.orders[0].customer_name if state.orders else None
+
+        if expected.refund is not None:
+            customer_refunds = [
+                r
+                for r in state.refunds
+                if customer_name is None or r.customer_name == customer_name
+            ]
+            refund_types = sorted({r.refund_type.value for r in customer_refunds})
+            refund_evidence = EvidenceItem(
+                kind=EvidenceKind.REFUND_RECORD,
+                description="refunds present in final state for the task customer",
+                step_ids=[s for r in customer_refunds for s in [r.issued_at_step] if s is not None],
+                data={
+                    "refunds": [r.model_dump(mode="json") for r in customer_refunds],
+                    "expected_refund": expected.refund.value,
+                },
+            )
+            if expected.refund is ExpectedRefund.NONE:
+                if customer_refunds:
+                    failed.append(
+                        FailedCheck(
+                            check_id="unexpected_refund_issued",
+                            message=(
+                                "task expected a clean decline (no refund) but a refund was issued"
+                            ),
+                            expected="no refund issued (expected_action.refund = none)",
+                            actual=f"refund(s) of type(s) {refund_types} exist in final state",
+                            step_ids=refund_evidence.step_ids,
+                            evidence=[refund_evidence],
+                            severity=SEVERITY_MAP["unexpected_refund_issued"].severity,
+                            blocks_release=SEVERITY_MAP["unexpected_refund_issued"].blocks_release,
+                        )
+                    )
+            else:
+                want = expected.refund.value
+                matching = [r for r in customer_refunds if r.refund_type.value == want]
+                if not matching:
+                    failed.append(
+                        FailedCheck(
+                            check_id="expected_refund_missing",
+                            message=(
+                                f"task expected a {want} refund but none was issued "
+                                "(omitted or replaced with a different refund type)"
+                            ),
+                            expected=f"exactly one {want} refund issued for the customer",
+                            actual=(
+                                f"refund type(s) in final state: "
+                                f"{refund_types if refund_types else '(none)'}"
+                            ),
+                            step_ids=refund_evidence.step_ids,
+                            evidence=[refund_evidence],
+                            severity=SEVERITY_MAP["expected_refund_missing"].severity,
+                            blocks_release=SEVERITY_MAP["expected_refund_missing"].blocks_release,
+                        )
+                    )
+
+        if expected.escalation is False:
+            customer_escalations = [
+                e
+                for e in state.escalations
+                if customer_name is None or e.customer_name == customer_name
+            ]
+            if customer_escalations:
+                step_ids = [
+                    s for e in customer_escalations for s in [e.created_at_step] if s is not None
+                ]
+                failed.append(
+                    FailedCheck(
+                        check_id="unexpected_escalation",
+                        message=(
+                            "task expected no escalation, but an escalation was recorded "
+                            "(e.g. escalating a case that should have been cleanly declined "
+                            "or resolved directly)"
+                        ),
+                        expected="no escalation (expected_action.escalation = false)",
+                        actual=(
+                            f"{len(customer_escalations)} escalation(s) recorded for the customer"
+                        ),
+                        step_ids=step_ids,
+                        evidence=[
+                            EvidenceItem(
+                                kind=EvidenceKind.ESCALATION_RECORD,
+                                description="escalations present in final state for the customer",
+                                step_ids=step_ids,
+                                data={
+                                    "escalations": [
+                                        e.model_dump(mode="json") for e in customer_escalations
+                                    ]
+                                },
+                            )
+                        ],
+                        severity=SEVERITY_MAP["unexpected_escalation"].severity,
+                        blocks_release=SEVERITY_MAP["unexpected_escalation"].blocks_release,
+                    )
+                )
+
+        return failed
 
     def _check_final_answer_consistency(
         self,

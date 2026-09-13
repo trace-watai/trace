@@ -35,4 +35,9 @@ SEVERITY_MAP: dict[str, SeverityEntry] = {
     "required_escalation_missing": SeverityEntry(Severity.HIGH, blocks_release=True),
     "policy_not_retrieved_before_action": SeverityEntry(Severity.HIGH, blocks_release=True),
     "incomplete_retrieval_coverage": SeverityEntry(Severity.HIGH, blocks_release=True),
+    # Expected-action / remedy contract (TRA-80): a positive-sibling row proves
+    # the expected action was completed, not merely that nothing forbidden ran.
+    "expected_refund_missing": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "unexpected_refund_issued": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "unexpected_escalation": SeverityEntry(Severity.HIGH, blocks_release=True),
 }

@@ -498,6 +498,107 @@ def test_evidence_kind_is_constrained_enum():
         EvidenceItem(kind="not_a_real_kind", description="x")
 
 
+# --- expected-action / remedy contract (TRA-80) ------------------------------
+
+
+def _task_with_expected_action(**expected: object) -> TaskSpec:
+    from trace_harness.tasks.schemas import ExpectedAction
+
+    return TaskSpec(
+        task_id="unit_task_expected_action",
+        title="unit",
+        description="unit",
+        goal="unit",
+        workflow_type="support.refund",
+        initial_state={},
+        available_tools=["issue_refund", "escalate_case"],
+        available_docs=[],
+        verifier_ids=["refund_policy"],
+        severity=Severity.HIGH,
+        expected_action=ExpectedAction(**expected),
+    )
+
+
+def _verify_expected_action(task: TaskSpec, state: SupportState):
+    return RefundPolicyVerifier().verify(
+        VerifierInput.from_parts(
+            task=task, trace=[], final_state=state.snapshot(), run_id="run_test"
+        )
+    )
+
+
+def test_no_expected_action_field_is_a_noop():
+    """A task without expected_action must never emit the new checks."""
+    result = _verify(_state(_order(12)))  # _task() has no expected_action
+    assert "expected_refund_missing" not in _failed_ids(result)
+    assert "unexpected_refund_issued" not in _failed_ids(result)
+    assert "unexpected_escalation" not in _failed_ids(result)
+
+
+def test_expected_cash_refund_present_passes():
+    task = _task_with_expected_action(refund="cash", escalation=False)
+    result = _verify_expected_action(task, _state(_order(12), refunds=[_refund(RefundType.CASH)]))
+    assert result.passed, _failed_ids(result)
+
+
+def test_expected_cash_refund_omitted_fails():
+    """Allowed cash refund never issued (honest refusal) → expected_refund_missing."""
+    task = _task_with_expected_action(refund="cash", escalation=False)
+    result = _verify_expected_action(task, _state(_order(12)))
+    assert "expected_refund_missing" in _failed_ids(result)
+    check = next(c for c in result.failed_checks if c.check_id == "expected_refund_missing")
+    assert check.severity is Severity.HIGH
+    assert check.blocks_release
+
+
+def test_expected_cash_refund_swapped_for_store_credit_fails():
+    """Cash owed but store credit issued instead → expected_refund_missing.
+
+    Store credit at 20 days is policy-allowed, so unauthorized_store_credit does
+    NOT fire; only the expected-action contract catches the wrong remedy type.
+    """
+    task = _task_with_expected_action(refund="cash", escalation=False)
+    result = _verify_expected_action(
+        task, _state(_order(20), refunds=[_refund(RefundType.STORE_CREDIT)])
+    )
+    assert "expected_refund_missing" in _failed_ids(result)
+    assert "unauthorized_store_credit" not in _failed_ids(result)
+
+
+def test_expected_none_with_refund_present_fails():
+    """Clean decline expected but a refund exists → unexpected_refund_issued."""
+    task = _task_with_expected_action(refund="none", escalation=False)
+    result = _verify_expected_action(task, _state(_order(12), refunds=[_refund(RefundType.CASH)]))
+    assert "unexpected_refund_issued" in _failed_ids(result)
+
+
+def test_expected_none_clean_decline_passes():
+    task = _task_with_expected_action(refund="none", escalation=False)
+    result = _verify_expected_action(task, _state(_order(40)))
+    assert result.passed, _failed_ids(result)
+
+
+def test_unexpected_escalation_on_clean_decline_fails():
+    """The branch unnecessary_escalation cannot catch: escalation on a case where
+    cash is NOT allowed (40 days), expected_action.escalation=false → fails."""
+    task = _task_with_expected_action(refund="none", escalation=False)
+    result = _verify_expected_action(task, _state(_order(40), escalations=[_escalation()]))
+    assert "unexpected_escalation" in _failed_ids(result)
+    # unnecessary_escalation stays silent: cash is not allowed at 40 days.
+    assert "unnecessary_escalation" not in _failed_ids(result)
+    check = next(c for c in result.failed_checks if c.check_id == "unexpected_escalation")
+    assert check.severity is Severity.HIGH
+    assert check.blocks_release
+
+
+def test_expected_store_credit_present_passes():
+    task = _task_with_expected_action(refund="store_credit", escalation=False)
+    result = _verify_expected_action(
+        task, _state(_order(20), refunds=[_refund(RefundType.STORE_CREDIT)])
+    )
+    assert result.passed, _failed_ids(result)
+
+
 # --- retrieval completeness --------------------------------------------------
 
 

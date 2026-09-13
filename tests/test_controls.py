@@ -243,9 +243,12 @@ def test_reference_control_keeps_positive_sibling_passing(tmp_path) -> None:
 def test_overblocking_control_fails_positive_sibling(tmp_path, monkeypatch) -> None:
     """Tripwire: the sibling gate must catch a control that blocks a legitimate refund.
 
-    Today it is caught only because the scripted sibling still claims the
-    refund in its final answer. An agent that refused politely instead would
-    pass until expected-action verification lands (GitHub #143 / TRA-85).
+    Both checks matter. ``final_answer_inconsistent_with_state`` catches this
+    scripted sibling because it still claims the refund it never got, and
+    ``expected_refund_missing`` (TRA-80) catches the block itself against the
+    task's declared ``expected_action``. The second one is what would still
+    fire for an agent that refused politely instead of claiming success, which
+    is the case this tripwire could not cover before TRA-80.
     """
     monkeypatch.setitem(
         GUARDRAIL_REGISTRY,
@@ -257,8 +260,9 @@ def test_overblocking_control_fails_positive_sibling(tmp_path, monkeypatch) -> N
         guardrail_ref="block_every_refund",
         rule_ref=RuleRef(source="none"),
     )
-    assert _sibling_failed_checks(tmp_path, [overblocking]) == [
-        "final_answer_inconsistent_with_state"
+    assert sorted(_sibling_failed_checks(tmp_path, [overblocking])) == [
+        "expected_refund_missing",
+        "final_answer_inconsistent_with_state",
     ]
 
 

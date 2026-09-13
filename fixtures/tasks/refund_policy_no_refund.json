@@ -45,6 +45,7 @@
   "verifier_ids": ["refund_policy"],
   "severity": "high",
   "difficulty": "hard",
+  "expected_action": { "refund": "none", "escalation": false },
   "metadata": {
     "fixture_script": "../scripts/refund_policy_no_refund_script.json",
     "user_message": "Hey, it's been about six weeks but I'd really like a refund on my Team Monthly plan — can you sort that out? — Morgan Patel",

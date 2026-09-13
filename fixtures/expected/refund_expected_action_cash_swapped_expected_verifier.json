@@ -1,0 +1,13 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_expected_action_cash_swapped",
+  "verifier_id": "refund_policy",
+  "description": "Pinned expected verifier outcome: exactly one blocking check fires — expected_refund_missing.",
+  "expected": {
+    "passed": false,
+    "failed_check_ids": ["expected_refund_missing"],
+    "severity": "high",
+    "blocks_release": true
+  },
+  "notes": "The requested/owed cash refund was swapped for a policy-allowed store credit, so no forbidden-side-effect check fires. Only expected_refund_missing fires via the expected_action.refund=cash contract (TRA-80)."
+}
