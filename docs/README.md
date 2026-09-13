@@ -24,7 +24,11 @@ Hard-to-reverse decisions get a numbered ADR in [decisions/](decisions/).
 Start with
 [ADR-0001 — initial architecture](decisions/ADR-0001-initial-architecture.md):
 why fixture-first, Pydantic contracts, local JSON artifacts,
-deterministic-verifier-first, and no hosted services initially.
+deterministic-verifier-first, and no hosted services initially. Then
+[ADR-0002 — Phase 3 and lanes](decisions/ADR-0002-phase3-replay-audit-and-lanes.md):
+why the first Phase 3 experiment is the control replay-validity audit, why a
+replayed control verdict is advisory until labeled, and why ownership moved
+from named module owners to lanes.
 
 Write an ADR when reversing the decision later would be expensive (schema
 contracts, storage layout, evaluation methodology, provider choices) or
