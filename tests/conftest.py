@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from trace_harness.environment.controls import ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models.fixture import FixtureModelAdapter
 from trace_harness.runner.agent_runner import AgentRunner
@@ -47,12 +48,20 @@ class FixtureRun:
     final_state: dict[str, Any]
 
 
-def run_task_fixture(task_path: Path, runs_dir: Path) -> FixtureRun:
-    """Execute one repo task fixture exactly the way the CLI does."""
+def run_task_fixture(
+    task_path: Path, runs_dir: Path, controls: list[ControlInstance] | None = None
+) -> FixtureRun:
+    """Execute one repo task fixture exactly the way the CLI does.
+
+    ``controls`` are installed on the environment first, the way
+    ``replay --apply-control`` installs them.
+    """
     task = load_task(task_path)
     docs = load_docs_for_task(task, task_path)
     script_path = (task_path.parent / task.metadata["fixture_script"]).resolve()
     environment = SupportEnvironment.from_task(task, docs=docs)
+    for control in controls or []:
+        environment.install_control(control)
     adapter = FixtureModelAdapter.from_file(script_path)
     store = ArtifactStore(runs_dir)
     config = RunConfig(
