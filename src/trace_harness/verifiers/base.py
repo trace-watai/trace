@@ -162,6 +162,20 @@ class VerifierResult(BaseModel):
             raise ValueError("an incomplete verdict cannot have passed=True")
         return self
 
+    @property
+    def has_violations(self) -> bool:
+        """True when the checks recorded a violation, whatever the verdict.
+
+        Attribution and failure bundles follow the evidence, not the verdict.
+        A run that broke a rule and *then* died is ``incomplete`` — it cannot
+        be counted as a failure in a pass rate — but it still has something to
+        explain, and ``mark_incomplete`` deliberately keeps its
+        ``failed_checks``, ``severity`` and ``blocks_release``. Gating the
+        bundle on the verdict would assert a release-blocking violation and
+        then refuse to say what it was.
+        """
+        return bool(self.failed_checks)
+
 
 def mark_incomplete(
     result: VerifierResult, *, status: str, termination_reason: str

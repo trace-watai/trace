@@ -29,7 +29,6 @@ from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.verifiers.base import (
     VerifierInput,
     VerifierResult,
-    VerifierVerdict,
     mark_incomplete,
     merge_verifier_results,
 )
@@ -111,11 +110,7 @@ def run_task_pipeline(
     run_result = AgentRunner(adapter, environment, store).run(task, config)
 
     verifier_result = _verify_run(store, run_result, task)
-    if (
-        verifier_result is not None
-        and verifier_result.verdict is VerifierVerdict.FAIL
-        and bundle_on_fail
-    ):
+    if verifier_result is not None and verifier_result.has_violations and bundle_on_fail:
         _attribute_and_bundle(store, run_result.run_id, task, run_result)
 
     return PipelineResult(

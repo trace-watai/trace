@@ -62,7 +62,6 @@ from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import (
     VerifierInput,
     VerifierResult,
-    VerifierVerdict,
     mark_incomplete,
     merge_verifier_results,
 )
@@ -275,10 +274,10 @@ def _attribute(run_dir: Path) -> bool:
     task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
     trace = store.read_trace(run_id)
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
-    if verifier_result.verdict is not VerifierVerdict.FAIL:
+    if not verifier_result.has_violations:
         print(
-            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value}; "
-            "nothing to attribute."
+            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value} "
+            f"with no recorded violations; nothing to attribute."
         )
         return False
 
@@ -309,10 +308,10 @@ def _bundle(run_dir: Path) -> bool:
     run_result = RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT))
     trace = store.read_trace(run_id)
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
-    if verifier_result.verdict is not VerifierVerdict.FAIL:
+    if not verifier_result.has_violations:
         print(
-            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value}; "
-            "no failure bundle to generate."
+            f"\nVerifier verdict for {run_id} is {verifier_result.verdict.value} "
+            f"with no recorded violations; no failure bundle to generate."
         )
         return False
     attribution = AttributionResult.model_validate(

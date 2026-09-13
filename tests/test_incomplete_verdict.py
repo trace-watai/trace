@@ -2,7 +2,9 @@
 
 Reproduces the bug end to end (truncated script -> terminated run) and checks
 every consumer: verifier_result.json, the run index, list-runs, the batch
-aggregates, and the bundle stage (nothing is bundled for an incomplete run).
+aggregates, and the bundle stage. Bundling follows the evidence, not the
+verdict: an incomplete run with no violations is not bundled, but one that
+broke a rule before it died still is.
 """
 
 from __future__ import annotations
@@ -28,6 +30,20 @@ def _truncated_script(tmp_path):
     script["actions"] = script["actions"][:1]  # get_order only; never reaches a final answer
     script["script_id"] += "_truncated"
     path = tmp_path / "short_script.json"
+    path.write_text(json.dumps(script))
+    return path
+
+
+def _violating_truncated_script(tmp_path):
+    """get_order + an unauthorized cash refund, then no final answer.
+
+    The run both breaks a rule and never completes: verdict ``incomplete``,
+    but with a real violation the bundle stage must still explain.
+    """
+    script = json.loads(DEMO_SCRIPT.read_text())
+    script["actions"] = script["actions"][:2]  # drops only the final answer
+    script["script_id"] += "_violating_truncated"
+    path = tmp_path / "violating_short_script.json"
     path.write_text(json.dumps(script))
     return path
 
@@ -106,9 +122,44 @@ def test_attribute_and_bundle_refuse_incomplete_runs(tmp_path, capsys):
     run_id = _only_run_id(runs_dir)
     main(["--runs-dir", str(runs_dir), "verify", str(runs_dir / run_id)])
     main(["--runs-dir", str(runs_dir), "attribute", str(runs_dir / run_id)])
-    assert "is incomplete; nothing to attribute" in capsys.readouterr().out
+    assert "no recorded violations; nothing to attribute" in capsys.readouterr().out
     store = ArtifactStore(runs_dir)
     assert not store.exists(run_id, names.ATTRIBUTION_RESULT)
+
+
+def test_incomplete_run_with_a_violation_is_still_bundled(tmp_path):
+    """A run that broke a rule and then died keeps its bundle.
+
+    ``mark_incomplete`` preserves ``failed_checks`` and ``blocks_release``, so
+    gating the bundle on ``verdict == fail`` would assert a release-blocking
+    violation and then refuse to say what it was. Attribution and bundling
+    follow ``has_violations`` instead.
+    """
+    runs_dir = tmp_path / "runs"
+    main(
+        [
+            "--runs-dir",
+            str(runs_dir),
+            "run-fixture",
+            str(DEMO_TASK),
+            "--script",
+            str(_violating_truncated_script(tmp_path)),
+        ]
+    )
+    run_id = _only_run_id(runs_dir)
+    main(["--runs-dir", str(runs_dir), "verify", str(runs_dir / run_id)])
+
+    store = ArtifactStore(runs_dir)
+    verifier = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
+    assert verifier.verdict is VerifierVerdict.INCOMPLETE  # it never answered
+    assert verifier.failed_checks  # but it did break a rule first
+    assert verifier.blocks_release
+    assert verifier.has_violations
+
+    assert main(["--runs-dir", str(runs_dir), "attribute", str(runs_dir / run_id)]) == 0
+    assert main(["--runs-dir", str(runs_dir), "bundle", str(runs_dir / run_id)]) == 0
+    assert store.exists(run_id, names.ATTRIBUTION_RESULT)
+    assert store.exists(run_id, names.FAILURE_CARD)
 
 
 def test_batch_aggregates_count_incomplete_and_exclude_from_pass_rate(tmp_path):
