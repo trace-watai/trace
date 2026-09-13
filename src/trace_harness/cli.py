@@ -31,17 +31,14 @@ import argparse
 import json
 import logging
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from trace_harness.config import HarnessConfig, load_env_file
-from trace_harness.environment.guardrails import unauthorized_cash_refund_guardrail
+from trace_harness.environment.controls import ControlInstance, select_controls
 from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.environment.tools import ToolResult
 from trace_harness.models import create_model_adapter
-from trace_harness.models.base import ToolCall
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.regression.replay import (
     describe_action_drift,
@@ -133,9 +130,9 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
 def _run_fixture(
     args: argparse.Namespace,
     store: ArtifactStore,
-    extra_hooks: list[Callable[[ToolCall, SupportState], ToolResult | None]] | None = None,
     pinned_initial_state: dict[str, Any] | None = None,
     pinned_script: FixtureScript | None = None,
+    controls: list[ControlInstance] | None = None,
 ) -> RunResult:
     task_path = Path(args.task_path).resolve()
     task = load_task(task_path)
@@ -151,8 +148,10 @@ def _run_fixture(
         metadata["replay_pinned_state"] = "true"
 
     environment = SupportEnvironment.from_task(task, docs=docs)
-    for hook in extra_hooks or []:
-        environment.register_pre_execute_hook(hook)
+    # Guardrails enter only as installed controls, never raw hooks, so every
+    # block they cause carries blocked_by in the trace.
+    for instance in controls or []:
+        environment.install_control(instance)
 
     # The fixture provider replays a script; real providers (gemini) drive the
     # agent live and need no script — only the fixture path is required.
@@ -376,7 +375,13 @@ def _replay_drift_notes(
     return notes
 
 
-def _replay(artifact_path: Path, store: ArtifactStore, *, apply_control: bool = False) -> int:
+def _replay(
+    artifact_path: Path,
+    store: ArtifactStore,
+    *,
+    apply_control: bool = False,
+    control_ids: list[str] | None = None,
+) -> int:
     """Replay a regression artifact and assert the gate conditions hold.
 
     1. Re-runs the scenario **from the artifact's pinned inputs** — state,
@@ -397,8 +402,9 @@ def _replay(artifact_path: Path, store: ArtifactStore, *, apply_control: bool = 
     normal meaning for a regression suite, since a bug silently stopping
     reproduction usually means the fixture broke, not that the bug got fixed.
 
-    With ``apply_control``: installs the reference guardrails (environment.
-    guardrails) on the environment before every run in this replay, and
+    With ``apply_control``: installs the reference controls (environment.
+    controls, all of them unless ``control_ids`` narrows the set) on the
+    environment before every run in this replay, and
     inverts the assertion — "gate clear" now requires that every pinned check
     stopped firing *and* that the control introduced no new blocking failure
     of its own. Both halves matter: a guardrail that blocks a harmful action
@@ -415,6 +421,11 @@ def _replay(artifact_path: Path, store: ArtifactStore, *, apply_control: bool = 
 
     Returns 0 if all assertions hold, 1 if the regression gate fires.
     """
+    # Flag and control-id errors are usage errors: fail before any output.
+    if control_ids and not apply_control:
+        raise CliInputError("--control requires --apply-control")
+    controls = select_controls(control_ids) if apply_control else []
+
     data = json.loads(artifact_path.read_text(encoding="utf-8"))
     artifact = RegressionArtifact.model_validate(data)
     pinned_state = pinned_initial_state(artifact)
@@ -434,7 +445,8 @@ def _replay(artifact_path: Path, store: ArtifactStore, *, apply_control: bool = 
     for note in _replay_drift_notes(artifact, task, task_path, pinned_state):
         print(f"  ⚠ fixture drift — {note}")
 
-    hooks = [unauthorized_cash_refund_guardrail] if apply_control else []
+    if controls:
+        _print("controls:", ", ".join(c.control_id for c in controls))
     gate_failed = False
 
     def _fixture_args(task_path: str) -> argparse.Namespace:
@@ -452,7 +464,7 @@ def _replay(artifact_path: Path, store: ArtifactStore, *, apply_control: bool = 
     result = _run_fixture(
         _fixture_args(artifact.task_fixture),
         store,
-        extra_hooks=hooks,
+        controls=controls,
         pinned_initial_state=pinned_state,
         pinned_script=script,
     )
@@ -503,7 +515,7 @@ def _replay(artifact_path: Path, store: ArtifactStore, *, apply_control: bool = 
         print(f"\n[2/2] Running {len(artifact.positive_sibling_tests)} positive sibling(s)")
         for i, sibling in enumerate(artifact.positive_sibling_tests, 1):
             print(f"  [{i}] {sibling.test_name}: {sibling.task_fixture}")
-            sib_result = _run_fixture(_fixture_args(sibling.task_fixture), store, extra_hooks=hooks)
+            sib_result = _run_fixture(_fixture_args(sibling.task_fixture), store, controls=controls)
             sib_dir = store.run_dir(sib_result.run_id)
             sib_merged, _ = _verify(sib_dir)
             if not sib_merged.passed:
@@ -810,8 +822,18 @@ def main(argv: list[str] | None = None) -> int:
         "--apply-control",
         action="store_true",
         help=(
-            "install the reference guardrails (trace_harness.environment.guardrails) "
+            "install the reference controls (trace_harness.environment.controls) "
             "before replaying, to demonstrate a repair control flipping the gate"
+        ),
+    )
+    p_replay.add_argument(
+        "--control",
+        action="append",
+        dest="control_ids",
+        metavar="CONTROL_ID",
+        help=(
+            "with --apply-control: install only this control id (repeatable); "
+            "default is every reference control"
         ),
     )
 
@@ -876,7 +898,12 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         _bundle(_resolve_run_dir(args.run_path, store.runs_dir))
         return 0
     if args.command == "replay":
-        return _replay(Path(args.artifact_path), store, apply_control=args.apply_control)
+        return _replay(
+            Path(args.artifact_path),
+            store,
+            apply_control=args.apply_control,
+            control_ids=args.control_ids,
+        )
     if args.command == "run-pipeline":
         result = _run_fixture(args, store)
         run_dir = store.run_dir(result.run_id)

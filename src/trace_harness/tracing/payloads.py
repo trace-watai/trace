@@ -80,6 +80,7 @@ class ToolCallExecutedPayload(_IgnoreExtra):
     status: str
     side_effect: str | None = None
     error: str | None = None
+    blocked_by: str | None = None  # control_id of the control that blocked the call (0.4.0+)
 
 
 class RetrievalResultItem(_IgnoreExtra):
@@ -101,6 +102,7 @@ class ToolObservationPayload(_IgnoreExtra):
     status: str
     result: Any = None
     error: str | None = None
+    blocked_by: str | None = None  # control_id of the control that blocked the call (0.4.0+)
 
 
 class FinalAnswerPayload(_IgnoreExtra):

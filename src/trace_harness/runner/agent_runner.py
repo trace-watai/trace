@@ -368,6 +368,7 @@ class AgentRunner:
                             "status": observation.status,
                             "side_effect": side_effect.value if side_effect else None,
                             "error": observation.error,
+                            "blocked_by": observation.blocked_by,
                         },
                         parent_event_id=tool_requested.event_id,
                     )
@@ -400,6 +401,7 @@ class AgentRunner:
                         "status": observation.status,
                         "result": observation.result,
                         "error": observation.error,
+                        "blocked_by": observation.blocked_by,
                     },
                     parent_event_id=tool_requested.event_id,
                 )

@@ -36,8 +36,8 @@ from trace_harness.tracing.recorder import TraceRecorder
 # --- Schema version ---
 
 
-def test_schema_version_bumped_to_0_3_0() -> None:
-    assert TRACE_SCHEMA_VERSION == "0.3.0"
+def test_schema_version_bumped_to_0_4_0() -> None:
+    assert TRACE_SCHEMA_VERSION == "0.4.0"
 
 
 def test_new_event_carries_schema_version() -> None:
@@ -46,7 +46,7 @@ def test_new_event_carries_schema_version() -> None:
         TraceEventType.RUN_FINISHED,
         payload={"status": "completed", "termination_reason": "final_answer", "steps_taken": 2},
     )
-    assert event.schema_version == "0.3.0"
+    assert event.schema_version == "0.4.0"
 
 
 # --- PAYLOAD_TYPES coverage ---
@@ -174,6 +174,29 @@ def test_tool_observation_payload_validates() -> None:
         {"tool_name": "lookup_policy", "status": "ok", "result": {"text": "..."}, "error": None}
     )
     assert p.tool_name == "lookup_policy"
+
+
+@pytest.mark.parametrize("model", [ToolCallExecutedPayload, ToolObservationPayload])
+def test_tool_payloads_carry_blocked_by(model) -> None:
+    p = model.model_validate(
+        {
+            "tool_name": "issue_refund",
+            "arguments": {},
+            "status": "error",
+            "error": "blocked by refund policy guardrail: ...",
+            "blocked_by": "ctl_refund_window_v1",
+        }
+    )
+    assert p.blocked_by == "ctl_refund_window_v1"
+
+
+@pytest.mark.parametrize("model", [ToolCallExecutedPayload, ToolObservationPayload])
+def test_pre_0_4_0_tool_payloads_without_blocked_by_still_validate(model) -> None:
+    # 0.3.0 traces have no blocked_by key; readers treat it as "not blocked"
+    p = model.model_validate(
+        {"tool_name": "issue_refund", "arguments": {}, "status": "ok", "error": None}
+    )
+    assert p.blocked_by is None
 
 
 def test_final_answer_payload_validates() -> None:

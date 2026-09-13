@@ -240,9 +240,9 @@
     "schema_versions": {
       "task": "0.3.0",
       "state": "0.2.0",
-      "trace": "0.3.0",
+      "trace": "0.4.0",
       "verifier_result": "0.4.0",
-      "harness": "0.1.0"
+      "harness": "unknown"
     }
   }
 }
