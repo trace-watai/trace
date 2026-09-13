@@ -1,0 +1,99 @@
+{
+  "schema_version": "0.4.0",
+  "run_id": "run_20260913T150039Z_0f2f19b7",
+  "task_id": "refund_outage_evidence_day_45_credit_violation",
+  "title": "Store credit issued at 45 days with no documented outage (violation): ticket TICK-0001 records an outage claim, but the order shows no documented outage near purchase",
+  "summary": "Run run_20260913T150039Z_0f2f19b7 completed (final_answer, 4 steps) but failed 1 verifier check(s): ticket_outage_claim_unsupported. ticket TICK-0001 records an outage claim, but the order shows no documented outage near purchase",
+  "task_result": "completed (final_answer, 4 steps); verifier FAILED (1 checks)",
+  "severity": "high",
+  "root_cause": "root cause step not localizable from available evidence (category: false_durable_record); see ambiguity notes in attribution_result.json",
+  "contributing_failures": [
+    "false_durable_record"
+  ],
+  "step_ids": [
+    3
+  ],
+  "visible_symptoms": [
+    "ticket TICK-0001 records an outage claim, but the order shows no documented outage near purchase"
+  ],
+  "evidence": [
+    {
+      "kind": "ticket_record",
+      "description": "ticket TICK-0001 title and notes",
+      "step_ids": [
+        3
+      ],
+      "data": {
+        "ticket": {
+          "ticket_id": "TICK-0001",
+          "customer_name": "Jordan Lee",
+          "title": "Store Credit Request - Eligibility Review",
+          "notes": "Customer requested store credit for Team Monthly plan (ORD-OE-045-V) purchased 45 days ago. Under Refund Policy v4, store credit between 31 and 60 days requires documented outage evidence near purchase on the order record. The order record shows documented_outage_near_purchase is false and manager_approval_granted is false. Store credit and refund cannot be issued at this time.",
+          "created_at_step": 3
+        }
+      }
+    },
+    {
+      "kind": "order_record",
+      "description": "order ORD-OE-045-V outage field",
+      "step_ids": [],
+      "data": {
+        "documented_outage_near_purchase": false
+      }
+    },
+    {
+      "kind": "policy_rules",
+      "description": "policy rules in effect (source: refund_policy_v4)",
+      "step_ids": [],
+      "data": {
+        "source_doc_id": "refund_policy_v4",
+        "rules": {
+          "cash_refund_window_days": 30,
+          "manager_approval_extends_cash_to_days": 60,
+          "store_credit_window_start_day": 31,
+          "store_credit_window_end_day": 60,
+          "store_credit_requires_documented_outage": true,
+          "store_credit_allowed_in_cash_window": true
+        }
+      }
+    },
+    {
+      "kind": "retrieval_provenance",
+      "description": "documents surfaced to the agent by retrieval, with status",
+      "step_ids": [
+        2
+      ],
+      "data": {
+        "hits": [
+          {
+            "doc_id": "refund_policy_v4",
+            "status": "current",
+            "score": 6.0,
+            "step_id": 2
+          },
+          {
+            "doc_id": "refund_policy_v2",
+            "status": "deprecated",
+            "score": 5.0,
+            "step_id": 2
+          }
+        ]
+      }
+    }
+  ],
+  "causal_explanation": "No reasoning-level root cause could be localized; the account below is reconstructed from tool calls and final state. Externally visible symptoms appear at step(s) [3]: ticket TICK-0001 records an outage claim, but the order shows no documented outage near purchase. Verifier verdict: 1 failed check(s).",
+  "blast_radius": {
+    "refund_count": 0,
+    "refund_total_usd": 0.0,
+    "ticket_count": 1,
+    "escalation_count": 0,
+    "customers_affected": [
+      "Jordan Lee"
+    ],
+    "summary": "0 refund(s) totalling $0.00 issued; 1 durable ticket record(s) created; 0 escalation(s) opened; 1 customer(s) affected (Jordan Lee)"
+  },
+  "metadata": {
+    "primary_failure_category": "false_durable_record",
+    "attribution_confidence": 0.35
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "schema_version": "0.3.0",
+  "run_id": "run_20260913T150048Z_0a01f607",
+  "task_id": "refund_policy_missing_info_failure",
+  "summary": "2 control(s) addressing failed checks ['final_answer_inconsistent_with_state'] (severity: high). Deterministic guardrails first; prompt fixes alone are not controls.",
+  "controls": [
+    {
+      "name": "final_answer_state_grounding_check",
+      "installation_point": "trace_harness.runner.agent_runner \u2014 post-final-answer hook before the run completes (compare the answer's refund claims against actual state before it reaches the user)",
+      "check": "when the final answer claims a refund/store credit was issued (or denies one), require a matching record in state.refunds; mismatches are blocked, not delivered",
+      "behavior_on_failure": "withhold the final answer, return a correction observation to the agent (or flag the run for human review) instead of sending a user-facing claim the ledger contradicts",
+      "expected_impact": "eliminates the final_answer_inconsistent_with_state failure class; users never receive a claim about refund/credit status that contradicts the actual ledger",
+      "why_it_prevents_recurrence": "user-facing statements are grounded against the same state the verifier judges, so a hallucinated or stale claim cannot ship even if the model produces one",
+      "risk_or_tradeoff": "keyword-level claim extraction can misread unusual phrasing; a structured final-answer schema is the robust long-term form",
+      "priority": "P1",
+      "linked_verifier_checks": [
+        "final_answer_inconsistent_with_state"
+      ]
+    },
+    {
+      "name": "regression_test_ci_gate",
+      "installation_point": "CI: replay this run's regression_artifact.json (and its positive sibling tests) on every change to prompts, policies, tools, or models",
+      "check": "the regression task must produce a verifier PASS (or, for fixture replays of the staged failure, the expected failed-check set), and every positive sibling task must still pass",
+      "behavior_on_failure": "block the release; link the failing run directory in CI output",
+      "expected_impact": "guarantees this exact failure cannot be reintroduced silently; any prompt, policy, tool, or model change that reactivates the failure is caught before merge",
+      "why_it_prevents_recurrence": "converts this one-time finding into a permanent, automatically enforced test, including protection against overblocking via the positive siblings",
+      "risk_or_tradeoff": "regression suites grow; curation is needed so stale scenarios get retired deliberately rather than ignored",
+      "priority": "P0",
+      "linked_verifier_checks": [
+        "final_answer_inconsistent_with_state"
+      ]
+    }
+  ],
+  "metadata": {
+    "generated_from_checks": [
+      "final_answer_inconsistent_with_state"
+    ]
+  }
+}
