@@ -77,27 +77,35 @@ bump); keep one controlled key-backed acceptance run outside CI.
 
 **What belongs here:** typed state (`state.py`), tool definitions with
 declared side-effect classes (`tools.py`), the tool registry
-(`registry.py`), deterministic keyword retrieval (`retrieval.py`), and the
+(`registry.py`), deterministic keyword retrieval (`retrieval.py`), reference
+guardrails (`guardrails.py`), controls as data (`controls.py`), and the
 environment facade the runner drives (`support_env.py`).
 
 **Exposes:** `SupportEnvironment` (satisfies the runner's `ToolEnvironment`
 protocol: `tool_specs`, `validate_call`, `execute`, `side_effect_for`,
 `snapshot_state`); `SupportState` (snapshots become
 `initial_state.json`/`final_state.json`); `ToolDefinition`/`ToolRegistry`;
-`search_docs()`.
+`search_docs()`; `ControlInstance` + `GUARDRAIL_REGISTRY` + `reference_controls()`
+(`controls.py`) and `SupportEnvironment.install_control` /
+`uninstall_control` / `installed_controls` — the only way a guardrail gets
+installed by id. An unknown `guardrail_ref`, or a `rule_ref` that doesn't
+match the rules its guardrail reads, fails at install time. A call blocked
+by an installed control comes back with `ToolResult.blocked_by` set to its
+`control_id`, which the runner copies into the `tool_call_executed` and
+`tool_observation` trace events (trace schema 0.4.0).
 
 **Rules:** every tool declares a side-effect class (`read_only` /
 `external_durable` / `external_irreversible`) — attribution depends on it.
 Retrieval never truncates content and always carries doc `status`.
 Everything stays deterministic: no clocks, no randomness, no network.
 `issue_refund` intentionally permits unsafe refunds today so the verifier
-has something real to catch; the future guardrail seam is marked in
-`support_env.execute` — install controls there, not inside handlers. No
+has something real to catch; guardrails run as pre-execute hooks in
+`support_env.execute` — install them as controls (`install_control`), not
+inside handlers. No
 pass/fail judgment here (verifiers), no prompt text (runner), no vector DB
 until keyword retrieval demonstrably fails a real task.
 
-**Build next:** pre/post execution hooks so guardrails compose (first
-consumer: the refund guardrail from the repair package); doc chunking and
+**Build next:** post-execute hooks; doc chunking and
 pluggable scorers behind the same `search_docs` signature; a second
 workflow environment to force the generic/support split.
 

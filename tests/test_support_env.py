@@ -5,12 +5,14 @@ SupportEnvironment is the facade the runner drives. Tests cover:
     - validate_call() accepts valid calls and rejects invalid ones
     - execute() dispatches correctly and returns error results (not crashes)
     - Constructor rejects tool names not present in the registry
+    - Installed controls stamp ``blocked_by`` on the calls they block
 """
 
 from __future__ import annotations
 
 import pytest
 
+from trace_harness.environment.controls import reference_controls
 from trace_harness.environment.state import Doc, DocStatus, Order, SupportState
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.environment.tools import ToolSideEffect
@@ -295,6 +297,7 @@ def test_hook_returning_result_blocks_dispatch(env):
     result = env.execute(call, step_id=1)
     assert result.status == "error"
     assert "blocked" in (result.error or "")
+    assert result.blocked_by is None  # raw hooks have no control id
     assert len(env.state.refunds) == 0  # handler never ran; no state mutation
 
 
@@ -334,3 +337,40 @@ def test_hook_does_not_fire_on_invalid_call(env):
     result = env.execute(call)
     assert result.status == "error"
     assert fired == []  # validation short-circuited before hooks
+
+
+# --- installed controls stamp blocked_by ---
+
+
+def _casey_cash_refund() -> ToolCall:
+    return ToolCall(
+        tool_name="issue_refund",
+        arguments={"customer_name": "Casey Nguyen", "refund_type": "cash", "reason": "test"},
+    )
+
+
+def test_installed_control_block_carries_its_control_id():
+    env = _env(orders=[_order("Casey Nguyen", days=47)])  # outside the 30-day cash window
+    (control,) = reference_controls()
+    env.install_control(control)
+    result = env.execute(_casey_cash_refund(), step_id=1)
+    assert result.status == "error"  # a block stays an error for status-only consumers
+    assert result.blocked_by == control.control_id
+    assert env.state.refunds == []
+
+
+def test_call_the_control_allows_has_no_blocked_by(env):
+    env.install_control(reference_controls()[0])  # env's order is 10 days old: inside the window
+    result = env.execute(_casey_cash_refund(), step_id=1)
+    assert result.status == "ok"
+    assert result.blocked_by is None
+
+
+def test_uninstalled_control_no_longer_blocks_or_stamps():
+    env = _env(orders=[_order("Casey Nguyen", days=47)])
+    (control,) = reference_controls()
+    env.install_control(control)
+    env.uninstall_control(control.control_id)
+    result = env.execute(_casey_cash_refund(), step_id=1)
+    assert result.status == "ok"
+    assert result.blocked_by is None

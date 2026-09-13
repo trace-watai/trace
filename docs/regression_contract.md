@@ -180,9 +180,11 @@ the tool surface the run actually had instead.
 trace-harness replay <regression_artifact.json> --apply-control
 ```
 
-This installs the reference guardrails in `trace_harness/environment/guardrails.py`
+This installs the reference controls from `trace_harness/environment/controls.py`
+(every one of them, or only the ids given with repeatable `--control <id>`)
 on the environment before replaying, so a repair control can actually be
 *demonstrated* flipping the gate, not just described in a repair package.
+The installed control ids are printed at the top of the replay.
 The assertion direction flips too:
 
 - **Without** `--apply-control`: "gate clear" (exit 0) means the pinned
