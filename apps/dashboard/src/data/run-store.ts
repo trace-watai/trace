@@ -94,6 +94,8 @@ export interface RawRunIndexEntry {
   error: string | null;
   verifier_passed: boolean | null;
   failed_check_count: number | null;
+  /** pass | fail | incomplete; absent or null until verified (index schema 0.4.0). */
+  verdict?: string | null;
   batch_id?: string | null;
 }
 

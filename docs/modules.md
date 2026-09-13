@@ -163,7 +163,8 @@ never bare booleans.
 
 **Exposes:** `Verifier.verify(task, trace, final_state, run_id) ->
 VerifierResult` (deterministic, side-effect free, robust to partial
-traces); `VerifierResult`/`FailedCheck`/`EvidenceItem`; the
+traces); `VerifierResult` (with a three-state `verdict`: pass / fail / incomplete —
+see verifier_philosophy.md) / `FailedCheck`/`EvidenceItem`; the
 `verifier_id -> class` registry (`registry.py`); `RefundPolicyVerifier`,
 whose policy rules load from the current policy doc's `metadata.rules` —
 data, not hardcode.
