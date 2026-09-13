@@ -34,7 +34,7 @@ from trace_harness.tracing.events import utc_now
 
 logger = logging.getLogger(__name__)
 
-BATCH_SUMMARY_SCHEMA_VERSION = "0.1.0"
+BATCH_SUMMARY_SCHEMA_VERSION = "0.2.0"  # 0.2.0: per-entry verdict, aggregates.incomplete
 
 # Entry statuses that mean "did not produce a usable, completed run".
 _ERROR_STATUSES = ("error", "setup_error")
@@ -55,6 +55,7 @@ class BatchRunEntry(BaseModel):
     termination_reason: str | None = None
     steps_taken: int | None = None
     verifier_passed: bool | None = None  # None if verify didn't run
+    verdict: str | None = None  # pass / fail / incomplete; None if verify didn't run
     verifier_id: str | None = None
     severity: str | None = None
     latency_ms: float | None = None
@@ -63,12 +64,18 @@ class BatchRunEntry(BaseModel):
 
 
 class BatchAggregates(BaseModel):
-    """Roll-up metrics over the batch (pass_rate is over *completed* runs only)."""
+    """Roll-up metrics over the batch (pass_rate is over *completed* runs only).
+
+    ``incomplete`` counts runs the verifier looked at but which never reached a
+    final answer; they are excluded from ``pass_rate`` and never counted as
+    passes. ``terminated``/``errored`` stay as the raw run-status counts.
+    """
 
     total: int
     completed: int
     terminated: int
     errored: int
+    incomplete: int = 0
     verifier_passed: int
     verifier_failed: int
     cost_recorded: int
@@ -174,6 +181,7 @@ def _entry_from_pipeline(
         termination_reason=str(run.termination_reason),
         steps_taken=run.steps_taken,
         verifier_passed=(verifier.passed if verifier is not None else None),
+        verdict=(verifier.verdict.value if verifier is not None and verifier.verdict else None),
         verifier_id=(verifier.verifier_id if verifier is not None else None),
         severity=(verifier.severity.value if verifier and verifier.severity else None),
         latency_ms=latency_ms,
@@ -204,6 +212,7 @@ def _aggregate(entries: list[BatchRunEntry]) -> BatchAggregates:
     passed = sum(1 for e in completed if e.verifier_passed is True)
     failed = sum(1 for e in completed if e.verifier_passed is False)
     errored = sum(1 for e in entries if e.status in _ERROR_STATUSES)
+    incomplete = sum(1 for e in entries if e.verdict == "incomplete")
     recorded_costs = [e.cost_usd for e in entries if e.cost_usd is not None]
     verdicts = passed + failed
     pass_rate = round(passed / verdicts, 4) if verdicts else None
@@ -212,8 +221,10 @@ def _aggregate(entries: list[BatchRunEntry]) -> BatchAggregates:
     for e in entries:
         bucket = by_agent.setdefault(
             e.agent_label,
-            {"passed": 0, "failed": 0, "terminated": 0, "errored": 0},
+            {"passed": 0, "failed": 0, "incomplete": 0, "terminated": 0, "errored": 0},
         )
+        if e.verdict == "incomplete":
+            bucket["incomplete"] += 1
         if e.status == str(RunStatus.COMPLETED) and e.verifier_passed is True:
             bucket["passed"] += 1
         elif e.status == str(RunStatus.COMPLETED) and e.verifier_passed is False:
@@ -228,6 +239,7 @@ def _aggregate(entries: list[BatchRunEntry]) -> BatchAggregates:
         completed=len(completed),
         terminated=terminated,
         errored=errored,
+        incomplete=incomplete,
         verifier_passed=passed,
         verifier_failed=failed,
         cost_recorded=len(recorded_costs),

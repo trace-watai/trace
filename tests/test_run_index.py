@@ -9,7 +9,7 @@ from datetime import datetime
 from conftest import FAILURE_TASK_PATH, run_task_fixture
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
-from trace_harness.tracing.run_index import RunIndex, RunIndexEntry
+from trace_harness.tracing.run_index import RUN_INDEX_SCHEMA_VERSION, RunIndex, RunIndexEntry
 
 
 def _entry(run_id: str, *, task_id: str = "t1", status: str = "completed") -> RunIndexEntry:
@@ -34,7 +34,7 @@ def test_upsert_round_trip_sorted_and_valid_json(tmp_path):
         "run_20260101T000000Z_aaaa",
         "run_20260102T000000Z_bbbb",
     ]
-    assert index.schema_version == "0.3.0"
+    assert index.schema_version == RUN_INDEX_SCHEMA_VERSION
 
     # On disk at the runs-dir root, valid newline-terminated JSON.
     raw = store.index_path().read_text()
@@ -86,7 +86,7 @@ def test_old_schema_index_rebuilds_at_current_version(tmp_path):
 
     index = store.read_index()
 
-    assert index.schema_version == "0.3.0"
+    assert index.schema_version == RUN_INDEX_SCHEMA_VERSION
     assert [entry.run_id for entry in index.entries] == [run_id]
 
 

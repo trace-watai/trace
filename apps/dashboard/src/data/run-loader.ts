@@ -75,6 +75,8 @@ export interface RunSummary {
   error: string | null;
   verifierPassed: boolean | null;
   failedCheckCount: number | null;
+  /** "pass" | "fail" | "incomplete"; null until verified. */
+  verdict: string | null;
   batchId: string | null;
 }
 
@@ -89,6 +91,7 @@ const toRunSummary = (entry: RawRunIndexEntry): RunSummary => ({
   error: entry.error,
   verifierPassed: entry.verifier_passed,
   failedCheckCount: entry.failed_check_count,
+  verdict: entry.verdict ?? null,
   batchId: entry.batch_id ?? null,
 });
 

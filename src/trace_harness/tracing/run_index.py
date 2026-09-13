@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from trace_harness.runner.result import RunResult
 
-RUN_INDEX_SCHEMA_VERSION = "0.3.0"
+RUN_INDEX_SCHEMA_VERSION = "0.4.0"  # 0.4.0: verdict (pass/fail/incomplete)
 
 
 class RunIndexEntry(BaseModel):
@@ -46,6 +46,10 @@ class RunIndexEntry(BaseModel):
     error: str | None = None
     verifier_passed: bool | None = None
     failed_check_count: int | None = None
+    # "pass" | "fail" | "incomplete"; None until the verify stage ran. A run
+    # whose status is not "completed" is "incomplete" regardless of what the
+    # verifier file says, so pre-0.4.0 files rebuild correctly.
+    verdict: str | None = None
     batch_id: str | None = None
 
     @classmethod
