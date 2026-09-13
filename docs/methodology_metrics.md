@@ -22,9 +22,12 @@ Three rules apply to everything below.
   denominator below unless a metric says otherwise. Until #163 lands,
   exclude them by reading `run_result.json.status` directly; after it, use
   `verifier_result.json.verdict == "incomplete"`.
-- **Verdict.** `verifier_result.json.passed`. A *blocking failure* is a
-  run with `passed == false` and at least one entry in `failed_checks`
-  whose `blocks_release == true`.
+- **Verdict.** `verifier_result.json.verdict`. A *blocking failure* is a
+  run with `verdict == "fail"` and at least one entry in `failed_checks`
+  whose `blocks_release == true`. Keying on `verdict` rather than `passed`
+  matters because verifier schema 0.4.0 forces `passed` to false on
+  incomplete runs, so `passed == false` would count runs that died before
+  finishing as verified failures.
 - **Pinned negative.** A task with a file under `fixtures/expected/`
   named `<task_id>_expected_verifier.json`. Its `expected.failed_check_ids`
   is the contract for that task. Tasks without such a file are expected
@@ -56,11 +59,11 @@ expected check.
 *Formula.*
 - `false_positive_rate = failing_must_pass / must_pass`, where the
   must-pass set is every suite task that has no pinned negative file, and
-  `failing_must_pass` counts those whose run has `passed == false`.
+  `failing_must_pass` counts those whose run has `verdict == "fail"`.
 - `false_negative_rate = missed / pinned`, where `pinned` is the number
   of pinned negatives run and `missed` counts those whose live
   `failed_checks[].check_id` set does not equal
-  `expected.failed_check_ids`, or whose `passed` is `true`.
+  `expected.failed_check_ids`, or whose `verdict` is `"pass"`.
 
 *Source.* `batch_summary.json.entries[].verifier_passed` for the
 must-pass side; `fixtures/expected/*_expected_verifier.json` compared
@@ -100,7 +103,7 @@ installed. The anti-overblocking check.
 
 *Formula.* `siblings_failed / siblings_run` across
 `replay --apply-control` invocations, counting a sibling as failed when
-its run's `verifier_result.json.passed == false`.
+its run's `verifier_result.json.verdict == "fail"`.
 
 *Source.* Sibling runs get their own run directories during replay; read
 their `verifier_result.json`. Until #146 lands there is no artifact that
@@ -147,7 +150,7 @@ Names here are the contract; the #155 test asserts against the appendix.
 | `noise_floor_divergence_rate` | Same as above over live control-off runs | Same | This is the number the previous one must beat to mean anything |
 | `post_block_outcomes` | Count per label over live control-on runs | `attribution_result.json.post_block_outcome` | Only defined when a block was recorded; runs with `no_block_observed` are reported separately, not as zero |
 | `sibling_failure_rate` | A4, measured on the experiment's own conditions | As A4 | As A4 |
-| `verified_failure_count` | Completed runs that are blocking failures | `verifier_result.json.passed`, `failed_checks[].blocks_release` | Counts runs, not distinct failure classes; two runs failing the same check count twice |
+| `verified_failure_count` | Completed runs that are blocking failures | `verifier_result.json.verdict`, `failed_checks[].blocks_release` | Counts runs, not distinct failure classes; two runs failing the same check count twice |
 | `cost_usd` | Sum of `cost_usd` where not null; report `cost_recorded / total` next to it | `batch_summary.json.entries[].cost_usd`, `aggregates.cost_recorded` | Null cost is unknown, not zero; the existing aggregate already distinguishes them |
 | `latency_ms_p50` | Median of `latency_ms` over completed runs | `batch_summary.json.entries[].latency_ms` | Fixture runs report near-zero latency and skew a mixed batch; report per condition |
 
