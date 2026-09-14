@@ -14,8 +14,9 @@ where the fixture runner and verifier are already wired together.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 REPAIR_VALIDATION_SCHEMA_VERSION = "0.1.0"
 
@@ -42,7 +43,7 @@ class ReRun(BaseModel):
 
     run_id: str
     task_id: str | None = None
-    verdict: str  # "PASS" or "FAIL", as the verifier reported it
+    verdict: Literal["PASS", "FAIL", "INCOMPLETE"]
     # Pinned checks that stopped firing once this control was installed. Only
     # meaningful on the originating re-run.
     cleared_checks: list[str] = Field(default_factory=list)
@@ -89,6 +90,7 @@ class RepairValidation(BaseModel):
     controls: list[ControlValidation] = Field(default_factory=list)
     rollup: ValidationRollup = Field(default_factory=ValidationRollup)
 
+    @model_validator(mode="after")
     def rebuild_rollup(self) -> RepairValidation:
         """Recount the rollup from ``controls`` so the two can never disagree."""
         rejected = {
@@ -105,7 +107,21 @@ class RepairValidation(BaseModel):
     @property
     def has_rejection(self) -> bool:
         """True when any control was rejected, which is what ``--fail-on-rejected`` gates on."""
-        return self.rollup.rejected > 0
+        return any(
+            c.verdict
+            in {ControlVerdict.REJECTED_FAILURE_PERSISTS, ControlVerdict.REJECTED_OVERBLOCKS}
+            for c in self.controls
+        )
+
+    @property
+    def has_incomplete(self) -> bool:
+        """An interrupted validation cannot establish a successful replay gate."""
+        return any(
+            rerun.verdict == "INCOMPLETE"
+            for control in self.controls
+            for rerun in [control.originating_rerun, *control.sibling_reruns]
+            if rerun is not None
+        )
 
 
 def decide_verdict(
@@ -114,6 +130,8 @@ def decide_verdict(
     pinned_failed_checks: set[str],
     pinned_introduced_blocking: set[str],
     failing_siblings: list[str],
+    pinned_completed: bool = True,
+    incomplete_siblings: list[str] | None = None,
 ) -> tuple[ControlVerdict, str | None]:
     """Decide one control's verdict from what its re-runs produced.
 
@@ -125,6 +143,13 @@ def decide_verdict(
     counts as overblocking. The control caused a failure that was not there
     before, which is the same harm as breaking a sibling.
     """
+    if not pinned_completed or incomplete_siblings:
+        detail = (
+            "the pinned replay did not complete"
+            if not pinned_completed
+            else f"positive sibling(s) {sorted(incomplete_siblings)} did not complete"
+        )
+        return ControlVerdict.SKIPPED, f"validation_incomplete: {detail}"
     still_firing = sorted(expected_checks & pinned_failed_checks)
     if still_firing:
         return (

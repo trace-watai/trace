@@ -253,14 +253,11 @@ fix that breaks the sibling is overblocking. This loop is TRACE's
 differentiation over pure attribution (see
 [AGENTRX_TRACE_SUMMARY.md](AGENTRX_TRACE_SUMMARY.md)).
 
-`replay --apply-control` does two things. The bundle gate asks whether the
-selected controls together hold the line, and per-control validation (issue
-#146) then installs each prescribed control on its own and records what it
-earned — `accepted`, `rejected_failure_persists`, `rejected_overblocks`, or
-`skipped` when no guardrail implements it. Every re-run is tagged into one
-`batch_id` so `list-runs --batch` shows the whole session, and
-`--fail-on-rejected` turns the result into a CI gate the way
-`verify --fail-on-verifier` does.
+`replay --apply-control` tests controls together and individually, recording
+verdicts and replay evidence in `repair_validation.json`. `--control` limits
+both stages; `--fail-on-rejected` gates individual rejections. Validation runs
+share a `batch_id`. See [control validation](failure_bundles.md#control-validation)
+for input handling, verdicts, and incomplete runs.
 
 **Build next:** a CI collector that executes every blocking regression plus
 its positive siblings; a promotion flow (run artifact → reviewed → committed
