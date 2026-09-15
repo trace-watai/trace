@@ -8,6 +8,7 @@ Commands (each is one pipeline stage; ``run-pipeline`` chains them):
     trace-harness bundle       runs/<run_id>
     trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json
     trace-harness run-suite    fixtures/suites/refund_v0.json
+    trace-harness collect-regressions docs/acceptance/runs
 
 ``run-suite`` runs many tasks across agent configs in one batch, isolating
 per-run failures and writing a batch summary for dashboard metrics.
@@ -59,6 +60,7 @@ from trace_harness.regression.replay import (
     pinned_initial_state,
 )
 from trace_harness.regression.replay import pinned_script as build_pinned_script
+from trace_harness.regression.report import ReplayCaseResult, ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.agent_runner import AgentRunner
@@ -563,6 +565,24 @@ def _replay(
     control_ids: list[str] | None = None,
     fail_on_rejected: bool = False,
 ) -> int:
+    """Keep the public replay command's exit contract unchanged."""
+    return _replay_with_report(
+        artifact_path,
+        store,
+        apply_control=apply_control,
+        control_ids=control_ids,
+        fail_on_rejected=fail_on_rejected,
+    ).exit_code
+
+
+def _replay_with_report(
+    artifact_path: Path,
+    store: ArtifactStore,
+    *,
+    apply_control: bool = False,
+    control_ids: list[str] | None = None,
+    fail_on_rejected: bool = False,
+) -> ReplayReport:
     """Replay a regression artifact and assert the gate conditions hold.
 
     1. Re-runs the scenario **from the artifact's pinned inputs** — state,
@@ -600,7 +620,7 @@ def _replay(
     script says. See docs/regression_contract.md#control-flip-demo for a
     fixture built so that isn't a problem.
 
-    Returns 0 if all assertions hold, 1 if the regression gate fires.
+    Returns structured evidence and the existing command's 0/1 exit status.
     """
     # Flag and control-id errors are usage errors: fail before any output.
     if control_ids and not apply_control:
@@ -614,7 +634,9 @@ def _replay(
     pinned_state = pinned_initial_state(artifact)
     # The task fixture is a hard requirement (tool subset + verifier ids), so a
     # missing one is a usage error (exit 2), not something to replay around.
-    task_path = Path(artifact.task_fixture).resolve()
+    # Retained artifacts may have been written on Windows. Fixture paths are
+    # portable repository paths, regardless of the machine doing the replay.
+    task_path = Path(artifact.task_fixture.replace("\\", "/")).resolve()
     task = load_task(task_path)
     script = build_pinned_script(artifact, task.task_id)
     prescribed, controls_source = (
@@ -639,7 +661,7 @@ def _replay(
 
     def _fixture_args(task_path: str) -> argparse.Namespace:
         return argparse.Namespace(
-            task_path=task_path,
+            task_path=task_path.replace("\\", "/"),
             script=None,
             provider="fixture",
             model=None,
@@ -662,6 +684,21 @@ def _replay(
 
     actual_ids = {c.check_id for c in merged.failed_checks}
     expected_ids = set(artifact.verifier_checks)
+
+    def _case(name: str, run: RunResult, verdict: VerifierResult) -> ReplayCaseResult:
+        return ReplayCaseResult(
+            test_name=name,
+            run_id=run.run_id,
+            completed=run.status is RunStatus.COMPLETED,
+            verifier_passed=verdict.passed,
+            failed_checks=sorted(check.check_id for check in verdict.failed_checks),
+            blocking_checks=sorted(
+                check.check_id for check in verdict.failed_checks if check.blocks_release
+            ),
+        )
+
+    scenario = _case(artifact.test_name, result, merged)
+    siblings: list[ReplayCaseResult] = []
 
     if not run_completed:
         print("  FAIL: pinned replay did not complete; no regression verdict can be established")
@@ -710,6 +747,7 @@ def _replay(
             sib_result = _run_fixture(_fixture_args(sibling.task_fixture), store, controls=controls)
             sib_dir = store.run_dir(sib_result.run_id)
             sib_merged, _ = _verify(sib_dir)
+            siblings.append(_case(sibling.test_name, sib_result, sib_merged))
             if not sib_merged.passed:
                 failed = sorted(c.check_id for c in sib_merged.failed_checks)
                 print(f"      FAIL: sibling must pass but failed on {failed}")
@@ -750,9 +788,12 @@ def _replay(
             gate_failed = True
     status = "FAIL — regression gate fired" if gate_failed else "PASS — regression gate clear"
     print(f"\nReplay result: {status}\n")
-    if gate_failed:
-        return 1
-    return 0
+    return ReplayReport(
+        exit_code=1 if gate_failed else 0,
+        expected_checks=sorted(expected_ids),
+        scenario=scenario,
+        siblings=siblings,
+    )
 
 
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
@@ -958,6 +999,39 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
     return 0
 
 
+def _collect_regressions(args: argparse.Namespace, store: ArtifactStore) -> int:
+    from trace_harness.runner.collector import SUMMARY_NAME, collect_regressions
+
+    summary = collect_regressions(args.path, store, suite_path=args.suite)
+    print("\nRegression collection:")
+    for entry in summary.entries:
+        label = entry.test_name or entry.artifact_path
+        if entry.error is not None:
+            detail = f"ERROR: {entry.error}"
+        elif entry.blocks_release is False:
+            detail = "SKIP: does not block release"
+        else:
+            baseline = "reproduced" if entry.baseline.reproduced else "NOT REPRODUCED"
+            detail = f"{baseline}; controls {entry.control_status} ({entry.replay_mode})"
+        _print(label, detail)
+    for test_name, sibling in summary.siblings_failed:
+        _print("sibling failed:", f"{test_name} / {sibling}")
+    for error in summary.errors:
+        _print("error:", error)
+    _print("artifacts found:", str(summary.artifacts_found))
+    _print("release-blocking:", str(summary.blocking))
+    _print("reproduced:", str(summary.reproduced))
+    _print("siblings passed:", str(summary.siblings_passed))
+    _print("controls confirmed:", str(summary.controls_confirmed))
+    _print("controls advisory:", str(summary.controls_advisory))
+    _print("controls failed:", str(len(summary.controls_failed)))
+    _print("malformed:", str(len(summary.malformed)))
+    _print("duration:", f"{summary.duration_s:.3f}s")
+    _print("summary:", str(store.runs_dir / SUMMARY_NAME))
+    _print("gate:", "PASS" if summary.exit_code == 0 else f"FAIL (exit {summary.exit_code})")
+    return summary.exit_code
+
+
 def _force_utf8_stdio() -> None:
     """Make stdout/stderr UTF-8 so verifier glyphs (✗, ⚠) never crash the CLI.
 
@@ -1118,6 +1192,16 @@ def main(argv: list[str] | None = None) -> int:
         help="exit 1 if any run failed verification or errored (CI gate mode)",
     )
 
+    p_collect = sub.add_parser(
+        "collect-regressions",
+        parents=[common],
+        help="replay release-blocking artifacts as a CI gate",
+    )
+    p_collect.add_argument("path", help="artifact file or directory to search recursively")
+    p_collect.add_argument(
+        "--suite", default=None, help="also generate artifacts from this offline fixture suite"
+    )
+
     args = parser.parse_args(argv)
     runs_dir_arg = getattr(args, "runs_dir", None)
     runs_dir = Path(runs_dir_arg) if runs_dir_arg else harness_config.runs_dir
@@ -1176,6 +1260,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         return 1 if (args.fail_on_verifier and not (merged.passed and run_completed)) else 0
     if args.command == "run-suite":
         return _run_suite(args, store)
+    if args.command == "collect-regressions":
+        return _collect_regressions(args, store)
     raise AssertionError(f"unhandled command {args.command}")  # pragma: no cover
 
 
