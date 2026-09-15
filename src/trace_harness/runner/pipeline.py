@@ -19,7 +19,8 @@ from typing import Any
 
 from trace_harness.environment.controls import ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.models import create_model_adapter
+from trace_harness.models import create_model_adapter, resolve_model_name
+from trace_harness.models.cassette import RecordingModelAdapter
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
 from trace_harness.runner.result import RunResult, RunStatus
@@ -91,20 +92,24 @@ def run_task_pipeline(
     }
     if environment.installed_controls:
         metadata["controls"] = [c.model_dump(mode="json") for c in environment.installed_controls]
+    script_path = None
     if agent_config.provider == "fixture":
         script_path = _resolve_fixture_script(task, task_path)
-        adapter = create_model_adapter("fixture", script_path=script_path)
-        model = f"scripted:{script_path.stem}"
         metadata["fixture_script_path"] = _repo_relative(script_path)
-    else:
-        adapter = create_model_adapter(
-            agent_config.provider,
-            model=agent_config.model,
-            temperature=agent_config.temperature,
-            seed=agent_config.seed,
-            timeout_seconds=agent_config.timeout_seconds,
-        )
-        model = agent_config.model
+    model = resolve_model_name(agent_config.provider, agent_config.model, script_path)
+    adapter = create_model_adapter(
+        agent_config.provider,
+        script_path=script_path,
+        model=model,
+        temperature=agent_config.temperature,
+        seed=agent_config.seed,
+        timeout_seconds=agent_config.timeout_seconds,
+        prompt_version=agent_config.prompt_version or PROMPT_VERSION,
+        cassette=agent_config.cassette,
+        task_id=task.task_id,
+    )
+    if isinstance(adapter, RecordingModelAdapter):
+        metadata["cassette_path"] = _repo_relative(adapter.path)
 
     config = RunConfig(
         task_id=task.task_id,
@@ -115,6 +120,7 @@ def run_task_pipeline(
         temperature=agent_config.temperature,
         seed=agent_config.seed,
         prompt_version=agent_config.prompt_version or PROMPT_VERSION,
+        cassette=agent_config.cassette,
         metadata=metadata,
     )
     run_result = AgentRunner(adapter, environment, store).run(task, config)

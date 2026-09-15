@@ -69,6 +69,31 @@ interpreted.
 `ModelAdapterError`; multiple parallel calls must fail explicitly until the
 shared action contract supports them.
 
+| Mode | Configuration | Behavior |
+| --- | --- | --- |
+| Fixture (default) | `--provider fixture` | Runs a scripted fixture; no cassette, SDK, or key. |
+| Live | `--provider gemini` | Calls the provider using explicit model settings. |
+| Record | `--cassette-mode record` | `RecordingModelAdapter` wraps the selected provider and writes normalized responses. |
+| Replay | `--cassette-mode replay` | Reads recorded responses without constructing a provider; a missing or mismatched request is an error. |
+
+`--cassette-dir` selects the root (default `fixtures/cassettes`). Files use
+`<task_id>/<model_id>/<seed>.jsonl`, with URL-escaped path components and
+`default` for an unspecified seed. Recording refuses to overwrite a cassette.
+The factory accepts an explicit `CassetteConfig`; environment variables never
+select record/replay. Suite agent configs accept the same `cassette` object.
+
+Each versioned entry pins its step, transcript hash (including provider state),
+tool-declaration hash, provider, resolved model, temperature, seed, timeout,
+and prompt version. `run_config.json` retains those settings, cassette mode,
+and resolved path. `RunConfig` and `SuiteSpec` are now `0.2.0`; older `0.1.0`
+data remains readable with cassettes disabled. Changing a setting or request
+requires a new recording. Replay never falls back to the network.
+
+Run traces retain fresh audit IDs and timestamps. Deterministic comparisons
+exclude only those two event fields; all remaining trace bytes, tool outcomes,
+and verifier results must agree. See [cassette fixtures](../fixtures/cassettes/README.md)
+for an offline Gemini example and provenance.
+
 **Build next:** add bounded retry/backoff and token/cost extraction; decide the
 parallel-tool-call story (`AgentAction` grows a list form behind a schema
 bump); keep one controlled key-backed acceptance run outside CI.

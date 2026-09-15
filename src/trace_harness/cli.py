@@ -19,7 +19,7 @@ the dashboard/API see the same data the pipeline used.
 
 Exit codes: 0 success; 1 verifier failed AND --fail-on-verifier was passed
 (CI gate mode); 2 usage or input errors (argparse errors, bad paths,
-malformed fixtures, missing artifacts). Without the flag a verified
+malformed fixtures, missing artifacts, cassette errors). Without the flag a verified
 failure exits 0 — finding failures is this tool succeeding.
 
 argparse over typer: subcommands this simple don't justify a dependency.
@@ -49,7 +49,8 @@ from trace_harness.environment.controls import (
 from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.failure_bundles.schemas import RepairPackage
-from trace_harness.models import create_model_adapter
+from trace_harness.models import create_model_adapter, resolve_model_name
+from trace_harness.models.cassette import CassetteConfig, RecordingModelAdapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.regression.promotion import LibraryGateError, commit_controls
 from trace_harness.regression.repair_validation import (
@@ -71,7 +72,7 @@ from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.batch import new_batch_id
-from trace_harness.runner.config import RunConfig
+from trace_harness.runner.config import PROMPT_VERSION, RunConfig
 from trace_harness.runner.result import RunResult, RunStatus
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
@@ -145,13 +146,19 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--model",
         default=None,
-        help="model name for real providers (e.g. gemini-2.0-flash); ignored by fixture",
+        help="model name for real providers (e.g. gemini-3.6-flash); ignored by fixture",
     )
     parser.add_argument(
         "--timeout",
         type=float,
         default=120.0,
         help="max wall-clock seconds for the whole run (default: 120)",
+    )
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--cassette-mode", choices=("record", "replay"), default=None)
+    parser.add_argument(
+        "--cassette-dir", default=None, help="cassette root (default with mode: fixtures/cassettes)"
     )
 
 
@@ -185,26 +192,47 @@ def _run_fixture(
     if environment.installed_controls:
         metadata["controls"] = [c.model_dump(mode="json") for c in environment.installed_controls]
 
+    cassette_mode = getattr(args, "cassette_mode", None)
+    cassette_dir = getattr(args, "cassette_dir", None)
+    if cassette_dir and cassette_mode is None:
+        raise CliInputError("--cassette-dir requires --cassette-mode")
+    cassette = (
+        CassetteConfig(mode=cassette_mode, directory=cassette_dir or "fixtures/cassettes")
+        if cassette_mode
+        else None
+    )
+    temperature = getattr(args, "temperature", None)
+    seed = getattr(args, "seed", None)
+
     # The fixture provider replays a script; real providers (gemini) drive the
     # agent live and need no script — only the fixture path is required.
     if args.provider == "fixture" and pinned_script is not None:
+        if cassette is not None:
+            raise CliInputError("regression replay cannot also use model cassettes")
         # Replaying pinned actions: the script file is not consulted at all, so
         # editing it cannot change what an existing regression asserts.
         adapter = FixtureModelAdapter(pinned_script)
         model = f"scripted:{pinned_script.script_id}"
         metadata["replay_pinned_script"] = "true"
-    elif args.provider == "fixture":
-        script_path = _resolve_script_path(task, task_path, args.script)
-        adapter = create_model_adapter("fixture", script_path=script_path)
-        model = f"scripted:{script_path.stem}"
-        metadata["fixture_script_path"] = _repo_relative(script_path)
     else:
+        script_path = None
+        if args.provider == "fixture":
+            script_path = _resolve_script_path(task, task_path, args.script)
+            metadata["fixture_script_path"] = _repo_relative(script_path)
+        model = resolve_model_name(args.provider, args.model, script_path)
         adapter = create_model_adapter(
             args.provider,
-            model=args.model,
+            script_path=script_path,
+            model=model,
             timeout_seconds=args.timeout,
+            temperature=temperature,
+            seed=seed,
+            cassette=cassette,
+            task_id=task.task_id,
+            prompt_version=PROMPT_VERSION,
         )
-        model = args.model
+        if isinstance(adapter, RecordingModelAdapter):
+            metadata["cassette_path"] = _repo_relative(adapter.path)
 
     config = RunConfig(
         task_id=task.task_id,
@@ -212,6 +240,9 @@ def _run_fixture(
         model=model,
         max_steps=args.max_steps,
         timeout_seconds=args.timeout,
+        temperature=temperature,
+        seed=seed,
+        cassette=cassette,
         metadata=metadata,
     )
     runner = AgentRunner(adapter, environment, store)
@@ -225,6 +256,8 @@ def _run_fixture(
     _print("trace:", str(store.trace_path(result.run_id)))
     if result.error:
         _print("error:", result.error)
+    if cassette is not None and result.status is RunStatus.ERROR:
+        raise CliInputError(result.error or "cassette run failed")
     print(f"\nNext: trace-harness verify {store.run_dir(result.run_id)}")
     return result
 
@@ -1114,6 +1147,8 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
 
     if args.fail_on_verifier and (agg.verifier_failed > 0 or agg.terminated > 0 or agg.errored > 0):
         return 1
+    if agg.errored > 0 and any(config.cassette is not None for config in suite.agent_configs):
+        return 2
     return 0
 
 

@@ -420,10 +420,14 @@ def test_live_adapter_receives_recorded_agent_knobs(
 
     assert captured == {
         "provider": "gemini",
+        "script_path": None,
         "model": "gemini-3.6-flash",
         "temperature": 0.2,
         "seed": 7,
         "timeout_seconds": 17.0,
+        "prompt_version": "v0",
+        "cassette": None,
+        "task_id": "refund_policy_valid_cash",
     }
     assert result.run_config.temperature == 0.2
     assert result.run_config.seed == 7

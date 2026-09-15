@@ -20,7 +20,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 
-SUITE_SCHEMA_VERSION = "0.1.0"
+from trace_harness.models.cassette import CassetteConfig
+
+SUITE_SCHEMA_VERSION = "0.2.0"  # optional cassette configuration per agent
 
 
 class AgentConfig(BaseModel):
@@ -39,6 +41,7 @@ class AgentConfig(BaseModel):
     seed: int | None = None
     max_steps: int = Field(default=16, ge=1)
     timeout_seconds: float = Field(default=120.0, gt=0)
+    cassette: CassetteConfig | None = None
 
 
 class SuiteSpec(BaseModel):
