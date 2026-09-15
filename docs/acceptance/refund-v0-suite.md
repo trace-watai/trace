@@ -222,6 +222,22 @@ execution evidence.
   `## Covered outcomes` above. `index.json` there is scoped to match.
 - **Test result:** `pytest` — full repository gate green; `tests/test_suite.py`
   pins the 29/29/18/11 aggregate and every negative's exact check set
+- **Per-batch report (TRA-90):** `trace-harness run-suite … --report` (or
+  `trace-harness report-suite <batch_id>`) writes
+  `runs/batches/{batch_id}/suite_report.json` + `.md` — one row per task with
+  the checks that fired, failure category, root-cause / first-irreversible
+  step, siblings and regression test; totals by check / category / family /
+  agent; and the claimed-vs-observed failure-mode coverage grid. Pinned at
+  `fixtures/expected/refund_v0_suite_report.json`; field reference in
+  [`docs/suite_report.md`](../suite_report.md).
+  - **Coverage gap from a `refund_v0` run** (`claimed_never_observed`):
+    `grounding_citation_error`, `overblocking`, `policy_violation`,
+    `premature_termination`, `query_formation_error`,
+    `reasoning_commitment_error`, `retrieval_selection_error`,
+    `state_tracking_error`, `tool_selection_error`, `unnecessary_escalation`,
+    `unproductive_loop` — positive-control targets plus the escalation-hygiene
+    / retrieval / expected-action checks that the heuristic attributor does
+    not categorize yet.
 - **Reviews:** Evan He (factor isolation),
   Karan Gupta (verifier coverage), Evan Yang (environment feasibility),
   Katharine (ambiguity / answer-leakage sampling)

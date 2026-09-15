@@ -9,9 +9,13 @@ Commands (each is one pipeline stage; ``run-pipeline`` chains them):
     trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json
     trace-harness run-suite    fixtures/suites/refund_v0.json
     trace-harness collect-regressions docs/acceptance/runs
+    trace-harness report-suite batch_<...>
 
 ``run-suite`` runs many tasks across agent configs in one batch, isolating
 per-run failures and writing a batch summary for dashboard metrics.
+``report-suite`` (or ``run-suite --report``) rolls a finished batch's
+artifacts into a per-batch report: which checks fired, which failure
+categories, and which claimed failure modes never actually showed up.
 
 Stages communicate only through run artifacts on disk — ``verify`` reads
 exactly what ``run-fixture`` wrote — so any stage can be re-run later, and
@@ -1145,6 +1149,9 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
     _print("pass_rate:", "n/a" if agg.pass_rate is None else f"{agg.pass_rate:.0%}")
     _print("summary:", str(summary_path(store.runs_dir, summary.batch_id)))
 
+    if getattr(args, "report", False):
+        _write_and_print_suite_report(store, summary.batch_id, print_full=False)
+
     if args.fail_on_verifier and (agg.verifier_failed > 0 or agg.terminated > 0 or agg.errored > 0):
         return 1
     if agg.errored > 0 and any(config.cassette is not None for config in suite.agent_configs):
@@ -1183,6 +1190,45 @@ def _collect_regressions(args: argparse.Namespace, store: ArtifactStore) -> int:
     _print("summary:", str(store.runs_dir / SUMMARY_NAME))
     _print("gate:", "PASS" if summary.exit_code == 0 else f"FAIL (exit {summary.exit_code})")
     return summary.exit_code
+
+
+def _write_and_print_suite_report(store: ArtifactStore, batch_id: str, *, print_full: bool) -> int:
+    """Build the per-batch report from on-disk artifacts, persist it, print it.
+
+    ``print_full`` prints the whole markdown rendering (``report-suite``); the
+    ``run-suite --report`` path prints only the paths + the coverage-gap lists
+    so it does not bury the batch summary it just showed.
+    """
+    from trace_harness.runner.batch import BatchSummary
+    from trace_harness.runner.report import build_suite_report, render_suite_report_markdown
+
+    summary = BatchSummary.model_validate(store.read_batch_summary(batch_id))
+    report = build_suite_report(summary, store)
+    markdown = render_suite_report_markdown(report)
+    json_path = store.write_suite_report(batch_id, report, markdown=markdown)
+
+    if print_full:
+        print(markdown)
+    print()
+    _print("suite report:", str(json_path))
+    _print("suite report (md):", str(store.suite_report_md_path(batch_id)))
+    _print("rows / failing:", f"{report.total_rows} / {report.failing_rows}")
+    _print(
+        "modes claimed, never observed:",
+        ", ".join(report.coverage.claimed_never_observed) or "—",
+    )
+    _print(
+        "categories observed, never claimed:",
+        ", ".join(report.coverage.observed_never_claimed) or "—",
+    )
+    for warning in report.warnings:
+        print(f"  ⚠ {warning}")
+    return 0
+
+
+def _report_suite(store: ArtifactStore, batch_id: str) -> int:
+    """`report-suite <batch_id>`: (re)generate and persist the batch's report."""
+    return _write_and_print_suite_report(store, batch_id, print_full=True)
 
 
 def _force_utf8_stdio() -> None:
@@ -1367,6 +1413,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="exit 1 if any run failed verification or errored (CI gate mode)",
     )
+    p_suite.add_argument(
+        "--report",
+        action="store_true",
+        help="also write suite_report.json/.md (checks fired, failure categories, coverage gaps)",
+    )
+
+    p_report = sub.add_parser(
+        "report-suite",
+        parents=[common],
+        help="roll a finished batch's artifacts into a per-batch check/category/coverage report",
+    )
+    p_report.add_argument(
+        "batch_id", help="batch id (from run-suite's output or `list-runs --batch`)"
+    )
 
     p_collect = sub.add_parser(
         "collect-regressions",
@@ -1444,6 +1504,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         return _run_suite(args, store)
     if args.command == "collect-regressions":
         return _collect_regressions(args, store)
+    if args.command == "report-suite":
+        return _report_suite(store, args.batch_id)
     raise AssertionError(f"unhandled command {args.command}")  # pragma: no cover
 
 

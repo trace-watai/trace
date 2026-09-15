@@ -139,11 +139,17 @@ workflow environment to force the generic/support split.
 **What belongs here:** `AgentRunner` (the step loop), `RunConfig` (every
 knob affecting a run, persisted for reproducibility), `RunResult`, and the
 `ToolEnvironment` protocol (defined here, at the consumer, so environments
-never import the runner).
+never import the runner). Also the batch layer — `BatchRunner` /
+`BatchSummary` (`batch.py`), `run_task_pipeline` (`pipeline.py`), and the
+per-batch `SuiteReport` (`report.py`).
 
 **Exposes:** `AgentRunner(adapter, environment, artifact_store).run(task,
 config) -> RunResult`; `build_initial_transcript` (prompt version `v0` —
-bump `RunConfig.prompt_version` when it changes).
+bump `RunConfig.prompt_version` when it changes); `BatchRunner(store).run(suite)
+-> BatchSummary`; `build_suite_report(summary, store) -> SuiteReport` +
+`render_suite_report_markdown` (read-only roll-up of a finished batch's
+on-disk artifacts — checks fired, failure categories, claimed-vs-observed
+coverage; see [suite_report.md](suite_report.md)).
 
 `collector.py` exposes `collect_regressions(path, store, suite_path=...)` and
 `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
@@ -157,12 +163,19 @@ knowledge (if a change mentions refunds, it belongs elsewhere); it never
 runs verifiers (separate pipeline stage over artifacts); every run —
 including crashes — leaves a run directory with `run_result.json`.
 `status=completed` means "produced a final answer", never "was correct".
+`build_suite_report` never re-runs a task and never writes — the CLI /
+`ArtifactStore` own persistence — and degrades to category `unknown` + a
+warning only when a run has a real violation and no attribution file; an
+`incomplete` run (three-state verdict, see verifiers/ below) with no
+violations gets no category and no warning, since there is nothing to
+attribute.
 
 **Build next:** a timeout that can interrupt a hung provider call (today
 checked only between steps); deliberate retry/backoff design for real
 adapters; `model_response` events when the first real adapter lands;
 multi-run orchestration (N runs, varied seeds) once live models make runs
-non-deterministic.
+non-deterministic; a TypeScript `SuiteReport` mirror for the dashboard in
+the style of `apps/dashboard/src/data/run-loader.ts`.
 
 ## tracing/ — events, recording, artifacts *(Samrath)*
 
