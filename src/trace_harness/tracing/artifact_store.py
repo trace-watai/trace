@@ -66,6 +66,7 @@ REPAIR_VALIDATION = "repair_validation.json"
 RUN_INDEX = "index.json"
 BATCHES_DIR = "batches"
 BATCH_SUMMARY = "batch_summary.json"
+REGRESSION_GATE_SUMMARY = "regression_gate_summary.json"
 
 ALL_ARTIFACTS = (
     TASK_SPEC,

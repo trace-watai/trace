@@ -120,6 +120,12 @@ never import the runner).
 config) -> RunResult`; `build_initial_transcript` (prompt version `v0` —
 bump `RunConfig.prompt_version` when it changes).
 
+`collector.py` exposes `collect_regressions(path, store, suite_path=...)` and
+`CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
+completed failure reproduction and positive siblings. Control validation gates
+only for explicit `static_ok` labels; other labels remain advisory. The CLI and
+`check_repo.sh` call this collector. See [the gate contract](regression_contract.md#what-ci-does).
+
 **Rules (these are the architecture):** the runner never imports tool
 implementations or a global tool registry; it contains zero scenario
 knowledge (if a change mentions refunds, it belongs elsewhere); it never
@@ -260,8 +266,7 @@ both stages; `--fail-on-rejected` gates individual rejections. Validation runs
 share a `batch_id`. See [control validation](failure_bundles.md#control-validation)
 for input handling, verdicts, and incomplete runs.
 
-**Build next:** a CI collector that executes every blocking regression plus
-its positive siblings; a promotion flow (run artifact → reviewed → committed
+**Build next:** a promotion flow (run artifact → reviewed → committed
 fixture), which is what the accepted verdicts feed; pin sibling state too
 (today siblings run from their live fixtures).
 

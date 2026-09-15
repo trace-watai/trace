@@ -122,6 +122,10 @@ for every contract and a sub-second offline test suite.
 - **Replay** — pinned state, documents, normalized agent actions, verifier
   checks, controls, and positive siblings are executable. Wider task-family
   coverage is still incomplete.
+- **Regression CI gate** — `collect-regressions` replays every blocking artifact
+  and its positive siblings; `check_repo.sh` runs it over retained and fresh bundle
+  artifacts. Control outcomes remain advisory unless explicitly labeled `static_ok`.
+  See [the gate contract](docs/regression_contract.md#what-ci-does).
 
 Observability stance: TRACE-native artifacts (`trace.jsonl` + run JSON)
 are the source of truth; Langfuse/Phoenix/OpenTelemetry are optional
