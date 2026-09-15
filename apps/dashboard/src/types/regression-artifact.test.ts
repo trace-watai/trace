@@ -31,8 +31,17 @@ const raw: RawRegressionArtifact = {
 };
 
 describe("parseRegressionArtifact", () => {
+  it("defaults legacy artifacts to unlabeled and preserves unknown fields", () => {
+    const parsed = parseRegressionArtifact({
+      ...raw,
+      future_field: { some_value: 1 },
+    } as RawRegressionArtifact);
+    expect(parsed.replayMode).toBe("unlabeled");
+    expect(parsed.replayModeBasis).toBeNull();
+    expect(parsed).toHaveProperty("futureField", { someValue: 1 });
+  });
   it("matches the executable pinned-input backend schema", () => {
-    expect(REGRESSION_SCHEMA_VERSION).toBe("0.2.0");
+    expect(REGRESSION_SCHEMA_VERSION).toBe("0.3.0");
     expect(parseRegressionArtifact(raw).pinnedAgentActions).toEqual([
       {
         actionType: "tool_call",

@@ -2,7 +2,7 @@
  * Regression-artifact data contract.
  *
  * Mirrors `RegressionArtifact` in `src/trace_harness/regression/schemas.py`
- * (REGRESSION_SCHEMA_VERSION 0.2.0), serialized as `regression_artifact.json`.
+ * (REGRESSION_SCHEMA_VERSION 0.3.0), serialized as `regression_artifact.json`.
  *
  * Pins everything needed to re-test a failure class later: the task, initial
  * state, the exact docs the agent saw, the checks that must hold, and a replay
@@ -13,7 +13,24 @@
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 import type { Severity } from "@/types/severity";
 
-export const REGRESSION_SCHEMA_VERSION = "0.2.0";
+export const REGRESSION_SCHEMA_VERSION = "0.3.0";
+
+export type ReplayMode = "static_ok" | "live_required" | "unlabeled";
+
+export interface RawReplayModeBasis {
+  control_ids: string[];
+  control_step: number | null;
+  first_irreversible_action_step: number | null;
+  steps_remaining_after_control: number | null;
+  gated_tool: string | null;
+  checks_reachable_via_gated_tool: string[];
+  checks_covered_by_control: string[];
+  other_irreversible_tools: string[];
+  rule_kind: "prohibition" | "requirement" | null;
+  predicted_by: "heuristic_v1" | "measured";
+  agreement_rate: number | null;
+  source_experiment_id: string | null;
+}
 
 /**
  * Wire shape of a positive companion scenario that must continue to pass,
@@ -53,6 +70,9 @@ export interface RawRegressionArtifact {
   positive_sibling_tests: RawSiblingTest[];
   severity: Severity;
   blocks_release: boolean;
+  /** Absent on artifacts written before 0.3.0. */
+  replay_mode?: ReplayMode;
+  replay_mode_basis?: RawReplayModeBasis | null;
   replay_command: string;
   metadata: Record<string, unknown>;
 }
@@ -62,4 +82,9 @@ export type RegressionArtifact = Camelize<RawRegressionArtifact>;
 
 export const parseRegressionArtifact = (
   raw: RawRegressionArtifact,
-): RegressionArtifact => camelizeKeys(raw);
+): RegressionArtifact =>
+  camelizeKeys({
+    replay_mode: "unlabeled" as const,
+    replay_mode_basis: null,
+    ...raw,
+  });

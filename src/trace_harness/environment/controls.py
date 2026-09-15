@@ -57,6 +57,9 @@ class RegisteredGuardrail:
     fn: GuardrailFn
     rule_source: str
     rule_keys: frozenset[str]
+    # Replay classification describes executable coverage, not repair-package prose.
+    checks_covered: frozenset[str] = frozenset()
+    rule_kind: Literal["prohibition", "requirement"] | None = None
 
 
 # guardrail_ref -> implementation. Seeded with the one guardrail the repository
@@ -66,6 +69,8 @@ GUARDRAIL_REGISTRY: dict[str, RegisteredGuardrail] = {
         fn=unauthorized_cash_refund_guardrail,
         rule_source="current_policy_doc",
         rule_keys=UNAUTHORIZED_CASH_REFUND_RULE_KEYS,
+        checks_covered=frozenset({"unauthorized_cash_refund"}),
+        rule_kind="prohibition",
     ),
 }
 

@@ -9,7 +9,7 @@ failure cannot quietly overblock legitimate behavior.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -17,7 +17,24 @@ from trace_harness.tasks.schemas import Severity
 
 # 0.2.0: added pinned_agent_actions so the agent's moves are pinned alongside
 # the world they ran in (previously only state and docs were).
-REGRESSION_SCHEMA_VERSION = "0.2.0"
+# 0.3.0: replay trust label and the facts used to predict it.
+REGRESSION_SCHEMA_VERSION = "0.3.0"
+ReplayMode = Literal["static_ok", "live_required", "unlabeled"]
+
+
+class ReplayModeBasis(BaseModel):
+    control_ids: list[str] = Field(default_factory=list)
+    control_step: int | None = None
+    first_irreversible_action_step: int | None = None
+    steps_remaining_after_control: int | None = None
+    gated_tool: str | None = None
+    checks_reachable_via_gated_tool: list[str] = Field(default_factory=list)
+    checks_covered_by_control: list[str] = Field(default_factory=list)
+    other_irreversible_tools: list[str] = Field(default_factory=list)
+    rule_kind: Literal["prohibition", "requirement"] | None = None
+    predicted_by: Literal["heuristic_v1", "measured"] = "heuristic_v1"
+    agreement_rate: float | None = Field(default=None, ge=0, le=1)
+    source_experiment_id: str | None = None
 
 
 class SiblingTest(BaseModel):
@@ -49,5 +66,7 @@ class RegressionArtifact(BaseModel):
     positive_sibling_tests: list[SiblingTest] = Field(default_factory=list)
     severity: Severity
     blocks_release: bool
+    replay_mode: ReplayMode = "unlabeled"
+    replay_mode_basis: ReplayModeBasis | None = None
     replay_command: str
     metadata: dict[str, Any] = Field(default_factory=dict)

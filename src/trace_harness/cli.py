@@ -440,6 +440,9 @@ def _replay(
     _print("severity:", str(artifact.severity))
     _print("blocks_release:", str(artifact.blocks_release))
     _print("apply_control:", str(apply_control))
+    _print("replay_mode:", artifact.replay_mode)
+    if apply_control and artifact.replay_mode == "live_required":
+        print("  ⚠ static replay is insufficient; a live agent must continue from the block point.")
     _print("pinned inputs:", "state + docs" + (" + agent actions" if script else " (no actions)"))
 
     for note in _replay_drift_notes(artifact, task, task_path, pinned_state):

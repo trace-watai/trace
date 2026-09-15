@@ -237,7 +237,8 @@ across bundles (same root cause in N runs → one card, not N).
 **What belongs here:** materializing verified failures into pinned,
 rerunnable `RegressionArtifact`s.
 
-**Exposes:** `materialize_regression_artifact(...)`;
+**Exposes:** `materialize_regression_artifact(...)` (schema 0.3.0, including
+`replay_mode` and its recorded basis; see [regression contract](regression_contract.md));
 `RegressionArtifact`/`SiblingTest`; `pinned_initial_state(...)` /
 `describe_state_drift(...)` (`replay.py`) — the pinned world a
 `trace-harness replay` run rebuilds, and how it differs from the fixture's

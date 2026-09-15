@@ -1,0 +1,7 @@
+{
+  "refund_policy_failure": "live_required",
+  "refund_cash_age_boundary_day_31_no_approval": "live_required",
+  "refund_outage_evidence_day_45_not_documented": "live_required",
+  "refund_policy_missing_info_failure": "live_required",
+  "refund_policy_phantom_refund": "live_required"
+}

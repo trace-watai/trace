@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.2.0",
+  "schema_version": "0.3.0",
   "test_name": "regression_refund_policy_failure",
   "source_run_id": "run_20260101T000000Z_sample01",
   "task_fixture": "fixtures/tasks/refund_policy_failure.json",
@@ -227,6 +227,28 @@
   ],
   "severity": "critical",
   "blocks_release": true,
+  "replay_mode": "live_required",
+  "replay_mode_basis": {
+    "control_ids": [
+      "ctl_refund_window_v1"
+    ],
+    "control_step": 5,
+    "first_irreversible_action_step": 5,
+    "steps_remaining_after_control": 2,
+    "gated_tool": "issue_refund",
+    "checks_reachable_via_gated_tool": [
+      "unauthorized_cash_refund",
+      "unauthorized_store_credit"
+    ],
+    "checks_covered_by_control": [
+      "unauthorized_cash_refund"
+    ],
+    "other_irreversible_tools": [],
+    "rule_kind": "prohibition",
+    "predicted_by": "heuristic_v1",
+    "agreement_rate": null,
+    "source_experiment_id": null
+  },
   "replay_command": "trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json",
   "metadata": {
     "source_verifier_id": "refund_policy",

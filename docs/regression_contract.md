@@ -28,7 +28,7 @@ from the refund failure scenario.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `schema_version` | `str` | auto | Currently `0.2.0`; bump when fields change |
+| `schema_version` | `str` | auto | Currently `0.3.0`; bump when fields change |
 | `test_name` | `str` | yes | Machine name: `regression_{task_id}` |
 | `source_run_id` | `str` | yes | The run that produced this artifact |
 | `task_fixture` | `str` | yes | Repo-relative path to the originating task JSON |
@@ -41,8 +41,59 @@ from the refund failure scenario.
 | `positive_sibling_tests` | `list[SiblingTest]` | no | Companion scenarios that must keep passing |
 | `severity` | `Severity` | yes | Highest severity from the verifier result |
 | `blocks_release` | `bool` | yes | Whether a regression failure blocks the release gate |
+| `replay_mode` | `static_ok` / `live_required` / `unlabeled` | auto | Trust label computed at materialization; defaults to `unlabeled` for older artifacts |
+| `replay_mode_basis` | `ReplayModeBasis` / null | auto | Recorded inputs to the fixed classification rule; null on older artifacts |
 | `replay_command` | `str` | yes | Shell command to reproduce the run |
 | `metadata` | `dict` | no | Source verifier ID, `available_tools`, and `schema_versions` for every input this artifact depends on |
+
+### `ReplayModeBasis` fields
+
+| Field | Type | Meaning |
+|---|---|---|
+| `control_ids` | `list[str]` | Reference controls considered (the default `--apply-control` set) |
+| `control_step` | `int` / null | First recorded tool step those controls would block; null if none |
+| `first_irreversible_action_step` | `int` / null | Copied from `AttributionResult` |
+| `steps_remaining_after_control` | `int` / null | Recorded model actions after the block; null if no block |
+| `gated_tool` | `str` / null | Tool blocked at `control_step` |
+| `checks_reachable_via_gated_tool` | `list[str]` | Known checks reachable through any arguments to that tool |
+| `checks_covered_by_control` | `list[str]` | Checks enforced by the executable guardrail that blocks the step |
+| `other_irreversible_tools` | `list[str]` | Other task tools registered as `external_irreversible` |
+| `rule_kind` | `prohibition` / `requirement` / null | Executable guardrail's rule kind; null if unknown or no block |
+| `predicted_by` | `heuristic_v1` / `measured` | Currently always `heuristic_v1` |
+| `agreement_rate` | `float` / null | Reserved for measured agreement; currently null |
+| `source_experiment_id` | `str` / null | Reserved for a live experiment; currently null |
+
+## What the label means and does not mean
+
+`static_ok` means the static replay verdict is sufficient under all four fixed
+conditions: the control blocks the first irreversible action identified by
+attribution, the rule is a prohibition ("never do X"), the guardrail covers every
+known verifier check reachable through that tool, and no other available tool
+has an irreversible side effect. Requirements ("do Y first") cannot qualify.
+Missing evidence, unknown tool-check coverage, or no predicted block yields
+`live_required`. Artifacts written before schema `0.3.0` load as `unlabeled`.
+
+The materializer finds the first block by advancing recorded successful tool
+calls in an isolated copy of the initial state with the reference controls
+installed. It stops at the block. Coverage comes from the executable guardrail
+registry, not the broader controls proposed in repair-package text. Tool-check
+reachability is data beside `_CONTROL_BUILDERS` in `failure_bundles/generator.py`.
+New guardrails must declare their actual check coverage and rule kind; missing
+metadata cannot earn `static_ok`.
+
+This is a heuristic about the recorded task, tool surface, and reference controls
+at artifact creation, not measured model behavior or a guarantee about arbitrary
+future controls. Re-materialize after those inputs change. A replay PASS still
+means only that the existing gate assertions passed. With `live_required`, a
+real agent must continue from the block point to establish control effectiveness;
+that execution belongs to TRA-97 (#159). Replay prints the label and one warning
+when `--apply-control` uses a `live_required` artifact. Exit codes are unchanged.
+
+All five `refund_bundles_v0` artifacts are `live_required`, pinned in
+`fixtures/expected/refund_bundles_v0_replay_modes.json`. The current guardrail
+covers only `unauthorized_cash_refund`; `issue_refund` also permits store-credit
+calls. Even the minimal control demo is therefore `live_required` despite its
+controlled replay exiting 0. No live confirmation is claimed by this label.
 
 ### `SiblingTest` fields
 
@@ -206,7 +257,7 @@ adapter replays a fixed list of pre-authored actions and never reads a tool
 result back into its next move — see `models/fixture.py`. Concretely:
 
 - `fixtures/tasks/refund_policy_control_demo.json` is a minimal fixture
-  built so `unauthorized_cash_refund` is the *only* possible violation — no
+  scripted so `unauthorized_cash_refund` is its only recorded violation — no
   ticket step, and a final answer that never claims the refund happened.
   Here, `--apply-control` flips the whole run FAIL → PASS by itself.
 - `fixtures/tasks/refund_policy_failure.json` (the full 7-step staged
