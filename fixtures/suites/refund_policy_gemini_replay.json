@@ -1,0 +1,14 @@
+{
+  "schema_version": "0.2.0",
+  "suite_id": "refund_policy_gemini_replay",
+  "description": "Offline replay of the retained Gemini refund-policy run; expected verifier PASS.",
+  "tasks": ["fixtures/tasks/refund_policy_failure.json"],
+  "agent_configs": [
+    {
+      "label": "retained-gemini",
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "cassette": {"mode": "replay", "directory": "fixtures/cassettes"}
+    }
+  ]
+}

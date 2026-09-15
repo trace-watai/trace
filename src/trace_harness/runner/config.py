@@ -20,7 +20,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-RUN_CONFIG_SCHEMA_VERSION = "0.1.0"
+from trace_harness.models.cassette import CassetteConfig
+
+RUN_CONFIG_SCHEMA_VERSION = "0.2.0"  # optional explicit cassette configuration
 
 # Version of the system/user prompt template built by
 # runner.agent_runner.build_initial_transcript. Bump when that template
@@ -52,4 +54,5 @@ class RunConfig(BaseModel):
     seed: int | None = None
     prompt_version: str = PROMPT_VERSION
     tool_mode: ToolMode = ToolMode.NATIVE
+    cassette: CassetteConfig | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

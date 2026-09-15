@@ -128,3 +128,14 @@ Copy `.env.example` to `.env` for local secrets; `.env` is gitignored.
 Free Gemini keys are for early prototyping only — tests must never require
 them, and the fixture provider stays the default. Sponsor credits replace
 free keys when limits bite.
+
+For repeatable model runs, use explicit `--cassette-mode record` or `replay`
+with `--cassette-dir`. Recording a live provider requires its normal key;
+replay requires neither keys, provider SDKs, nor network access. Tests record
+only stub/fixture adapters and replay the retained live fixture offline.
+The wrapper stores request hashes, normalized actions, provider continuation
+state, and allowlisted token counts. Raw SDK responses and headers are excluded;
+recognized credential fields and the wrapped adapter's API key are rejected
+if they appear in normalized actions. Review action text before committing
+cassettes: it can still contain task/customer data or other sensitive content.
+Never put API keys in a suite manifest, run configuration, or cassette.
