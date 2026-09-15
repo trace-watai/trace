@@ -67,6 +67,10 @@ RUN_INDEX = "index.json"
 BATCHES_DIR = "batches"
 BATCH_SUMMARY = "batch_summary.json"
 REGRESSION_GATE_SUMMARY = "regression_gate_summary.json"
+# Per-batch (not per-run): the check/category/coverage report over a batch,
+# derived from the batch summary + each run's artifacts (see runner/report.py).
+SUITE_REPORT = "suite_report.json"
+SUITE_REPORT_MD = "suite_report.md"
 
 ALL_ARTIFACTS = (
     TASK_SPEC,
@@ -217,6 +221,12 @@ class ArtifactStore:
     def batch_summary_path(self, batch_id: str) -> Path:
         return self.runs_dir / BATCHES_DIR / batch_id / BATCH_SUMMARY
 
+    def suite_report_path(self, batch_id: str) -> Path:
+        return self.runs_dir / BATCHES_DIR / batch_id / SUITE_REPORT
+
+    def suite_report_md_path(self, batch_id: str) -> Path:
+        return self.runs_dir / BATCHES_DIR / batch_id / SUITE_REPORT_MD
+
     def write_batch_summary(self, batch_id: str, payload: BaseModel | dict) -> Path:
         """Atomically persist the authoritative summary for one batch."""
         data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
@@ -224,6 +234,41 @@ class ArtifactStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(path, json.dumps(data, indent=2) + "\n")
         return path
+
+    def read_batch_summary(self, batch_id: str) -> Any:
+        """Load one batch's summary JSON, or raise with the path we looked in."""
+        path = self.batch_summary_path(batch_id)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"batch summary not found for batch '{batch_id}' (looked in {path})."
+            )
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def write_suite_report(
+        self, batch_id: str, payload: BaseModel | dict, *, markdown: str | None = None
+    ) -> Path:
+        """Atomically persist a batch's suite report (JSON, plus optional markdown).
+
+        The markdown string is rendered by the caller (``runner/report.py``) so
+        this layer keeps no view logic. Returns the JSON path.
+        """
+        data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
+        path = self.suite_report_path(batch_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(path, json.dumps(data, indent=2) + "\n")
+        if markdown is not None:
+            _atomic_write_text(self.suite_report_md_path(batch_id), markdown)
+        return path
+
+    def read_suite_report(self, batch_id: str) -> Any:
+        """Load one batch's suite report JSON, or raise with a generation hint."""
+        path = self.suite_report_path(batch_id)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"suite report not found for batch '{batch_id}' (looked in {path}). "
+                "Run `trace-harness report-suite <batch_id>` to generate it."
+            )
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def read_index(self) -> RunIndex:
         """Load the run index; missing or corrupt indexes are rebuildable."""

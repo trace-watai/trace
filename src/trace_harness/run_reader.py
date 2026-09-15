@@ -15,6 +15,8 @@ endpoint map in docs/future_api.md is mirrored 1:1 by the methods here:
     GET /runs/{id}/verifier         -> get_verifier(id)   -> VerifierResult | None
     GET /runs/{id}/attribution      -> get_attribution(id)-> AttributionResult | None
     GET /runs/{id}/bundle           -> get_bundle(id)     -> FailureBundle | None
+    GET /batches/{id}               -> get_batch_summary(id) -> BatchSummary
+    GET /batches/{id}/report        -> get_suite_report(id)  -> SuiteReport
 
 Missing-artifact states are explicit:
   * unknown run id (no directory)              -> raise RunNotFound
@@ -38,6 +40,8 @@ from trace_harness.attribution.schemas import AttributionResult
 from trace_harness.failure_bundles.generator import FailureBundle
 from trace_harness.failure_bundles.schemas import FailureCard, RepairPackage
 from trace_harness.regression.schemas import RegressionArtifact
+from trace_harness.runner.batch import BatchSummary
+from trace_harness.runner.report import SuiteReport, build_suite_report
 from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
@@ -147,6 +151,25 @@ class RunReader:
     def list_runs_for_batch(self, batch_id: str) -> list[RunSummary]:
         """All runs tagged with ``batch_id``, oldest-first (chronological)."""
         return [s for s in self.list_runs() if s.batch_id == batch_id]
+
+    # --- batches ---
+
+    def get_batch_summary(self, batch_id: str) -> BatchSummary:
+        """The authoritative summary for one batch (raises if the batch is unknown)."""
+        return BatchSummary.model_validate(self.store.read_batch_summary(batch_id))
+
+    def get_suite_report(self, batch_id: str) -> SuiteReport:
+        """The persisted suite report for one batch.
+
+        Reads ``suite_report.json`` unchanged, exactly like the other getters.
+        If it has not been generated yet, falls back to building it in memory
+        from the batch summary + run artifacts (no write) so a caller never has
+        to sequence a ``report-suite`` first.
+        """
+        try:
+            return SuiteReport.model_validate(self.store.read_suite_report(batch_id))
+        except FileNotFoundError:
+            return build_suite_report(self.get_batch_summary(batch_id), self.store)
 
     # --- single run ---
 
