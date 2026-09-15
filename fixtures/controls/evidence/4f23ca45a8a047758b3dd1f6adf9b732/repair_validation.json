@@ -1,0 +1,48 @@
+{
+  "schema_version": "0.1.0",
+  "run_id": "run_20260914T185450Z_df4b49a1",
+  "test_name": "regression_refund_policy_control_demo",
+  "batch_id": "batch_20260914T185450Z_973314c8",
+  "controls_source": "repair_package",
+  "controls": [
+    {
+      "control": "deterministic_pre_call_refund_guardrail",
+      "verdict": "accepted",
+      "reason": null,
+      "guardrail_ref": "unauthorized_cash_refund_guardrail",
+      "control_id": "ctl_refund_window_v1",
+      "originating_rerun": {
+        "run_id": "run_20260914T185450Z_d7763386",
+        "task_id": "refund_policy_control_demo",
+        "verdict": "PASS",
+        "cleared_checks": [
+          "unauthorized_cash_refund"
+        ],
+        "failed_checks": []
+      },
+      "sibling_reruns": [
+        {
+          "run_id": "run_20260914T185450Z_5143402a",
+          "task_id": "refund_policy_valid_cash",
+          "verdict": "PASS",
+          "cleared_checks": [],
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "control": "regression_test_ci_gate",
+      "verdict": "skipped",
+      "reason": "not_materializable: no registered guardrail for this control yet",
+      "guardrail_ref": null,
+      "control_id": null,
+      "originating_rerun": null,
+      "sibling_reruns": []
+    }
+  ],
+  "rollup": {
+    "accepted": 1,
+    "rejected": 0,
+    "skipped": 1
+  }
+}

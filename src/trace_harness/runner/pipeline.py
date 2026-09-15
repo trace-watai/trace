@@ -15,7 +15,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from trace_harness.environment.controls import ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models import create_model_adapter
 from trace_harness.runner.agent_runner import AgentRunner
@@ -70,17 +72,25 @@ def run_task_pipeline(
     store: ArtifactStore,
     *,
     bundle_on_fail: bool = True,
+    control_library: Path | str | None = None,
+    controls: list[ControlInstance] | None = None,
 ) -> PipelineResult:
     """Run one task under one agent config and produce all pipeline artifacts."""
     task_path = Path(task_path).resolve()
     task = load_task(task_path)
     docs = load_docs_for_task(task, task_path)
-    environment = SupportEnvironment.from_task(task, docs=docs)
+    if control_library is not None and controls is not None:
+        raise ValueError("choose either a control library or explicit controls")
+    environment = SupportEnvironment.from_task(task, docs=docs, control_library=control_library)
+    for control in sorted(controls or [], key=lambda c: c.control_id):
+        environment.install_control(control)
 
-    metadata: dict[str, str] = {
+    metadata: dict[str, Any] = {
         "task_fixture_path": _repo_relative(task_path),
         "agent_label": agent_config.label,
     }
+    if environment.installed_controls:
+        metadata["controls"] = [c.model_dump(mode="json") for c in environment.installed_controls]
     if agent_config.provider == "fixture":
         script_path = _resolve_fixture_script(task, task_path)
         adapter = create_model_adapter("fixture", script_path=script_path)

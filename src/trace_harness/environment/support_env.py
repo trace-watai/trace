@@ -45,10 +45,12 @@ Edge cases for verifier inspection
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
+from trace_harness.environment.control_library import load_library
 from trace_harness.environment.controls import ControlInstance, resolve_control
 from trace_harness.environment.registry import ToolRegistry, default_support_registry
 from trace_harness.environment.state import Doc, SupportState
@@ -67,6 +69,7 @@ class SupportEnvironment:
         state: SupportState,
         registry: ToolRegistry | None = None,
         available_tools: list[str] | None = None,
+        control_library: Path | str | None = None,
     ):
         self.state = state
         self._registry = registry or default_support_registry()
@@ -85,6 +88,9 @@ class SupportEnvironment:
                     f"registry has {self._registry.names()}"
                 )
             self._available = list(available_tools)
+        if control_library is not None:
+            for control in load_library(control_library).active_controls():
+                self.install_control(control)
 
     @classmethod
     def from_task(
@@ -92,10 +98,16 @@ class SupportEnvironment:
         task: TaskSpec,
         docs: list[Doc] | None = None,
         registry: ToolRegistry | None = None,
+        control_library: Path | str | None = None,
     ) -> SupportEnvironment:
         """Build the environment a task describes: initial state + tool subset."""
         state = SupportState.from_task(task, docs=docs)
-        return cls(state, registry=registry, available_tools=task.available_tools)
+        return cls(
+            state,
+            registry=registry,
+            available_tools=task.available_tools,
+            control_library=control_library,
+        )
 
     def register_pre_execute_hook(
         self, hook: Callable[[ToolCall, SupportState], ToolResult | None]

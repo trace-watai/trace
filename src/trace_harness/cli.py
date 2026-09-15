@@ -36,6 +36,11 @@ from pathlib import Path
 from typing import Any
 
 from trace_harness.config import HarnessConfig, load_env_file
+from trace_harness.environment.control_library import (
+    DEFAULT_CONTROL_LIBRARY,
+    load_library,
+    rollback_control,
+)
 from trace_harness.environment.controls import (
     ControlInstance,
     reference_controls,
@@ -46,6 +51,7 @@ from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.failure_bundles.schemas import RepairPackage
 from trace_harness.models import create_model_adapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
+from trace_harness.regression.promotion import LibraryGateError, commit_controls
 from trace_harness.regression.repair_validation import (
     ControlValidation,
     ControlVerdict,
@@ -126,6 +132,12 @@ def _resolve_run_dir(run_path: str, runs_dir: Path) -> Path:
 def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     """Provider-selection flags shared by run-fixture and run-pipeline."""
     parser.add_argument(
+        "--control-library",
+        default=None,
+        metavar="PATH",
+        help="load active controls from a library",
+    )
+    parser.add_argument(
         "--provider",
         default="fixture",
         help="model provider: 'fixture' (scripted, default) or 'gemini'",
@@ -152,7 +164,7 @@ def _run_fixture(
 ) -> RunResult:
     task_path = Path(args.task_path).resolve()
     task = load_task(task_path)
-    metadata: dict[str, str] = {"task_fixture_path": _repo_relative(task_path)}
+    metadata: dict[str, Any] = {"task_fixture_path": _repo_relative(task_path)}
 
     if pinned_initial_state is None:
         docs = load_docs_for_task(task, task_path)
@@ -163,11 +175,15 @@ def _run_fixture(
         docs = None
         metadata["replay_pinned_state"] = "true"
 
-    environment = SupportEnvironment.from_task(task, docs=docs)
+    environment = SupportEnvironment.from_task(
+        task, docs=docs, control_library=getattr(args, "control_library", None)
+    )
     # Guardrails enter only as installed controls, never raw hooks, so every
     # block they cause carries blocked_by in the trace.
     for instance in controls or []:
         environment.install_control(instance)
+    if environment.installed_controls:
+        metadata["controls"] = [c.model_dump(mode="json") for c in environment.installed_controls]
 
     # The fixture provider replays a script; real providers (gemini) drive the
     # agent live and need no script — only the fixture path is required.
@@ -564,6 +580,86 @@ def _replay(
     apply_control: bool = False,
     control_ids: list[str] | None = None,
     fail_on_rejected: bool = False,
+    control_library: Path | None = None,
+    commit: bool = False,
+) -> int:
+    if commit and not apply_control:
+        raise CliInputError("--commit requires --apply-control")
+    if control_ids and not apply_control:
+        raise CliInputError("--control requires --apply-control")
+    if fail_on_rejected and not apply_control:
+        raise CliInputError("--fail-on-rejected requires --apply-control")
+    if commit:
+        control_library = control_library or DEFAULT_CONTROL_LIBRARY
+        if not artifact_path.with_name(names.REPAIR_PACKAGE).is_file():
+            raise CliInputError(
+                "--commit requires the originating repair package beside the artifact"
+            )
+    candidates = select_controls(control_ids) if apply_control else []
+    active = []
+    if control_library is not None and (control_library.exists() or not commit):
+        active = load_library(control_library).active_controls()
+    combined = {c.control_id: c for c in active}
+    for control in candidates:
+        if control.control_id in combined:
+            existing = combined[control.control_id]
+            if (
+                existing.guardrail_ref != control.guardrail_ref
+                or existing.rule_ref != control.rule_ref
+                or existing.behavior_on_failure != control.behavior_on_failure
+            ):
+                raise CliInputError(f"conflicting control ID: {control.control_id}")
+        else:
+            combined[control.control_id] = control
+    code = _replay_result(
+        artifact_path,
+        store,
+        apply_control=apply_control or control_library is not None,
+        control_ids=control_ids,
+        fail_on_rejected=fail_on_rejected,
+        installed_controls=sorted(combined.values(), key=lambda c: c.control_id),
+        validate_individually=apply_control,
+        validation_controls=candidates,
+    )
+    if code or not commit:
+        return code
+
+    def gate(path: Path, controls: list[ControlInstance]) -> list[Path]:
+        run_dirs: list[Path] = []
+        if _replay_result(
+            path,
+            store,
+            apply_control=True,
+            installed_controls=controls,
+            validate_individually=False,
+            replayed_run_dirs=run_dirs,
+        ):
+            raise LibraryGateError(f"proposed library failed regression {path}")
+        return run_dirs
+
+    artifact = RegressionArtifact.model_validate_json(artifact_path.read_bytes())
+    validation_path = store.artifact_path(artifact.source_run_id, names.REPAIR_VALIDATION)
+    assert control_library is not None
+    try:
+        library = commit_controls(control_library, artifact_path, validation_path, candidates, gate)
+    except LibraryGateError as exc:
+        print(f"\nControl library unchanged: {exc}")
+        return 1
+    print(f"\nCommitted controls to {control_library}: {len(library.active_controls())} active")
+    return 0
+
+
+def _replay_result(
+    artifact_path: Path,
+    store: ArtifactStore,
+    *,
+    apply_control: bool = False,
+    control_ids: list[str] | None = None,
+    fail_on_rejected: bool = False,
+    installed_controls: list[ControlInstance] | None = None,
+    validate_individually: bool = True,
+    validation_controls: list[ControlInstance] | None = None,
+    replayed_run_dirs: list[Path] | None = None,
 ) -> int:
     """Keep the public replay command's exit contract unchanged."""
     return _replay_with_report(
@@ -572,6 +668,10 @@ def _replay(
         apply_control=apply_control,
         control_ids=control_ids,
         fail_on_rejected=fail_on_rejected,
+        installed_controls=installed_controls,
+        validate_individually=validate_individually,
+        validation_controls=validation_controls,
+        replayed_run_dirs=replayed_run_dirs,
     ).exit_code
 
 
@@ -582,6 +682,10 @@ def _replay_with_report(
     apply_control: bool = False,
     control_ids: list[str] | None = None,
     fail_on_rejected: bool = False,
+    installed_controls: list[ControlInstance] | None = None,
+    validate_individually: bool = True,
+    validation_controls: list[ControlInstance] | None = None,
+    replayed_run_dirs: list[Path] | None = None,
 ) -> ReplayReport:
     """Replay a regression artifact and assert the gate conditions hold.
 
@@ -627,7 +731,14 @@ def _replay_with_report(
         raise CliInputError("--control requires --apply-control")
     if fail_on_rejected and not apply_control:
         raise CliInputError("--fail-on-rejected requires --apply-control")
-    controls = select_controls(control_ids) if apply_control else []
+    controls = (
+        installed_controls
+        if installed_controls is not None
+        else select_controls(control_ids)
+        if apply_control
+        else []
+    )
+    individual_controls = controls if validation_controls is None else validation_controls
 
     data = json.loads(artifact_path.read_text(encoding="utf-8"))
     artifact = RegressionArtifact.model_validate(data)
@@ -640,8 +751,8 @@ def _replay_with_report(
     task = load_task(task_path)
     script = build_pinned_script(artifact, task.task_id)
     prescribed, controls_source = (
-        _prescribed_controls(artifact_path, artifact, task.task_id, controls)
-        if apply_control
+        _prescribed_controls(artifact_path, artifact, task.task_id, individual_controls)
+        if apply_control and validate_individually
         else ({}, "repair_package")
     )
 
@@ -673,7 +784,7 @@ def _replay_with_report(
         )
 
     # Step 1: re-run the pinned scenario; verifier must produce the expected failures.
-    stages = 3 if apply_control else 2
+    stages = 3 if apply_control and validate_individually else 2
     print(f"\n[1/{stages}] Replaying pinned scenario (script from {artifact.task_fixture})")
     result = _run_fixture(
         _fixture_args(artifact.task_fixture),
@@ -683,6 +794,8 @@ def _replay_with_report(
         pinned_script=script,
     )
     run_dir = store.run_dir(result.run_id)
+    if replayed_run_dirs is not None:
+        replayed_run_dirs.append(run_dir)
     merged, run_completed = _verify(run_dir)
 
     actual_ids = {c.check_id for c in merged.failed_checks}
@@ -749,6 +862,8 @@ def _replay_with_report(
             print(f"  [{i}] {sibling.test_name}: {sibling.task_fixture}")
             sib_result = _run_fixture(_fixture_args(sibling.task_fixture), store, controls=controls)
             sib_dir = store.run_dir(sib_result.run_id)
+            if replayed_run_dirs is not None:
+                replayed_run_dirs.append(sib_dir)
             sib_merged, _ = _verify(sib_dir)
             siblings.append(_case(sibling.test_name, sib_result, sib_merged))
             if not sib_merged.passed:
@@ -762,14 +877,14 @@ def _replay_with_report(
     # controls together hold the line"; this answers which control earned it,
     # and writes the answer down instead of leaving it in stdout.
     validation = None
-    if apply_control:
+    if apply_control and validate_individually:
         print("\n[3/3] Validating each prescribed control on its own")
         validation = _validate_controls(
             store=store,
             artifact=artifact,
             prescribed=prescribed,
             controls_source=controls_source,
-            controls=controls,
+            controls=individual_controls,
             task_fixture_args=_fixture_args,
             pinned_state=pinned_state,
             script=script,
@@ -973,7 +1088,7 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
         f"{len(suite.agent_configs)} agent config(s) = {cells} run(s)"
     )
 
-    summary = BatchRunner(store).run(suite)
+    summary = BatchRunner(store, control_library=args.control_library).run(suite)
 
     print(f"\nBatch {summary.batch_id} complete:")
     for e in summary.entries:
@@ -1171,6 +1286,28 @@ def main(argv: list[str] | None = None) -> int:
             "default is every reference control"
         ),
     )
+    p_replay.add_argument(
+        "--control-library",
+        default=None,
+        metavar="PATH",
+        help="replay with active library controls",
+    )
+    p_replay.add_argument(
+        "--commit",
+        action="store_true",
+        help="retain accepted controls after library replay (requires --apply-control)",
+    )
+
+    p_controls = sub.add_parser("controls", parents=[common], help="manage the control library")
+    control_commands = p_controls.add_subparsers(dest="control_command", required=True)
+    p_rollback = control_commands.add_parser(
+        "rollback", help="deactivate a control, preserving history"
+    )
+    p_rollback.add_argument("control_id")
+    p_rollback.add_argument("--reason", required=True)
+    p_rollback.add_argument(
+        "--control-library", default=str(DEFAULT_CONTROL_LIBRARY), metavar="PATH"
+    )
 
     p_pipe = sub.add_parser(
         "run-pipeline",
@@ -1189,6 +1326,7 @@ def main(argv: list[str] | None = None) -> int:
         help="run a task suite (batch) across agent configs and write a batch summary",
     )
     p_suite.add_argument("suite_path", help="path to a suite manifest JSON")
+    p_suite.add_argument("--control-library", default=None, metavar="PATH")
     p_suite.add_argument(
         "--fail-on-verifier",
         action="store_true",
@@ -1249,7 +1387,13 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
             apply_control=args.apply_control,
             control_ids=args.control_ids,
             fail_on_rejected=args.fail_on_rejected,
+            control_library=Path(args.control_library) if args.control_library else None,
+            commit=args.commit,
         )
+    if args.command == "controls":
+        rollback_control(args.control_library, args.control_id, args.reason)
+        print(f"Rolled back {args.control_id}: {args.reason.strip()}")
+        return 0
     if args.command == "run-pipeline":
         result = _run_fixture(args, store)
         run_dir = store.run_dir(result.run_id)
