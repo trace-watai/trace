@@ -130,8 +130,8 @@ A repair package *prescribes* controls by name. Whether one can actually be
 installed is recorded in `environment/controls.py::MATERIALIZABLE_REPAIR_CONTROLS`,
 which maps each prescribed `RepairControl.name` to the `guardrail_ref` that
 implements it, or to `None` when nothing does yet. Per-control validation
-(TRA-92, not built yet) is meant to report the latter as
-`skipped: not_materializable` rather than pretending.
+reports the latter as `skipped: not_materializable` rather than pretending,
+and writes every verdict to `repair_validation.json` (issue #146).
 
 | Prescribed `RepairControl.name` | Executable `guardrail_ref` |
 |---|---|
@@ -141,6 +141,36 @@ implements it, or to `None` when nothing does yet. Per-control validation
 | `final_answer_state_grounding_check` | none yet |
 | `required_escalation_enforcement` | none yet |
 | `regression_test_ci_gate` | not an environment guardrail; a CI control |
+
+### Control validation
+
+`replay --apply-control` writes `repair_validation.json` at schema `0.1.0`
+under `<output-runs-dir>/<source_run_id>/`, reading prescriptions beside the
+input regression artifact. Invalid or mismatched packages fail before replay;
+empty packages produce no verdicts. Without a package, selected reference
+controls use all pinned checks and record `controls_source: reference_controls`.
+
+Each verdict includes control identity, reason, originating and sibling run
+IDs, failed checks, and linked checks cleared on completed replays. Evidence
+retains `PASS`, `FAIL`, or `INCOMPLETE`; a rollup counts the control verdicts.
+
+| Verdict | Condition |
+|---|---|
+| `accepted` | Linked checks cleared, no new blocking check appeared, and all declared siblings passed. |
+| `rejected_failure_persists` | A linked check still fired. |
+| `rejected_overblocks` | Linked checks cleared, but a new blocking check appeared or a positive sibling failed. |
+| `skipped` | `not_materializable`, `not_selected`, `no_linked_checks`, or `validation_incomplete`. |
+
+Incomplete evidence takes precedence and always causes exit 1. Other skips
+do not fail the gate. `--fail-on-rejected` also gates individual rejections.
+Invalid inputs return exit 2.
+
+`inspect <source_run_id>` renders validation even without a local trace.
+`list-runs --batch <batch_id>` groups individual validation runs.
+
+`refund_policy_control_demo` earns acceptance. `refund_policy_failure` remains
+rejected because its script claims a blocked refund, introducing
+`final_answer_inconsistent_with_state`. Live-agent recovery needs separate validation.
 
 ### `RepairPackage` fields
 
