@@ -88,16 +88,63 @@ With `--apply-control` the meaning of `0`/`1` inverts for the pinned checks
 only; see [Control-flip demo](#control-flip-demo---apply-control) below.
 Fixture drift never affects the exit code.
 
-### What CI should do with a regression artifact
+### What CI does
 
-For each `RegressionArtifact` where `blocks_release: true`:
+`scripts/check_repo.sh` runs the collector after the pipeline smoke checks:
 
-1. Run `trace-harness replay <regression_artifact.json>` — rebuilds the run from the artifact's own pinned `initial_state`, `pinned_docs`, and `pinned_agent_actions` (the fixture named in `task_fixture` is read only for the tool subset and verifier ids), and asserts the verifier produces the expected `verifier_checks` as failed checks
-2. Run each `positive_sibling_tests[*].task_fixture` through the full pipeline
-3. Assert every sibling produces a verifier PASS
-4. Fail the CI run if any of the above break
+```bash
+trace-harness collect-regressions docs/acceptance/runs \
+  --suite fixtures/suites/refund_bundles_v0.json --runs-dir /tmp/trace-regression-gate
+```
 
-Severity and `blocks_release` are read directly off the `VerifierResult` — they come from the canonical `SEVERITY_MAP` in `verifiers/severity_map.py` and must not be recalculated in CI.
+The command recursively finds `regression_artifact.json` files (or accepts one
+artifact file), generates fresh artifacts through the optional fixture suite,
+and calls the existing replay implementation for every release-blocking artifact.
+The retained artifact plus the five bundle artifacts produce six collected entries,
+including two separate recordings with the same test name.
+
+Each pinned failure must reproduce and every declared positive sibling must pass.
+Both require completed runs: a partial run cannot satisfy the collector even if
+it emitted a pinned violation before stopping. The standalone `replay` command's
+exit contract is unchanged. Portable fixture paths from Windows artifacts are
+accepted. Nonblocking artifacts are listed and skipped; the collector never
+recalculates severity or `blocks_release`.
+
+The collector also calls `replay --apply-control` through the same implementation.
+It reads an explicit `replay_mode` when present, defaulting older artifacts to
+`unlabeled`; it does not assign trust labels itself (#156).
+
+| Replay mode | Control result in the collector |
+|---|---|
+| `static_ok` | Gates: pinned checks must disappear, no blocking failure may remain, and the scenario and passing siblings must complete. |
+| `live_required` or `unlabeled` | Advisory, including control failures/errors; does not affect the exit code or count as confirmed. |
+
+Until #156 labels artifacts, all control results remain advisory. Control counts
+are per artifact under the current reference-control set, not per individual
+control. #146's per-control reports can replace that validation call once merged.
+This command runs no live agents; optional suites must use the fixture provider.
+
+| Exit | Meaning |
+|---|---|
+| `0` | All required gates passed; may include skipped artifacts and advisory control failures. |
+| `1` | Failure did not reproduce, a sibling failed, a `static_ok` control failed, or suite/replay execution failed. |
+| `2` | Malformed artifact, unknown replay label, missing/unusable input, or invalid suite; takes precedence over exit 1. |
+
+The collector continues after invalid artifacts and writes a version `0.1.0`
+`regression_gate_summary.json` at the runs root. It records found/blocking/reproduced
+counts, passing and failing siblings, confirmed/advisory/failed controls, skipped
+and malformed artifacts, execution errors, duration, and per-artifact replay results.
+A blocking artifact with no pinned verifier checks is malformed. An empty valid
+directory reports zero artifacts; it does not claim any regressions were exercised.
+
+Each invocation retains a separate working directory under
+`<runs-dir>/regression-collections/`: frozen source copies with SHA-256 hashes,
+generated suite runs, baseline/control runs, replay logs, and its own summary.
+The root summary points to the latest collection. When scanning an ancestor,
+the collector excludes its own working directories to avoid collecting old copies;
+an explicit input path inside them remains usable. Source artifacts are never
+edited and their `replay_command` strings are never executed. CI uses a throwaway
+runs directory; use a persistent `--runs-dir` to inspect local evidence afterward.
 
 ### Linear visibility guidance
 
@@ -199,6 +246,12 @@ The assertion direction flips too:
   Positive siblings are re-run with the guardrail active either way, so
   `--apply-control` doubles as an overblocking check on legitimate behavior.
 
+Either way, a pinned replay that does not *complete* fails the gate on its own.
+A run that never reached a final answer cannot establish that the recorded
+failure still reproduces, whatever its checks happened to report before it
+stopped, so it is never a clear gate. This is the same rule the verifier applies
+to incomplete runs (issue #163).
+
 **Important limit, found while building this:** a guardrail can only change
 what happens in *state* (did the tool call's side effect actually occur).
 It cannot change what a scripted fixture agent says, because the fixture
@@ -242,7 +295,8 @@ not just show the clean fixture and imply the guardrail fixes everything.
 scripts/check_repo.sh
 ```
 
-Runs lint, format, tests, and the full pipeline smoke test. Minimum bar before any PR.
+Runs lint, format, tests, the full pipeline smoke test, and the regression collector.
+Minimum bar before any PR.
 
 ---
 

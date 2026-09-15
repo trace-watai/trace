@@ -31,4 +31,8 @@ python -m trace_harness.cli --runs-dir "$SMOKE_DIR" \
 python -m trace_harness.cli --runs-dir "$SMOKE_DIR" \
   run-pipeline fixtures/tasks/refund_policy_valid_cash.json --fail-on-verifier >/dev/null
 
+echo "==> regression gate"
+python -m trace_harness.cli --runs-dir "$SMOKE_DIR" \
+  collect-regressions docs/acceptance/runs --suite fixtures/suites/refund_bundles_v0.json
+
 echo "==> all checks passed"
