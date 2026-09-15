@@ -58,7 +58,11 @@ class SuiteReportRow(BaseModel):
     ``run_id`` is ``None`` only for a cell whose setup failed before a run
     existed. For a passing (or un-verified) row the failure fields are inert:
     ``primary_failure_category`` is ``""`` and the step / contributing fields
-    are empty.
+    are empty. That is also true for an ``incomplete`` row that recorded no
+    violations before the run died — ``verifier_passed`` is forced ``False``
+    for it (see ``verifiers.base.mark_incomplete``), but it is not a verifier
+    *failure*, so it gets no category and no missing-attribution warning;
+    ``verdict`` is what distinguishes the two.
     """
 
     run_id: str | None
@@ -66,6 +70,8 @@ class SuiteReportRow(BaseModel):
     family: str
     agent_label: str
     verifier_passed: bool | None
+    # "pass" | "fail" | "incomplete" | null (pre-batch-schema-0.2.0 / unverified).
+    verdict: str | None = None
     failed_check_ids: list[str] = Field(default_factory=list)
     severity: str | None = None
     blocks_release: bool = False
@@ -228,15 +234,25 @@ def _build_row(
     verifier = _read_optional_dict(store, run_id, names.VERIFIER_RESULT) if run_id else None
     failed_check_ids, severity, blocks_release = _verifier_fields(verifier, entry.severity)
 
+    # A blocking violation is what makes a row worth explaining — not merely
+    # verifier_passed is False. An `incomplete` run (died before finishing;
+    # verifiers.base.mark_incomplete forces passed=False) that recorded zero
+    # violations has nothing to attribute, and attribute/bundle correctly
+    # never ran for it: that is not a gap, so it gets no category and no
+    # warning, only its `verdict`. An incomplete run that *did* record a
+    # violation before dying is attributed exactly like a normal failure.
+    has_violations = bool(failed_check_ids)
     attribution = (
-        _read_optional_dict(store, run_id, names.ATTRIBUTION_RESULT) if run_id and failed else None
+        _read_optional_dict(store, run_id, names.ATTRIBUTION_RESULT)
+        if run_id and failed and has_violations
+        else None
     )
-    if failed and attribution is None:
+    if failed and has_violations and attribution is None:
         warnings.append(
             f"{entry.task_id}: verifier failed but attribution_result.json is missing; "
             f"failure category recorded as '{_UNKNOWN_CATEGORY}'"
         )
-    if failed:
+    if failed and has_violations:
         primary_category, contributing, root_cause_step, first_irreversible_step = (
             _attribution_fields(attribution)
         )
@@ -259,6 +275,7 @@ def _build_row(
         family=family_for_task_path(entry.task_path),
         agent_label=entry.agent_label,
         verifier_passed=entry.verifier_passed,
+        verdict=entry.verdict,
         failed_check_ids=failed_check_ids,
         severity=severity,
         blocks_release=blocks_release,
@@ -347,6 +364,8 @@ def build_suite_report(summary: BatchSummary, store: ArtifactStore) -> SuiteRepo
 
 
 def _verdict(row: SuiteReportRow) -> str:
+    if row.verdict == "incomplete":
+        return "INCOMPLETE"
     if row.verifier_passed is True:
         return "PASS"
     if row.verifier_passed is False:

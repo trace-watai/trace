@@ -1190,6 +1190,8 @@ def _collect_regressions(args: argparse.Namespace, store: ArtifactStore) -> int:
     _print("summary:", str(store.runs_dir / SUMMARY_NAME))
     _print("gate:", "PASS" if summary.exit_code == 0 else f"FAIL (exit {summary.exit_code})")
     return summary.exit_code
+
+
 def _write_and_print_suite_report(store: ArtifactStore, batch_id: str, *, print_full: bool) -> int:
     """Build the per-batch report from on-disk artifacts, persist it, print it.
 

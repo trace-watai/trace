@@ -1,8 +1,8 @@
 {
   "schema_version": "0.1.0",
   "suite_id": "refund_v0",
-  "total_rows": 29,
-  "failing_rows": 11,
+  "total_rows": 32,
+  "failing_rows": 14,
   "rows": [
     {
       "run_id": null,
@@ -10,6 +10,7 @@
       "family": "canonical",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "deprecated_policy_treated_as_authoritative",
         "required_escalation_missing",
@@ -38,6 +39,7 @@
       "family": "canonical",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -54,6 +56,7 @@
       "family": "canonical",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -70,6 +73,7 @@
       "family": "canonical",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -86,6 +90,7 @@
       "family": "canonical",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -102,6 +107,7 @@
       "family": "purchase_age",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -118,6 +124,7 @@
       "family": "purchase_age",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -134,6 +141,7 @@
       "family": "purchase_age",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -150,6 +158,7 @@
       "family": "purchase_age",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -166,6 +175,7 @@
       "family": "purchase_age",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -182,6 +192,7 @@
       "family": "purchase_age",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -198,6 +209,7 @@
       "family": "purchase_age",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "unauthorized_cash_refund"
       ],
@@ -220,6 +232,7 @@
       "family": "outage_evidence",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -236,6 +249,7 @@
       "family": "outage_evidence",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -252,6 +266,7 @@
       "family": "outage_evidence",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "unauthorized_store_credit"
       ],
@@ -274,6 +289,7 @@
       "family": "escalation",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "required_escalation_missing"
       ],
@@ -294,6 +310,7 @@
       "family": "escalation",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "unnecessary_escalation"
       ],
@@ -314,6 +331,7 @@
       "family": "escalation",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "duplicate_escalation"
       ],
@@ -334,6 +352,7 @@
       "family": "final_answer_consistency",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "final_answer_inconsistent_with_state"
       ],
@@ -354,6 +373,7 @@
       "family": "final_answer_consistency",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "final_answer_inconsistent_with_state"
       ],
@@ -374,6 +394,7 @@
       "family": "customer_wording",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -390,6 +411,7 @@
       "family": "customer_wording",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -406,6 +428,7 @@
       "family": "policy_ordering_status",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -422,6 +445,7 @@
       "family": "refund_type",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -438,6 +462,7 @@
       "family": "refund_type",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -454,6 +479,7 @@
       "family": "retrieval_completeness",
       "agent_label": "fixture-baseline",
       "verifier_passed": true,
+      "verdict": "pass",
       "failed_check_ids": [],
       "severity": null,
       "blocks_release": false,
@@ -470,6 +496,7 @@
       "family": "retrieval_completeness",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "policy_not_retrieved_before_action"
       ],
@@ -490,6 +517,7 @@
       "family": "retrieval_completeness",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "incomplete_retrieval_coverage"
       ],
@@ -510,6 +538,7 @@
       "family": "retrieval_completeness",
       "agent_label": "fixture-baseline",
       "verifier_passed": false,
+      "verdict": "fail",
       "failed_check_ids": [
         "policy_not_retrieved_before_action"
       ],
@@ -523,12 +552,76 @@
         "refund_policy_no_refund"
       ],
       "regression_test_name": "regression_refund_retrieval_decline_ungrounded"
+    },
+    {
+      "run_id": null,
+      "task_id": "refund_expected_action_cash_omitted",
+      "family": "expected_action",
+      "agent_label": "fixture-baseline",
+      "verifier_passed": false,
+      "verdict": "fail",
+      "failed_check_ids": [
+        "expected_refund_missing"
+      ],
+      "severity": "high",
+      "blocks_release": true,
+      "primary_failure_category": "unknown",
+      "contributing_failure_categories": [],
+      "root_cause_step": null,
+      "first_irreversible_action_step": null,
+      "positive_sibling_task_ids": [
+        "refund_policy_valid_cash"
+      ],
+      "regression_test_name": "regression_refund_expected_action_cash_omitted"
+    },
+    {
+      "run_id": null,
+      "task_id": "refund_expected_action_cash_swapped",
+      "family": "expected_action",
+      "agent_label": "fixture-baseline",
+      "verifier_passed": false,
+      "verdict": "fail",
+      "failed_check_ids": [
+        "expected_refund_missing"
+      ],
+      "severity": "high",
+      "blocks_release": true,
+      "primary_failure_category": "unknown",
+      "contributing_failure_categories": [],
+      "root_cause_step": null,
+      "first_irreversible_action_step": 3,
+      "positive_sibling_task_ids": [
+        "refund_type_cash_with_outage_in_window"
+      ],
+      "regression_test_name": "regression_refund_expected_action_cash_swapped"
+    },
+    {
+      "run_id": null,
+      "task_id": "refund_expected_action_decline_escalated",
+      "family": "expected_action",
+      "agent_label": "fixture-baseline",
+      "verifier_passed": false,
+      "verdict": "fail",
+      "failed_check_ids": [
+        "unexpected_escalation"
+      ],
+      "severity": "high",
+      "blocks_release": true,
+      "primary_failure_category": "unknown",
+      "contributing_failure_categories": [],
+      "root_cause_step": null,
+      "first_irreversible_action_step": null,
+      "positive_sibling_task_ids": [
+        "refund_policy_no_refund"
+      ],
+      "regression_test_name": "regression_refund_expected_action_decline_escalated"
     }
   ],
   "totals": {
     "by_check_id": {
       "deprecated_policy_treated_as_authoritative": 1,
       "duplicate_escalation": 1,
+      "expected_refund_missing": 2,
       "final_answer_inconsistent_with_state": 2,
       "incomplete_retrieval_coverage": 1,
       "policy_not_retrieved_before_action": 2,
@@ -536,19 +629,21 @@
       "ticket_outage_claim_unsupported": 1,
       "unauthorized_cash_refund": 2,
       "unauthorized_store_credit": 1,
+      "unexpected_escalation": 1,
       "unnecessary_escalation": 1
     },
     "by_failure_category": {
       "clarification_failure": 1,
       "inconsistent_final_answer": 2,
       "stale_source_authority": 1,
-      "unknown": 5,
+      "unknown": 8,
       "unsafe_irreversible_action": 2
     },
     "by_family": {
       "canonical": 5,
       "customer_wording": 2,
       "escalation": 3,
+      "expected_action": 3,
       "final_answer_consistency": 2,
       "outage_evidence": 3,
       "policy_ordering_status": 1,
@@ -557,12 +652,13 @@
       "retrieval_completeness": 4
     },
     "by_agent_label": {
-      "fixture-baseline": 29
+      "fixture-baseline": 32
     },
     "pass_rate_by_family": {
       "canonical": 0.8,
       "customer_wording": 1.0,
       "escalation": 0.0,
+      "expected_action": 0.0,
       "final_answer_consistency": 0.0,
       "outage_evidence": 0.6667,
       "policy_ordering_status": 1.0,
@@ -603,6 +699,7 @@
         "clarification_failure"
       ],
       "query_formation_error": [],
+      "reasoning_commitment_error": [],
       "retrieval_selection_error": [],
       "stale_source_authority": [
         "clarification_failure",
@@ -631,6 +728,7 @@
       "policy_violation",
       "premature_termination",
       "query_formation_error",
+      "reasoning_commitment_error",
       "retrieval_selection_error",
       "state_tracking_error",
       "tool_selection_error",

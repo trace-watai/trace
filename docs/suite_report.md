@@ -46,11 +46,12 @@ Per run, the builder reads four artifacts through `ArtifactStore.read_json`:
 | `task_id` | str | `BatchRunEntry.task_id`. |
 | `family` | str | first path segment after `refund_task_families/` in `BatchRunEntry.task_path`; `canonical` for tasks outside that folder. |
 | `agent_label` | str | `BatchRunEntry.agent_label`. |
-| `verifier_passed` | bool \| null | `BatchRunEntry.verifier_passed` (`null` = verify never ran, e.g. setup error). |
+| `verifier_passed` | bool \| null | `BatchRunEntry.verifier_passed` (`null` = verify never ran, e.g. setup error). **Forced `false` for an `incomplete` run even with zero violations** — see [Degradation](#degradation). |
+| `verdict` | str \| null | `BatchRunEntry.verdict`: `"pass"` \| `"fail"` \| `"incomplete"` \| `null` (unverified, or a batch summary written before schema 0.2.0). The three-state signal `verifier_passed` alone can't give you — use this to tell a genuine failure from a run that just never finished. |
 | `failed_check_ids` | list[str] | sorted `check_id`s from `verifier_result.json` `failed_checks`; `[]` on a pass. |
 | `severity` | str \| null | `verifier_result.json` `severity` (falls back to the entry's), `null` on a pass. |
 | `blocks_release` | bool | `verifier_result.json` `blocks_release`; `false` on a pass. |
-| `primary_failure_category` | str | `attribution_result.json` `primary_failure_category`. `""` for a pass / un-verified row; `"unknown"` for a failure whose attribution file is missing **or** whose check has no attributor category mapping. |
+| `primary_failure_category` | str | `attribution_result.json` `primary_failure_category`. `""` for a pass / un-verified row **and** for an `incomplete` row with zero recorded violations (nothing to attribute — see [Degradation](#degradation)); `"unknown"` for a genuine failure (or an `incomplete` row *with* violations) whose attribution file is missing, or whose check has no attributor category mapping. |
 | `contributing_failure_categories` | list[str] | `attribution_result.json` `contributing_failure_categories`; `[]` otherwise. |
 | `root_cause_step` | int \| null | `attribution_result.json` `root_cause_step`. |
 | `first_irreversible_action_step` | int \| null | `attribution_result.json` `first_irreversible_action_step`. |
@@ -72,16 +73,17 @@ Every dict is key-sorted so the JSON diffs cleanly.
 ### Consistency with the failure-bundle doc
 
 For `refund_v0`, `by_failure_category` is
-`{clarification_failure: 1, inconsistent_final_answer: 2, stale_source_authority: 1, unknown: 5, unsafe_irreversible_action: 2}`.
+`{clarification_failure: 1, inconsistent_final_answer: 2, stale_source_authority: 1, unknown: 8, unsafe_irreversible_action: 2}`.
 The non-`unknown` entries line up with
 [`failure-bundles-v0.md`](acceptance/failure-bundles-v0.md): bundle #1
 (`refund_policy_failure`) → `stale_source_authority`; the authorization-bypass
 negatives → `unsafe_irreversible_action`; the missing-escalation negative →
 `clarification_failure`; the phantom-refund negative →
-`inconsistent_final_answer`. The five `unknown` rows are the escalation-hygiene
-(`unnecessary_escalation`, `duplicate_escalation`) and retrieval-completeness
-(`policy_not_retrieved_before_action`, `incomplete_retrieval_coverage`) checks,
-which have no entry in the heuristic attributor's check→category map yet.
+`inconsistent_final_answer`. The eight `unknown` rows are the checks with no
+entry in the heuristic attributor's check→category map yet: escalation-hygiene
+(`unnecessary_escalation`, `duplicate_escalation`), retrieval-completeness
+(`policy_not_retrieved_before_action`, `incomplete_retrieval_coverage`), and
+expected-action (`expected_refund_missing` ×2, `unexpected_escalation`).
 
 ## Coverage
 
@@ -100,19 +102,20 @@ of `primary_failure_category` and `contributing_failure_categories` over
 
 `claimed_never_observed`:
 `grounding_citation_error`, `overblocking`, `policy_violation`,
-`premature_termination`, `query_formation_error`, `retrieval_selection_error`,
-`state_tracking_error`, `tool_selection_error`, `unnecessary_escalation`,
-`unproductive_loop`.
+`premature_termination`, `query_formation_error`, `reasoning_commitment_error`,
+`retrieval_selection_error`, `state_tracking_error`, `tool_selection_error`,
+`unnecessary_escalation`, `unproductive_loop`.
 
 `observed_never_claimed`: _(none)_.
 
 Most of that gap is **positive-control tasks** (a `policy_violation` task that
 correctly *doesn't* violate produces no category) plus the **attributor
-mapping gap** above — retrieval-completeness tasks claim
+mapping gap** above — retrieval-completeness and expected-action tasks claim
 `query_formation_error` / `grounding_citation_error` / `retrieval_selection_error`
-but their checks resolve to `unknown`. Closing the map (attribution ticket) or
-adding tasks that actually exercise a mode both shrink this list; it is the
-"issue #13 coverage matrix" kept honest by regeneration instead of by hand.
+/ `reasoning_commitment_error` but their checks resolve to `unknown`. Closing
+the map (attribution ticket) or adding tasks that actually exercise a mode
+both shrink this list; it is the "issue #13 coverage matrix" kept honest by
+regeneration instead of by hand.
 
 ## Degradation
 
@@ -121,6 +124,17 @@ adding tasks that actually exercise a mode both shrink this list; it is the
 - **Failing run, no `attribution_result.json`** → `primary_failure_category`
   is `"unknown"`, a warning is appended
   (`"<task_id>: verifier failed but attribution_result.json is missing; …"`).
+  This only fires when the row actually recorded a violation
+  (`failed_check_ids` non-empty) — see the next bullet for the case it does not.
+- **`incomplete` run with zero recorded violations** → `verifiers.base.
+  mark_incomplete` forces `verifier_passed=false` on any run that never
+  completes, even one that hadn't done anything wrong yet; `attribute`/`bundle`
+  correctly never ran for it, so `attribution_result.json` is legitimately
+  absent. That is **not** the missing-attribution gap above: the row gets
+  `primary_failure_category=""` (like a pass) and **no warning** — `verdict`
+  (`"incomplete"`) is what tells you this row isn't a clean pass either. An
+  `incomplete` run that *did* record a violation before dying is attributed
+  exactly like a normal failure.
 - **No `task_spec.json`** → `targeted_failure_modes` and siblings are omitted
   for that row, with a warning.
 - **No `verifier_result.json`** → check ids empty, severity/blocks fall back
@@ -135,7 +149,7 @@ adding tasks that actually exercise a mode both shrink this list; it is the
 `fixtures/expected/refund_v0_suite_report.json` is a full `refund_v0` report
 with the volatile fields removed (`batch_id`, `generated_at`, and every row's
 `run_id` set to `null`). `tests/test_suite_report.py` runs `refund_v0` into a
-temp dir, applies the same normalization, and asserts equality — 29 rows, 11
+temp dir, applies the same normalization, and asserts equality — 32 rows, 14
 failing. Regenerate it only by re-running `build_suite_report` (never hand-edit).
 
 > Note on `refund_bundles_v0`: "five different categories across the five
@@ -148,4 +162,4 @@ failing. Regenerate it only by re-running `build_suite_report` (never hand-edit)
 > two bundles share a category by design while remaining distinct cases.
 > `tests/test_suite_report.py` asserts exactly that: five failing rows, one
 > per bundle, every one categorized (no `unknown`) — a real contrast with
-> `refund_v0`, where 5 of 11 failing rows are `unknown`.
+> `refund_v0`, where 8 of 14 failing rows are `unknown`.

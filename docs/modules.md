@@ -165,7 +165,10 @@ including crashes — leaves a run directory with `run_result.json`.
 `status=completed` means "produced a final answer", never "was correct".
 `build_suite_report` never re-runs a task and never writes — the CLI /
 `ArtifactStore` own persistence — and degrades to category `unknown` + a
-warning when a failing run has no attribution file.
+warning only when a run has a real violation and no attribution file; an
+`incomplete` run (three-state verdict, see verifiers/ below) with no
+violations gets no category and no warning, since there is nothing to
+attribute.
 
 **Build next:** a timeout that can interrupt a hung provider call (today
 checked only between steps); deliberate retry/backoff design for real

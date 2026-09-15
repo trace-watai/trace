@@ -233,10 +233,11 @@ execution evidence.
   - **Coverage gap from a `refund_v0` run** (`claimed_never_observed`):
     `grounding_citation_error`, `overblocking`, `policy_violation`,
     `premature_termination`, `query_formation_error`,
-    `retrieval_selection_error`, `state_tracking_error`,
-    `tool_selection_error`, `unnecessary_escalation`, `unproductive_loop` —
-    positive-control targets plus the escalation-hygiene / retrieval checks
-    that the heuristic attributor does not categorize yet.
+    `reasoning_commitment_error`, `retrieval_selection_error`,
+    `state_tracking_error`, `tool_selection_error`, `unnecessary_escalation`,
+    `unproductive_loop` — positive-control targets plus the escalation-hygiene
+    / retrieval / expected-action checks that the heuristic attributor does
+    not categorize yet.
 - **Reviews:** Evan He (factor isolation),
   Karan Gupta (verifier coverage), Evan Yang (environment feasibility),
   Katharine (ambiguity / answer-leakage sampling)
