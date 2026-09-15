@@ -242,7 +242,9 @@ rerunnable `RegressionArtifact`s.
 `RegressionArtifact`/`SiblingTest`; `pinned_initial_state(...)` /
 `describe_state_drift(...)` (`replay.py`) — the pinned world a
 `trace-harness replay` run rebuilds, and how it differs from the fixture's
-world today.
+world today; `RepairValidation`/`ControlVerdict`/`decide_verdict(...)`
+(`repair_validation.py`) — per-control accept/reject verdicts written as
+`repair_validation.json`.
 
 **Rules:** pin the run's *recorded* state, docs, and agent actions (snapshots
 from the trace, not live fixtures — fixtures may evolve) and replay from
@@ -252,9 +254,16 @@ fix that breaks the sibling is overblocking. This loop is TRACE's
 differentiation over pure attribution (see
 [AGENTRX_TRACE_SUMMARY.md](AGENTRX_TRACE_SUMMARY.md)).
 
+`replay --apply-control` tests controls together and individually, recording
+verdicts and replay evidence in `repair_validation.json`. `--control` limits
+both stages; `--fail-on-rejected` gates individual rejections. Validation runs
+share a `batch_id`. See [control validation](failure_bundles.md#control-validation)
+for input handling, verdicts, and incomplete runs.
+
 **Build next:** a CI collector that executes every blocking regression plus
 its positive siblings; a promotion flow (run artifact → reviewed → committed
-fixture); pin sibling state too (today siblings run from their live fixtures).
+fixture), which is what the accepted verdicts feed; pin sibling state too
+(today siblings run from their live fixtures).
 
 ---
 

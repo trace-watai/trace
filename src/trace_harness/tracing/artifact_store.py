@@ -58,6 +58,9 @@ ATTRIBUTION_RESULT = "attribution_result.json"
 FAILURE_CARD = "failure_card.json"
 REPAIR_PACKAGE = "repair_package.json"
 REGRESSION_ARTIFACT = "regression_artifact.json"
+# Written by ``replay --apply-control`` rather than the run pipeline, so it is
+# deliberately absent from ``ALL_ARTIFACTS``.
+REPAIR_VALIDATION = "repair_validation.json"
 
 # Runs-dir-level (not per-run): a derived, rebuildable index of all runs.
 RUN_INDEX = "index.json"

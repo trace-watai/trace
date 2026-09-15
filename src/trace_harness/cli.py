@@ -35,11 +35,24 @@ from pathlib import Path
 from typing import Any
 
 from trace_harness.config import HarnessConfig, load_env_file
-from trace_harness.environment.controls import ControlInstance, select_controls
+from trace_harness.environment.controls import (
+    ControlInstance,
+    reference_controls,
+    select_controls,
+)
 from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.failure_bundles.schemas import RepairPackage
 from trace_harness.models import create_model_adapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
+from trace_harness.regression.repair_validation import (
+    ControlValidation,
+    ControlVerdict,
+    RepairValidation,
+    ReRun,
+    decide_verdict,
+    skipped_control,
+)
 from trace_harness.regression.replay import (
     describe_action_drift,
     describe_state_drift,
@@ -49,6 +62,7 @@ from trace_harness.regression.replay import pinned_script as build_pinned_script
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.agent_runner import AgentRunner
+from trace_harness.runner.batch import new_batch_id
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunResult, RunStatus
 from trace_harness.tasks.loader import load_docs_for_task, load_task
@@ -375,12 +389,179 @@ def _replay_drift_notes(
     return notes
 
 
+def _prescribed_controls(
+    artifact_path: Path,
+    artifact: RegressionArtifact,
+    task_id: str,
+    controls: list[ControlInstance],
+) -> tuple[dict[str, set[str]], str]:
+    """Read prescriptions beside the input artifact, independently of output storage."""
+    package_path = artifact_path.with_name(names.REPAIR_PACKAGE)
+    try:
+        package = RepairPackage.model_validate_json(package_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return (
+            {
+                c.provenance.repair_control: set(artifact.verifier_checks)
+                for c in controls
+                if c.provenance.repair_control is not None
+            },
+            "reference_controls",
+        )
+    if package.run_id != artifact.source_run_id or package.task_id != task_id:
+        raise CliInputError("repair package does not match the regression artifact's run and task")
+    prescribed = {}
+    for control in package.controls:
+        if control.name in prescribed:
+            raise CliInputError(f"duplicate repair control name: {control.name}")
+        linked = set(control.linked_verifier_checks)
+        if linked - set(artifact.verifier_checks):
+            raise CliInputError(
+                f"repair control {control.name!r} links checks the artifact never pinned"
+            )
+        prescribed[control.name] = linked
+    return prescribed, "repair_package"
+
+
+def _instance_for_repair_control(name: str) -> ControlInstance | None:
+    """The shipped control instance a repair control materializes as, if any."""
+    for instance in reference_controls():
+        if instance.provenance.repair_control == name:
+            return instance
+    return None
+
+
+def _validate_controls(
+    *,
+    store: ArtifactStore,
+    artifact: RegressionArtifact,
+    prescribed: dict[str, set[str]],
+    controls_source: str,
+    controls: list[ControlInstance],
+    task_fixture_args,
+    pinned_state: dict[str, Any] | None,
+    script,
+) -> RepairValidation:
+    """Validate each prescribed control in isolation and return the artifact.
+
+    Each materializable control is installed on its own, the pinned scenario is
+    replayed, and every positive sibling is re-run. Validating one at a time is
+    the whole point: a bundle verdict cannot say which control earned it.
+    """
+    batch_id = new_batch_id()
+    pinned_checks = set(artifact.verifier_checks)
+    selected_ids = {c.control_id for c in controls}
+    validations: list[ControlValidation] = []
+
+    for name, expected_checks in prescribed.items():
+        instance = _instance_for_repair_control(name)
+        if instance is None:
+            validations.append(skipped_control(name))
+            print(f"  {name}: skipped (not materializable)")
+            continue
+        if instance.control_id not in selected_ids or not expected_checks:
+            reason = (
+                "not_selected: this control was excluded by --control"
+                if instance.control_id not in selected_ids
+                else "no_linked_checks: the prescription names no checks to validate"
+            )
+            validations.append(
+                ControlValidation(control=name, verdict=ControlVerdict.SKIPPED, reason=reason)
+            )
+            print(f"  {name}: skipped ({reason})")
+            continue
+
+        pinned = _run_fixture(
+            task_fixture_args(artifact.task_fixture),
+            store,
+            controls=[instance],
+            pinned_initial_state=pinned_state,
+            pinned_script=script,
+        )
+        pinned_merged, pinned_completed = _verify(store.run_dir(pinned.run_id))
+        _tag_batch(store, pinned.run_id, batch_id)
+        pinned_failed = {c.check_id for c in pinned_merged.failed_checks}
+        introduced = {
+            c.check_id
+            for c in pinned_merged.failed_checks
+            if c.check_id not in pinned_checks and c.blocks_release
+        }
+        originating = ReRun(
+            run_id=pinned.run_id,
+            task_id=pinned.task_id,
+            verdict=pinned_merged.verdict.value.upper(),
+            cleared_checks=sorted(expected_checks - pinned_failed) if pinned_completed else [],
+            failed_checks=sorted(pinned_failed),
+        )
+
+        sibling_reruns: list[ReRun] = []
+        failing_siblings: list[str] = []
+        incomplete_siblings: list[str] = []
+        for sibling in artifact.positive_sibling_tests:
+            sib = _run_fixture(task_fixture_args(sibling.task_fixture), store, controls=[instance])
+            sib_merged, sib_completed = _verify(store.run_dir(sib.run_id))
+            _tag_batch(store, sib.run_id, batch_id)
+            sib_failed = sorted(c.check_id for c in sib_merged.failed_checks)
+            sibling_reruns.append(
+                ReRun(
+                    run_id=sib.run_id,
+                    task_id=sib.task_id,
+                    verdict=sib_merged.verdict.value.upper(),
+                    failed_checks=sib_failed,
+                )
+            )
+            if not sib_completed:
+                incomplete_siblings.append(sibling.test_name)
+            elif not sib_merged.passed:
+                failing_siblings.append(sibling.test_name)
+
+        verdict, reason = decide_verdict(
+            expected_checks=expected_checks,
+            pinned_failed_checks=pinned_failed,
+            pinned_introduced_blocking=introduced,
+            failing_siblings=failing_siblings,
+            pinned_completed=pinned_completed,
+            incomplete_siblings=incomplete_siblings,
+        )
+        validations.append(
+            ControlValidation(
+                control=name,
+                verdict=verdict,
+                reason=reason,
+                guardrail_ref=instance.guardrail_ref,
+                control_id=instance.control_id,
+                originating_rerun=originating,
+                sibling_reruns=sibling_reruns,
+            )
+        )
+        print(f"  {name}: {verdict.value}" + (f" ({reason})" if reason else ""))
+
+    validation = RepairValidation(
+        run_id=artifact.source_run_id,
+        test_name=artifact.test_name,
+        batch_id=batch_id,
+        controls_source=controls_source,
+        controls=validations,
+    ).rebuild_rollup()
+    store.write_json(artifact.source_run_id, names.REPAIR_VALIDATION, validation)
+    return validation
+
+
+def _tag_batch(store: ArtifactStore, run_id: str, batch_id: str) -> None:
+    """Group a validation re-run into its session; never fatal to the validation."""
+    try:
+        store.enrich_index_entry_with_batch(run_id, batch_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not tag run %s into batch %s", run_id, batch_id)
+
+
 def _replay(
     artifact_path: Path,
     store: ArtifactStore,
     *,
     apply_control: bool = False,
     control_ids: list[str] | None = None,
+    fail_on_rejected: bool = False,
 ) -> int:
     """Replay a regression artifact and assert the gate conditions hold.
 
@@ -424,6 +605,8 @@ def _replay(
     # Flag and control-id errors are usage errors: fail before any output.
     if control_ids and not apply_control:
         raise CliInputError("--control requires --apply-control")
+    if fail_on_rejected and not apply_control:
+        raise CliInputError("--fail-on-rejected requires --apply-control")
     controls = select_controls(control_ids) if apply_control else []
 
     data = json.loads(artifact_path.read_text(encoding="utf-8"))
@@ -434,6 +617,11 @@ def _replay(
     task_path = Path(artifact.task_fixture).resolve()
     task = load_task(task_path)
     script = build_pinned_script(artifact, task.task_id)
+    prescribed, controls_source = (
+        _prescribed_controls(artifact_path, artifact, task.task_id, controls)
+        if apply_control
+        else ({}, "repair_package")
+    )
 
     print(f"\nReplaying regression: {artifact.test_name}")
     _print("source_run_id:", artifact.source_run_id)
@@ -463,7 +651,8 @@ def _replay(
         )
 
     # Step 1: re-run the pinned scenario; verifier must produce the expected failures.
-    print(f"\n[1/2] Replaying pinned scenario (script from {artifact.task_fixture})")
+    stages = 3 if apply_control else 2
+    print(f"\n[1/{stages}] Replaying pinned scenario (script from {artifact.task_fixture})")
     result = _run_fixture(
         _fixture_args(artifact.task_fixture),
         store,
@@ -472,12 +661,15 @@ def _replay(
         pinned_script=script,
     )
     run_dir = store.run_dir(result.run_id)
-    merged, _ = _verify(run_dir)
+    merged, run_completed = _verify(run_dir)
 
     actual_ids = {c.check_id for c in merged.failed_checks}
     expected_ids = set(artifact.verifier_checks)
 
-    if apply_control:
+    if not run_completed:
+        print("  FAIL: pinned replay did not complete; no regression verdict can be established")
+        gate_failed = True
+    elif apply_control:
         # With a control installed, "gate clear" flips: the pinned checks must
         # be GONE. But absence alone isn't enough — a guardrail that trades one
         # blocking failure for another hasn't fixed anything, so any new
@@ -515,7 +707,7 @@ def _replay(
 
     # Step 2: each positive sibling must pass.
     if artifact.positive_sibling_tests:
-        print(f"\n[2/2] Running {len(artifact.positive_sibling_tests)} positive sibling(s)")
+        print(f"\n[2/{stages}] Running {len(artifact.positive_sibling_tests)} positive sibling(s)")
         for i, sibling in enumerate(artifact.positive_sibling_tests, 1):
             print(f"  [{i}] {sibling.test_name}: {sibling.task_fixture}")
             sib_result = _run_fixture(_fixture_args(sibling.task_fixture), store, controls=controls)
@@ -528,9 +720,42 @@ def _replay(
             else:
                 print("      PASS")
 
+    # Per-control validation (#146). The bundle gate above answers "do these
+    # controls together hold the line"; this answers which control earned it,
+    # and writes the answer down instead of leaving it in stdout.
+    validation = None
+    if apply_control:
+        print("\n[3/3] Validating each prescribed control on its own")
+        validation = _validate_controls(
+            store=store,
+            artifact=artifact,
+            prescribed=prescribed,
+            controls_source=controls_source,
+            controls=controls,
+            task_fixture_args=_fixture_args,
+            pinned_state=pinned_state,
+            script=script,
+        )
+        rollup = validation.rollup
+        _print(
+            "validation:",
+            f"{rollup.accepted} accepted, {rollup.rejected} rejected, {rollup.skipped} skipped",
+        )
+        written = store.artifact_path(artifact.source_run_id, names.REPAIR_VALIDATION)
+        _print("written:", str(written))
+
+    if validation is not None:
+        if validation.has_incomplete:
+            print("  FAIL: per-control validation did not complete")
+            gate_failed = True
+        if fail_on_rejected and validation.has_rejection:
+            print("  FAIL: --fail-on-rejected found rejected controls")
+            gate_failed = True
     status = "FAIL — regression gate fired" if gate_failed else "PASS — regression gate clear"
     print(f"\nReplay result: {status}\n")
-    return 1 if gate_failed else 0
+    if gate_failed:
+        return 1
+    return 0
 
 
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
@@ -616,9 +841,37 @@ def _print_event(event: TraceEvent, children: dict[str, list[TraceEvent]], inden
         _print_event(child, children, indent + 1)
 
 
+def _print_repair_validation(store: ArtifactStore, run_id: str) -> bool:
+    """Summarize repair_validation.json when a validation session produced one."""
+    if not store.exists(run_id, names.REPAIR_VALIDATION):
+        return False
+    try:
+        validation = RepairValidation.model_validate(
+            store.read_json(run_id, names.REPAIR_VALIDATION)
+        )
+    except FileNotFoundError:
+        return False
+    rollup = validation.rollup
+    print(f"\nControl validation for {run_id} ({validation.controls_source}):")
+    for control in validation.controls:
+        detail = f" — {control.reason}" if control.reason else ""
+        print(f"  {control.verdict.value:28} {control.control}{detail}")
+    print(
+        f"  rollup: {rollup.accepted} accepted, {rollup.rejected} rejected, "
+        f"{rollup.skipped} skipped"
+    )
+    return True
+
+
 def _inspect_run(run_dir: Path, step_filter: int | None, as_json: bool) -> None:
     """Print a human-readable timeline of a run's trace events."""
     store, run_id = ArtifactStore.for_run_path(run_dir)
+
+    if not as_json and step_filter is None:
+        has_validation = _print_repair_validation(store, run_id)
+        if has_validation and not store.trace_path(run_id).exists():
+            return
+
     events = store.read_trace(run_id)
 
     if step_filter is not None:
@@ -830,6 +1083,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p_replay.add_argument(
+        "--fail-on-rejected",
+        action="store_true",
+        help="exit 1 if any control is rejected (CI gate mode; requires --apply-control)",
+    )
+    p_replay.add_argument(
         "--control",
         action="append",
         dest="control_ids",
@@ -906,6 +1164,7 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
             store,
             apply_control=args.apply_control,
             control_ids=args.control_ids,
+            fail_on_rejected=args.fail_on_rejected,
         )
     if args.command == "run-pipeline":
         result = _run_fixture(args, store)

@@ -12,7 +12,12 @@ tests.
 task → agent execution → structured trace → deterministic verifier
      → attribution/judge → failure card → repair package
      → regression test → dashboard
+
+regression test + controls → replay → repair_validation.json
 ```
+
+`replay --apply-control` records [per-control validation](docs/failure_bundles.md#control-validation).
+Add `--fail-on-rejected` to gate individual rejections.
 
 > **The verifier decides pass/fail. The judge explains why.**
 
