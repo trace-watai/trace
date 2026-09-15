@@ -78,6 +78,17 @@ describe("refund-failure fixture contracts", () => {
     expect(verifier.schemaVersion).toBe(VERIFIER_RESULT_SCHEMA_VERSION);
     expect(repair.schemaVersion).toBe(REPAIR_PACKAGE_SCHEMA_VERSION);
     expect(regression.schemaVersion).toBe(REGRESSION_SCHEMA_VERSION);
+    expect(regression.replayMode).toBe("live_required");
+    expect(regression.replayModeBasis?.controlIds).toEqual([
+      "ctl_refund_window_v1",
+    ]);
+    expect(regression.replayModeBasis?.checksCoveredByControl).toEqual([
+      "unauthorized_cash_refund",
+    ]);
+    expect(regression.replayModeBasis?.checksReachableViaGatedTool).toEqual([
+      "unauthorized_cash_refund",
+      "unauthorized_store_credit",
+    ]);
     expect(
       new Set([
         attribution.runId,

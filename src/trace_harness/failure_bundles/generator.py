@@ -274,6 +274,19 @@ _CONTROL_BUILDERS = {
 }
 
 
+# Tool-level reachability includes alternative arguments, not just the recorded call.
+CHECKS_REACHABLE_BY_TOOL = {
+    "issue_refund": ["unauthorized_cash_refund", "unauthorized_store_credit"],
+    "create_ticket": ["ticket_outage_claim_unsupported"],
+    "final_answer": ["final_answer_inconsistent_with_state"],
+    "escalate_case": [
+        "required_escalation_missing",
+        "unnecessary_escalation",
+        "duplicate_escalation",
+    ],
+}
+
+
 class FailureBundleGenerator:
     """Assembles the three failure artifacts from one verified failed run."""
 
@@ -303,6 +316,8 @@ class FailureBundleGenerator:
             initial_state=initial_state,
             run_id=run_result.run_id,
             task_fixture_path=task_fixture_path,
+            attribution=attribution,
+            checks_reachable_by_tool=CHECKS_REACHABLE_BY_TOOL,
         )
         return FailureBundle(
             failure_card=failure_card,

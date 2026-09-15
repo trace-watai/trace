@@ -42,7 +42,18 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from trace_harness.regression.schemas import RegressionArtifact, SiblingTest
+from trace_harness.attribution.schemas import AttributionResult
+from trace_harness.environment.controls import reference_controls, resolve_guardrail
+from trace_harness.environment.state import SupportState
+from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.tools import ToolSideEffect
+from trace_harness.models.base import ToolCall
+from trace_harness.regression.schemas import (
+    RegressionArtifact,
+    ReplayMode,
+    ReplayModeBasis,
+    SiblingTest,
+)
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import VerifierResult
@@ -70,6 +81,77 @@ def _recorded_agent_actions(trace: list[TraceEvent]) -> list[dict[str, Any]]:
     ]
 
 
+def classify_replay_mode(basis: ReplayModeBasis) -> ReplayMode:
+    """All four conditions need affirmative evidence; missing facts fail closed."""
+    if (
+        basis.control_ids
+        and basis.control_step is not None
+        and basis.control_step == basis.first_irreversible_action_step
+        and basis.rule_kind == "prohibition"
+        and basis.gated_tool
+        and basis.checks_reachable_via_gated_tool
+        and set(basis.checks_reachable_via_gated_tool) <= set(basis.checks_covered_by_control)
+        and not basis.other_irreversible_tools
+    ):
+        return "static_ok"
+    return "live_required"
+
+
+def _replay_mode_basis(
+    task: TaskSpec,
+    trace: list[TraceEvent],
+    initial_state: dict[str, Any],
+    attribution: AttributionResult,
+    checks_reachable_by_tool: dict[str, list[str]],
+) -> ReplayModeBasis:
+    """Find the first reference-control block in an isolated copy of the pinned world.
+
+    Only recorded, executed tool calls advance the sandbox. No model is run.
+    Stop at the block: a recording cannot predict the agent's next decision.
+    """
+    env = SupportEnvironment(
+        SupportState.model_validate(initial_state), available_tools=task.available_tools
+    )
+    controls = reference_controls()
+    for control in controls:
+        env.install_control(control)
+    basis = ReplayModeBasis(
+        control_ids=[control.control_id for control in controls],
+        first_irreversible_action_step=attribution.first_irreversible_action_step,
+    )
+    for event in trace:
+        if event.event_type is not TraceEventType.TOOL_CALL_EXECUTED:
+            continue
+        call = ToolCall.model_validate(event.payload)
+        # Existing blocks/errors did not mutate the recorded world.
+        if event.payload.get("status") != "ok":
+            continue
+        result = env.execute(call, step_id=event.step_id)
+        if result.blocked_by:
+            control = next(c for c in controls if c.control_id == result.blocked_by)
+            registered = resolve_guardrail(control.guardrail_ref)
+            basis.control_step = event.step_id
+            basis.gated_tool = call.tool_name
+            basis.checks_reachable_via_gated_tool = checks_reachable_by_tool.get(call.tool_name, [])
+            basis.checks_covered_by_control = sorted(registered.checks_covered)
+            basis.rule_kind = registered.rule_kind
+            basis.steps_remaining_after_control = sum(
+                e.event_type is TraceEventType.MODEL_ACTION
+                and e.step_id is not None
+                and event.step_id is not None
+                and e.step_id > event.step_id
+                for e in trace
+            )
+            break
+    basis.other_irreversible_tools = sorted(
+        tool
+        for tool in task.available_tools
+        if tool != basis.gated_tool
+        and env.side_effect_for(tool) is ToolSideEffect.EXTERNAL_IRREVERSIBLE
+    )
+    return basis
+
+
 def materialize_regression_artifact(
     *,
     task: TaskSpec,
@@ -78,6 +160,8 @@ def materialize_regression_artifact(
     initial_state: dict[str, Any],
     run_id: str,
     task_fixture_path: str | None,
+    attribution: AttributionResult,
+    checks_reachable_by_tool: dict[str, list[str]],
 ) -> RegressionArtifact:
     """Build a :class:`RegressionArtifact` from one verified failure."""
     if verifier_result.passed:
@@ -89,7 +173,10 @@ def materialize_regression_artifact(
         for entry in task.metadata.get("positive_sibling_tasks", [])
     ]
 
+    basis = _replay_mode_basis(task, trace, initial_state, attribution, checks_reachable_by_tool)
     return RegressionArtifact(
+        replay_mode=classify_replay_mode(basis),
+        replay_mode_basis=basis,
         test_name=f"regression_{task.task_id}",
         source_run_id=run_id,
         task_fixture=fixture_path,
