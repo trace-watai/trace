@@ -266,8 +266,14 @@ both stages; `--fail-on-rejected` gates individual rejections. Validation runs
 share a `batch_id`. See [control validation](failure_bundles.md#control-validation)
 for input handling, verdicts, and incomplete runs.
 
-**Build next:** a promotion flow (run artifact → reviewed → committed
-fixture), which is what the accepted verdicts feed; pin sibling state too
+`replay --apply-control --commit` promotes accepted controls after replaying
+the proposed library against new and existing regressions. The versioned
+library retains evidence and rollback history. Environments and `run-suite`
+load it explicitly with `control_library` / `--control-library`. See
+[the lifecycle](failure_bundles.md#control-library) and
+[ADR-0003](decisions/ADR-0003-control-library.md).
+
+**Build next:** pinned sibling inputs
 (today siblings run from their live fixtures).
 
 ---

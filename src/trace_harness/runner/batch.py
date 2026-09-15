@@ -26,6 +26,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from trace_harness.environment.control_library import load_library
 from trace_harness.runner.pipeline import PipelineResult, run_task_pipeline
 from trace_harness.runner.result import RunStatus
 from trace_harness.runner.suite import AgentConfig, SuiteSpec
@@ -113,8 +114,13 @@ def summary_path(runs_dir: Path, batch_id: str) -> Path:
 class BatchRunner:
     """Runs a suite over one artifact store, isolating per-cell failures."""
 
-    def __init__(self, store: ArtifactStore):
+    def __init__(self, store: ArtifactStore, control_library: Path | str | None = None):
         self.store = store
+        # Freeze one validated set for the entire batch. Invalid libraries fail
+        # before any cell runs instead of becoming a series of setup errors.
+        self.controls = (
+            load_library(control_library).active_controls() if control_library is not None else None
+        )
 
     def run(self, suite: SuiteSpec) -> BatchSummary:
         started_at = utc_now()
@@ -140,7 +146,7 @@ class BatchRunner:
 
     def _run_cell(self, config: AgentConfig, task_path: str) -> BatchRunEntry:
         try:
-            result = run_task_pipeline(task_path, config, self.store)
+            result = run_task_pipeline(task_path, config, self.store, controls=self.controls)
             return _entry_from_pipeline(result, config, task_path)
         except Exception as exc:  # noqa: BLE001 — isolate the cell; the batch goes on
             logger.warning(

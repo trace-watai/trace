@@ -1,0 +1,35 @@
+{
+  "schema_version": "0.1.0",
+  "controls": [
+    {
+      "schema_version": "0.1.0",
+      "control_id": "ctl_refund_window_v1",
+      "guardrail_ref": "unauthorized_cash_refund_guardrail",
+      "rule_ref": {
+        "source": "current_policy_doc",
+        "rules": [
+          "cash_refund_window_days",
+          "manager_approval_extends_cash_to_days"
+        ]
+      },
+      "behavior_on_failure": {
+        "action": "block"
+      },
+      "provenance": {
+        "run_id": "run_20260914T185450Z_df4b49a1",
+        "repair_control": "deterministic_pre_call_refund_guardrail"
+      },
+      "metadata": {}
+    }
+  ],
+  "regressions": [
+    {
+      "source_run_id": "run_20260914T185450Z_df4b49a1",
+      "test_name": "regression_refund_policy_control_demo",
+      "run_ids": [
+        "run_20260914T185450Z_a0da10b4",
+        "run_20260914T185450Z_f88ac274"
+      ]
+    }
+  ]
+}

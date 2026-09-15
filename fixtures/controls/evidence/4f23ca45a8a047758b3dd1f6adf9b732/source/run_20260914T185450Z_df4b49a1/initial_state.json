@@ -1,0 +1,23 @@
+{
+  "schema_version": "0.2.0",
+  "orders": [
+    {
+      "order_id": "ORD-2026-0500",
+      "customer_name": "Priya Shah",
+      "plan": "Pro Annual",
+      "amount_usd": 199.0,
+      "purchase_age_days": 47,
+      "documented_outage_near_purchase": false,
+      "manager_approval_granted": false,
+      "metadata": {}
+    }
+  ],
+  "refunds": [],
+  "tickets": [],
+  "escalations": [],
+  "docs": [],
+  "next_refund_seq": 1,
+  "next_ticket_seq": 1,
+  "next_escalation_seq": 1,
+  "doc_ranking_override": null
+}

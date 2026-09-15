@@ -172,6 +172,36 @@ Invalid inputs return exit 2.
 rejected because its script claims a blocked refund, introducing
 `final_answer_inconsistent_with_state`. Live-agent recovery needs separate validation.
 
+### Control library
+
+```text
+failure → card → repair → validation → library → regression CI gate
+```
+
+`replay --apply-control --commit` promotes accepted controls into a versioned
+library. It replays the proposed active set against each new and existing
+originating regression and its positive siblings before writing. The library
+retains source, validation, and activation evidence with relative paths and
+SHA-256 hashes. Missing, changed, or mismatched evidence prevents loading.
+
+```bash
+trace-harness replay runs/<run_id>/regression_artifact.json --apply-control --commit --control-library runs/local-controls/library.json
+trace-harness run-suite fixtures/suites/refund_v0.json --control-library runs/local-controls/library.json
+trace-harness controls rollback ctl_refund_window_v1 --reason "restore baseline" --control-library runs/local-controls/library.json
+```
+
+Library loading is explicit. Active controls install in sorted ID order;
+each batch uses one validated snapshot. Plain validation leaves the library
+unchanged. Rollback appends a reason and preserves evidence; reusing an ID
+with existing history is rejected. These operations write local artifacts,
+not Git commits.
+
+The [retained example](../fixtures/controls/README.md) preserves all 18
+passing suite cases. Two negatives lose `unauthorized_cash_refund` but retain
+false refund claims, so they still fail. Separate controlled expectations
+record those outcomes. The full CI collector remains #161; static replay
+remains advisory for live-agent recovery under ADR-0002.
+
 ### `RepairPackage` fields
 
 | Field | Type | Required | Description |
