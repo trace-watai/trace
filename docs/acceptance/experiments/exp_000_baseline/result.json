@@ -1,0 +1,23 @@
+{
+  "schema_version": "0.1.0",
+  "experiment_id": "exp_000_baseline",
+  "condition_batches": {
+    "replay_only": "batch_20260917T191429Z_87bfa2c7"
+  },
+  "metrics": {
+    "verdict_agreement_rate": null,
+    "first_post_fork_divergence_rate": null,
+    "noise_floor_divergence_rate": null,
+    "post_block_outcomes": null,
+    "sibling_failure_rate": null,
+    "verified_failure_count": 5,
+    "cost_usd": 0.0,
+    "latency_ms_p50": 5.0,
+    "extra": {}
+  },
+  "decision": "baseline",
+  "decided_by": "human",
+  "report_path": "docs/acceptance/experiments/exp_000_baseline/report.md",
+  "finished_at": "2026-09-17T19:14:50.602207Z",
+  "metadata": {}
+}
