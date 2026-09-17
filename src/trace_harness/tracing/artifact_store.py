@@ -64,6 +64,11 @@ REPAIR_VALIDATION = "repair_validation.json"
 
 # Runs-dir-level (not per-run): a derived, rebuildable index of all runs.
 RUN_INDEX = "index.json"
+EXPERIMENTS_DIR = "experiments"
+EXPERIMENT_SPEC = "experiment.json"
+EXPERIMENT_RESULT = "result.json"
+EXPERIMENT_REPORT_MD = "report.md"
+
 BATCHES_DIR = "batches"
 BATCH_SUMMARY = "batch_summary.json"
 REGRESSION_GATE_SUMMARY = "regression_gate_summary.json"
@@ -226,6 +231,62 @@ class ArtifactStore:
 
     def suite_report_md_path(self, batch_id: str) -> Path:
         return self.runs_dir / BATCHES_DIR / batch_id / SUITE_REPORT_MD
+
+    # --- experiments (#155) ---
+    #
+    # An experiment lives beside the batches it compares rather than inside any
+    # one of them, because it is the thing that relates several batches.
+
+    def experiment_dir(self, experiment_id: str) -> Path:
+        return self.runs_dir / EXPERIMENTS_DIR / experiment_id
+
+    def experiment_spec_path(self, experiment_id: str) -> Path:
+        return self.experiment_dir(experiment_id) / EXPERIMENT_SPEC
+
+    def experiment_result_path(self, experiment_id: str) -> Path:
+        return self.experiment_dir(experiment_id) / EXPERIMENT_RESULT
+
+    def experiment_report_path(self, experiment_id: str) -> Path:
+        return self.experiment_dir(experiment_id) / EXPERIMENT_REPORT_MD
+
+    def write_experiment_spec(self, experiment_id: str, payload: BaseModel | dict) -> Path:
+        """Persist the plan. Written before any condition runs."""
+        return self._write_experiment_json(self.experiment_spec_path(experiment_id), payload)
+
+    def write_experiment_result(
+        self, experiment_id: str, payload: BaseModel | dict, *, markdown: str | None = None
+    ) -> Path:
+        """Persist the result, and the human-readable report beside it."""
+        path = self._write_experiment_json(self.experiment_result_path(experiment_id), payload)
+        if markdown is not None:
+            _atomic_write_text(self.experiment_report_path(experiment_id), markdown)
+        return path
+
+    def _write_experiment_json(self, path: Path, payload: BaseModel | dict) -> Path:
+        data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(path, json.dumps(data, indent=2) + "\n")
+        return path
+
+    def read_experiment_spec(self, experiment_id: str) -> Any:
+        return self._read_experiment_json(self.experiment_spec_path(experiment_id), experiment_id)
+
+    def read_experiment_result(self, experiment_id: str) -> Any:
+        return self._read_experiment_json(self.experiment_result_path(experiment_id), experiment_id)
+
+    def _read_experiment_json(self, path: Path, experiment_id: str) -> Any:
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"{path.name} not found for experiment '{experiment_id}' (looked in {path})."
+            )
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def list_experiments(self) -> list[str]:
+        """Experiment ids that have a plan on disk, oldest first by id."""
+        root = self.runs_dir / EXPERIMENTS_DIR
+        if not root.is_dir():
+            return []
+        return sorted(d.name for d in root.iterdir() if (d / EXPERIMENT_SPEC).is_file())
 
     def write_batch_summary(self, batch_id: str, payload: BaseModel | dict) -> Path:
         """Atomically persist the authoritative summary for one batch."""
