@@ -211,6 +211,11 @@ MATERIALIZABLE_REPAIR_CONTROLS: dict[str, str | None] = {
     # A CI-side control, not an environment guardrail; the regression
     # collector (issue #161) is what makes it real.
     "regression_test_ci_gate": None,
+    # Detection rather than a guardrail: an omitted remedy cannot be caused by
+    # blocking something, so no pre-dispatch hook can materialize this.
+    "expected_action_contract_check": None,
+    "escalation_discipline_check": None,
+    "retrieval_before_action_check": None,
 }
 
 

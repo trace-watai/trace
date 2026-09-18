@@ -205,6 +205,25 @@ class RefundPolicyVerifier(Verifier):
 
     verifier_id = "refund_policy"
 
+    #: Every check id this verifier can emit, declared in one place so the
+    #: severity map and the repair-control templates can be checked against it
+    #: (#188). Adding a check without adding both fails the lockstep test.
+    CHECK_IDS: tuple[str, ...] = (
+        "unauthorized_cash_refund",
+        "unauthorized_store_credit",
+        "deprecated_policy_treated_as_authoritative",
+        "ticket_outage_claim_unsupported",
+        "final_answer_inconsistent_with_state",
+        "required_escalation_missing",
+        "unnecessary_escalation",
+        "duplicate_escalation",
+        "policy_not_retrieved_before_action",
+        "incomplete_retrieval_coverage",
+        "expected_refund_missing",
+        "unexpected_refund_issued",
+        "unexpected_escalation",
+    )
+
     def verify(
         self,
         input: VerifierInput,
