@@ -402,3 +402,45 @@ def test_run_result_written_even_if_final_snapshot_fails(tmp_path):
     assert "snapshot failed" in (result.error or "")
     assert store.exists(result.run_id, names.RUN_RESULT)
     assert store.read_json(result.run_id, names.FINAL_STATE)["snapshot_error"]
+
+
+def test_blocked_final_answer_ends_the_run_as_terminated(tmp_path):
+    """A blocked answer was never given, so the run did not complete (#193)."""
+    from conftest import FAILURE_TASK_PATH
+    from trace_harness.environment.support_env import SupportEnvironment
+    from trace_harness.environment.tools import ToolResult
+    from trace_harness.models.fixture import FixtureModelAdapter
+    from trace_harness.runner.agent_runner import AgentRunner
+    from trace_harness.runner.config import RunConfig
+    from trace_harness.runner.result import RunStatus, TerminationReason
+    from trace_harness.tasks.loader import load_docs_for_task, load_task
+    from trace_harness.tracing.artifact_store import ArtifactStore
+    from trace_harness.tracing.events import TraceEventType
+
+    task = load_task(FAILURE_TASK_PATH)
+    docs = load_docs_for_task(task, FAILURE_TASK_PATH)
+    env = SupportEnvironment.from_task(task, docs=docs)
+    env.register_final_answer_hook(
+        lambda answer, state: ToolResult(
+            tool_name="final_answer",
+            status="error",
+            error="the answer claims a refund the state does not support",
+            blocked_by="ctl_answer_grounding",
+        )
+    )
+
+    script = (FAILURE_TASK_PATH.parent / task.metadata["fixture_script"]).resolve()
+    store = ArtifactStore(tmp_path / "runs")
+    result = AgentRunner(FixtureModelAdapter.from_file(script), env, store).run(
+        task, RunConfig(task_id=task.task_id)
+    )
+
+    assert result.status is RunStatus.TERMINATED
+    assert result.termination_reason is TerminationReason.FINAL_ANSWER_BLOCKED
+    assert result.final_output is None
+
+    answers = [
+        e for e in store.read_trace(result.run_id) if e.event_type is TraceEventType.FINAL_ANSWER
+    ]
+    assert len(answers) == 1
+    assert answers[0].payload["blocked_by"] == "ctl_answer_grounding"

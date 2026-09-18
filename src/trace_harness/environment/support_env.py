@@ -51,7 +51,12 @@ from typing import Any
 from pydantic import ValidationError
 
 from trace_harness.environment.control_library import load_library
-from trace_harness.environment.controls import ControlInstance, resolve_control
+from trace_harness.environment.controls import (
+    ControlConflictError,
+    ControlInstance,
+    find_conflict,
+    resolve_control,
+)
 from trace_harness.environment.registry import ToolRegistry, default_support_registry
 from trace_harness.environment.state import Doc, SupportState
 from trace_harness.environment.tools import ToolResult, ToolSideEffect
@@ -59,6 +64,11 @@ from trace_harness.models.base import ToolCall, ToolSpec
 from trace_harness.tasks.schemas import TaskSpec
 
 PreExecuteHook = Callable[[ToolCall, SupportState], ToolResult | None]
+# Sees the result the handler produced; returning a replacement changes what
+# the agent observes. The side effect has already happened.
+PostExecuteHook = Callable[[ToolCall, SupportState, ToolResult], ToolResult | None]
+# Sees the answer the agent is about to give; returning a result blocks it.
+FinalAnswerHook = Callable[[str, SupportState], ToolResult | None]
 
 
 class SupportEnvironment:
@@ -74,6 +84,8 @@ class SupportEnvironment:
         self.state = state
         self._registry = registry or default_support_registry()
         self._pre_execute_hooks: list[Callable[[ToolCall, SupportState], ToolResult | None]] = []
+        self._post_execute_hooks: list[PostExecuteHook] = []
+        self._final_answer_hooks: list[FinalAnswerHook] = []
         # control_id -> (instance, the hook we registered for it). Installed
         # controls are explicit, inspectable state (TRA-87); raw hooks added
         # through register_pre_execute_hook are not tracked here.
@@ -120,6 +132,32 @@ class SupportEnvironment:
         """
         self._pre_execute_hooks.append(hook)
 
+    def register_final_answer_hook(self, hook: FinalAnswerHook) -> None:
+        """Attach a check that runs on the answer before the run accepts it.
+
+        A final answer never reaches the environment on its own, so without
+        this seam no control can act on what the agent claims. Returning a
+        result blocks the answer and ends the run as blocked.
+        """
+        self._final_answer_hooks.append(hook)
+
+    def check_final_answer(self, answer: str) -> ToolResult | None:
+        """The first block a final answer hook raises, or None to allow it."""
+        for hook in self._final_answer_hooks:
+            blocked = hook(answer, self.state)
+            if blocked is not None:
+                return blocked
+        return None
+
+    def register_post_execute_hook(self, hook: PostExecuteHook) -> None:
+        """Attach a check that runs after a tool handler, seeing its result.
+
+        Mirrors the pre-execute seam, but the side effect has already occurred
+        by the time these run, so returning a replacement result changes what
+        the agent observes rather than preventing anything.
+        """
+        self._post_execute_hooks.append(hook)
+
     # --- controls as data (TRA-87) ---
 
     def install_control(self, instance: ControlInstance) -> None:
@@ -133,6 +171,16 @@ class SupportEnvironment:
         """
         if instance.control_id in self._installed_controls:
             raise ValueError(f"control {instance.control_id!r} is already installed")
+        conflicting = find_conflict(instance, [i for i, _ in self._installed_controls.values()])
+        if conflicting is not None:
+            raise ControlConflictError(
+                f"control {instance.control_id!r} conflicts with installed control "
+                f"{conflicting.control_id!r}: both read "
+                f"{instance.rule_ref.source}:{sorted(instance.rule_ref.rules)} through "
+                f"{instance.guardrail_ref!r} but disagree on behavior_on_failure "
+                f"({conflicting.behavior_on_failure.action} vs "
+                f"{instance.behavior_on_failure.action})"
+            )
         guardrail = resolve_control(instance)
         control_id = instance.control_id
 
@@ -200,7 +248,16 @@ class SupportEnvironment:
             early = hook(call, self.state)
             if early is not None:
                 return early
-        return definition.handler(self.state, args, step_id)
+        result = definition.handler(self.state, args, step_id)
+        # Post-execute hooks see what the handler produced. The side effect has
+        # already happened, so these cannot prevent it; they exist to catch a
+        # result that should not stand, such as a durable record written with a
+        # claim the state does not support.
+        for hook in self._post_execute_hooks:
+            replacement = hook(call, self.state, result)
+            if replacement is not None:
+                return replacement
+        return result
 
     def side_effect_for(self, tool_name: str) -> ToolSideEffect | None:
         definition = self._registry.get(tool_name)
