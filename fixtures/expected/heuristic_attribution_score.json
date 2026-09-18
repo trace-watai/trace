@@ -1,0 +1,33 @@
+{
+  "schema_version": "0.1.0",
+  "method": "heuristic",
+  "labels_path": "fixtures/attribution_ground_truth/refund_v0_staged.jsonl",
+  "labeled_tasks": 5,
+  "step_fields": {
+    "root_cause_step": {
+      "labeled": 5,
+      "exact": 2,
+      "off_by_one": 2,
+      "exact_accuracy": 0.4,
+      "off_by_one_accuracy": 0.4
+    },
+    "missed_recovery_step": {
+      "labeled": 5,
+      "exact": 3,
+      "off_by_one": 3,
+      "exact_accuracy": 0.6,
+      "off_by_one_accuracy": 0.6
+    },
+    "first_irreversible_action_step": {
+      "labeled": 5,
+      "exact": 5,
+      "off_by_one": 5,
+      "exact_accuracy": 1.0,
+      "off_by_one_accuracy": 1.0
+    }
+  },
+  "category_labeled": 5,
+  "category_correct": 5,
+  "category_accuracy": 1.0,
+  "unscored_tasks": []
+}

@@ -114,6 +114,42 @@ Each of those writes an ambiguity note rather than a number. Two staged rows in
 at step 4, both for the same reason the live failures did. No category changed
 and the canonical staged attribution is byte for byte identical.
 
+## The method interface, and the number to beat
+
+Attribution used to mean one class. `attribute` constructed
+`HeuristicAttributor` directly, so there was nowhere to plug a judge in and
+nothing to compare one against.
+
+An `AttributionMethod` takes a task, a trace and a verifier result and returns
+an `AttributionResult`, whatever is behind it. The registry in
+`attribution/registry.py` is the only place a name becomes a class, and
+`attribute --method <name>` selects one. Every result is stamped with the
+method that produced it, what it cost, and whether it is deterministic. Those
+last two decide where a method can run: the heuristic is free and
+deterministic, so it runs on every failure in CI, and a judge will be neither.
+
+**Ground truth.** `fixtures/attribution_ground_truth/refund_v0_staged.jsonl`
+carries one record per staged failing task, with a sentence per label saying
+which line of the script makes it true. The sentences matter more than the
+numbers. A label nobody can trace back to the fixture is an opinion, and a
+scorer built on opinions measures agreement with whoever wrote them.
+
+**Scoring.** `score-attribution --method <m> --labels <path>` applies the c1
+formulas from [methodology_metrics.md](methodology_metrics.md): exact-step and
+off-by-one accuracy per step field, plus category accuracy, each reported
+separately with no average across fields. A null label is a real answer, so a
+method that invents a missed-recovery step where the label says there is none
+scores zero on that row rather than counting as a near miss.
+
+The heuristic's score on the staged set is pinned in
+`fixtures/expected/heuristic_attribution_score.json` and a test fails if a
+detector change moves it. As of this writing it gets root cause exactly right
+on 2 of 5, missed recovery on 3 of 5, the first irreversible action on 5 of 5,
+and the category on 5 of 5. That is the number a judge has to beat, and it is
+deliberately not 1.0: the heuristic localizes acts well and intentions poorly,
+which is what you would expect from something that cannot read reasoning it was
+not written to look for.
+
 ## Where this goes next (the judge program)
 
 1. **Judge schema first:** an LLM judge consumes the same inputs and emits

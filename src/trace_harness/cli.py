@@ -39,6 +39,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from trace_harness.attribution.registry import DEFAULT_METHOD
 from trace_harness.config import HarnessConfig, load_env_file
 from trace_harness.environment.control_library import (
     DEFAULT_CONTROL_LIBRARY,
@@ -335,9 +336,9 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
     return merged, run_completed
 
 
-def _attribute(run_dir: Path) -> bool:
+def _attribute(run_dir: Path, method: str = "heuristic") -> bool:
     """Returns True if an attribution was produced (verifier had failed)."""
-    from trace_harness.attribution.heuristic import HeuristicAttributor
+    from trace_harness.attribution.registry import run_attribution
 
     store, run_id = ArtifactStore.for_run_path(run_dir)
     task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
@@ -350,7 +351,7 @@ def _attribute(run_dir: Path) -> bool:
         )
         return False
 
-    attribution = HeuristicAttributor().attribute(task, trace, verifier_result)
+    attribution = run_attribution(method, task, trace, verifier_result)
     store.write_json(run_id, names.ATTRIBUTION_RESULT, attribution)
 
     print(f"\nAttribution for {run_id} (heuristic, confidence {attribution.confidence:.2f}):")
@@ -990,6 +991,64 @@ def _validate_fixtures(args: argparse.Namespace) -> int:
     return 0
 
 
+def _score_attribution(args: argparse.Namespace, store: ArtifactStore) -> int:
+    """Score a method against a label file and write attribution_score.json.
+
+    Runs the method fresh over every run whose task the labels name, rather
+    than reading committed attributions, so a detector change shows up in the
+    score without anyone regenerating artifacts first.
+    """
+    from trace_harness.attribution.registry import run_attribution
+    from trace_harness.attribution.scoring import load_labels, score_attributions
+
+    labels_path = Path(args.labels)
+    if not labels_path.is_file():
+        raise CliInputError(f"labels file not found: {labels_path}")
+    labels = load_labels(labels_path)
+    wanted = {row["task_id"] for row in labels}
+
+    attributions: dict[str, dict] = {}
+    for run_id in store.list_runs():
+        if not store.exists(run_id, names.VERIFIER_RESULT):
+            continue
+        task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
+        if task.task_id not in wanted:
+            continue
+        verifier = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
+        if verifier.passed:
+            continue
+        result = run_attribution(args.method, task, store.read_trace(run_id), verifier)
+        attributions[task.task_id] = result.model_dump(mode="json")
+
+    score = score_attributions(
+        method=args.method,
+        labels_path=labels_path,
+        labels=labels,
+        attributions=attributions,
+    )
+    out = store.runs_dir / "attribution_score.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(score.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+    print(f"\nAttribution score for method '{score.method}':")
+    _print("labels:", str(labels_path))
+    _print("scored tasks:", f"{score.labeled_tasks} of {len(labels)}")
+    for field, fs in score.step_fields.items():
+        _print(
+            f"  {field}:",
+            f"exact {fs.exact}/{fs.labeled} ({fs.exact_accuracy}), "
+            f"off-by-one {fs.off_by_one}/{fs.labeled} ({fs.off_by_one_accuracy})",
+        )
+    _print(
+        "  category:",
+        f"{score.category_correct}/{score.category_labeled} ({score.category_accuracy})",
+    )
+    if score.unscored_tasks:
+        _print("unscored:", ", ".join(score.unscored_tasks))
+    _print("written:", str(out))
+    return 0
+
+
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
     """Print a one-line summary per run, newest last (chronological)."""
     reader = RunReader(store)
@@ -1384,9 +1443,14 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     p_attr = sub.add_parser(
-        "attribute", parents=[common], help="run heuristic attribution on a verified failure"
+        "attribute", parents=[common], help="localize the failure in a verified failing run"
     )
     p_attr.add_argument("run_path")
+    p_attr.add_argument(
+        "--method",
+        default=DEFAULT_METHOD,
+        help="attribution method to use (default: heuristic)",
+    )
 
     p_bundle = sub.add_parser(
         "bundle", parents=[common], help="generate failure card/repair/regression artifacts"
@@ -1498,6 +1562,14 @@ def main(argv: list[str] | None = None) -> int:
         "path", nargs="?", default="fixtures/tasks", help="directory to validate"
     )
 
+    p_score = sub.add_parser(
+        "score-attribution",
+        parents=[common],
+        help="score an attribution method against a JSONL label file",
+    )
+    p_score.add_argument("--labels", required=True, help="path to a JSONL label file")
+    p_score.add_argument("--method", default=DEFAULT_METHOD)
+
     p_suite = sub.add_parser(
         "run-suite",
         parents=[common],
@@ -1583,7 +1655,7 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         merged, run_completed = _verify(_resolve_run_dir(args.run_path, store.runs_dir))
         return 1 if (args.fail_on_verifier and not (merged.passed and run_completed)) else 0
     if args.command == "attribute":
-        _attribute(_resolve_run_dir(args.run_path, store.runs_dir))
+        _attribute(_resolve_run_dir(args.run_path, store.runs_dir), args.method)
         return 0
     if args.command == "bundle":
         _bundle(_resolve_run_dir(args.run_path, store.runs_dir))
@@ -1615,6 +1687,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         return 1 if (args.fail_on_verifier and not (merged.passed and run_completed)) else 0
     if args.command == "validate-fixtures":
         return _validate_fixtures(args)
+    if args.command == "score-attribution":
+        return _score_attribution(args, store)
     if args.command == "run-suite":
         return _run_suite(args, store)
     if args.command == "collect-regressions":
