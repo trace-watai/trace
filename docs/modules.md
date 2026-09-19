@@ -51,14 +51,16 @@ Rupert on transcript shape); wire `validate-fixtures` into `check_repo.sh`/CI
 (with Sarp); parameterized task variants that sweep boundary values
 (day 29/30/31/60/61) from one template.
 
-## models/ — model adapters *(Rupert Maiti)*
+## models/ — model adapters *(Evaluation Systems)*
 
 **What belongs here:** the provider-neutral contract types (`Message`,
 `ToolSpec`, `ToolCall`, `AgentAction`), the `ModelAdapter` protocol, and
-its implementations: `FixtureModelAdapter` (deterministic scripted agent —
-the default everywhere) and `GeminiModelAdapter` (native function calling
-through the optional `google-genai` SDK, normalized into the same
-single-action contract).
+its implementations. `FixtureModelAdapter` is the deterministic scripted
+agent and the default everywhere. `GeminiModelAdapter` and
+`AnthropicModelAdapter` are the two live providers, each normalizing native
+tool calling into the same single-action contract through its own optional
+SDK. Two vendors exist so a live result never depends on one credential,
+which is what #158 and #159 need to compare model families at all.
 
 **Exposes:** `ModelAdapter.next_action(transcript, tools) -> AgentAction`;
 `create_model_adapter(provider, ...)` — the only place provider strings are
@@ -72,7 +74,8 @@ shared action contract supports them.
 | Mode | Configuration | Behavior |
 | --- | --- | --- |
 | Fixture (default) | `--provider fixture` | Runs a scripted fixture; no cassette, SDK, or key. |
-| Live | `--provider gemini` | Calls the provider using explicit model settings. |
+| Live | `--provider gemini` | Calls Gemini using explicit model settings. Needs `GEMINI_API_KEY` and the `gemini` extra. Cost is reported as null, since there is no price table for it yet. |
+| Live | `--provider anthropic` | Calls Claude using explicit model settings. Needs `ANTHROPIC_API_KEY` and the `anthropic` extra. Token usage is read off the response and priced, so `cost_usd` is a number. A seed is recorded and never sent, because the Messages API has none. |
 | Record | `--cassette-mode record` | `RecordingModelAdapter` wraps the selected provider and writes normalized responses. |
 | Replay | `--cassette-mode replay` | Reads recorded responses without constructing a provider; a missing or mismatched request is an error. |
 

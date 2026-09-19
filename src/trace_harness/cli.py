@@ -55,6 +55,7 @@ from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.failure_bundles.schemas import RepairPackage
 from trace_harness.metrics.history import HISTORY_PATH as DEFAULT_HISTORY_PATH
 from trace_harness.models import create_model_adapter, resolve_model_name
+from trace_harness.models.base import ProviderNotConfiguredError
 from trace_harness.models.cassette import CassetteConfig, RecordingModelAdapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.regression.promotion import LibraryGateError, commit_controls
@@ -1558,6 +1559,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return _dispatch(args, store)
+    except ProviderNotConfiguredError as exc:
+        # A missing key or SDK is a setup problem, and the adapter's message
+        # already says exactly what to do about it. Burying that under a
+        # traceback helps nobody.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except (FileNotFoundError, KeyError, ValueError) as exc:
         # Expected input problems — a mistyped run path, a malformed fixture
         # (TaskLoadError and pydantic ValidationError are ValueErrors), an

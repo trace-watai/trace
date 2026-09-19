@@ -95,6 +95,17 @@ class ModelAdapterError(RuntimeError):
     """Base class for adapter failures the runner should treat as model errors."""
 
 
+class ProviderNotConfiguredError(RuntimeError):
+    """A provider cannot be used because its key or SDK is missing.
+
+    Separate from :class:`ModelAdapterError` because it is raised at
+    construction, before any run exists, so there is nothing to terminate. The
+    CLI catches it and prints the adapter's instructions instead of a
+    traceback, which is the difference between a usable message and one the
+    reader has to scroll past a stack to find.
+    """
+
+
 class ScriptExhaustedError(ModelAdapterError):
     """A fixture script ran out of actions before the run terminated."""
 

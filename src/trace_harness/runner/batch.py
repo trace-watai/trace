@@ -19,6 +19,7 @@ makes that missing telemetry visible.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -27,11 +28,12 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from trace_harness.environment.control_library import load_library
+from trace_harness.models import estimate_cost_usd
 from trace_harness.runner.pipeline import PipelineResult, run_task_pipeline
-from trace_harness.runner.result import RunStatus
+from trace_harness.runner.result import RunResult, RunStatus
 from trace_harness.runner.suite import AgentConfig, SuiteSpec
-from trace_harness.tracing.artifact_store import ArtifactStore
-from trace_harness.tracing.events import utc_now
+from trace_harness.tracing.artifact_store import TRACE, ArtifactStore
+from trace_harness.tracing.events import TraceEventType, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +149,7 @@ class BatchRunner:
     def _run_cell(self, config: AgentConfig, task_path: str) -> BatchRunEntry:
         try:
             result = run_task_pipeline(task_path, config, self.store, controls=self.controls)
-            return _entry_from_pipeline(result, config, task_path)
+            return _entry_from_pipeline(result, config, task_path, self.store.runs_dir)
         except Exception as exc:  # noqa: BLE001 — isolate the cell; the batch goes on
             logger.warning(
                 "batch cell failed (agent=%s, task=%s): %s", config.label, task_path, exc
@@ -168,8 +170,56 @@ class BatchRunner:
                 logger.warning("batch index enrich failed for %s", entry.run_id)
 
 
+def _recorded_provider_responses(runs_dir: Path, run: RunResult) -> list[dict]:
+    """Every raw provider response this run recorded, read back from its trace.
+
+    The adapter puts the provider's response on ``AgentAction.raw`` and the
+    runner writes it as a ``model_response`` event, so the usage a vendor
+    reported is already retained. Reading it back here means a cost is priced
+    from the same bytes the trace carries rather than from a second accounting
+    path that could disagree with it.
+    """
+    relative = run.artifact_paths.get(TRACE)
+    if relative is None:
+        return []
+    path = runs_dir / relative
+    if not path.is_file():
+        return []
+    raws = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("event_type") != TraceEventType.MODEL_RESPONSE.value:
+            continue
+        raw = (event.get("payload") or {}).get("raw")
+        if isinstance(raw, dict):
+            raws.append(raw)
+    return raws
+
+
+def _cost_usd(result: PipelineResult, runs_dir: Path) -> float | None:
+    """What this run cost, or None when that cannot be established.
+
+    Fixture runs cost nothing and say so. A live run is priced from the usage
+    its own trace recorded, and a provider or model with no price table stays
+    null, because a run that moved money and reports zero is worse than one
+    that reports nothing.
+    """
+    if result.run_config.provider == "fixture":
+        return 0.0
+    return estimate_cost_usd(
+        result.run_config.provider,
+        result.run_config.model,
+        _recorded_provider_responses(runs_dir, result.run_result),
+    )
+
+
 def _entry_from_pipeline(
-    result: PipelineResult, config: AgentConfig, task_path: str
+    result: PipelineResult, config: AgentConfig, task_path: str, runs_dir: Path
 ) -> BatchRunEntry:
     run = result.run_result
     verifier = result.verifier_result
@@ -191,7 +241,7 @@ def _entry_from_pipeline(
         verifier_id=(verifier.verifier_id if verifier is not None else None),
         severity=(verifier.severity.value if verifier and verifier.severity else None),
         latency_ms=latency_ms,
-        cost_usd=0.0 if result.run_config.provider == "fixture" else None,
+        cost_usd=_cost_usd(result, runs_dir),
         error=run.error,
     )
 

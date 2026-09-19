@@ -7,6 +7,9 @@ protocol. Concrete adapters:
   scripted, no API keys. The default everywhere (tests, CI, fixtures).
 - :class:`~trace_harness.models.gemini.GeminiModelAdapter` — native function
   calling through the optional ``google-genai`` SDK.
+- :class:`~trace_harness.models.anthropic.AnthropicModelAdapter` — native tool
+  use through the optional ``anthropic`` SDK. A second vendor so a live result
+  and the two-model conditions in #158 and #159 do not depend on one key.
 
 ``create_model_adapter`` is the one place provider strings become adapters,
 so the CLI and future API server never branch on provider names themselves.
@@ -24,7 +27,7 @@ from trace_harness.models.cassette import (
     cassette_path,
 )
 
-KNOWN_PROVIDERS = ("fixture", "gemini")
+KNOWN_PROVIDERS = ("fixture", "gemini", "anthropic")
 
 
 def resolve_model_name(provider: str, model: str | None, script_path: Path | str | None) -> str:
@@ -37,6 +40,10 @@ def resolve_model_name(provider: str, model: str | None, script_path: Path | str
         from trace_harness.models.gemini import DEFAULT_GEMINI_MODEL
 
         return model or DEFAULT_GEMINI_MODEL
+    if provider == "anthropic":
+        from trace_harness.models.anthropic import DEFAULT_ANTHROPIC_MODEL
+
+        return model or DEFAULT_ANTHROPIC_MODEL
     raise ValueError(f"unknown model provider '{provider}'; known providers: {KNOWN_PROVIDERS}")
 
 
@@ -55,7 +62,8 @@ def create_model_adapter(
     """Build a model adapter for ``provider``.
 
     ``fixture`` requires ``script_path`` (a FixtureScript JSON file).
-    ``gemini`` requires ``GEMINI_API_KEY`` in the environment. Its behavioral
+    ``gemini`` requires ``GEMINI_API_KEY`` and ``anthropic`` requires
+    ``ANTHROPIC_API_KEY`` in the environment. Its behavioral
     knobs are passed explicitly so the adapter executes the same configuration
     persisted in ``run_config.json``.
 
@@ -109,4 +117,29 @@ def create_model_adapter(
             seed=seed,
             timeout_seconds=timeout_seconds,
         )
+    if provider == "anthropic":
+        from trace_harness.models.anthropic import AnthropicModelAdapter
+
+        return AnthropicModelAdapter(
+            model=model,
+            temperature=temperature,
+            seed=seed,
+            timeout_seconds=timeout_seconds,
+        )
     raise ValueError(f"unknown model provider '{provider}'; known providers: {KNOWN_PROVIDERS}")
+
+
+def estimate_cost_usd(provider: str, model: str, raws: list[dict]) -> float | None:
+    """Price a run's recorded provider responses, or None when it cannot be priced.
+
+    Dispatches per provider because token accounting and prices are vendor
+    facts, not harness facts. A provider with no pricer returns None, which is
+    what ``BatchRunEntry.cost_usd`` has always carried for a live run and is
+    honest about the gap. Gemini has no pricer yet, so its runs keep reporting
+    null rather than an invented number.
+    """
+    if provider == "anthropic":
+        from trace_harness.models.anthropic import estimate_cost_usd as anthropic_cost
+
+        return anthropic_cost(model, raws)
+    return None
