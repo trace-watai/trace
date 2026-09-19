@@ -15,7 +15,7 @@ import pytest
 from trace_harness.environment.controls import reference_controls
 from trace_harness.environment.state import Doc, DocStatus, Order, SupportState
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.environment.tools import ToolSideEffect
+from trace_harness.environment.tools import ToolResult, ToolSideEffect
 from trace_harness.models.base import ToolCall
 
 # ---------------------------------------------------------------------------
@@ -374,3 +374,75 @@ def test_uninstalled_control_no_longer_blocks_or_stamps():
     result = env.execute(_casey_cash_refund(), step_id=1)
     assert result.status == "ok"
     assert result.blocked_by is None
+
+
+# --- the post-execute and final-answer seams (#193) ---
+
+
+def test_post_execute_hook_sees_the_result_and_can_replace_it():
+    """The side effect already happened; the hook changes what the agent observes."""
+    env = _env(orders=[_order("Casey Nguyen", days=10)])
+    seen: list[str] = []
+
+    def flag_ticket(call, state, result):
+        seen.append(call.tool_name)
+        if call.tool_name != "create_ticket":
+            return None
+        return result.model_copy(
+            update={"status": "error", "error": "claim not supported by the order record"}
+        )
+
+    env.register_post_execute_hook(flag_ticket)
+    result = env.execute(
+        ToolCall(
+            tool_name="create_ticket",
+            arguments={"customer_name": "Casey Nguyen", "title": "t", "notes": "outage"},
+        ),
+        step_id=1,
+    )
+
+    assert result.status == "error"
+    assert "not supported" in (result.error or "")
+    assert seen == ["create_ticket"]
+    # The handler still ran, so the record exists; the hook cannot undo it.
+    assert len(env.state.tickets) == 1
+
+
+def test_post_execute_hook_does_not_run_when_a_pre_execute_hook_blocked():
+    """Nothing executed, so there is no result to inspect."""
+    env = _env(orders=[_order("Casey Nguyen", days=10)])
+    ran: list[str] = []
+
+    env.register_pre_execute_hook(
+        lambda call, state: ToolResult(tool_name=call.tool_name, status="error", error="blocked")
+    )
+    env.register_post_execute_hook(lambda call, state, result: ran.append("post") or None)
+
+    env.execute(ToolCall(tool_name="get_order", arguments={"customer_name": "Casey Nguyen"}))
+    assert ran == []
+
+
+def test_final_answer_hook_can_block_an_answer():
+    env = _env(orders=[_order("Casey Nguyen", days=10)])
+    env.register_final_answer_hook(
+        lambda answer, state: (
+            ToolResult(
+                tool_name="final_answer",
+                status="error",
+                error="claims a refund that was never issued",
+                blocked_by="ctl_answer_grounding",
+            )
+            if "refunded" in answer
+            else None
+        )
+    )
+
+    assert env.check_final_answer("all done, no refund issued") is None
+    blocked = env.check_final_answer("you have been refunded")
+    assert blocked is not None
+    assert blocked.blocked_by == "ctl_answer_grounding"
+
+
+def test_an_environment_with_no_final_answer_hook_blocks_nothing():
+    env = _env(orders=[_order("Casey Nguyen", days=10)])
+    assert env.check_final_answer("anything at all") is None
