@@ -502,7 +502,19 @@ def test_evidence_kind_is_constrained_enum():
 
 
 def _task_with_expected_action(**expected: object) -> TaskSpec:
-    from trace_harness.tasks.schemas import ExpectedAction
+    """Accepts the old bool for escalation and maps it onto the posture (#192)."""
+    from trace_harness.tasks.schemas import (
+        EscalationExpectation,
+        EscalationPosture,
+        ExpectedAction,
+    )
+
+    if isinstance(expected.get("escalation"), bool):
+        expected["escalation"] = EscalationExpectation(
+            posture=EscalationPosture.REQUIRED
+            if expected["escalation"]
+            else EscalationPosture.FORBIDDEN
+        )
 
     return TaskSpec(
         task_id="unit_task_expected_action",

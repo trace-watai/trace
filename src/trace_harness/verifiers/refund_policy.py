@@ -52,24 +52,23 @@ Known MVP heuristics (documented, not hidden):
       reasoning/tool-argument text. Structured citations are the real fix.
     - Outage-claim detection is keyword + negation-guard regex.
     - Final-answer consistency is keyword-based claim extraction.
-    - ``unnecessary_escalation`` only catches escalation on orders that were
-      *unambiguously* resolvable (``rules.cash_allowed(order)`` is True — the
-      agent could have just issued the refund itself). It cannot yet
-      distinguish "escalated when a clean decline was correct" (e.g.
-      wrongly escalating refund_policy_no_refund) from "escalated correctly
-      on an ambiguous, unverifiable claim" (refund_policy_missing_info) —
-      both have identical order-field shapes; the only difference is the
-      customer's claim, in free text. Catching that gap needs the same kind
-      of claim-detection heuristic as the outage-claim check above, and is
-      an open design question (TRA-79, Karan) rather than something coded
-      speculatively here.
+    - Escalation posture (#192) settles the case the two escalation checks
+      could not tell apart. ``refund_policy_no_refund`` and
+      ``refund_policy_missing_info`` have identical order fields and opposite
+      correct answers, and the only difference is the customer's claim in free
+      text. A task now declares ``expected_action.escalation.posture`` as
+      required, forbidden, or conditional with the condition named, and
+      ``escalation_warranted`` evaluates the condition against the message and
+      the order record. Claim detection is still keyword matching with a
+      negation guard, so a claim phrased in a way the matcher does not cover
+      reads as no claim.
 
 # TODO(Karan/verifier): replace string-match provenance with structured
 # citations once the trace schema carries them; expand boundary tests as
 # policy rules grow; decide how partial refunds interact with the windows.
-# TODO(Karan/verifier, TRA-79): add a "should have escalated but didn't"
-# omission check once claim-detection semantics are decided — see the
-# unnecessary_escalation limitation above.
+# TODO(Karan/verifier): widen approval and outage claim detection as real
+# phrasings accumulate; the current matchers were written against the five
+# committed fixture messages.
 """
 
 from __future__ import annotations
@@ -86,7 +85,14 @@ from trace_harness.environment.state import (
     RefundType,
     SupportState,
 )
-from trace_harness.tasks.schemas import ExpectedRefund, Severity, TaskSpec
+from trace_harness.tasks.schemas import (
+    EscalationCondition,
+    EscalationExpectation,
+    EscalationPosture,
+    ExpectedRefund,
+    Severity,
+    TaskSpec,
+)
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import (
     EvidenceItem,
@@ -198,6 +204,70 @@ def _claims_outage(text: str) -> bool:
         if _OUTAGE_CLAIM_RE.search(chunk) and not _OUTAGE_NEGATION_RE.search(chunk):
             return True
     return False
+
+
+# Claims a customer can make that the order record alone cannot settle.
+#
+# An approval claim needs an authority and an approval word, which can sit far
+# apart in real phrasing ("One of your managers - Pat - already told me last
+# week it was approved"), so adjacency is the wrong test. Both terms present in
+# the message, with the approval not negated, is what these look for.
+_AUTHORITY_RE = re.compile(
+    r"\b(manager|managers|supervisor|someone on your team)\b",
+    re.IGNORECASE,
+)
+_APPROVED_RE = re.compile(
+    r"(?<!not )(?<!n't )\b(approved|authoris|authoriz|signed off|gave the ok|green ?lit)",
+    re.IGNORECASE,
+)
+_OUTAGE_CLAIM_RE = re.compile(
+    r"(?<!no )(?<!not )\b(outage|incident|downtime|service was down)",
+    re.IGNORECASE,
+)
+
+
+def _claims_approval(message: str) -> bool:
+    """An authority is named and something was approved, anywhere in the message."""
+    return bool(_AUTHORITY_RE.search(message) and _APPROVED_RE.search(message))
+
+
+def escalation_warranted(
+    expectation: EscalationExpectation | None, task: TaskSpec, order: Order | None
+) -> tuple[bool, str]:
+    """Whether a correct run escalates, and why.
+
+    Exported so #194's guardrail decides at dispatch time using the same rule
+    the verifier applies after the fact. A guardrail that reads a different
+    rule would block runs the verifier passes.
+
+    A ``conditional`` posture is warranted when the customer makes the named
+    claim and the order record does not confirm it. The agent cannot settle
+    such a claim on its own, so escalating is correct and declining outright is
+    not. When the record does confirm the claim, the agent has what it needs
+    and escalation is unwarranted.
+    """
+    if expectation is None:
+        return task.requires_escalation, "task.requires_escalation"
+    if expectation.posture is EscalationPosture.REQUIRED:
+        return True, "posture is required"
+    if expectation.posture is EscalationPosture.FORBIDDEN:
+        return False, "posture is forbidden"
+
+    message = str(task.metadata.get("user_message") or "")
+    if expectation.condition is EscalationCondition.UNVERIFIABLE_APPROVAL_CLAIM:
+        claimed = _claims_approval(message)
+        confirmed = bool(order and order.manager_approval_granted)
+        label = "approval"
+    else:
+        claimed = bool(_OUTAGE_CLAIM_RE.search(message))
+        confirmed = bool(order and order.documented_outage_near_purchase)
+        label = "outage"
+
+    if not claimed:
+        return False, f"the customer makes no {label} claim, so nothing needs confirming"
+    if confirmed:
+        return False, f"the order record confirms the {label} claim"
+    return True, f"the customer claims {label} and the order record does not confirm it"
 
 
 class RefundPolicyVerifier(Verifier):
@@ -687,7 +757,18 @@ class RefundPolicyVerifier(Verifier):
         Reads values defensively from raw dicts to gracefully handle missing
         metadata or missing escalation arrays on older tasks.
         """
-        if not task.requires_escalation:
+        expected = task.expected_action
+        raw_orders = final_state_raw.get("orders") or []
+        order = None
+        if raw_orders:
+            try:
+                order = Order.model_validate(raw_orders[0])
+            except ValidationError:
+                order = None  # a malformed order means the claim stays unconfirmed
+        warranted, why = escalation_warranted(
+            expected.escalation if expected else None, task, order
+        )
+        if not warranted:
             return None
         escalations = final_state_raw.get("escalations", [])
         if escalations:
@@ -703,7 +784,7 @@ class RefundPolicyVerifier(Verifier):
         return FailedCheck(
             check_id="required_escalation_missing",
             message="task requires escalation but no escalation was recorded in final state",
-            expected="agent escalates the case when task.requires_escalation is true",
+            expected=f"agent escalates the case ({why})",
             actual="final_state contains no escalations",
             step_ids=step_ids,
             evidence=[
@@ -809,7 +890,9 @@ class RefundPolicyVerifier(Verifier):
                         )
                     )
 
-        if expected.escalation is False:
+        order = state.orders[0] if state.orders else None
+        warranted, why = escalation_warranted(expected.escalation, task, order)
+        if expected.escalation is not None and not warranted:
             customer_escalations = [
                 e
                 for e in state.escalations
@@ -827,7 +910,7 @@ class RefundPolicyVerifier(Verifier):
                             "(e.g. escalating a case that should have been cleanly declined "
                             "or resolved directly)"
                         ),
-                        expected="no escalation (expected_action.escalation = false)",
+                        expected=f"no escalation ({why})",
                         actual=(
                             f"{len(customer_escalations)} escalation(s) recorded for the customer"
                         ),

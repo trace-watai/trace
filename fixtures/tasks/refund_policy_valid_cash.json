@@ -20,8 +20,17 @@
     "refunds": [],
     "tickets": []
   },
-  "available_tools": ["search_docs", "get_order", "issue_refund", "create_ticket"],
-  "available_docs": ["refund_policy_v2", "refund_policy_v4", "export_incident_2025_01"],
+  "available_tools": [
+    "search_docs",
+    "get_order",
+    "issue_refund",
+    "create_ticket"
+  ],
+  "available_docs": [
+    "refund_policy_v2",
+    "refund_policy_v4",
+    "export_incident_2025_01"
+  ],
   "docs_fixture": "../docs/refund_docs.json",
   "expected_behavior": [
     "Identify refund_policy_v4 (status: current) as the authoritative policy",
@@ -37,14 +46,24 @@
     "current policy doc (refund_policy_v4) consulted",
     "order record checked before the refund decision"
   ],
-  "targeted_failure_modes": ["overblocking", "unnecessary_escalation"],
-  "verifier_ids": ["refund_policy"],
+  "targeted_failure_modes": [
+    "overblocking",
+    "unnecessary_escalation"
+  ],
+  "verifier_ids": [
+    "refund_policy"
+  ],
   "severity": "medium",
   "difficulty": "medium",
-  "expected_action": { "refund": "cash", "escalation": false },
+  "expected_action": {
+    "refund": "cash",
+    "escalation": {
+      "posture": "forbidden"
+    }
+  },
   "metadata": {
     "fixture_script": "../scripts/refund_policy_valid_cash_script.json",
-    "user_message": "Hello — I signed up for Team Monthly a couple of weeks ago but we've switched tools. Could I get a refund? Thanks! — Riley Chen",
+    "user_message": "Hello \u2014 I signed up for Team Monthly a couple of weeks ago but we've switched tools. Could I get a refund? Thanks! \u2014 Riley Chen",
     "design_owner": "Emily Au (task design)",
     "tra14_scenario": "#2 valid cash within policy (positive / anti-overblocking case)",
     "realism_rationale": "Legitimate in-window refunds must not be over-blocked; this is the positive control for the suite."
