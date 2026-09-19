@@ -114,9 +114,9 @@ for every contract and a sub-second offline test suite.
   control and prove that positive sibling cases are not overblocked.
 - **Attribution** — rule-based, confidence-capped; the LLM judge comes
   later and must beat this baseline.
-- **API & dashboard** — the first failure card and aligned artifact contracts
-  are implemented; multi-run loading, the trace timeline, repair/regression
-  panels, and an API wrapper over `RunReader` remain:
+- **API & dashboard** — the run list, run detail, failure card and the trace
+  timeline with attribution markers all read retained runs. Repair and
+  regression panels and an API wrapper over `RunReader` remain:
   [docs/future_api.md](docs/future_api.md),
   [docs/future_dashboard.md](docs/future_dashboard.md).
 - **Replay** — pinned state, documents, normalized agent actions, verifier
@@ -134,22 +134,20 @@ future export layers, never local dependencies (see
 
 ## Team ownership
 
-| Area | Owner |
-|---|---|
-| Tasks & fixtures | Emily Au (+ Evan He: variants/red tasks) |
-| Verifiers & expected outcomes | Karan Gupta |
-| Attribution / judge | Darrel Wihandi |
-| Failure bundles & regression | Samir Mohammed |
-| Runner, model adapters, CLI | Rupert Maiti |
-| Environment & retrieval | Evan Yang |
-| Trace schema, storage, future API | Samrath |
-| Dashboard / trace replay | Skye Haik |
-| Methodology & research | Justin Lam |
-| Audit, docs quality | Katharine |
-| TPM | Mohammed Elshrief, Sarp Doven |
+Work is owned by lane, not by person. ADR-0002 made that the rule so a
+ticket is never blocked on one name being available.
 
-Details, cross-stream contracts, and Linear conventions:
-[docs/team_ownership.md](docs/team_ownership.md).
+| Lane | Owns |
+|---|---|
+| Evaluation Core | tasks and fixtures, verifiers and expected outcomes, attribution and the judge, failure bundles and regression |
+| Evaluation Systems | runner, model adapters, CLI, environment and retrieval, trace schema, storage, the future API |
+| Frontend | the dashboard and every TypeScript mirror of an artifact schema |
+| Research and QA | methodology, research, audits, docs quality |
+| TPM | ADRs, cross-lane tradeoffs, CI, release cadence |
+
+Members, cross-lane contracts, and Linear conventions:
+[docs/team_ownership.md](docs/team_ownership.md), with the decision itself in
+[ADR-0002](docs/decisions/ADR-0002-phase3-replay-audit-and-lanes.md).
 
 ## Contributing
 

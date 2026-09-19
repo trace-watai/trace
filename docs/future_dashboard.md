@@ -1,8 +1,10 @@
 # Future: dashboard (trace replay & failure UX)
 
-**Status: live run reads landed for run summary + failure card; other views
-pending.** Owner: Skye Haik. Data contracts: coordinate with Samrath
-(trace/artifact schemas) and Darrel (attribution semantics).
+**Status: run summary, failure card, run list and the trace timeline with
+attribution markers all read retained runs. Repair package and regression
+artifact panels remain.** Owned by the frontend lane. Data contracts are a
+cross-lane contract with evaluation systems, per
+[team_ownership.md](team_ownership.md).
 
 **Current stack:** Next.js + TypeScript + Tailwind + shadcn/ui in
 `apps/dashboard/`.
@@ -33,12 +35,12 @@ dashboard-side state.
 | View | Status | Primary source | What it must show |
 |---|---|---|---|
 | Run summary | Live | `run_result.json` + `task_spec.json` | status vs verdict distinction and steps are visible; timing and task goal remain |
-| Trace timeline | Pending | `trace.jsonl` | step-grouped events; prompts/actions/observations; retrieval results with doc **status badges** |
-| Verifier failures | Pending | `verifier_result.json` | failed checks with expected/actual, severity, blocks_release, evidence drill-down to steps |
-| Attribution | Pending | `attribution_result.json` | root cause vs missed recovery vs first irreversible — **distinct markers on the timeline** (steps 3 / 4 / 5 in the fixture), confidence + ambiguity notes |
+| Trace timeline | Live (#150) | `trace.jsonl` | step-grouped events; prompts/actions/observations; retrieval results with doc **status badges** |
+| Verifier failures | Live (#150) | `verifier_result.json` | failed checks with expected/actual, severity, blocks_release, evidence drill-down to steps |
+| Attribution | Live (#150) | `attribution_result.json` | root cause vs missed recovery vs first irreversible — **distinct markers on the timeline** (steps 3 / 4 / 5 in the fixture), confidence + ambiguity notes |
 | Failure card | Live | `failure_card.json` | the human story: summary, blast radius, symptoms |
-| Repair package | Pending | `repair_package.json` | controls with installation points + priorities |
-| Regression artifact | Pending | `regression_artifact.json` | pinned scenario, checks, replay command, positive siblings |
+| Repair package | Pending (#205) | `repair_package.json` | controls with installation points + priorities |
+| Regression artifact | Pending (#205) | `regression_artifact.json` | pinned scenario, checks, replay command, positive siblings |
 
 **UX north star:** a teammate who wasn't there opens a failed run and
 within a minute can say *what happened, where it became inevitable, and
@@ -46,6 +48,6 @@ what would prevent it*. Step ids are the cross-linking currency — every
 evidence item carries them.
 
 **Still out of scope:** auth, live polling, run comparison, and editing. The
-next integration step is building the pending views (trace timeline, verifier
-failures, attribution, repair package) on the same `run-loader.ts` seam the
+next integration step is building the two remaining views (repair package and
+regression artifact) on the same `run-loader.ts` seam the
 run summary and failure card already use.

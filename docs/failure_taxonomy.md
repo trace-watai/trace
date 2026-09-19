@@ -164,9 +164,11 @@ Scenarios not covered by the refund fixture:
 | `evidence_step_ids` | union of the above | `FailureCard.evidence` |
 | `ambiguity_notes` | heuristic's degradation contract | folded into `causal_explanation`, never dropped |
 
-`_CHECK_CATEGORY` maps 5 check ids to 4 of the 19 `FailureCategory`
-values — refund-domain data, not part of the taxonomy itself. Fills in as
-new verifiers land.
+`_CHECK_CATEGORY` maps 6 of the verifier's 13 check ids to 5 of the 19
+`FailureCategory` values. That map is refund-domain data and it is not part of
+the taxonomy itself. Seven check ids have no category yet, so a run failing
+only on one of them attributes with a null primary category and an ambiguity
+note rather than a guess. The gap closes as new verifiers land.
 
 ## Versioning
 
