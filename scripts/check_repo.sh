@@ -20,6 +20,9 @@ ruff check .
 echo "==> ruff format --check"
 ruff format --check .
 
+echo "==> fixture validity"
+python -m trace_harness.cli validate-fixtures fixtures/tasks
+
 echo "==> pytest"
 pytest
 

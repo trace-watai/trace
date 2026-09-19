@@ -205,6 +205,55 @@ def validate_task_file(path: Path) -> list[ValidationIssue]:
     return validate_task(task)
 
 
+#: Task files under this directory are meant to be invalid; the gate fails when
+#: one of them stops being flagged.
+COUNTEREXAMPLES_DIR = "counterexamples"
+#: Generated candidates (#14) are not authored fixtures and are not gated.
+CANDIDATES_DIR = "candidates"
+
+
+@dataclass(frozen=True)
+class FixtureVerdict:
+    """One task file and whether it came out the way it was supposed to."""
+
+    path: Path
+    is_counterexample: bool
+    issues: list[ValidationIssue]
+
+    @property
+    def errors(self) -> list[ValidationIssue]:
+        return errors(self.issues)
+
+    @property
+    def ok(self) -> bool:
+        """A counterexample is correct only when it is flagged."""
+        return bool(self.errors) if self.is_counterexample else not self.errors
+
+
+def collect_task_files(root: Path) -> list[Path]:
+    """Every task file under ``root``, recursively, excluding generated candidates.
+
+    The old entry point globbed the top level only, so a task under
+    ``refund_task_families/`` that no suite referenced could merge without ever
+    being validated.
+    """
+    return sorted(
+        path for path in root.rglob("*.json") if CANDIDATES_DIR not in path.relative_to(root).parts
+    )
+
+
+def validate_fixture_tree(root: Path) -> list[FixtureVerdict]:
+    """Validate every task file under ``root``."""
+    return [
+        FixtureVerdict(
+            path=path,
+            is_counterexample=COUNTEREXAMPLES_DIR in path.relative_to(root).parts,
+            issues=validate_task_file(path),
+        )
+        for path in collect_task_files(root)
+    ]
+
+
 def _report(path: Path, *, expect_invalid: bool) -> bool:
     """Validate one fixture, print its status + issues, return whether it's as expected."""
     issues = validate_task(load_task(path))
