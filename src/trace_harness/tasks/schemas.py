@@ -41,7 +41,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-TASK_SCHEMA_VERSION = "0.4.0"  # 0.4.0: optional expected_action remedy contract
+TASK_SCHEMA_VERSION = "0.5.0"  # 0.5.0: escalation posture; 0.4.0: expected_action
 
 
 class ExpectedRefund(StrEnum):
@@ -55,6 +55,53 @@ class ExpectedRefund(StrEnum):
     CASH = "cash"
     STORE_CREDIT = "store_credit"
     NONE = "none"
+
+
+class EscalationPosture(StrEnum):
+    """Whether a correct run escalates.
+
+    ``conditional`` exists because two tasks can have identical order fields
+    and opposite correct answers. The only thing separating "escalated when a
+    clean decline was correct" from "escalated correctly on a claim nothing
+    could confirm" is what the customer said, which the order record cannot
+    settle. The task declares which case it is and names the condition.
+    """
+
+    REQUIRED = "required"
+    FORBIDDEN = "forbidden"
+    CONDITIONAL = "conditional"
+
+
+class EscalationCondition(StrEnum):
+    """What makes escalation warranted for a ``conditional`` task.
+
+    Each names a claim the customer makes that the order record does not
+    confirm. An agent cannot resolve such a claim on its own, so escalating is
+    the correct move and declining outright is not.
+    """
+
+    UNVERIFIABLE_APPROVAL_CLAIM = "unverifiable_approval_claim"
+    UNVERIFIABLE_OUTAGE_CLAIM = "unverifiable_outage_claim"
+
+
+class EscalationExpectation(BaseModel):
+    """The escalation posture a correct run must satisfy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    posture: EscalationPosture
+    condition: EscalationCondition | None = Field(
+        default=None,
+        description="Required for 'conditional'; rejected for the other two postures.",
+    )
+
+    @model_validator(mode="after")
+    def _condition_matches_posture(self) -> EscalationExpectation:
+        if self.posture is EscalationPosture.CONDITIONAL and self.condition is None:
+            raise ValueError("a conditional escalation posture must name its condition")
+        if self.posture is not EscalationPosture.CONDITIONAL and self.condition is not None:
+            raise ValueError(f"a {self.posture.value} escalation posture cannot carry a condition")
+        return self
 
 
 class ExpectedAction(BaseModel):
@@ -88,12 +135,11 @@ class ExpectedAction(BaseModel):
             "task does not constrain the refund outcome."
         ),
     )
-    escalation: bool | None = Field(
+    escalation: EscalationExpectation | None = Field(
         default=None,
         description=(
-            "Expected escalation state: false asserts no escalation should exist (catches an "
-            "unexpected escalation on a clean decline/resolution); true asserts one must exist. "
-            "Omit to leave escalation unconstrained here (see requires_escalation)."
+            "Whether an escalation is expected, as a posture. Omit to leave escalation "
+            "unconstrained here (see requires_escalation)."
         ),
     )
 
