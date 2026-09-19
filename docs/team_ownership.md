@@ -66,4 +66,24 @@ where module knowledge has to live.
   real work, it becomes a ticket — the docs seed the backlog; Linear *is*
   the backlog.
 
+## Branch protection exception for the metrics history
+
+`main` requires two status checks, `Backend gate` and `Dashboard gate`, with
+strict mode on. The metrics history job (#207) appends one line to
+`docs/acceptance/metrics_history.jsonl` after a merge and pushes it straight to
+`main` with `[skip ci]`, because a record of what a commit measured is worth
+nothing if it arrives through a PR that changes the commit it is describing.
+
+That push cannot use the default `GITHUB_TOKEN`. Required status checks apply
+to direct pushes as well as merges, and `[skip ci]` guarantees the two checks
+never report on the bot commit, so the push is rejected. The job needs a token
+belonging to an account with admin on the repository, since `enforce_admins` is
+off and admins can push past required checks. Store it as the `METRICS_HISTORY_TOKEN`
+secret and give the checkout step `token: ${{ secrets.METRICS_HISTORY_TOKEN }}`.
+
+Until that secret exists the job fails on its push step and nothing else
+breaks. The gates it depends on have already reported by then, the history file
+simply does not gain a line, and the run after it records the same numbers
+against a later commit. Owned by the TPM lane, along with rotating the token.
+
 Maintained by the TPM lane.

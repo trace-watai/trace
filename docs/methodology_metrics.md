@@ -113,6 +113,77 @@ aggregates this, only the printed `[2/2]` section and the exit code.
 fixtures, not pinned state. And a sibling "passing" means no violation was
 recorded, which until #143 does not prove the sibling did the right thing.
 
+### A5. Control coverage
+
+*Meaning.* How far the controls a repair package asked for actually get.
+A prescribed control is a name. It becomes *materializable* when some
+registered guardrail can install it, *validated* when a validation run
+produced a verdict for it, and *accepted* when that verdict was
+`accepted`. Reporting only the last of the four hides which wall the
+work is stuck behind.
+
+*Formula.* `accepted / prescribed`, with `materializable / prescribed`
+alongside it. `prescribed` counts distinct control names across every
+retained `repair_package.json`. `materializable` counts those with a
+non-null entry in `MATERIALIZABLE_REPAIR_CONTROLS`. `validated` and
+`accepted` count those appearing in a `repair_validation.json`, the
+latter restricted to `verdict == "accepted"`.
+
+*Source.* `repair_package.json.controls[].name`,
+`environment/controls.py`, and `repair_validation.json.controls[]`.
+Recorded per commit in `docs/acceptance/metrics_history.jsonl`.
+
+*Blind spot.* This counts control names and says nothing about how much
+of the failure surface those names cover. Nine prescribed controls that
+all guard one refund check would read as broad coverage. A name that was
+accepted once is counted as accepted forever, so a control rolled back
+through `rollback_control` still appears here until its validation
+artifact is removed.
+
+### A6. Over-blocking over time
+
+*Meaning.* A4 recorded per commit rather than computed on demand, so the
+question "is the library blocking more good behavior than it used to"
+has an answer.
+
+*Formula.* The A4 rate, read from the latest `repair_validation.json`
+rather than recomputed. `siblings_failed / siblings_run` over that one
+artifact's `controls[].sibling_reruns`, counting `verdict == "FAIL"`.
+
+*Source.* `repair_validation.json`, chosen by the highest `batch_id`,
+whose timestamp prefix orders chronologically. File mtime is not used
+because a fresh clone rewrites it.
+
+*Blind spot.* One artifact per point, so a commit that validated one
+control is plotted next to a commit that validated ten with no
+indication of the difference beyond the denominator. Inherits every
+blind spot A4 has. An empty denominator is reported as null and drawn as
+a gap, because zero siblings run and zero siblings failed are not the
+same fact.
+
+### A7. Cost of learning
+
+*Meaning.* What it cost the world to find out whether a control works.
+Validation re-runs the failing task and its positive siblings, and the
+refund environment moves money on every one of them. That spend is real
+even against a fixture, and hiding it would make validation look free.
+
+*Formula.* Over the same validation artifact A6 reads, and over its
+re-runs deduplicated by `run_id`, the count of `tool_call_executed`
+events with `side_effect == "external_irreversible"` and `status ==
+"ok"`, and the sum of `final_state.json.refunds[].amount_usd`.
+
+*Source.* `repair_validation.json.controls[].originating_rerun` and
+`.sibling_reruns`, then `trace.jsonl` and `final_state.json` in each
+named run directory. Re-runs whose directory was not retained are listed
+in `runs_not_retained` and excluded from both totals.
+
+*Blind spot.* Money is refund dollars only. Tokens, wall time and any
+external call the environment does not model are absent, so this is a
+floor rather than a total. A re-run that was not retained is missing
+from the number and visible only in `runs_not_retained`, so a shrinking
+cost can mean cleanup rather than progress.
+
 ## Part B. Deterministic, computable once the named ticket lands
 
 ### B1. Repair effectiveness (after #159)
