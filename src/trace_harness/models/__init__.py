@@ -8,8 +8,13 @@ protocol. Concrete adapters:
 - :class:`~trace_harness.models.gemini.GeminiModelAdapter` — native function
   calling through the optional ``google-genai`` SDK.
 - :class:`~trace_harness.models.anthropic.AnthropicModelAdapter` — native tool
-  use through the optional ``anthropic`` SDK. A second vendor so a live result
-  and the two-model conditions in #158 and #159 do not depend on one key.
+  use through the optional ``anthropic`` SDK.
+- :class:`~trace_harness.models.openai.OpenAIModelAdapter` — native function
+  calling through the optional ``openai`` SDK, and the only one of the three
+  that both accepts a seed and publishes a per-token price.
+
+Three live vendors exist so a live result never depends on one key, and so the
+two-model conditions in #158, #159 and #217 have something to compare.
 
 ``create_model_adapter`` is the one place provider strings become adapters,
 so the CLI and future API server never branch on provider names themselves.
@@ -27,7 +32,7 @@ from trace_harness.models.cassette import (
     cassette_path,
 )
 
-KNOWN_PROVIDERS = ("fixture", "gemini", "anthropic")
+KNOWN_PROVIDERS = ("fixture", "gemini", "anthropic", "openai")
 
 
 def resolve_model_name(provider: str, model: str | None, script_path: Path | str | None) -> str:
@@ -44,6 +49,10 @@ def resolve_model_name(provider: str, model: str | None, script_path: Path | str
         from trace_harness.models.anthropic import DEFAULT_ANTHROPIC_MODEL
 
         return model or DEFAULT_ANTHROPIC_MODEL
+    if provider == "openai":
+        from trace_harness.models.openai import DEFAULT_OPENAI_MODEL
+
+        return model or DEFAULT_OPENAI_MODEL
     raise ValueError(f"unknown model provider '{provider}'; known providers: {KNOWN_PROVIDERS}")
 
 
@@ -62,8 +71,8 @@ def create_model_adapter(
     """Build a model adapter for ``provider``.
 
     ``fixture`` requires ``script_path`` (a FixtureScript JSON file).
-    ``gemini`` requires ``GEMINI_API_KEY`` and ``anthropic`` requires
-    ``ANTHROPIC_API_KEY`` in the environment. Its behavioral
+    Each live provider requires its own key in the environment,
+    ``GEMINI_API_KEY``, ``ANTHROPIC_API_KEY`` or ``OPENAI_API_KEY``. Its behavioral
     knobs are passed explicitly so the adapter executes the same configuration
     persisted in ``run_config.json``.
 
@@ -126,6 +135,15 @@ def create_model_adapter(
             seed=seed,
             timeout_seconds=timeout_seconds,
         )
+    if provider == "openai":
+        from trace_harness.models.openai import OpenAIModelAdapter
+
+        return OpenAIModelAdapter(
+            model=model,
+            temperature=temperature,
+            seed=seed,
+            timeout_seconds=timeout_seconds,
+        )
     raise ValueError(f"unknown model provider '{provider}'; known providers: {KNOWN_PROVIDERS}")
 
 
@@ -142,4 +160,8 @@ def estimate_cost_usd(provider: str, model: str, raws: list[dict]) -> float | No
         from trace_harness.models.anthropic import estimate_cost_usd as anthropic_cost
 
         return anthropic_cost(model, raws)
+    if provider == "openai":
+        from trace_harness.models.openai import estimate_cost_usd as openai_cost
+
+        return openai_cost(model, raws)
     return None

@@ -38,6 +38,11 @@ gemini = [
 anthropic = [
     "anthropic>=0.40,<1",
 ]
+# Optional: the OpenAI adapter uses the openai SDK. Same rule again, installing
+# it does NOT make tests require a key.
+openai = [
+    "openai>=1.60,<2",
+]
 
 [project.scripts]
 trace-harness = "trace_harness.cli:main"

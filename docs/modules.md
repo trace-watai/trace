@@ -57,14 +57,26 @@ Rupert on transcript shape); wire `validate-fixtures` into `check_repo.sh`/CI
 `ToolSpec`, `ToolCall`, `AgentAction`), the `ModelAdapter` protocol, and
 its implementations. `FixtureModelAdapter` is the deterministic scripted
 agent and the default everywhere. `GeminiModelAdapter` and
-`AnthropicModelAdapter` are the two live providers, each normalizing native
-tool calling into the same single-action contract through its own optional
-SDK. Two vendors exist so a live result never depends on one credential,
-which is what #158 and #159 need to compare model families at all.
+`AnthropicModelAdapter` and `OpenAIModelAdapter` are the three live
+providers, each normalizing native tool calling into the same single-action
+contract through its own optional SDK. Three vendors exist so a live result
+never depends on one credential, which is what #158, #159 and #217 need to
+compare model families at all.
 
 **Exposes:** `ModelAdapter.next_action(transcript, tools) -> AgentAction`;
 `create_model_adapter(provider, ...)` — the only place provider strings are
 interpreted.
+
+**Provider capability, since they are not interchangeable:**
+
+| Provider | Native tool calling | Seed | Published price |
+| --- | --- | --- | --- |
+| `gemini` | yes | yes | no table yet, `cost_usd` stays null |
+| `anthropic` | yes | no, the Messages API has none | yes |
+| `openai` | yes | yes, best-effort with `system_fingerprint` | yes |
+
+A seeded sample plan, such as the five seeds per condition in #217, can only
+run against a provider whose seed is actually sent.
 
 **Rules:** no code path may make tests need an API key. No tool execution
 (environment) and no prompt construction (runner). Provider errors become
@@ -76,6 +88,7 @@ shared action contract supports them.
 | Fixture (default) | `--provider fixture` | Runs a scripted fixture; no cassette, SDK, or key. |
 | Live | `--provider gemini` | Calls Gemini using explicit model settings. Needs `GEMINI_API_KEY` and the `gemini` extra. Cost is reported as null, since there is no price table for it yet. |
 | Live | `--provider anthropic` | Calls Claude using explicit model settings. Needs `ANTHROPIC_API_KEY` and the `anthropic` extra. Token usage is read off the response and priced, so `cost_usd` is a number. A seed is recorded and never sent, because the Messages API has none. |
+| Live | `--provider openai` | Calls an OpenAI chat model. Needs `OPENAI_API_KEY` and the `openai` extra. Priced the same way. The seed is sent, and the response's `system_fingerprint` is recorded so a seeded re-run whose backend build moved can be told apart from a real reproduction. |
 | Record | `--cassette-mode record` | `RecordingModelAdapter` wraps the selected provider and writes normalized responses. |
 | Replay | `--cassette-mode replay` | Reads recorded responses without constructing a provider; a missing or mismatched request is an error. |
 
