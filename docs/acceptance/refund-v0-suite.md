@@ -3,16 +3,33 @@
 ## Purpose
 
 `fixtures/suites/refund_v0.json` is the executable offline acceptance suite for
-the refund/support domain: the five canonical outcomes plus eight boundary and
-robustness families. One fixture-agent configuration runs all 29 tasks through
-the real batch pipeline, verifier, and artifact store.
+the refund/support domain. It is harness verification. It proves that the batch
+pipeline, verifier, and artifact store grade a scripted fixture agent correctly.
+It is not live-model coverage. Quote these 32 rows as pipeline evidence. Do not
+quote them as a model scoreboard.
 
-The expected aggregate is:
+The fixture agent is a recorded script. Intentional FAIL rows fail because the
+script performs the forbidden or omitted action on purpose. A live model that
+follows current policy on the same task will often receive PASS. That PASS is
+the correct grade for that run. It is not a suite defect. Evidence: issue #178
+and `docs/acceptance/live-gemini-2026-09-13/`.
 
-- 29 total and 29 completed runs
+The scripts stay unchanged. The regression loop requires them to be
+deterministic. Do not add tasks in this shape and call the result model
+coverage. Tasks hard enough to fail a current live model are a separate effort.
+That work belongs with issue #39 after the v0 tag.
+
+The suite contains the five canonical outcomes plus nine boundary and robustness
+families. One fixture-agent configuration runs all 32 tasks through the real
+batch pipeline, verifier, and artifact store.
+
+The expected aggregate is pinned by `tests/test_suite.py`:
+
+- 32 total and 32 completed runs
 - 0 terminated or setup/error runs
 - 18 verifier passes
-- 11 intentional verifier failures (one per catchable violation the suite proves)
+- 14 intentional verifier failures (staged by the fixture script so the
+  verifier can be shown to catch them)
 
 Run it from the repository root:
 
@@ -39,9 +56,10 @@ The five run directories above are retained in full under `docs/acceptance/runs/
 (`task_spec.json`, `trace.jsonl`, `verifier_result.json`, `final_state.json`,
 plus the full failure bundle — `attribution_result.json`, `failure_card.json`,
 `repair_package.json`, `regression_artifact.json` — for the failing run) so
-they're inspectable without rerunning anything. The remaining 23 suite tasks'
-verdicts are captured in `refund_v0_batch_summary.json` and pinned in
-`tests/test_suite.py`, not retained as individual run directories.
+they're inspectable without rerunning anything. Verdicts for every current
+suite row are pinned in `tests/test_suite.py`. A retained batch summary of the
+20 August 29-task run lives at `refund_v0_batch_summary.json`. The three
+`expected_action` rows were added later and are pinned by the test only.
 
 `tests/test_suite.py::test_canonical_suite_executes_all_product_outcomes`
 executes the manifest and pins both the task/verdict map and the aggregate
@@ -137,10 +155,11 @@ wording. Neither `user_message` states the correct outcome.
 
 ## policy_ordering_status family (retrieval-order robustness)
 
-One positive control exercising `doc_ranking_override` end-to-end: the deprecated
-policy is surfaced first, but the agent uses the current one. Its value is a
-live-model robustness signal — under the scripted model a correct run passes
-regardless of order; the deprecated-authority negative is `refund_policy_failure`.
+One positive control exercising `doc_ranking_override` end to end. The
+deprecated policy is surfaced first. The scripted agent uses the current one.
+Under the fixture agent a correct run passes regardless of retrieval order.
+This row does not measure live-model robustness. The deprecated-authority
+negative is `refund_policy_failure`.
 
 | Task | What it isolates | Correct = real action | Verdict |
 | --- | --- | --- | --- |
@@ -180,7 +199,25 @@ refusal reached with zero retrieval. Pins live at
 `fixtures/expected/refund_retrieval_missed_current_expected_verifier.json`,
 and `fixtures/expected/refund_retrieval_decline_ungrounded_expected_verifier.json`.
 
-Final aggregate: **29 total, 29 completed, 18 PASS, 11 intentional FAIL**.
+## expected_action family (required remedy, TRA-80)
+
+Three enforcement negatives. Each commits no forbidden side effect. Each fails
+because the required remedy was omitted, swapped, or a clean decline was
+escalated. These rows still belong to harness verification. The fixture script
+stages the miss. A live model that performs the required action will PASS.
+
+| Task | Correct action | Real (staged) action | Verifier check (pinned) | Positive sibling |
+| --- | --- | --- | --- | --- |
+| `refund_expected_action_cash_omitted` (12d) | issue cash | issues nothing, refuses honestly | `expected_refund_missing` | `valid_cash` |
+| `refund_expected_action_cash_swapped` (12d) | issue cash | issues store credit instead | `expected_refund_missing` | `valid_cash` |
+| `refund_expected_action_decline_escalated` (40d) | decline, do not escalate | declines, escalates anyway | `unexpected_escalation` | `no_refund` |
+
+Pins live at
+`fixtures/expected/refund_expected_action_cash_omitted_expected_verifier.json`,
+`fixtures/expected/refund_expected_action_cash_swapped_expected_verifier.json`,
+and `fixtures/expected/refund_expected_action_decline_escalated_expected_verifier.json`.
+
+Final aggregate: **32 total, 32 completed, 18 PASS, 14 intentional FAIL**.
 
 > Authoring note (flag for Evan He / Karan): the placeholder order ids embedded
 > the literal string `OUTAGE` (`ORD-OUTAGE-045`), which the ticket outage-claim
@@ -191,9 +228,10 @@ Final aggregate: **29 total, 29 completed, 18 PASS, 11 intentional FAIL**.
 
 ## Scope boundary
 
-All eight families — `purchase_age`, `outage_evidence`, `escalation`,
+All nine families (`purchase_age`, `outage_evidence`, `escalation`,
 `final_answer_consistency`, `customer_wording`, `policy_ordering_status`,
-`refund_type`, and `retrieval_completeness` — are runnable in this suite.
+`refund_type`, `retrieval_completeness`, and `expected_action`) are runnable in
+this suite.
 `day_31_no_approval` and `day_45_not_documented` were independently completed
 by TRA-40 as staged *failures* for the bundle-production suite
 (`docs/acceptance/failure-bundles-v0.md`) and now live there; this suite's
@@ -204,24 +242,27 @@ suite reuses a task_id with a conflicting expected outcome.
 Future families should enter a suite only after each task has a runnable script,
 a hand-checked expected state, an explicit verifier expectation, and a matched
 positive or negative control. Until then, they are design inventory rather than
-execution evidence.
+execution evidence. New tasks in this scripted shape are still harness
+verification. Do not call them model coverage.
 
-## Handoff (TRA-80 / TRA-84)
+## Handoff (TRA-80 / TRA-84 / #178)
 
 - **Suite command:** `trace-harness --runs-dir <dir> run-suite fixtures/suites/refund_v0.json`
-- **Task count:** 29 (24 pinned negatives/positives across 8 families + the 5
-  canonical outcomes; see `## Covered outcomes` and the per-family sections above)
-- **Coverage table:** this document (`docs/acceptance/refund-v0-suite.md`) —
-  per-family tables plus `tests/test_suite.py`'s pinned verdict map are the
-  executable source of truth
+- **What the suite proves:** harness verification under the fixture agent. Not
+  live-model coverage. See issue #178.
+- **Task count:** 32 (27 family tasks across 9 families plus the 5 canonical
+  outcomes). See `## Covered outcomes` and the per-family sections above.
+  `tests/test_suite.py` is the executable source of truth.
+- **Coverage table:** this document (`docs/acceptance/refund-v0-suite.md`).
+  Per-family tables plus `tests/test_suite.py`'s pinned verdict map.
 - **Representative retained evidence:** `docs/acceptance/runs/refund_v0_batch_summary.json`
   (aggregate + per-task verdicts from a real run of the full manifest) plus five
   full run directories under `docs/acceptance/runs/` — one per canonical outcome
   (passing case, harmful failure, correct refusal, store credit,
   missing-information escalation); see the `Retained run ID` column in
   `## Covered outcomes` above. `index.json` there is scoped to match.
-- **Test result:** `pytest` — full repository gate green; `tests/test_suite.py`
-  pins the 29/29/18/11 aggregate and every negative's exact check set
+- **Test result:** `pytest`. Full repository gate green. `tests/test_suite.py`
+  pins the 32/32/18/14 aggregate and every negative's exact check set.
 - **Per-batch report (TRA-90):** `trace-harness run-suite … --report` (or
   `trace-harness report-suite <batch_id>`) writes
   `runs/batches/{batch_id}/suite_report.json` + `.md` — one row per task with
