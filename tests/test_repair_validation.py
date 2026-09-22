@@ -1,7 +1,8 @@
 """Per-control validation verdicts (issue #146).
 
 Covers real accepted, ineffective, overblocking, and interrupted replays,
-control selection, prescription provenance, inspection, and CI exit behavior.
+control selection, prescription provenance, inspection, CI exit behavior, and
+the replay_mode standing each verdict carries.
 """
 
 from __future__ import annotations
@@ -33,6 +34,13 @@ from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 
 CONTROL_DEMO_TASK_PATH = FIXTURES_DIR / "tasks" / "refund_policy_control_demo.json"
+PINNED_VALIDATION = (
+    FIXTURES_DIR
+    / "controls"
+    / "evidence"
+    / "4f23ca45a8a047758b3dd1f6adf9b732"
+    / names.REPAIR_VALIDATION
+)
 
 
 def _bundle_artifact(tmp_path):
@@ -305,7 +313,8 @@ def test_inspect_validation_in_separate_output_directory(tmp_path, capsys):
     captured = capsys.readouterr()
     assert code == 0
     assert "accepted" in captured.out
-    assert "deterministic_pre_call_refund_guardrail" in captured.out
+    assert "deterministic_pre_call_refund_guardrail [advisory]" in captured.out
+    assert "1 accepted (0 gating, 1 advisory)" in captured.out
     assert not captured.err
 
 
@@ -538,3 +547,77 @@ def test_fail_on_rejected_passes_when_nothing_is_rejected(tmp_path) -> None:
     code, validation = _validation_for(tmp_path, extra_args=("--fail-on-rejected",))
     assert validation.rollup.rejected == 0
     assert code == 0
+
+
+# --- replay_mode standing (ADR-0002, decision 2) ---
+
+
+@pytest.mark.parametrize(
+    ("replay_mode", "standing"),
+    [("static_ok", "gating"), ("live_required", "advisory"), (None, "advisory")],
+)
+def test_every_verdict_records_the_artifact_replay_mode(tmp_path, replay_mode, standing):
+    artifact = _bundle_artifact(tmp_path)
+    if replay_mode is None:
+        _edit_json(artifact, lambda a: a.pop("replay_mode"))
+    else:
+        _edit_json(artifact, lambda a: a.update(replay_mode=replay_mode))
+
+    code, validation = _replay_validation(tmp_path, artifact)
+
+    assert code == 0
+    expected_mode = replay_mode or "unlabeled"
+    assert {c.replay_mode for c in validation.controls} == {expected_mode}
+    (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
+    assert accepted.standing == standing
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (
+        (1, 0) if standing == "gating" else (0, 1)
+    )
+
+
+def test_rollup_splits_accepted_verdicts_by_standing() -> None:
+    validation = RepairValidation(
+        run_id="run_x",
+        test_name="t",
+        controls=[
+            ControlValidation(
+                control="a", verdict=ControlVerdict.ACCEPTED, replay_mode="static_ok"
+            ),
+            ControlValidation(control="b", verdict=ControlVerdict.ACCEPTED),
+            ControlValidation(
+                control="c", verdict=ControlVerdict.ACCEPTED, replay_mode="live_required"
+            ),
+            ControlValidation(
+                control="d", verdict=ControlVerdict.REJECTED_OVERBLOCKS, replay_mode="static_ok"
+            ),
+        ],
+    )
+    rollup = validation.rollup
+    assert (rollup.accepted, rollup.accepted_gating, rollup.accepted_advisory) == (3, 1, 2)
+
+
+def test_a_written_standing_is_derived_again_on_read() -> None:
+    """An edited file must not promote an advisory verdict to gating."""
+    control = ControlValidation.model_validate(
+        {
+            "control": "a",
+            "verdict": "accepted",
+            "replay_mode": "live_required",
+            "standing": "gating",
+        }
+    )
+    assert control.standing == "advisory"
+    assert control.model_dump(mode="json")["standing"] == "advisory"
+
+
+def test_pinned_validation_evidence_reads_as_advisory_and_unchanged() -> None:
+    """The evidence behind ctl_refund_window_v1 predates the label and stays pinned."""
+    raw = PINNED_VALIDATION.read_bytes()
+    validation = RepairValidation.model_validate_json(raw)
+    assert validation.schema_version == "0.1.0"
+    assert {c.replay_mode for c in validation.controls} == {"unlabeled"}
+    (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
+    assert accepted.control_id == REFUND_WINDOW_CONTROL_ID
+    assert accepted.standing == "advisory"
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (0, 1)
+    assert PINNED_VALIDATION.read_bytes() == raw

@@ -4,6 +4,11 @@
 Loading is explicit with `--control-library fixtures/controls/library.json`.
 Default runs continue to use the original baseline.
 
+The entry predates acceptance-basis recording and its regression artifact
+carries no replay label, so it reads as advisory on an `unlabeled` artifact.
+`trace-harness controls list` shows this. The file is left unrewritten
+because its evidence hashes are pinned.
+
 The retained source is the offline `refund_policy_control_demo` run. Its
 regression artifact adds the existing valid-cash task as a positive sibling.
 Individual validation and replay with the proposed library both passed. The

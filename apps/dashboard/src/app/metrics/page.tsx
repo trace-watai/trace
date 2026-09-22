@@ -13,10 +13,10 @@ const SERIES = [
     key: "coverage",
     title: "Control coverage",
     blurb:
-      "Accepted controls over the controls repair packages asked for. A5 in docs/methodology_metrics.md.",
+      "Accepted controls over the controls repair packages asked for. An acceptance only gates when its artifact is static_ok, otherwise it is advisory. A5 in docs/methodology_metrics.md.",
     point: (snapshot: MetricsSnapshot) => ({
       value: ratioValue(snapshot.coverage.acceptedOverPrescribed),
-      label: `${snapshot.coverage.accepted}/${snapshot.coverage.prescribed} accepted`,
+      label: `${snapshot.coverage.accepted}/${snapshot.coverage.prescribed} accepted, ${snapshot.coverage.acceptedGating} gating and ${snapshot.coverage.acceptedAdvisory} advisory`,
       detail: `${snapshot.coverage.materializable} materializable, ${snapshot.coverage.validated} validated`,
     }),
     format: percent,

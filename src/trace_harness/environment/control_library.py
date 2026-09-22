@@ -1,4 +1,13 @@
-"""Versioned controls with retained evidence and append-only status history (#147)."""
+"""Versioned controls with retained evidence and append-only status history (#147).
+
+Each entry records the basis its acceptance rests on. A control accepted
+against a ``static_ok`` artifact is gating. A control accepted against a
+``live_required`` or ``unlabeled`` artifact may still enter the library, and
+is installed wherever the library is loaded, but it is recorded as advisory.
+Its evidence is a replay that ADR-0002 does not let gate anything, so a suite
+run with it installed is a measurement of the control, and nothing may report
+an advisory entry as proven.
+"""
 
 from __future__ import annotations
 
@@ -16,13 +25,20 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trace_harness.environment.controls import ControlInstance, resolve_control
 from trace_harness.failure_bundles.schemas import RepairPackage
-from trace_harness.regression.repair_validation import ControlVerdict, RepairValidation
-from trace_harness.regression.schemas import RegressionArtifact
+from trace_harness.regression.repair_validation import (
+    ControlVerdict,
+    RepairValidation,
+    VerdictStanding,
+    standing_for,
+)
+from trace_harness.regression.schemas import RegressionArtifact, ReplayMode
 from trace_harness.runner.result import RunResult
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.events import utc_now
 
-CONTROL_LIBRARY_SCHEMA_VERSION = "0.1.0"
+# 0.2.0: entries record their acceptance basis. A 0.1.0 entry has none and
+# reads as advisory on an unlabeled artifact, which is what it was.
+CONTROL_LIBRARY_SCHEMA_VERSION = "0.2.0"
 DEFAULT_CONTROL_LIBRARY = Path("fixtures/controls/library.json")
 
 
@@ -88,6 +104,24 @@ class StatusChange(BaseModel):
     at: datetime = Field(default_factory=utc_now)
 
 
+class AcceptanceBasis(BaseModel):
+    """The replay label an entry's accepted verdict was reached under.
+
+    Both fields default to what an entry written before 0.2.0 was actually
+    accepted on, so an old library reads as advisory without being rewritten.
+    ``check_acceptance`` holds both to the retained artifact.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    replay_mode: ReplayMode = "unlabeled"
+    standing: VerdictStanding = "advisory"
+
+    @classmethod
+    def for_artifact(cls, artifact: RegressionArtifact) -> AcceptanceBasis:
+        return cls(replay_mode=artifact.replay_mode, standing=standing_for(artifact.replay_mode))
+
+
 class LibraryEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -95,6 +129,7 @@ class LibraryEntry(BaseModel):
     provenance: LibraryProvenance
     status: Literal["active", "rolled_back"] = "active"
     history: list[StatusChange] = Field(min_length=1)
+    acceptance: AcceptanceBasis = Field(default_factory=AcceptanceBasis)
 
     @model_validator(mode="after")
     def consistent_history(self) -> LibraryEntry:
@@ -107,7 +142,7 @@ class LibraryEntry(BaseModel):
 class ControlLibrary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["0.1.0"] = CONTROL_LIBRARY_SCHEMA_VERSION
+    schema_version: Literal["0.1.0", "0.2.0"] = CONTROL_LIBRARY_SCHEMA_VERSION
     entries: list[LibraryEntry] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -150,8 +185,14 @@ def check_acceptance(
     package: RepairPackage,
     artifact: RegressionArtifact,
     validation: RepairValidation,
+    basis: AcceptanceBasis,
 ) -> None:
-    """Bind an accepted verdict to this exact control and originating failure."""
+    """Bind an accepted verdict to this exact control and originating failure.
+
+    The recorded basis must name the artifact's own ``replay_mode`` and the
+    standing that label allows. A gating acceptance therefore needs a
+    ``static_ok`` artifact, and an advisory one cannot be recorded as gating.
+    """
     run_id = source.run_id
     if {package.run_id, artifact.source_run_id, validation.run_id, control.provenance.run_id} != {
         run_id
@@ -181,6 +222,22 @@ def check_acceptance(
         or any(r.verdict != "PASS" for r in verdict.sibling_reruns)
     ):
         raise ValueError(f"control {control.control_id!r} lacks complete accepted validation")
+    if verdict.replay_mode != artifact.replay_mode:
+        raise ValueError(
+            f"control {control.control_id!r} was validated as {verdict.replay_mode} "
+            f"but the artifact is {artifact.replay_mode}"
+        )
+    if basis.replay_mode != artifact.replay_mode:
+        raise ValueError(
+            f"control {control.control_id!r} records replay_mode {basis.replay_mode} "
+            f"but the artifact is {artifact.replay_mode}"
+        )
+    allowed = standing_for(artifact.replay_mode)
+    if basis.standing != allowed:
+        raise ValueError(
+            f"control {control.control_id!r} records a {basis.standing} acceptance "
+            f"but a {artifact.replay_mode} artifact only supports {allowed}"
+        )
 
 
 def load_library(path: Path | str, *, resolve_active: bool = True) -> ControlLibrary:
@@ -201,6 +258,7 @@ def load_library(path: Path | str, *, resolve_active: bool = True) -> ControlLib
             RepairPackage.model_validate_json(refs.repair_package.read(path.parent)),
             RegressionArtifact.model_validate_json(refs.regression_artifact.read(path.parent)),
             validation,
+            entry.acceptance,
         )
         _require_retained_runs(path.parent, entry, validation)
         if resolve_active and entry.status == "active":
@@ -261,7 +319,12 @@ def library_lock(path: Path) -> Iterator[None]:
 
 
 def write_library(path: Path, library: ControlLibrary) -> None:
-    """Atomically publish a complete revision; callers must hold library_lock."""
+    """Atomically publish a complete revision; callers must hold library_lock.
+
+    A revision is written at the current schema. An older library gains its
+    entries' default acceptance basis explicitly the first time it is written.
+    """
+    library = library.model_copy(update={"schema_version": CONTROL_LIBRARY_SCHEMA_VERSION})
     ControlLibrary.model_validate(library.model_dump())
     payload = json.dumps(library.model_dump(mode="json"), indent=2) + "\n"
     fd, name = tempfile.mkstemp(dir=path.parent)

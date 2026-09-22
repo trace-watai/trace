@@ -2,8 +2,9 @@
  * Metrics-history data contract.
  *
  * Mirrors `MetricsSnapshot` in `src/trace_harness/metrics/history.py`
- * (METRICS_SNAPSHOT_SCHEMA_VERSION 0.1.0), serialized one record per line into
+ * (METRICS_SNAPSHOT_SCHEMA_VERSION 0.2.0), serialized one record per line into
  * `docs/acceptance/metrics_history.jsonl` by the main workflow after a merge.
+ * Lines written at an older version stay in that file and are read here too.
  *
  * Coverage, over-blocking and cost of learning are trends. Each carries the two
  * counts it came from so a point can be read without trusting a rate, and a
@@ -13,7 +14,10 @@
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
-export const METRICS_SNAPSHOT_SCHEMA_VERSION = "0.1.0";
+export const METRICS_SNAPSHOT_SCHEMA_VERSION = "0.2.0";
+
+/** Versions that can appear in the committed history, oldest first. */
+export const READABLE_METRICS_SNAPSHOT_VERSIONS = ["0.1.0", "0.2.0"] as const;
 
 export interface RawRatio {
   numerator: number;
@@ -27,6 +31,12 @@ export interface RawCoverage {
   materializable: number;
   validated: number;
   accepted: number;
+  /**
+   * `accepted` split by standing: gating when a verdict was reached against a
+   * `static_ok` artifact, advisory otherwise. Absent before 0.2.0.
+   */
+  accepted_gating?: number;
+  accepted_advisory?: number;
   accepted_over_prescribed: RawRatio;
   materializable_over_prescribed: RawRatio;
   unmapped_controls: string[];
@@ -58,10 +68,12 @@ export interface RawMetricsSnapshot {
 }
 
 export type Ratio = Camelize<RawRatio>;
-export type Coverage = Camelize<RawCoverage>;
+export type Coverage = Camelize<Required<RawCoverage>>;
 export type OverBlocking = Camelize<RawOverBlocking>;
 export type CostOfLearning = Camelize<RawCostOfLearning>;
-export type MetricsSnapshot = Camelize<RawMetricsSnapshot>;
+export type MetricsSnapshot = Omit<Camelize<RawMetricsSnapshot>, "coverage"> & {
+  coverage: Coverage;
+};
 
 /**
  * The rate a ratio describes, or null when nothing was measured.
@@ -73,9 +85,25 @@ export type MetricsSnapshot = Camelize<RawMetricsSnapshot>;
 export const ratioValue = (ratio: Ratio): number | null =>
   ratio.denominator === 0 ? null : ratio.numerator / ratio.denominator;
 
+/**
+ * Fill the gating and advisory split on a record written before it existed.
+ *
+ * Those records were computed from validations that carried no replay mode,
+ * and a verdict without one reads as unlabeled, which is advisory. The backend
+ * reads the same lines the same way.
+ */
+const withAcceptanceSplit = (coverage: Camelize<RawCoverage>): Coverage => ({
+  ...coverage,
+  acceptedGating: coverage.acceptedGating ?? 0,
+  acceptedAdvisory: coverage.acceptedAdvisory ?? coverage.accepted,
+});
+
 export const parseMetricsSnapshot = (
   raw: RawMetricsSnapshot,
-): MetricsSnapshot => camelizeKeys(raw);
+): MetricsSnapshot => {
+  const snapshot = camelizeKeys(raw);
+  return { ...snapshot, coverage: withAcceptanceSplit(snapshot.coverage) };
+};
 
 /**
  * Parse a JSONL history file, oldest first, skipping blank lines.

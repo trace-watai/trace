@@ -37,7 +37,8 @@ from trace_harness.tracing.artifact_store import (
 )
 from trace_harness.tracing.events import utc_now
 
-METRICS_SNAPSHOT_SCHEMA_VERSION = "0.1.0"
+# 0.2.0: coverage splits accepted controls into gating and advisory.
+METRICS_SNAPSHOT_SCHEMA_VERSION = "0.2.0"
 
 #: Default history file. One JSON object per line, appended, never rewritten.
 HISTORY_PATH = Path("docs/acceptance/metrics_history.jsonl")
@@ -87,6 +88,10 @@ class Coverage(BaseModel):
     registered guardrail, so they can never be installed, and a name that can
     be installed still has to survive validation. Reporting only the last
     number would hide which of the three walls the work is stuck behind.
+
+    An accepted name is gating when at least one of its accepted verdicts was
+    reached against a ``static_ok`` artifact, and advisory otherwise. The
+    split exists because ADR-0002 lets only the first kind gate anything.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -95,10 +100,36 @@ class Coverage(BaseModel):
     materializable: int = Field(ge=0)
     validated: int = Field(ge=0)
     accepted: int = Field(ge=0)
+    accepted_gating: int = Field(ge=0)
+    accepted_advisory: int = Field(ge=0)
     accepted_over_prescribed: Ratio
     materializable_over_prescribed: Ratio
     #: Prescribed names with no entry in the materializability map at all.
     unmapped_controls: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def split_unrecorded_acceptance(cls, data: Any) -> Any:
+        """Read a 0.1.0 record, which has no gating and advisory split.
+
+        Validations written before the split did not record a replay_mode, and
+        such a verdict reads as unlabeled, which is advisory. The record was
+        computed from those validations, so every accepted name in it is
+        advisory under the same rule that reads the validations themselves.
+        """
+        if (
+            isinstance(data, dict)
+            and "accepted_gating" not in data
+            and "accepted_advisory" not in data
+        ):
+            data = {**data, "accepted_gating": 0, "accepted_advisory": data.get("accepted")}
+        return data
+
+    @model_validator(mode="after")
+    def split_sums_to_accepted(self) -> Coverage:
+        if self.accepted_gating + self.accepted_advisory != self.accepted:
+            raise ValueError("gating and advisory acceptances must sum to accepted")
+        return self
 
 
 class OverBlocking(BaseModel):
@@ -140,7 +171,7 @@ class MetricsSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["0.1.0"] = METRICS_SNAPSHOT_SCHEMA_VERSION
+    schema_version: Literal["0.1.0", "0.2.0"] = METRICS_SNAPSHOT_SCHEMA_VERSION
     commit: str = Field(min_length=1)
     recorded_at: datetime = Field(default_factory=utc_now)
     coverage: Coverage
@@ -212,15 +243,22 @@ def compute_coverage(prescribed: set[str], validations: list[RepairValidation]) 
     """Prescribed names narrowed to those that can exist and did survive."""
     materializable = {n for n in prescribed if MATERIALIZABLE_REPAIR_CONTROLS.get(n)}
     validated = {c.control for v in validations for c in v.controls} & prescribed
-    accepted = {
-        c.control for v in validations for c in v.controls if c.verdict is ControlVerdict.ACCEPTED
-    } & prescribed
+    verdicts = [
+        c
+        for v in validations
+        for c in v.controls
+        if c.verdict is ControlVerdict.ACCEPTED and c.control in prescribed
+    ]
+    accepted = {c.control for c in verdicts}
+    gating = {c.control for c in verdicts if c.standing == "gating"}
     total = len(prescribed)
     return Coverage(
         prescribed=total,
         materializable=len(materializable),
         validated=len(validated),
         accepted=len(accepted),
+        accepted_gating=len(gating),
+        accepted_advisory=len(accepted - gating),
         accepted_over_prescribed=Ratio(numerator=len(accepted), denominator=total),
         materializable_over_prescribed=Ratio(numerator=len(materializable), denominator=total),
         unmapped_controls=sorted(prescribed - set(MATERIALIZABLE_REPAIR_CONTROLS)),

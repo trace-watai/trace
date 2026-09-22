@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   METRICS_SNAPSHOT_SCHEMA_VERSION,
+  READABLE_METRICS_SNAPSHOT_VERSIONS,
   parseMetricsHistory,
   parseMetricsSnapshot,
   ratioValue,
@@ -20,6 +21,8 @@ const raw: RawMetricsSnapshot = {
     materializable: 1,
     validated: 2,
     accepted: 1,
+    accepted_gating: 0,
+    accepted_advisory: 1,
     accepted_over_prescribed: { numerator: 1, denominator: 6, value: 0.1667 },
     materializable_over_prescribed: {
       numerator: 1,
@@ -52,6 +55,28 @@ describe("parseMetricsSnapshot", () => {
     expect(snapshot.costOfLearning.moneyMovedUsd).toBe(189);
     expect(snapshot.suitePassRate.denominator).toBe(29);
     expect(snapshot.verifiedFailures).toBe(11);
+  });
+
+  it("reads the gating and advisory split", () => {
+    const snapshot = parseMetricsSnapshot({
+      ...raw,
+      coverage: { ...raw.coverage, accepted_gating: 1, accepted_advisory: 0 },
+    });
+    expect(snapshot.coverage.acceptedGating).toBe(1);
+    expect(snapshot.coverage.acceptedAdvisory).toBe(0);
+  });
+
+  it("reads a 0.1.0 record, which has no split, as all advisory", () => {
+    const coverage = { ...raw.coverage };
+    delete coverage.accepted_gating;
+    delete coverage.accepted_advisory;
+    const snapshot = parseMetricsSnapshot({
+      ...raw,
+      schema_version: "0.1.0",
+      coverage,
+    });
+    expect(snapshot.coverage.acceptedGating).toBe(0);
+    expect(snapshot.coverage.acceptedAdvisory).toBe(1);
   });
 
   it("leaves artifact paths alone", () => {
@@ -105,11 +130,16 @@ describe("parseMetricsHistory", () => {
     const history = parseMetricsHistory(fs.readFileSync(file, "utf8"));
     expect(history.length).toBeGreaterThan(0);
     for (const snapshot of history) {
-      expect(snapshot.schemaVersion).toBe(METRICS_SNAPSHOT_SCHEMA_VERSION);
+      expect(READABLE_METRICS_SNAPSHOT_VERSIONS).toContain(
+        snapshot.schemaVersion,
+      );
       expect(snapshot.commit.length).toBeGreaterThan(0);
       expect(snapshot.coverage.acceptedOverPrescribed.denominator).toBe(
         snapshot.coverage.prescribed,
       );
+      expect(
+        snapshot.coverage.acceptedGating + snapshot.coverage.acceptedAdvisory,
+      ).toBe(snapshot.coverage.accepted);
     }
   });
 });

@@ -160,7 +160,7 @@ notices.
 
 ### Control validation
 
-`replay --apply-control` writes `repair_validation.json` at schema `0.1.0`
+`replay --apply-control` writes `repair_validation.json` at schema `0.2.0`
 under `<output-runs-dir>/<source_run_id>/`, reading prescriptions beside the
 input regression artifact. Invalid or mismatched packages fail before replay;
 empty packages produce no verdicts. Without a package, selected reference
@@ -169,6 +169,15 @@ controls use all pinned checks and record `controls_source: reference_controls`.
 Each verdict includes control identity, reason, originating and sibling run
 IDs, failed checks, and linked checks cleared on completed replays. Evidence
 retains `PASS`, `FAIL`, or `INCOMPLETE`; a rollup counts the control verdicts.
+
+Each verdict also records the `replay_mode` of the artifact it was validated
+against and the `standing` that label gives it. Under ADR-0002 only
+`static_ok` is `gating`; `live_required` and `unlabeled` are `advisory`. The
+verdict values are unchanged, so an advisory `accepted` still means the
+control held under replay, and it makes no claim about a live agent. The
+rollup splits `accepted` into `accepted_gating` and `accepted_advisory`.
+`standing` is derived on read, so an edited file cannot promote a verdict.
+Files written at `0.1.0` carry no label and read as `unlabeled`.
 
 | Verdict | Condition |
 |---|---|
@@ -211,6 +220,27 @@ each batch uses one validated snapshot. Plain validation leaves the library
 unchanged. Rollback appends a reason and preserves evidence; reusing an ID
 with existing history is rejected. These operations write local artifacts,
 not Git commits.
+
+Each entry records the basis of its acceptance in `acceptance`, a
+`replay_mode` and a `standing`, copied from the originating artifact at
+commit time. The rule:
+
+- A control accepted against a `static_ok` artifact enters as `gating`.
+- A control accepted against a `live_required` or `unlabeled` artifact still
+  enters, and is recorded as `advisory`.
+- Advisory entries install like any active entry, so suites and replays run
+  with them in place and measure their effect. Nothing downstream may report
+  an advisory entry as proven.
+- Loading holds the recorded basis to the retained artifact and validation.
+  A basis naming a different `replay_mode`, or a `gating` basis on an
+  artifact that is not `static_ok`, fails to load.
+
+Library schema `0.2.0` adds the field. A `0.1.0` entry has none and reads
+as `unlabeled` and `advisory`, which is what `ctl_refund_window_v1` was
+accepted on. The first write of an older library records that basis
+explicitly. `trace-harness controls list` prints every entry with its
+status and basis, and `run-suite --control-library` prints the gating and
+advisory split of what it installed.
 
 The [retained example](../fixtures/controls/README.md) preserves all 18
 passing suite cases. Two negatives lose `unauthorized_cash_refund` but retain

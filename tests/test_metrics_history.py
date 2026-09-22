@@ -14,6 +14,7 @@ import pytest
 
 from conftest import REPO_ROOT
 from trace_harness.metrics.history import (
+    Coverage,
     MetricsSnapshot,
     append_snapshot,
     build_snapshot,
@@ -31,6 +32,7 @@ from trace_harness.regression.repair_validation import RepairValidation
 # to count as materializable.
 MATERIAL = "deterministic_pre_call_refund_guardrail"
 PAPER = "ticket_claim_grounding_check"
+COMMITTED_HISTORY = REPO_ROOT / "docs" / "acceptance" / "metrics_history.jsonl"
 
 
 def _write(path: Path, payload: dict) -> None:
@@ -129,8 +131,43 @@ def test_coverage_counts_each_wall_separately(tree: Path) -> None:
     assert coverage.materializable == 1  # only MATERIAL has a guardrail
     assert coverage.validated == 2  # both got a verdict, one of them "skipped"
     assert coverage.accepted == 1
+    # The tree's validation records no replay_mode, so its acceptance is advisory.
+    assert (coverage.accepted_gating, coverage.accepted_advisory) == (0, 1)
     assert coverage.accepted_over_prescribed.value == 0.5
     assert coverage.unmapped_controls == []
+
+
+def _accepted(control: str, replay_mode: str | None = None) -> RepairValidation:
+    entry = {"control": control, "verdict": "accepted"}
+    if replay_mode is not None:
+        entry["replay_mode"] = replay_mode
+    return RepairValidation.model_validate({"run_id": "r", "test_name": "t", "controls": [entry]})
+
+
+def test_coverage_splits_accepted_into_gating_and_advisory() -> None:
+    """A name accepted once against a static_ok artifact is gating, whatever else it earned."""
+    validations = [
+        _accepted(MATERIAL, "live_required"),
+        _accepted(MATERIAL, "static_ok"),
+        _accepted(PAPER),
+    ]
+    coverage = compute_coverage({MATERIAL, PAPER}, validations)
+    assert coverage.accepted == 2
+    assert (coverage.accepted_gating, coverage.accepted_advisory) == (1, 1)
+
+
+def test_a_split_that_does_not_sum_to_accepted_is_rejected() -> None:
+    with pytest.raises(ValueError, match="sum to accepted"):
+        Coverage(
+            prescribed=2,
+            materializable=1,
+            validated=1,
+            accepted=1,
+            accepted_gating=1,
+            accepted_advisory=1,
+            accepted_over_prescribed={"numerator": 1, "denominator": 2},
+            materializable_over_prescribed={"numerator": 1, "denominator": 2},
+        )
 
 
 def test_coverage_reports_null_rather_than_zero_when_nothing_was_prescribed(
@@ -289,9 +326,20 @@ def test_a_missing_history_file_reads_as_empty(tmp_path: Path) -> None:
 
 def test_the_committed_history_file_is_readable() -> None:
     """Whatever main has recorded so far must still parse against this schema."""
-    for snapshot in load_history(REPO_ROOT / "docs" / "acceptance" / "metrics_history.jsonl"):
+    history = load_history(COMMITTED_HISTORY)
+    assert history
+    for snapshot in history:
         assert isinstance(snapshot, MetricsSnapshot)
         assert snapshot.commit
+
+
+def test_a_record_from_before_the_split_reads_as_advisory() -> None:
+    """0.1.0 records were computed from validations with no replay_mode, so unlabeled."""
+    old = [s for s in load_history(COMMITTED_HISTORY) if s.schema_version == "0.1.0"]
+    assert old, "the committed history starts at 0.1.0"
+    for snapshot in old:
+        assert snapshot.coverage.accepted_gating == 0
+        assert snapshot.coverage.accepted_advisory == snapshot.coverage.accepted
 
 
 def test_a_hand_edited_rate_in_the_history_is_ignored() -> None:

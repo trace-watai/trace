@@ -173,6 +173,13 @@ It reads an explicit `replay_mode` when present, defaulting older artifacts to
 Until #156 labels artifacts, all control results remain advisory. Control counts
 are per artifact under the current reference-control set, not per individual
 control. #146's per-control reports can replace that validation call once merged.
+
+Per-control validation and the control library apply the same rule. Every
+verdict in `repair_validation.json` records the artifact's `replay_mode` and
+whether that makes it gating or advisory, and a library entry records the
+same basis for its acceptance. See
+[control validation](failure_bundles.md#control-validation) and
+[the control library](failure_bundles.md#control-library).
 This command runs no live agents; optional suites must use the fixture provider.
 
 | Exit | Meaning |

@@ -1,4 +1,6 @@
-"""Control promotion, retained provenance, rollback, and suite behavior (#147)."""
+"""Control promotion, retained provenance, rollback, suite behavior (#147), and
+the acceptance basis each entry records under ADR-0002.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +14,14 @@ from conftest import FIXTURES_DIR
 from trace_harness import cli
 from trace_harness.cli import main
 from trace_harness.environment import controls as controls_module
-from trace_harness.environment.control_library import ControlLibrary, load_library, rollback_control
+from trace_harness.environment.control_library import (
+    CONTROL_LIBRARY_SCHEMA_VERSION,
+    AcceptanceBasis,
+    ControlLibrary,
+    check_acceptance,
+    load_library,
+    rollback_control,
+)
 from trace_harness.environment.controls import (
     GUARDRAIL_REGISTRY,
     REFUND_WINDOW_CONTROL_ID,
@@ -22,7 +31,11 @@ from trace_harness.environment.controls import (
 )
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.environment.tools import ToolResult
+from trace_harness.failure_bundles.schemas import RepairPackage
+from trace_harness.regression.repair_validation import RepairValidation
+from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.runner.batch import BatchRunner, BatchSummary
+from trace_harness.runner.result import RunResult
 from trace_harness.runner.suite import load_suite
 from trace_harness.tasks.loader import load_task
 from trace_harness.tracing import artifact_store as names
@@ -31,6 +44,7 @@ from trace_harness.tracing.artifact_store import ArtifactStore
 DEMO = FIXTURES_DIR / "tasks/refund_policy_control_demo.json"
 VALID = FIXTURES_DIR / "tasks/refund_policy_valid_cash.json"
 SUITE = FIXTURES_DIR / "suites/refund_v0.json"
+COMMITTED_LIBRARY = FIXTURES_DIR / "controls/library.json"
 
 
 def _edit(path, update):
@@ -87,8 +101,10 @@ def test_commit_retains_evidence_and_installs_control(committed):
     path, artifact = committed
     library = load_library(path)
     (entry,) = library.entries
-    assert library.schema_version == "0.1.0"
+    assert library.schema_version == CONTROL_LIBRARY_SCHEMA_VERSION
     assert entry.control.control_id == REFUND_WINDOW_CONTROL_ID
+    # The demo artifact is live_required, so its acceptance is advisory.
+    assert entry.acceptance == AcceptanceBasis(replay_mode="live_required", standing="advisory")
     assert entry.control.provenance.run_id == json.loads(artifact.read_text())["source_run_id"]
     assert entry.status == "active"
     assert [h.status for h in entry.history] == ["active"]
@@ -489,7 +505,9 @@ def _outcomes(store, summary):
     return outcomes
 
 
-def test_full_suite_preserves_positive_cases_and_rollback_restores_baseline(committed, tmp_path):
+def test_full_suite_preserves_positive_cases_and_rollback_restores_baseline(
+    committed, tmp_path, capsys
+):
     library, _ = committed
     suite = load_suite(SUITE)
     baseline_store = ArtifactStore(tmp_path / "baseline")
@@ -508,6 +526,7 @@ def test_full_suite_preserves_positive_cases_and_rollback_restores_baseline(comm
         )
         == 0
     )
+    assert "1 active (0 gating, 1 advisory) installed" in capsys.readouterr().out
     active = BatchSummary.model_validate_json(
         next(active_store.runs_dir.glob("batches/*/batch_summary.json")).read_bytes()
     )
@@ -561,3 +580,91 @@ def test_committed_example_loads_and_matches_controlled_pins():
 
 def test_empty_library_is_valid():
     assert ControlLibrary().active_controls() == []
+
+
+# --- acceptance basis (ADR-0002, decision 2) ---
+
+
+def _set_acceptance(library, replay_mode, standing):
+    _edit(
+        library,
+        lambda p: p["entries"][0].update(
+            acceptance={"replay_mode": replay_mode, "standing": standing}
+        ),
+    )
+
+
+def test_committed_library_entry_reads_as_advisory():
+    """ctl_refund_window_v1 was accepted on an unlabeled artifact and predates the field."""
+    raw = COMMITTED_LIBRARY.read_bytes()
+    assert "acceptance" not in json.loads(raw)["entries"][0]
+    library = load_library(COMMITTED_LIBRARY)
+    assert library.schema_version == "0.1.0"
+    (entry,) = [e for e in library.entries if e.control.control_id == REFUND_WINDOW_CONTROL_ID]
+    assert entry.acceptance == AcceptanceBasis(replay_mode="unlabeled", standing="advisory")
+    assert COMMITTED_LIBRARY.read_bytes() == raw
+
+
+def test_static_ok_artifact_commits_a_gating_control(tmp_path):
+    artifact = _bundle(tmp_path)
+    _edit(artifact, lambda a: a.update(replay_mode="static_ok"))
+    library = tmp_path / "controls/library.json"
+    assert _commit(tmp_path, artifact, library) == 0
+    (entry,) = load_library(library).entries
+    assert entry.acceptance == AcceptanceBasis(replay_mode="static_ok", standing="gating")
+
+
+def test_gating_acceptance_on_an_advisory_artifact_is_refused(committed):
+    library, _ = committed
+    _set_acceptance(library, "live_required", "gating")
+    with pytest.raises(ValueError, match="only supports advisory"):
+        load_library(library)
+
+
+def test_acceptance_basis_must_name_the_artifact_replay_mode(committed):
+    library, _ = committed
+    _set_acceptance(library, "unlabeled", "advisory")
+    with pytest.raises(ValueError, match="records replay_mode unlabeled"):
+        load_library(library)
+
+
+def test_validation_replay_mode_must_match_the_artifact(committed):
+    library, _ = committed
+    root = library.parent
+    (entry,) = load_library(library).entries
+    refs = entry.provenance
+    validation = RepairValidation.model_validate_json(refs.repair_validation.read(root))
+    for control in validation.controls:
+        control.replay_mode = "static_ok"
+    with pytest.raises(ValueError, match="validated as static_ok"):
+        check_acceptance(
+            entry.control,
+            RunResult.model_validate_json(refs.source_run.read(root)),
+            RepairPackage.model_validate_json(refs.repair_package.read(root)),
+            RegressionArtifact.model_validate_json(refs.regression_artifact.read(root)),
+            validation,
+            entry.acceptance,
+        )
+
+
+def test_controls_list_shows_each_acceptance_basis(capsys):
+    assert main(["controls", "list", "--control-library", str(COMMITTED_LIBRARY)]) == 0
+    out = capsys.readouterr().out
+    assert "schema 0.1.0" in out
+    assert REFUND_WINDOW_CONTROL_ID in out
+    assert "active · advisory (replay_mode unlabeled)" in out
+    assert "1 active (0 gating, 1 advisory)" in out
+
+
+def test_writing_an_old_library_records_its_basis_explicitly(tmp_path):
+    """A rollback rewrites the manifest at the current schema without changing its meaning."""
+    copy = tmp_path / "controls"
+    shutil.copytree(COMMITTED_LIBRARY.parent, copy)
+    rollback_control(copy / "library.json", REFUND_WINDOW_CONTROL_ID, "exercise the migration")
+    written = json.loads((copy / "library.json").read_text())
+    assert written["schema_version"] == CONTROL_LIBRARY_SCHEMA_VERSION
+    assert written["entries"][0]["acceptance"] == {
+        "replay_mode": "unlabeled",
+        "standing": "advisory",
+    }
+    assert load_library(copy / "library.json").active_controls() == []

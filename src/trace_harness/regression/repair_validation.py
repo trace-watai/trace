@@ -9,16 +9,39 @@ that produced it, written as ``repair_validation.json``.
 The verdict logic here is pure so it can be tested without running fixtures.
 The orchestration that actually replays scenarios lives in ``cli.py``, which is
 where the fixture runner and verifier are already wired together.
+
+Each verdict also records the ``replay_mode`` of the artifact it was reached
+against. ADR-0002 makes a static replay verdict advisory until the artifact is
+labeled ``static_ok``, so an accepted verdict on a ``live_required`` or
+``unlabeled`` artifact says the control held under replay and nothing about a
+live agent. The collector already reads the label that way; recording it here
+lets the control library and the metrics read it the same way.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-REPAIR_VALIDATION_SCHEMA_VERSION = "0.1.0"
+from trace_harness.regression.schemas import ReplayMode
+
+# 0.2.0: each control verdict records the artifact's replay_mode and whether
+# that makes it gating or advisory; the rollup splits accepted verdicts the
+# same way. Files written at 0.1.0 read as unlabeled, which is advisory.
+REPAIR_VALIDATION_SCHEMA_VERSION = "0.2.0"
+
+VerdictStanding = Literal["gating", "advisory"]
+
+
+def standing_for(replay_mode: ReplayMode) -> VerdictStanding:
+    """Whether a verdict reached under ``replay_mode`` can gate anything.
+
+    Only ``static_ok`` gates, which is the rule the regression collector
+    already applies to control results (ADR-0002, decision 2).
+    """
+    return "gating" if replay_mode == "static_ok" else "advisory"
 
 
 class ControlVerdict(StrEnum):
@@ -63,6 +86,27 @@ class ControlValidation(BaseModel):
     control_id: str | None = None
     originating_rerun: ReRun | None = None
     sibling_reruns: list[ReRun] = Field(default_factory=list)
+    # The replay_mode of the artifact this verdict was reached against. Files
+    # written before 0.2.0 did not record it and read as unlabeled.
+    replay_mode: ReplayMode = "unlabeled"
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_serialized_standing(cls, data: Any) -> Any:
+        """Ignore a ``standing`` read back from a file and derive it again.
+
+        ``standing`` is written out so a reader sees it without knowing the
+        rule, but it always follows from ``replay_mode``. Accepting it on input
+        would let an edited file promote an advisory verdict to gating.
+        """
+        if isinstance(data, dict) and "standing" in data:
+            data = {k: v for k, v in data.items() if k != "standing"}
+        return data
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def standing(self) -> VerdictStanding:
+        return standing_for(self.replay_mode)
 
 
 class ValidationRollup(BaseModel):
@@ -71,6 +115,9 @@ class ValidationRollup(BaseModel):
     accepted: int = 0
     rejected: int = 0
     skipped: int = 0
+    # ``accepted`` split by standing. The two always sum to ``accepted``.
+    accepted_gating: int = 0
+    accepted_advisory: int = 0
 
 
 class RepairValidation(BaseModel):
@@ -97,10 +144,13 @@ class RepairValidation(BaseModel):
             ControlVerdict.REJECTED_FAILURE_PERSISTS,
             ControlVerdict.REJECTED_OVERBLOCKS,
         }
+        accepted = [c for c in self.controls if c.verdict is ControlVerdict.ACCEPTED]
         self.rollup = ValidationRollup(
-            accepted=sum(1 for c in self.controls if c.verdict is ControlVerdict.ACCEPTED),
+            accepted=len(accepted),
             rejected=sum(1 for c in self.controls if c.verdict in rejected),
             skipped=sum(1 for c in self.controls if c.verdict is ControlVerdict.SKIPPED),
+            accepted_gating=sum(1 for c in accepted if c.standing == "gating"),
+            accepted_advisory=sum(1 for c in accepted if c.standing == "advisory"),
         )
         return self
 
@@ -170,10 +220,11 @@ def decide_verdict(
     return ControlVerdict.ACCEPTED, None
 
 
-def skipped_control(name: str) -> ControlValidation:
+def skipped_control(name: str, *, replay_mode: ReplayMode = "unlabeled") -> ControlValidation:
     """A prescribed control with no registered guardrail, reported honestly."""
     return ControlValidation(
         control=name,
         verdict=ControlVerdict.SKIPPED,
         reason="not_materializable: no registered guardrail for this control yet",
+        replay_mode=replay_mode,
     )

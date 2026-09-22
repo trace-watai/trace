@@ -122,14 +122,21 @@ A prescribed control is a name. It becomes *materializable* when some
 registered guardrail can install it, *validated* when a validation run
 produced a verdict for it, and *accepted* when that verdict was
 `accepted`. Reporting only the last of the four hides which wall the
-work is stuck behind.
+work is stuck behind. An accepted name is further split into *gating*
+and *advisory*, because ADR-0002 lets a replay verdict gate only when its
+artifact is labeled `static_ok`.
 
 *Formula.* `accepted / prescribed`, with `materializable / prescribed`
 alongside it. `prescribed` counts distinct control names across every
 retained `repair_package.json`. `materializable` counts those with a
 non-null entry in `MATERIALIZABLE_REPAIR_CONTROLS`. `validated` and
 `accepted` count those appearing in a `repair_validation.json`, the
-latter restricted to `verdict == "accepted"`.
+latter restricted to `verdict == "accepted"`. `accepted_gating` counts
+accepted names with at least one accepted verdict whose `standing ==
+"gating"`; `accepted_advisory` counts the rest, so the two always sum to
+`accepted`. A snapshot recorded at `0.1.0` has no split and reads as all
+advisory, because the validations it was computed from carried no
+`replay_mode` and read as `unlabeled`.
 
 *Source.* `repair_package.json.controls[].name`,
 `environment/controls.py`, and `repair_validation.json.controls[]`.
@@ -140,7 +147,9 @@ of the failure surface those names cover. Nine prescribed controls that
 all guard one refund check would read as broad coverage. A name that was
 accepted once is counted as accepted forever, so a control rolled back
 through `rollback_control` still appears here until its validation
-artifact is removed.
+artifact is removed. Gating is a property of the label, and the label is
+itself a prediction until #159 measures it, so a gating count is only as
+good as the `static_ok` rule in `docs/regression_contract.md`.
 
 ### A6. Over-blocking over time
 
@@ -161,7 +170,10 @@ control is plotted next to a commit that validated ten with no
 indication of the difference beyond the denominator. Inherits every
 blind spot A4 has. An empty denominator is reported as null and drawn as
 a gap, because zero siblings run and zero siblings failed are not the
-same fact.
+same fact. Over-blocking is not split by standing. ADR-0002 keeps
+positive siblings gating whatever the artifact's label, so a sibling
+failure under an advisory verdict counts the same as one under a gating
+verdict.
 
 ### A7. Cost of learning
 
