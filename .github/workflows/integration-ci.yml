@@ -36,23 +36,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # secrets cannot be read in a step-level if, so the token is lifted into env
+    # and every step checks it. with no token the job skips itself and stays
+    # green. falling back to GITHUB_TOKEN could never work, because required
+    # status checks apply to direct pushes and the bot commit's skip marker
+    # means they never report on it, so the fallback only turned main red.
+    env:
+      HISTORY_TOKEN: ${{ secrets.METRICS_HISTORY_TOKEN }}
     steps:
-      # Required status checks apply to direct pushes, and [skip ci] means they
-      # never report on the bot commit, so GITHUB_TOKEN cannot land this.
-      # docs/team_ownership.md records what METRICS_HISTORY_TOKEN has to be.
+      - name: Skip when no token is configured
+        if: env.HISTORY_TOKEN == ''
+        run: echo "METRICS_HISTORY_TOKEN is not set, history not recorded for ${GITHUB_SHA}. see docs/team_ownership.md"
+
       - uses: actions/checkout@v7
+        if: env.HISTORY_TOKEN != ''
         with:
-          token: ${{ secrets.METRICS_HISTORY_TOKEN || github.token }}
+          token: ${{ env.HISTORY_TOKEN }}
 
       - uses: actions/setup-python@v7
+        if: env.HISTORY_TOKEN != ''
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install backend
+        if: env.HISTORY_TOKEN != ''
         run: python -m pip install -e ".[dev]"
 
       - name: Append the snapshot
+        if: env.HISTORY_TOKEN != ''
         run: |
           TRACE_RUNS_DIR="${RUNNER_TEMP}/trace-history" \
             python -m trace_harness.cli collect-regressions docs/acceptance/runs \
@@ -61,6 +73,7 @@ jobs:
               --history-root .
 
       - name: Commit the snapshot
+        if: env.HISTORY_TOKEN != ''
         run: |
           if git diff --quiet -- docs/acceptance/metrics_history.jsonl; then
             echo "already recorded for ${GITHUB_SHA}"

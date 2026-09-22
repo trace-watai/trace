@@ -81,9 +81,9 @@ belonging to an account with admin on the repository, since `enforce_admins` is
 off and admins can push past required checks. Store it as the `METRICS_HISTORY_TOKEN`
 secret and give the checkout step `token: ${{ secrets.METRICS_HISTORY_TOKEN }}`.
 
-Until that secret exists the job fails on its push step and nothing else
-breaks. The gates it depends on have already reported by then, the history file
-simply does not gain a line, and the run after it records the same numbers
-against a later commit. Owned by the TPM lane, along with rotating the token.
+Until that secret exists the job skips itself and stays green, printing that
+no history was recorded for the commit. Nothing needs changing once the secret
+is added, the next merge after it records the first line. Owned by the TPM
+lane, along with rotating the token.
 
 Maintained by the TPM lane.
