@@ -71,6 +71,49 @@ Known scaffold limits: the disconfirming-evidence detector is
 refund-domain-specific; provenance is substring matching; categories come
 from a static check-id map. All marked with TODOs in code.
 
+## Natural failures, and where the answer is still null
+
+Every staged fixture shares one shape. A deprecated doc is retrieved, the
+reasoning cites it, and an unauthorized action follows. The deprecated-citation
+heuristic was written against that shape, so when the first live Gemini runs
+were retained (#179) both of their failures came back with
+`root_cause_step: null` at confidence 0.35. Neither had cited anything, and one
+of them exposed no reasoning text at all.
+
+A second detector now handles the failures where the violating act *is* the
+cause. A ticket asserting an outage the order record contradicts, or a final
+answer contradicting final state, has no earlier step that produced it, unlike
+an unauthorized refund which follows from an earlier bad reading of policy. For
+those checks the verifier has already localized the step, and the attributor
+adopts it only after corroborating against the trace that the step really
+contains the asserting act. Without that corroboration the attributor would be
+restating the verdict rather than attributing it, so when the step carries no
+matching `create_ticket` call or final answer it refuses and writes an
+ambiguity note naming what was missing.
+
+The two paths are not worth the same. A cause the agent stated in its own
+reasoning contributes 0.25 to confidence; one inferred from the act alone
+contributes 0.20, and confidence stays capped at 0.85 either way. A run with no
+reasoning always carries a note saying so, whether or not a cause was found,
+because the reader should know the account rests on tool calls and state rather
+than on anything the agent said.
+
+**Where the answer is still null, honestly.**
+
+- A failure whose only checks are authorization violations, with no reasoning
+  and no deprecated citation. The refund is a symptom and the cause sits in
+  reasoning nobody recorded.
+- A check carrying no step ids at all.
+- A check whose step id does not match any corroborating act in the trace.
+  Naming that step anyway would make the attribution look better without making
+  it truer.
+
+Each of those writes an ambiguity note rather than a number. Two staged rows in
+`refund_v0` moved from null to a real step when this landed,
+`refund_final_answer_phantom` at step 3 and `refund_final_answer_denied_real`
+at step 4, both for the same reason the live failures did. No category changed
+and the canonical staged attribution is byte for byte identical.
+
 ## Where this goes next (the judge program)
 
 1. **Judge schema first:** an LLM judge consumes the same inputs and emits

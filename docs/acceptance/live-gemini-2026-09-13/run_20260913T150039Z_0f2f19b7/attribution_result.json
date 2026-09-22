@@ -1,7 +1,7 @@
 {
   "schema_version": "0.3.0",
   "run_id": "run_20260913T150039Z_0f2f19b7",
-  "root_cause_step": null,
+  "root_cause_step": 3,
   "first_bad_step": 3,
   "missed_recovery_step": null,
   "first_unrecoverable_step": null,
@@ -11,11 +11,11 @@
   ],
   "primary_failure_category": "false_durable_record",
   "contributing_failure_categories": [],
-  "causal_explanation": "No reasoning-level root cause could be localized; the account below is reconstructed from tool calls and final state. Externally visible symptoms appear at step(s) [3]: ticket TICK-0001 records an outage claim, but the order shows no documented outage near purchase. Verifier verdict: 1 failed check(s).",
+  "causal_explanation": "At step 3 the agent wrote an unsupported claim via create_ticket, which ticket_outage_claim_unsupported flagged. Externally visible symptoms appear at step(s) [3]: ticket TICK-0001 records an outage claim, but the order shows no documented outage near purchase. Verifier verdict: 1 failed check(s).",
   "evidence_step_ids": [
     3
   ],
-  "confidence": 0.35,
+  "confidence": 0.55,
   "ambiguity_notes": [
     "trace exposes no model reasoning; root cause limited to what tool calls, arguments, and final state show",
     "trace contains no successful external irreversible action; first irreversible and approximated unrecoverable steps remain unset"

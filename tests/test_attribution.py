@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import REPO_ROOT
 from trace_harness.attribution.heuristic import HeuristicAttributor
 from trace_harness.attribution.schemas import FailureCategory
+from trace_harness.tasks.schemas import TaskSpec
+from trace_harness.tracing import artifact_store as names
+from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEventType
-from trace_harness.verifiers.base import VerifierInput
+from trace_harness.verifiers.base import VerifierInput, VerifierResult
 from trace_harness.verifiers.registry import get_verifier
 
 
@@ -59,7 +63,7 @@ def test_attribution_requires_a_failed_verifier_result(valid_run):
 
 
 def test_attribution_degrades_gracefully_without_reasoning(failure_run):
-    """Real models may expose no reasoning; attribution must say so, not guess."""
+    """Real models may expose no reasoning; attribution must say so and fall back."""
     verifier_result = _verified(failure_run)
     stripped_trace = []
     for event in failure_run.trace:
@@ -69,9 +73,12 @@ def test_attribution_degrades_gracefully_without_reasoning(failure_run):
         stripped_trace.append(clone)
 
     result = HeuristicAttributor().attribute(failure_run.task, stripped_trace, verifier_result)
-    assert result.root_cause_step is None
-    # Falls back to the earliest failed-check step for first_bad_step.
-    assert result.first_bad_step == 3
+    # Without reasoning the deprecated-citation heuristic cannot fire, but the
+    # unsupported-claim detector still localizes the step the agent wrote a
+    # claim the order record contradicts (#190). Saying "step 6, because the
+    # ticket was written there" is evidence, not a guess.
+    assert result.root_cause_step == 6
+    assert result.first_bad_step == 6
     # Tool-state facts still stand.
     assert result.first_irreversible_action_step == 5
     assert any("no model reasoning" in note for note in result.ambiguity_notes)
@@ -243,3 +250,104 @@ def test_no_recovery_window_when_evidence_arrives_after_the_harm(failure_run):
     assert result.first_irreversible_action_step == 1
     assert result.missed_recovery_step is None
     assert any("no recovery opportunity existed" in n for n in result.ambiguity_notes)
+
+
+# --- natural failures from the retained live runs (#190) ---
+#
+# The staged fixtures all share one shape: a deprecated doc is retrieved, cited,
+# and acted on. The live Gemini failures retained in #179 do not, and they came
+# back with no root cause at all. These tests read those real traces so the
+# detector cannot quietly regress to only handling the shape we authored.
+
+LIVE_RUNS = REPO_ROOT / "docs" / "acceptance" / "live-gemini-2026-09-13"
+TICKET_CLAIM_RUN = "run_20260913T150039Z_0f2f19b7"
+PHANTOM_ANSWER_RUN = "run_20260913T150048Z_0a01f607"
+
+
+def _attribute_live(run_id: str):
+    store = ArtifactStore(LIVE_RUNS)
+    return HeuristicAttributor().attribute(
+        TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC)),
+        store.read_trace(run_id),
+        VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT)),
+    )
+
+
+def test_live_unsupported_ticket_claim_gets_a_root_cause() -> None:
+    """The step that wrote the claim is the cause; nothing earlier produced it."""
+    result = _attribute_live(TICKET_CLAIM_RUN)
+
+    assert result.root_cause_step == 3
+    assert result.confidence >= 0.5
+    assert result.primary_failure_category is FailureCategory.FALSE_DURABLE_RECORD
+    assert "create_ticket" in result.causal_explanation
+
+
+def test_live_inconsistent_final_answer_gets_a_root_cause() -> None:
+    result = _attribute_live(PHANTOM_ANSWER_RUN)
+
+    assert result.root_cause_step == 4
+    assert result.confidence >= 0.5
+    assert result.primary_failure_category is FailureCategory.INCONSISTENT_FINAL_ANSWER
+    assert "final state does not support" in result.causal_explanation
+
+
+@pytest.mark.parametrize("run_id", [TICKET_CLAIM_RUN, PHANTOM_ANSWER_RUN])
+def test_live_failures_still_record_that_reasoning_was_absent(run_id: str) -> None:
+    """Locating a cause from tool calls does not hide that the agent said nothing."""
+    result = _attribute_live(run_id)
+    assert any("no model reasoning" in note for note in result.ambiguity_notes)
+
+
+@pytest.mark.parametrize("run_id", [TICKET_CLAIM_RUN, PHANTOM_ANSWER_RUN])
+def test_live_confidence_stays_below_the_cap(run_id: str) -> None:
+    """A cause inferred from the act is weaker than one the agent stated."""
+    assert _attribute_live(run_id).confidence < 0.85
+
+
+def test_root_cause_is_refused_when_the_trace_does_not_corroborate_it() -> None:
+    """The verifier's step id alone is not enough; the act must be in the trace."""
+    store = ArtifactStore(LIVE_RUNS)
+    verifier = VerifierResult.model_validate(
+        store.read_json(TICKET_CLAIM_RUN, names.VERIFIER_RESULT)
+    )
+    # Point the check at a step where no create_ticket call was executed.
+    moved = verifier.model_copy(
+        update={
+            "failed_checks": [
+                check.model_copy(update={"step_ids": [1]}) for check in verifier.failed_checks
+            ]
+        }
+    )
+    result = HeuristicAttributor().attribute(
+        TaskSpec.model_validate(store.read_json(TICKET_CLAIM_RUN, names.TASK_SPEC)),
+        store.read_trace(TICKET_CLAIM_RUN),
+        moved,
+    )
+
+    assert result.root_cause_step is None
+    assert any("does not corroborate" in note for note in result.ambiguity_notes)
+
+
+def test_earliest_assertion_wins_when_a_run_carries_several() -> None:
+    """A later unsupported claim is downstream of an earlier one, so take the first."""
+    store = ArtifactStore(LIVE_RUNS)
+    verifier = VerifierResult.model_validate(
+        store.read_json(TICKET_CLAIM_RUN, names.VERIFIER_RESULT)
+    )
+    ticket_check = verifier.failed_checks[0]
+    # Same run, but the final answer is also flagged, at a later step.
+    also_answer = ticket_check.model_copy(
+        update={"check_id": "final_answer_inconsistent_with_state", "step_ids": [4]}
+    )
+    both = verifier.model_copy(update={"failed_checks": [also_answer, ticket_check]})
+
+    result = HeuristicAttributor().attribute(
+        TaskSpec.model_validate(store.read_json(TICKET_CLAIM_RUN, names.TASK_SPEC)),
+        store.read_trace(TICKET_CLAIM_RUN),
+        both,
+    )
+
+    # Listed answer-first, but step 3 precedes step 4.
+    assert result.root_cause_step == 3
+    assert result.primary_failure_category is FailureCategory.FALSE_DURABLE_RECORD
