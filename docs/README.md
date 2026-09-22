@@ -69,7 +69,7 @@ when the same debate has happened twice. Format:
 `ADR-NNNN-short-slug.md` with **Status / Context / Decision /
 Consequences** — including the costs; an ADR without downsides is
 advertising. Never rewrite an accepted ADR; supersede it. Anyone may
-draft; Mohammed reviews direction.
+draft; the TPM lane reviews direction.
 
 ## Doc hygiene
 

@@ -53,10 +53,11 @@ API (future, contract pinned in docs/future_api.md)
 
 The CLI (`trace_harness/cli.py`) exposes each arrow as a subcommand
 (`run-fixture`, `verify`, `attribute`, `bundle`) and chains them as
-`run-pipeline`. Twelve subcommands exist. Alongside the five above there are
+`run-pipeline`. Thirteen subcommands exist. Alongside the five above there are
 `run-suite` and `report-suite` for batches, `list-runs` and `inspect` for the
-read path, `replay` and `collect-regressions` for the regression gate, and
-`controls` for the control library. `trace-harness --help` is the list that
+read path, `replay` and `collect-regressions` for the regression gate,
+`controls` for the control library, and `validate-fixtures` for the task
+rubric. `trace-harness --help` is the list that
 cannot go stale. **Stages communicate only through artifacts on disk** — any
 stage can be re-run later (e.g. re-verify an old trace with a new
 verifier), and the dashboard sees exactly what the pipeline saw.
