@@ -55,7 +55,9 @@
   "requires_escalation": false,
   "expected_action": {
     "refund": "cash",
-    "escalation": false
+    "escalation": {
+      "posture": "forbidden"
+    }
   },
   "metadata": {
     "fixture_script": "../../../../scripts/refund_type_cash_with_outage_in_window_script.json",

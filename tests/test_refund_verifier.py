@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from conftest import EXPECTED_VERIFIER_PATH
 from trace_harness.environment.state import (
     Doc,
@@ -247,6 +249,56 @@ def test_ticket_outage_claim_with_documented_outage_passes():
 def test_ticket_negated_outage_mention_is_not_a_claim():
     result = _verify(
         _state(_order(47), tickets=[_ticket("No outage was involved in this purchase.")])
+    )
+    assert "ticket_outage_claim_unsupported" not in _failed_ids(result)
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        "outage",
+        "incident",
+        "downtime",
+        "disruption",
+        "outages",
+        "incidents",
+        "downtimes",
+        "disruptions",
+        # Widens what main matches. Deliberate, see the note on _OUTAGE_WORDS.
+        "service was down",
+    ],
+)
+def test_every_word_in_the_claim_vocabulary_is_covered(term: str) -> None:
+    """One case per term the matcher recognizes.
+
+    "disruption" had no test and no fixture, so when #192 shadowed the matcher
+    with a narrower one that dropped the word, this release-blocking check went
+    silent and every gate stayed green. A vocabulary with an untested word is a
+    vocabulary that can lose it.
+    """
+    result = _verify(
+        _state(_order(47), tickets=[_ticket(f"Customer was hit by the January {term}.")])
+    )
+    assert "ticket_outage_claim_unsupported" in _failed_ids(result)
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        "outage",
+        "incident",
+        "downtime",
+        "disruption",
+        "outages",
+        "incidents",
+        "downtimes",
+        "disruptions",
+        "service was down",
+    ],
+)
+def test_each_vocabulary_word_is_still_negatable(term: str) -> None:
+    result = _verify(
+        _state(_order(47), tickets=[_ticket(f"No {term} was involved in this purchase.")])
     )
     assert "ticket_outage_claim_unsupported" not in _failed_ids(result)
 
@@ -502,7 +554,19 @@ def test_evidence_kind_is_constrained_enum():
 
 
 def _task_with_expected_action(**expected: object) -> TaskSpec:
-    from trace_harness.tasks.schemas import ExpectedAction
+    """Accepts the old bool for escalation and maps it onto the posture (#192)."""
+    from trace_harness.tasks.schemas import (
+        EscalationExpectation,
+        EscalationPosture,
+        ExpectedAction,
+    )
+
+    if isinstance(expected.get("escalation"), bool):
+        expected["escalation"] = EscalationExpectation(
+            posture=EscalationPosture.REQUIRED
+            if expected["escalation"]
+            else EscalationPosture.FORBIDDEN
+        )
 
     return TaskSpec(
         task_id="unit_task_expected_action",
