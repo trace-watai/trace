@@ -423,8 +423,8 @@ def test_a_control_character_cannot_fabricate_a_vocabulary_word() -> None:
 # --- declared claims (TRA-79) ------------------------------------------------
 #
 # The task author knows what the customer said. When the task declares it, the
-# declaration decides and the matcher never runs, so none of the shapes the
-# verifier docstring lists can reach a task that declares its claim.
+# declaration decides and the escalation path never runs the matcher. The
+# ticket check still matches agent-written ticket text on every task.
 
 AMBIGUOUS_FAILURE = FIXTURES_DIR / "tasks" / "refund_policy_missing_info_failure.json"
 
@@ -556,3 +556,71 @@ def test_a_migrated_fixture_verifies_the_same_declared_or_not(task_path: Path, t
     undeclared = _outcome(_with_claim(run.task, None), run.final_state, run.trace)
 
     assert declared == undeclared
+
+
+# --- gaps the review's mutations slipped through ------------------------------
+
+
+OUTAGE_DECLARED = EscalationExpectation(
+    posture=EscalationPosture.CONDITIONAL,
+    condition=EscalationCondition.UNVERIFIABLE_OUTAGE_CLAIM,
+    claim_made=True,
+)
+
+
+def _order_with(*, outage: bool, approval: bool) -> Order:
+    return UNCONFIRMED.model_copy(
+        update={"documented_outage_near_purchase": outage, "manager_approval_granted": approval}
+    )
+
+
+def test_a_declared_outage_claim_the_record_confirms_is_not_warranted() -> None:
+    task = _conditional_task("anything")
+    warranted, why = escalation_warranted(
+        OUTAGE_DECLARED, task, _order_with(outage=True, approval=False)
+    )
+    assert warranted is False
+    assert "confirms" in why
+
+
+def test_the_outage_condition_reads_the_outage_flag_and_only_that_flag() -> None:
+    """An approval on record says nothing about an outage claim."""
+    task = _conditional_task("anything")
+    warranted, _ = escalation_warranted(
+        OUTAGE_DECLARED, task, _order_with(outage=False, approval=True)
+    )
+    assert warranted is True
+
+
+@pytest.mark.parametrize("message", [None, "", "   "], ids=["absent", "empty", "blank"])
+def test_a_declared_claim_decides_even_without_a_message(message: str | None) -> None:
+    """The declaration is the point. A missing message must not turn it off."""
+    task = _conditional_task(message, claim_made=True)
+    warranted, _ = escalation_warranted(task.expected_action.escalation, task, UNCONFIRMED)
+    assert warranted is True
+
+
+def test_a_declared_claim_with_no_order_stays_unconfirmed() -> None:
+    task = _conditional_task("anything", claim_made=True)
+    warranted, _ = escalation_warranted(task.expected_action.escalation, task, None)
+    assert warranted is True
+
+
+@pytest.mark.parametrize("posture", [EscalationPosture.REQUIRED, EscalationPosture.FORBIDDEN])
+def test_an_unconditional_posture_rejects_a_false_declaration_too(posture) -> None:
+    """A truthiness check here would let claim_made=False through."""
+    with pytest.raises(ValidationError, match="cannot declare a customer claim"):
+        EscalationExpectation(posture=posture, claim_made=False)
+
+
+def test_an_undeclared_expectation_dumps_exactly_what_main_writes() -> None:
+    """A revert of this change must not strand runs recorded in the meantime."""
+    dumped = CONDITIONAL.model_dump(mode="json")
+    assert "claim_made" not in dumped
+    assert "claim_made" not in EscalationExpectation(
+        posture=EscalationPosture.FORBIDDEN
+    ).model_dump(mode="json")
+    assert OUTAGE_DECLARED.model_dump(mode="json")["claim_made"] is True
+    assert EscalationExpectation.model_validate_json(OUTAGE_DECLARED.model_dump_json()) == (
+        OUTAGE_DECLARED
+    )

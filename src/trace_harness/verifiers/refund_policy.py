@@ -80,8 +80,8 @@ Known MVP heuristics (documented, not hidden):
       - "incident" is a generic support word. "I'd like to report an incident
         with my delivery" is not an outage claim.
       - A negation more than 60 characters from the claim word escapes the
-        window, and one placed after it is never seen at all, so "it was
-        approved, but that turned out not to be true" reads as a claim.
+        window, and one placed after it is never seen at all, so "my manager
+        approved it, but that turned out not to be true" reads as a claim.
       - The window cuts the other way too. A negation inside it that has
         nothing to do with the claim suppresses a real one, so "there was no
         warning before the outage hit" reads as no claim. Widening the
@@ -97,9 +97,10 @@ Known MVP heuristics (documented, not hidden):
 
       These are the same class of problem that made TRA-79 an open question.
       Widening the matcher trades one direction of error for the other, which
-      is why the claim became a declared field on the task. They still apply
-      in full to ``ticket_outage_claim_unsupported``, because ticket text is
-      written by the agent during the run.
+      is why the claim became a declared field on the task. The shapes that
+      concern outage wording still apply to ``ticket_outage_claim_unsupported``,
+      because ticket text is written by the agent during the run and the check
+      runs on every task whether or not it declares a claim.
 
 # TODO(Karan/verifier): replace string-match provenance with structured
 # citations once the trace schema carries them; expand boundary tests as

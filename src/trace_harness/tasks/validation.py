@@ -179,12 +179,21 @@ def validate_task(task: TaskSpec) -> list[ValidationIssue]:
     # or a correct run is impossible. Deliberately a plain string-membership check
     # (not a tool-registry lookup) so the rubric stays independent of whether the
     # escalate_case tool has landed in the environment yet.
-    if task.requires_escalation and _ESCALATION_TOOL not in task.available_tools:
+    # A declared or required escalation posture decides the verdict without
+    # reading requires_escalation, so it has to be checked here too.
+    posture = task.expected_action.escalation if task.expected_action else None
+    posture_may_escalate = posture is not None and (
+        posture.posture is EscalationPosture.REQUIRED
+        or (posture.posture is EscalationPosture.CONDITIONAL and posture.claim_made is True)
+    )
+    if (
+        task.requires_escalation or posture_may_escalate
+    ) and _ESCALATION_TOOL not in task.available_tools:
         issues.append(
             ValidationIssue(
                 "requires_escalation_without_tool",
-                f"requires_escalation is true but available_tools does not include "
-                f"'{_ESCALATION_TOOL}'; a correct run could not escalate",
+                f"a correct run of this task may need to escalate, but available_tools does "
+                f"not include '{_ESCALATION_TOOL}'",
             )
         )
 

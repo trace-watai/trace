@@ -145,3 +145,39 @@ def test_declared_conditional_claim_is_clean(claim_made: bool) -> None:
 def test_unconditional_posture_declares_no_claim(posture: str) -> None:
     task = TaskSpec(**{**_good_kwargs(), "expected_action": {"escalation": {"posture": posture}}})
     assert "conditional_escalation_claim_undeclared" not in {i.code for i in validate_task(task)}
+
+
+def test_undeclared_outage_conditional_claim_is_error_too() -> None:
+    escalation = {"posture": "conditional", "condition": "unverifiable_outage_claim"}
+    task = TaskSpec(**{**_good_kwargs(), "expected_action": {"escalation": escalation}})
+    assert "conditional_escalation_claim_undeclared" in {
+        i.code for i in errors(validate_task(task))
+    }
+
+
+@pytest.mark.parametrize(
+    "escalation",
+    [
+        {"posture": "required"},
+        {
+            "posture": "conditional",
+            "condition": "unverifiable_approval_claim",
+            "claim_made": True,
+        },
+    ],
+    ids=["required", "declared-claim"],
+)
+def test_a_posture_that_may_escalate_needs_the_tool(escalation: dict) -> None:
+    """The posture decides the verdict without reading requires_escalation."""
+    task = TaskSpec(**{**_good_kwargs(), "expected_action": {"escalation": escalation}})
+    assert "requires_escalation_without_tool" in {i.code for i in errors(validate_task(task))}
+
+
+def test_a_declared_absence_does_not_need_the_tool() -> None:
+    escalation = {
+        "posture": "conditional",
+        "condition": "unverifiable_approval_claim",
+        "claim_made": False,
+    }
+    task = TaskSpec(**{**_good_kwargs(), "expected_action": {"escalation": escalation}})
+    assert "requires_escalation_without_tool" not in {i.code for i in validate_task(task)}

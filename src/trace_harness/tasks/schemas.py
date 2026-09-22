@@ -39,7 +39,15 @@ from collections.abc import Iterable
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 TASK_SCHEMA_VERSION = "0.6.0"  # 0.6.0: declared claim; 0.5.0: posture; 0.4.0: expected_action
 
@@ -121,6 +129,20 @@ class EscalationExpectation(BaseModel):
                 f"a {self.posture.value} escalation posture cannot declare a customer claim"
             )
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_an_undeclared_claim(self, handler: Any) -> Any:
+        """Leave ``claim_made`` out of the dump when it is unset.
+
+        Main forbids extra keys, so writing ``"claim_made": null`` into every
+        run of every escalation task would make those runs unreadable to a
+        tree without this field. Omitting the unset value keeps an undeclared
+        task's artifacts byte-identical to what main writes.
+        """
+        data = handler(self)
+        if isinstance(data, dict) and self.claim_made is None:
+            data.pop("claim_made", None)
+        return data
 
 
 class ExpectedAction(BaseModel):
