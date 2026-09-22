@@ -360,7 +360,7 @@
       "blocks_release": true,
       "primary_failure_category": "inconsistent_final_answer",
       "contributing_failure_categories": [],
-      "root_cause_step": null,
+      "root_cause_step": 3,
       "first_irreversible_action_step": null,
       "positive_sibling_task_ids": [
         "refund_policy_no_refund"
@@ -381,7 +381,7 @@
       "blocks_release": true,
       "primary_failure_category": "inconsistent_final_answer",
       "contributing_failure_categories": [],
-      "root_cause_step": null,
+      "root_cause_step": 4,
       "first_irreversible_action_step": 3,
       "positive_sibling_task_ids": [
         "refund_policy_valid_cash"
