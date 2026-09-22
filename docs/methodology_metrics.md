@@ -43,8 +43,10 @@ Three rules apply to everything below.
 
 *Formula.* `valid / total` over every task JSON under `fixtures/tasks/`.
 
-*Source.* The validate-fixtures checker described in
-`docs/task_validity.md`; one line per file with its status.
+*Source.* `trace-harness validate-fixtures`, which prints the `valid/total`
+line and one line per problem. It recurses through `fixtures/tasks/`, so
+family tasks that no suite references are counted. `scripts/check_repo.sh`
+runs it, so CI enforces the number rather than reporting it.
 
 *Blind spot.* The rubric checks structure and authoring quality, not
 whether the task is solvable by any agent. A valid task can still be

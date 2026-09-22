@@ -6,7 +6,7 @@ of an agent. This rubric is the standard for the second bar. It has two layers:
 1. **Structural** — enforced by `TaskSpec` (`trace_harness/tasks/schemas.py`).
    Every task, including unit-test stubs, must satisfy these or it won't load.
 2. **Authoring quality** — enforced by `tasks/validation.py` (`validate_task`)
-   and run against real fixtures via `python -m trace_harness.tasks.validation`.
+   and run against real fixtures via `trace-harness validate-fixtures`.
    Stubs are exempt; only committed fixtures must pass.
 
 Owner: Emily Au (task design). Failure-mode vocabulary is co-owned with Darrel
@@ -48,7 +48,7 @@ Errors block a seed task; warnings should be reviewed.
 
 ## Running it
 ```bash
-python -m trace_harness.tasks.validation        # validate every committed task fixture
+trace-harness validate-fixtures        # validate every committed task fixture
 python -m pytest tests/test_task_validation.py  # the checker's tests
 ```
 
@@ -59,4 +59,4 @@ at least one `verifier_id` and one `targeted_failure_mode`; `required_evidence`;
 a `difficulty`; and a `metadata.fixture_script` if it should run in the pipeline.
 If a correct run must escalate to a human rather than resolve the case, set
 `requires_escalation: true` and include `escalate_case` in `available_tools`.
-Run `python -m trace_harness.tasks.validation` before committing.
+Run `trace-harness validate-fixtures` before committing.
