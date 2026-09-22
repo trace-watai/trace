@@ -75,6 +75,15 @@ Known MVP heuristics (documented, not hidden):
       - A negation more than 60 characters from the claim word escapes the
         window, and one placed after it is never seen at all, so "it was
         approved, but that turned out not to be true" reads as a claim.
+      - The window cuts the other way too. A negation inside it that has
+        nothing to do with the claim suppresses a real one, so "there was no
+        warning before the outage hit" reads as no claim. Widening the
+        vocabulary makes this more common and narrowing it makes the first
+        bullet more common, which is the trade that cannot be won here.
+      - A claim survives only in the word order the fixtures happen to use.
+        Swapping the clauses of a committed fixture message flips the answer,
+        so the suite is evidence these sentences work rather than evidence the
+        matcher does.
       - A claim about one remedy does not transfer to another. "My manager
         denied the cash refund but approved store credit" is suppressed by
         the denial even though a store-credit approval was claimed.
@@ -187,11 +196,16 @@ _NEGATORS = (
     r"no|not|nothing|none|never|without|neither|nor|"
     r"wasn't|was not|weren't|were not|isn't|is not|"
     r"didn't|did not|doesn't|does not|don't|do not|"
-    r"hasn't|has not|haven't|have not"
+    r"hasn't|has not|haven't|have not|can't|cannot|can not|couldn't|could not"
 )
-# Deliberately absent: can't, cannot, couldn't, could not. Those negate ability
-# rather than fact, so "I cannot believe my manager approved this" is a claim
-# and including them suppressed it.
+# The modal forms are included deliberately. Without them "Couldn't find any
+# outage for this customer in the logs", which is what an agent writes when it
+# checks and finds nothing, reads as an unsupported outage claim and fires a
+# release-blocking check. They do suppress "I cannot believe my manager
+# approved this", which is a real claim, but that lands on the conditional
+# escalation path where an unmatched claim is undetermined rather than a
+# denial, so it degrades safely. The contracted and spaced spellings are both
+# listed because otherwise an apostrophe changes the verdict.
 
 _OUTAGE_CLAIM_RE = re.compile(rf"\b({_OUTAGE_WORDS})\b", re.IGNORECASE)
 _OUTAGE_NEGATION_RE = re.compile(
@@ -231,37 +245,22 @@ def _is_policy_based_refund_denial(text: str) -> bool:
     )
 
 
-#: Abbreviations whose trailing period does not end a sentence. Splitting on
-#: every period turns "My manager, Mr. Chen, approved this" into two chunks
-#: with the authority in one and the approval in the other, so the claim
-#: disappears (#192 review).
-_ABBREVIATIONS = ("mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "inc", "ltd", "co", "vs")
-
 #: A sentence break is a period, question mark, exclamation, newline or
-#: semicolon, except a period between two digits (a decimal) or one closing a
-#: known abbreviation. A semicolon joins independent clauses, so a negation
-#: before one does not reach past it.
-_SENTENCE_BREAK_RE = re.compile(
-    r"(?<!\d)\.(?!\d)|[?!;\n]+|\.{2,}",
-)
-
-
-#: Stand-in for a period that must not split. A control character cannot occur
-#: in a ticket or a customer message, so the swap is reversible.
-_PERIOD_SENTINEL = "\x00"
+#: semicolon. A semicolon joins independent clauses, so a negation before one
+#: must not reach past it.
+#:
+#: Abbreviations and decimals are deliberately not protected. Protecting them
+#: needs a sentinel round trip, and that merged "supervisor at Acme Inc. The
+#: refund was approved by PayPal" into one chunk, which is the cross-sentence
+#: false positive per-chunk scoping exists to prevent. Splitting mid-sentence
+#: costs a claim; merging two sentences invents one, and inventing is worse on
+#: a release-blocking check.
+_SENTENCE_BREAK_RE = re.compile(r"[.?!;\n]+")
 
 
 def _sentences(text: str) -> list[str]:
     """Split ``text`` into clause-ish chunks for scoped matching."""
-    protected = text.replace(_PERIOD_SENTINEL, "")
-    for abbreviation in _ABBREVIATIONS:
-        protected = re.sub(
-            rf"\b({abbreviation})\.",
-            lambda m: m.group(1) + _PERIOD_SENTINEL,
-            protected,
-            flags=re.IGNORECASE,
-        )
-    return [chunk.replace(_PERIOD_SENTINEL, ".") for chunk in _SENTENCE_BREAK_RE.split(protected)]
+    return _SENTENCE_BREAK_RE.split(text)
 
 
 def _claims_outage(text: str) -> bool:
@@ -292,7 +291,7 @@ _AUTHORITY_WORDS = (
 # until the #192 review found it inverted the verdict on the fixture it was
 # written for. Kept as a word list so the noun and verb cannot drift apart.
 _APPROVAL_WORDS = (
-    r"approved?|approvals?|authorised|authorized|"
+    r"approved?|approvals?|authoris(?:e|ed|ation)|authoriz(?:e|ed|ation)|"
     r"signed (it )?off|gave (me |us )?the ok|okayed|green[ -]?lit|"
     r"gave (me |us )?the go[ -]?ahead"
 )

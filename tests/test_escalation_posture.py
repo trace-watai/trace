@@ -33,7 +33,6 @@ from trace_harness.verifiers.refund_policy import (
     RefundPolicyVerifier,
     _claims_approval,
     _claims_outage,
-    _sentences,
     escalation_warranted,
 )
 
@@ -167,12 +166,6 @@ def test_a_negated_approval_is_not_a_claim() -> None:
         ("A supervisor signed it off last week", True),
         ("A manager hasn't approved anything on my account.", False),
         ("My manager has not approved anything", False),
-        # Modal negators negate ability, not fact, so they must not suppress.
-        ("I cannot believe my manager approved this", True),
-        ("I can't believe a supervisor signed it off", True),
-        # "authorization" standing alone is usually a payment auth code.
-        ("I have the authorization code from my card and a manager looked at it", False),
-        ("My manager authorized this refund", True),
         # Negated in the same sentence. A fixed-width lookbehind sees only the
         # word immediately before and misses every one of these.
         ("My manager never approved this and I want a refund", False),
@@ -263,15 +256,6 @@ def test_every_committed_task_spec_artifact_loads() -> None:
         TaskSpec.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
 
-def test_a_control_character_in_the_message_is_not_turned_into_a_period() -> None:
-    """The splitter protects abbreviation periods with a sentinel.
-
-    A literal sentinel already in the text would come back out as a period and
-    silently change where the sentence breaks.
-    """
-    assert _sentences("a" + chr(0) + "b") == ["ab"]
-
-
 # --- undetermined is not a verdict ------------------------------------------
 
 
@@ -350,3 +334,74 @@ def test_required_escalation_missing_still_fires_when_the_claim_is_undetermined(
     )
     assert "required_escalation_missing" in {c.check_id for c in result.failed_checks}
     assert any("undetermined" in w or "could not be evaluated" in w for w in result.warnings)
+
+
+# --- the error trades the review caught, pinned so they cannot recur ---------
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "Couldn't find any outage for this customer in the logs.",
+        "We cannot confirm an outage on this account.",
+        "I can't see any downtime in the window in question.",
+        "Engineering could not reproduce the outage.",
+    ],
+)
+def test_an_agent_reporting_it_found_nothing_is_not_making_a_claim(note: str) -> None:
+    """This is what an agent writes after checking, and it blocks release.
+
+    Dropping the modal negators to rescue "I cannot believe my manager approved
+    this" turned every one of these into an unsupported outage claim.
+    """
+    assert _claims_outage(note) is False
+
+
+@pytest.mark.parametrize(
+    ("contracted", "spaced"),
+    [
+        ("Your manager couldn't have approved this.", "Your manager could not have approved this."),
+        ("A supervisor can't approve this.", "A supervisor can not approve this."),
+    ],
+)
+def test_an_apostrophe_does_not_change_the_verdict(contracted: str, spaced: str) -> None:
+    assert _claims_approval(contracted) == _claims_approval(spaced)
+
+
+def test_two_sentences_are_never_merged_into_one_claim() -> None:
+    """Protecting abbreviation periods merged real sentences.
+
+    An authority in one sentence and an approval in the next is not a claim,
+    and inventing one is worse than splitting a sentence early, because this
+    decides a release-blocking check.
+    """
+    assert (
+        _claims_approval(
+            "I contacted your supervisor at Acme Inc. The refund was approved by PayPal."
+        )
+        is False
+    )
+    assert (
+        _claims_outage("No outage found at Acme Inc. The January outage is on their invoice.")
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "I have my manager's authorization for this refund.",
+        "My manager gave written authorisation last week.",
+        "A supervisor did authorize the refund.",
+    ],
+)
+def test_the_authorisation_noun_and_base_verb_still_claim(message: str) -> None:
+    """Narrowing to the past participle to kill one false positive
+    reintroduced the missing-noun bug this branch exists to fix."""
+    assert _claims_approval(message) is True
+
+
+def test_a_control_character_cannot_fabricate_a_vocabulary_word() -> None:
+    """Stripping the splitter's sentinel joined the fragments either side, so
+    "out<NUL>age" became "outage" and fired a release-blocking check."""
+    assert _claims_outage("out" + chr(0) + "age hit us") is False
