@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from conftest import FIXTURES_DIR
+from conftest import FIXTURES_DIR, regression_artifact, static_ok_basis
 from trace_harness import cli
 from trace_harness.cli import main
 from trace_harness.environment import controls as controls_module
@@ -30,9 +30,11 @@ from trace_harness.regression.repair_validation import (
     RepairValidation,
     ReRun,
     decide_verdict,
+    gating_refusal,
     over_blocking_summary,
     sibling_family,
     skipped_control,
+    verdict_gates,
 )
 from trace_harness.tasks.loader import load_task
 from trace_harness.tracing import artifact_store as names
@@ -318,7 +320,10 @@ def test_inspect_validation_in_separate_output_directory(tmp_path, capsys):
     captured = capsys.readouterr()
     assert code == 0
     assert "accepted" in captured.out
-    assert "deterministic_pre_call_refund_guardrail [advisory]" in captured.out
+    assert (
+        "deterministic_pre_call_refund_guardrail [advisory, replay_mode live_required, "
+        "predicted until #159 measures it]"
+    ) in captured.out
     assert "1 accepted (0 gating, 1 advisory)" in captured.out
     assert not captured.err
 
@@ -573,18 +578,24 @@ def test_fail_on_rejected_passes_when_nothing_is_rejected(tmp_path) -> None:
     ("replay_mode", "standing"),
     [("static_ok", "gating"), ("live_required", "advisory"), (None, "advisory")],
 )
-def test_every_verdict_records_the_artifact_replay_mode(tmp_path, replay_mode, standing):
+def test_every_verdict_records_the_artifact_replay_mode(tmp_path, capsys, replay_mode, standing):
     artifact = _bundle_artifact(tmp_path)
     if replay_mode is None:
         _edit_json(artifact, lambda a: a.pop("replay_mode"))
     else:
         _edit_json(artifact, lambda a: a.update(replay_mode=replay_mode))
+    capsys.readouterr()
 
     code, validation = _replay_validation(tmp_path, artifact)
 
     assert code == 0
     expected_mode = replay_mode or "unlabeled"
     assert {c.replay_mode for c in validation.controls} == {expected_mode}
+    assert {c.predicted_by for c in validation.controls} == {"heuristic_v1"}
+    # The demo's basis classifies as live_required, so a static_ok label on it
+    # is flagged even though the verdict records the label as stated.
+    warned = "static_ok is not supported by the artifact's own basis" in capsys.readouterr().out
+    assert warned == (replay_mode == "static_ok")
     (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
     assert accepted.standing == standing
     assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (
@@ -598,19 +609,32 @@ def test_rollup_splits_accepted_verdicts_by_standing() -> None:
         test_name="t",
         controls=[
             ControlValidation(
-                control="a", verdict=ControlVerdict.ACCEPTED, replay_mode="static_ok"
+                control="a",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="static_ok",
+                predicted_by="heuristic_v1",
             ),
             ControlValidation(control="b", verdict=ControlVerdict.ACCEPTED),
             ControlValidation(
-                control="c", verdict=ControlVerdict.ACCEPTED, replay_mode="live_required"
+                control="c",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="live_required",
+                predicted_by="heuristic_v1",
+            ),
+            # A static_ok label with no basis behind it cannot gate.
+            ControlValidation(
+                control="e", verdict=ControlVerdict.ACCEPTED, replay_mode="static_ok"
             ),
             ControlValidation(
-                control="d", verdict=ControlVerdict.REJECTED_OVERBLOCKS, replay_mode="static_ok"
+                control="d",
+                verdict=ControlVerdict.REJECTED_OVERBLOCKS,
+                replay_mode="static_ok",
+                predicted_by="heuristic_v1",
             ),
         ],
     )
     rollup = validation.rollup
-    assert (rollup.accepted, rollup.accepted_gating, rollup.accepted_advisory) == (3, 1, 2)
+    assert (rollup.accepted, rollup.accepted_gating, rollup.accepted_advisory) == (4, 1, 3)
 
 
 def test_a_written_standing_is_derived_again_on_read() -> None:
@@ -750,3 +774,45 @@ def test_pinned_validation_evidence_bounds_one_family_at_95_percent() -> None:
     assert (blocking.siblings_run, blocking.siblings_failed) == (1, 0)
     assert (blocking.independent_families, blocking.families_failed) == (1, 0)
     assert blocking.upper_bound_95 == 0.95
+
+
+# --- whether a label can back a gating verdict ---
+
+
+@pytest.mark.parametrize(
+    ("replay_mode", "basis", "refusal"),
+    [
+        ("static_ok", "supported", None),
+        ("static_ok", None, "has no recorded basis"),
+        ("static_ok", "unsupported", "classifies as live_required"),
+        ("live_required", "supported", "the artifact is live_required"),
+        ("unlabeled", None, "the artifact is unlabeled"),
+    ],
+)
+def test_only_a_static_ok_label_its_basis_supports_can_gate(replay_mode, basis, refusal) -> None:
+    recorded = {
+        "supported": static_ok_basis(),
+        "unsupported": static_ok_basis().model_copy(update={"rule_kind": "requirement"}),
+        None: None,
+    }[basis]
+    reason = gating_refusal(regression_artifact(replay_mode=replay_mode, basis=recorded))
+    if refusal is None:
+        assert reason is None
+    else:
+        assert refusal in reason
+
+
+def test_a_verdict_gates_only_against_an_artifact_that_backs_it() -> None:
+    verdict = ControlValidation(
+        control="a",
+        verdict=ControlVerdict.ACCEPTED,
+        replay_mode="static_ok",
+        predicted_by="heuristic_v1",
+    )
+    backing = regression_artifact(replay_mode="static_ok", basis=static_ok_basis())
+    assert verdict.standing == "gating"
+    assert verdict_gates(verdict, backing)
+    assert not verdict_gates(verdict, None)
+    assert not verdict_gates(verdict, regression_artifact(replay_mode="unlabeled"))
+    measured = static_ok_basis().model_copy(update={"predicted_by": "measured"})
+    assert not verdict_gates(verdict, regression_artifact(replay_mode="static_ok", basis=measured))

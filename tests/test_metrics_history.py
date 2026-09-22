@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT
+from conftest import REPO_ROOT, regression_artifact, static_ok_basis
 from trace_harness.metrics.history import (
     Coverage,
     MetricsSnapshot,
@@ -138,23 +138,108 @@ def test_coverage_counts_each_wall_separately(tree: Path) -> None:
     assert coverage.unmapped_controls == []
 
 
-def _accepted(control: str, replay_mode: str | None = None) -> RepairValidation:
-    entry = {"control": control, "verdict": "accepted"}
+def _verdict(
+    control: str, replay_mode: str | None = None, verdict: str = "accepted"
+) -> RepairValidation:
+    entry = {"control": control, "verdict": verdict}
     if replay_mode is not None:
         entry["replay_mode"] = replay_mode
-    return RepairValidation.model_validate({"run_id": "r", "test_name": "t", "controls": [entry]})
+        entry["predicted_by"] = "heuristic_v1"
+    return RepairValidation.model_validate(
+        {"run_id": "run_x", "test_name": "t", "controls": [entry]}
+    )
+
+
+def _accepted(control: str, replay_mode: str | None = None) -> RepairValidation:
+    return _verdict(control, replay_mode)
+
+
+SUPPORTED = regression_artifact(replay_mode="static_ok", basis=static_ok_basis())
 
 
 def test_coverage_splits_accepted_into_gating_and_advisory() -> None:
-    """A name accepted once against a static_ok artifact is gating, whatever else it earned."""
+    """A name accepted once against an artifact that backs static_ok is gating."""
     validations = [
         _accepted(MATERIAL, "live_required"),
         _accepted(MATERIAL, "static_ok"),
         _accepted(PAPER),
     ]
-    coverage = compute_coverage({MATERIAL, PAPER}, validations)
+    artifacts = [regression_artifact(replay_mode="live_required"), SUPPORTED, None]
+    coverage = compute_coverage({MATERIAL, PAPER}, validations, artifacts)
     assert coverage.accepted == 2
     assert (coverage.accepted_gating, coverage.accepted_advisory) == (1, 1)
+
+
+def test_a_static_ok_verdict_without_its_artifact_is_advisory() -> None:
+    """The verdict's own label is a claim; with no artifact to check it against, it is advisory."""
+    coverage = compute_coverage({MATERIAL}, [_accepted(MATERIAL, "static_ok")])
+    assert (coverage.accepted_gating, coverage.accepted_advisory) == (0, 1)
+
+
+def test_only_an_accepted_verdict_can_make_a_name_gating() -> None:
+    """A rejected verdict on a backed static_ok artifact contributes nothing to gating."""
+    validations = [
+        _verdict(MATERIAL, "static_ok", verdict="rejected_overblocks"),
+        _accepted(MATERIAL, "live_required"),
+    ]
+    artifacts = [SUPPORTED, regression_artifact(replay_mode="live_required")]
+    coverage = compute_coverage({MATERIAL}, validations, artifacts)
+    assert coverage.accepted == 1
+    assert (coverage.accepted_gating, coverage.accepted_advisory) == (0, 1)
+
+
+@pytest.mark.parametrize("layout", ["run_dir", "library_evidence"])
+@pytest.mark.parametrize(
+    ("artifact_label", "gating"),
+    [("static_ok_supported", 1), ("unlabeled", 0), ("static_ok_without_basis", 0), (None, 0)],
+)
+def test_snapshot_checks_a_gating_verdict_against_the_retained_artifact(
+    tmp_path: Path, layout: str, artifact_label: str | None, gating: int
+) -> None:
+    """A validation file claiming static_ok is gating only if its artifact backs the claim."""
+    run_dir = tmp_path / "r1"
+    _write(run_dir / "repair_package.json", {"controls": [{"name": MATERIAL}]})
+    _write(
+        run_dir / "repair_validation.json",
+        {
+            "run_id": "run_x",
+            "test_name": "t",
+            "controls": [
+                {
+                    "control": MATERIAL,
+                    "verdict": "accepted",
+                    "replay_mode": "static_ok",
+                    "predicted_by": "heuristic_v1",
+                }
+            ],
+        },
+    )
+    artifact = {
+        "static_ok_supported": SUPPORTED,
+        "unlabeled": regression_artifact(),
+        "static_ok_without_basis": regression_artifact(replay_mode="static_ok"),
+        None: None,
+    }[artifact_label]
+    if artifact is not None:
+        where = run_dir if layout == "run_dir" else run_dir / "source" / "run_x"
+        _write(where / "regression_artifact.json", artifact.model_dump(mode="json"))
+    coverage = build_snapshot(tmp_path, commit="c1").coverage
+    assert coverage.accepted == 1
+    assert (coverage.accepted_gating, coverage.accepted_advisory) == (gating, 1 - gating)
+
+
+def test_an_artifact_from_another_run_does_not_back_a_verdict(tmp_path: Path) -> None:
+    run_dir = tmp_path / "r1"
+    _write(run_dir / "repair_package.json", {"controls": [{"name": MATERIAL}]})
+    _write(
+        run_dir / "repair_validation.json",
+        _verdict(MATERIAL, "static_ok").model_dump(mode="json"),
+    )
+    other = regression_artifact(
+        run_id="run_other", replay_mode="static_ok", basis=static_ok_basis()
+    )
+    _write(run_dir / "regression_artifact.json", other.model_dump(mode="json"))
+    assert build_snapshot(tmp_path, commit="c1").coverage.accepted_gating == 0
 
 
 def test_a_split_that_does_not_sum_to_accepted_is_rejected() -> None:

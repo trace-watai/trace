@@ -159,8 +159,10 @@ registered guardrail can install it, *validated* when a validation run
 produced a verdict for it, and *accepted* when that verdict was
 `accepted`. Reporting only the last of the four hides which wall the
 work is stuck behind. An accepted name is further split into *gating*
-and *advisory*, because ADR-0002 lets a replay verdict gate only when its
-artifact is labeled `static_ok`.
+and *advisory*. ADR-0002 keeps a static replay verdict advisory "until the
+artifact carries a measured replay-mode label" and has the collector gate
+on `static_ok`. This follows the collector, and every `static_ok` label
+counted as gating is predicted until #159 measures one.
 
 *Formula.* `accepted / prescribed`, with `materializable / prescribed`
 alongside it. `prescribed` counts distinct control names across every
@@ -168,8 +170,13 @@ retained `repair_package.json`. `materializable` counts those with a
 non-null entry in `MATERIALIZABLE_REPAIR_CONTROLS`. `validated` and
 `accepted` count those appearing in a `repair_validation.json`, the
 latter restricted to `verdict == "accepted"`. `accepted_gating` counts
-accepted names with at least one accepted verdict whose `standing ==
-"gating"`; `accepted_advisory` counts the rest, so the two always sum to
+accepted names with at least one accepted verdict that gates when checked
+against the regression artifact it was validated against: that artifact is
+retained beside the validation (in the same run directory, or under
+`source/<run_id>/` in a control library's evidence), carries the verdict's
+`replay_mode` and `predicted_by`, is `static_ok`, and has a recorded basis
+that classifies as `static_ok`. A verdict whose artifact was not retained
+is advisory. `accepted_advisory` counts the rest, so the two always sum to
 `accepted`. A snapshot recorded at `0.1.0` has no split and reads as all
 advisory, because the validations it was computed from carried no
 `replay_mode`, and an unrecorded label reads as advisory.

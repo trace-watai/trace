@@ -4,6 +4,7 @@ the acceptance basis each entry records under ADR-0002.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import shutil
@@ -104,7 +105,9 @@ def test_commit_retains_evidence_and_installs_control(committed):
     assert library.schema_version == CONTROL_LIBRARY_SCHEMA_VERSION
     assert entry.control.control_id == REFUND_WINDOW_CONTROL_ID
     # The demo artifact is live_required, so its acceptance is advisory.
-    assert entry.acceptance == AcceptanceBasis(replay_mode="live_required", standing="advisory")
+    assert entry.acceptance == AcceptanceBasis(
+        replay_mode="live_required", predicted_by="heuristic_v1", standing="advisory"
+    )
     assert entry.control.provenance.run_id == json.loads(artifact.read_text())["source_run_id"]
     assert entry.status == "active"
     assert [h.status for h in entry.history] == ["active"]
@@ -585,11 +588,15 @@ def test_empty_library_is_valid():
 # --- acceptance basis (ADR-0002, decision 2) ---
 
 
-def _set_acceptance(library, replay_mode, standing):
+def _set_acceptance(library, replay_mode, standing, predicted_by="heuristic_v1"):
     _edit(
         library,
         lambda p: p["entries"][0].update(
-            acceptance={"replay_mode": replay_mode, "standing": standing}
+            acceptance={
+                "replay_mode": replay_mode,
+                "predicted_by": predicted_by,
+                "standing": standing,
+            }
         ),
     )
 
@@ -605,19 +612,97 @@ def test_committed_library_entry_reads_as_advisory():
     assert COMMITTED_LIBRARY.read_bytes() == raw
 
 
-def test_static_ok_artifact_commits_a_gating_control(tmp_path):
+@pytest.fixture
+def classified_static_ok(monkeypatch):
+    """Widen the refund guardrail's declared coverage so the classifier itself says static_ok.
+
+    The shipped guardrail covers only unauthorized_cash_refund while issue_refund
+    can also reach unauthorized_store_credit, which is why every real artifact
+    is live_required. Covering both satisfies all four rules honestly.
+    """
+    ref = "unauthorized_cash_refund_guardrail"
+    monkeypatch.setitem(
+        GUARDRAIL_REGISTRY,
+        ref,
+        dataclasses.replace(
+            GUARDRAIL_REGISTRY[ref],
+            checks_covered=frozenset({"unauthorized_cash_refund", "unauthorized_store_credit"}),
+        ),
+    )
+
+
+def test_a_classified_static_ok_label_commits_as_gating(tmp_path, classified_static_ok, capsys):
     artifact = _bundle(tmp_path)
-    _edit(artifact, lambda a: a.update(replay_mode="static_ok"))
+    labeled = json.loads(artifact.read_text())
+    assert labeled["replay_mode"] == "static_ok"
+    assert labeled["replay_mode_basis"]["predicted_by"] == "heuristic_v1"
     library = tmp_path / "controls/library.json"
     assert _commit(tmp_path, artifact, library) == 0
     (entry,) = load_library(library).entries
-    assert entry.acceptance == AcceptanceBasis(replay_mode="static_ok", standing="gating")
+    assert entry.acceptance == AcceptanceBasis(
+        replay_mode="static_ok", predicted_by="heuristic_v1", standing="gating"
+    )
+    capsys.readouterr()
+    assert main(["controls", "list", "--control-library", str(library)]) == 0
+    out = capsys.readouterr().out
+    assert "gating (replay_mode static_ok, predicted until #159 measures it)" in out
+    assert "1 gating on a predicted label until #159 measures it" in out
+
+
+def test_an_artifact_that_supports_gating_cannot_be_recorded_as_advisory(
+    tmp_path, classified_static_ok
+):
+    artifact = _bundle(tmp_path)
+    library = tmp_path / "controls/library.json"
+    assert _commit(tmp_path, artifact, library) == 0
+    _set_acceptance(library, "static_ok", "advisory")
+    with pytest.raises(ValueError, match="supports gating"):
+        load_library(library)
+
+
+def test_a_basis_naming_another_predictor_is_refused(tmp_path, classified_static_ok):
+    artifact = _bundle(tmp_path)
+    library = tmp_path / "controls/library.json"
+    assert _commit(tmp_path, artifact, library) == 0
+    _set_acceptance(library, "static_ok", "gating", predicted_by="measured")
+    with pytest.raises(ValueError, match="records a label from measured"):
+        load_library(library)
+
+
+@pytest.mark.parametrize(
+    ("basis", "predicted_by", "refusal"),
+    [
+        ("kept", "heuristic_v1", "classifies as live_required"),
+        ("removed", None, "has no recorded basis"),
+    ],
+)
+def test_a_static_ok_label_its_basis_does_not_support_is_advisory(
+    tmp_path, basis, predicted_by, refusal
+):
+    """A hand-set static_ok commits as advisory, and a gating claim on it fails to load."""
+    artifact = _bundle(tmp_path)
+
+    def relabel(a):
+        a["replay_mode"] = "static_ok"
+        if basis == "removed":
+            a["replay_mode_basis"] = None
+
+    _edit(artifact, relabel)
+    library = tmp_path / "controls/library.json"
+    assert _commit(tmp_path, artifact, library) == 0
+    (entry,) = load_library(library).entries
+    assert entry.acceptance == AcceptanceBasis(
+        replay_mode="static_ok", predicted_by=predicted_by, standing="advisory"
+    )
+    _set_acceptance(library, "static_ok", "gating", predicted_by=predicted_by)
+    with pytest.raises(ValueError, match=refusal):
+        load_library(library)
 
 
 def test_gating_acceptance_on_an_advisory_artifact_is_refused(committed):
     library, _ = committed
     _set_acceptance(library, "live_required", "gating")
-    with pytest.raises(ValueError, match="only supports advisory"):
+    with pytest.raises(ValueError, match="gating acceptance but the artifact is live_required"):
         load_library(library)
 
 
@@ -635,15 +720,22 @@ def test_a_basis_without_a_replay_mode_cannot_be_gating(committed):
         load_library(library)
 
 
-def test_validation_replay_mode_must_match_the_artifact(committed):
+@pytest.mark.parametrize(
+    ("field", "value", "refusal"),
+    [
+        ("replay_mode", "static_ok", "validated as static_ok"),
+        ("predicted_by", "measured", "validated on a label from measured"),
+    ],
+)
+def test_validation_label_must_match_the_artifact(committed, field, value, refusal):
     library, _ = committed
     root = library.parent
     (entry,) = load_library(library).entries
     refs = entry.provenance
     validation = RepairValidation.model_validate_json(refs.repair_validation.read(root))
     for control in validation.controls:
-        control.replay_mode = "static_ok"
-    with pytest.raises(ValueError, match="validated as static_ok"):
+        setattr(control, field, value)
+    with pytest.raises(ValueError, match=refusal):
         check_acceptance(
             entry.control,
             RunResult.model_validate_json(refs.source_run.read(root)),
@@ -670,7 +762,11 @@ def test_writing_an_old_library_records_its_basis_explicitly(tmp_path):
     rollback_control(copy / "library.json", REFUND_WINDOW_CONTROL_ID, "exercise the migration")
     written = json.loads((copy / "library.json").read_text())
     assert written["schema_version"] == CONTROL_LIBRARY_SCHEMA_VERSION
-    assert written["entries"][0]["acceptance"] == {"replay_mode": None, "standing": "advisory"}
+    assert written["entries"][0]["acceptance"] == {
+        "replay_mode": None,
+        "predicted_by": None,
+        "standing": "advisory",
+    }
     assert load_library(copy / "library.json").active_controls() == []
 
 

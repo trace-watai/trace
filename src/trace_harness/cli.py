@@ -65,6 +65,9 @@ from trace_harness.regression.repair_validation import (
     RepairValidation,
     ReRun,
     decide_verdict,
+    describe_label,
+    gating_refusal,
+    predictor_of,
     skipped_control,
 )
 from trace_harness.regression.replay import (
@@ -505,19 +508,23 @@ def _validate_controls(
     replayed, and every positive sibling is re-run. Validating one at a time is
     the whole point: a bundle verdict cannot say which control earned it.
 
-    Every verdict carries the artifact's ``replay_mode``, so an acceptance on an
-    artifact that is not ``static_ok`` is recorded as advisory.
+    Every verdict carries the artifact's ``replay_mode`` and ``predicted_by``,
+    so an acceptance on an artifact that is not ``static_ok`` is recorded as
+    advisory.
     """
     batch_id = new_batch_id()
     pinned_checks = set(artifact.verifier_checks)
     selected_ids = {c.control_id for c in controls}
     replay_mode = artifact.replay_mode
+    predicted_by = predictor_of(artifact)
     validations: list[ControlValidation] = []
 
     for name, expected_checks in prescribed.items():
         instance = _instance_for_repair_control(name)
         if instance is None:
-            validations.append(skipped_control(name, replay_mode=replay_mode))
+            validations.append(
+                skipped_control(name, replay_mode=replay_mode, predicted_by=predicted_by)
+            )
             print(f"  {name}: skipped (not materializable)")
             continue
         if instance.control_id not in selected_ids or not expected_checks:
@@ -532,6 +539,7 @@ def _validate_controls(
                     verdict=ControlVerdict.SKIPPED,
                     reason=reason,
                     replay_mode=replay_mode,
+                    predicted_by=predicted_by,
                 )
             )
             print(f"  {name}: skipped ({reason})")
@@ -600,9 +608,10 @@ def _validate_controls(
             originating_rerun=originating,
             sibling_reruns=sibling_reruns,
             replay_mode=replay_mode,
+            predicted_by=predicted_by,
         )
         validations.append(result)
-        detail = reason or f"{result.standing}, replay_mode {replay_mode}"
+        detail = reason or f"{result.standing}, {describe_label(replay_mode, predicted_by)}"
         print(f"  {name}: {verdict.value} ({detail})")
 
     validation = RepairValidation(
@@ -712,8 +721,23 @@ def _replay(
 def _library_standing(library: ControlLibrary) -> str:
     """Active controls split by the standing of the verdict that admitted them."""
     active = [entry for entry in library.entries if entry.status == "active"]
-    gating = sum(1 for entry in active if entry.acceptance.standing == "gating")
-    return f"{len(active)} active ({gating} gating, {len(active) - gating} advisory)"
+    gating = [entry for entry in active if entry.acceptance.standing == "gating"]
+    text = f"{len(active)} active ({len(gating)} gating, {len(active) - len(gating)} advisory)"
+    predicted = sum(1 for entry in gating if entry.acceptance.predicted_by != "measured")
+    if predicted:
+        text += f"; {predicted} gating on a predicted label until #159 measures it"
+    return text
+
+
+def _gating_note(controls: list[ControlValidation]) -> str:
+    """Say so when an accepted gating verdict rests on a predicted label."""
+    predicted = any(
+        c.verdict is ControlVerdict.ACCEPTED
+        and c.standing == "gating"
+        and c.predicted_by != "measured"
+        for c in controls
+    )
+    return "; gating labels are predicted until #159 measures them" if predicted else ""
 
 
 def _list_controls(path: Path) -> int:
@@ -730,7 +754,7 @@ def _list_controls(path: Path) -> int:
         _print(
             entry.control.control_id,
             f"{entry.status} · {basis.standing} "
-            f"(replay_mode {basis.replay_mode or 'not recorded'}) · "
+            f"({describe_label(basis.replay_mode, basis.predicted_by)}) · "
             f"{entry.control.guardrail_ref}",
         )
     _print("controls:", _library_standing(library))
@@ -850,6 +874,12 @@ def _replay_with_report(
     _print("blocks_release:", str(artifact.blocks_release))
     _print("apply_control:", str(apply_control))
     _print("replay_mode:", artifact.replay_mode)
+    refusal = gating_refusal(artifact) if artifact.replay_mode == "static_ok" else None
+    if apply_control and refusal is not None:
+        print(
+            f"  ⚠ static_ok is not supported by the artifact's own basis ({refusal}); "
+            "the control library and the metrics treat these verdicts as advisory."
+        )
     if apply_control and artifact.replay_mode == "live_required":
         print("  ⚠ static replay is insufficient; a live agent must continue from the block point.")
     _print("pinned inputs:", "state + docs" + (" + agent actions" if script else " (no actions)"))
@@ -982,7 +1012,7 @@ def _replay_with_report(
             "validation:",
             f"{rollup.accepted} accepted ({rollup.accepted_gating} gating, "
             f"{rollup.accepted_advisory} advisory), {rollup.rejected} rejected, "
-            f"{rollup.skipped} skipped",
+            f"{rollup.skipped} skipped{_gating_note(validation.controls)}",
         )
         blocking = rollup.over_blocking
         _print(
@@ -1146,12 +1176,16 @@ def _print_repair_validation(store: ArtifactStore, run_id: str) -> bool:
     print(f"\nControl validation for {run_id} ({validation.controls_source}):")
     for control in validation.controls:
         detail = f" — {control.reason}" if control.reason else ""
-        standing = f" [{control.standing}]" if control.verdict is ControlVerdict.ACCEPTED else ""
+        standing = (
+            f" [{control.standing}, {describe_label(control.replay_mode, control.predicted_by)}]"
+            if control.verdict is ControlVerdict.ACCEPTED
+            else ""
+        )
         print(f"  {control.verdict.value:28} {control.control}{standing}{detail}")
     print(
         f"  rollup: {rollup.accepted} accepted ({rollup.accepted_gating} gating, "
         f"{rollup.accepted_advisory} advisory), {rollup.rejected} rejected, "
-        f"{rollup.skipped} skipped"
+        f"{rollup.skipped} skipped{_gating_note(validation.controls)}"
     )
     blocking = rollup.over_blocking
     print(
@@ -1332,7 +1366,8 @@ def _append_metrics_history(args: argparse.Namespace, store: ArtifactStore) -> N
     _print(
         "coverage:",
         f"{coverage.accepted}/{coverage.prescribed} accepted of prescribed "
-        f"({coverage.accepted_gating} gating, {coverage.accepted_advisory} advisory)",
+        f"({coverage.accepted_gating} gating on predicted static_ok labels, "
+        f"{coverage.accepted_advisory} advisory)",
     )
     families = _over_blocking_text(
         blocking.families_failed, blocking.independent_families, blocking.upper_bound_95

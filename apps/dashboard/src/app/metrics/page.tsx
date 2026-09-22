@@ -14,10 +14,10 @@ const SERIES = [
     key: "coverage",
     title: "Control coverage",
     blurb:
-      "Accepted controls over the controls repair packages asked for. An acceptance only gates when its artifact is static_ok, otherwise it is advisory. A5 in docs/methodology_metrics.md.",
+      "Accepted controls over the controls repair packages asked for. ADR-0002 keeps a replay verdict advisory until its artifact carries a measured replay-mode label; like the collector, an acceptance on a static_ok artifact whose basis supports it counts as gating, and every static_ok label is predicted until #159 measures one. A5 in docs/methodology_metrics.md.",
     point: (snapshot: MetricsSnapshot) => ({
       value: ratioValue(snapshot.coverage.acceptedOverPrescribed),
-      label: `${snapshot.coverage.accepted}/${snapshot.coverage.prescribed} accepted, ${snapshot.coverage.acceptedGating} gating and ${snapshot.coverage.acceptedAdvisory} advisory`,
+      label: `${snapshot.coverage.accepted}/${snapshot.coverage.prescribed} accepted, ${snapshot.coverage.acceptedGating} gating on predicted labels and ${snapshot.coverage.acceptedAdvisory} advisory`,
       detail: `${snapshot.coverage.materializable} materializable, ${snapshot.coverage.validated} validated`,
     }),
     format: percent,

@@ -318,8 +318,8 @@ for input handling, verdicts, and incomplete runs.
 `replay --apply-control --commit` promotes accepted controls after replaying
 the proposed library against new and existing regressions. The versioned
 library retains evidence and rollback history, and each entry records whether
-its acceptance is gating (`static_ok`) or advisory; `controls list` shows
-which. Environments and `run-suite`
+its acceptance is gating (a `static_ok` label its basis supports, predicted
+until #159 measures it) or advisory; `controls list` shows which. Environments and `run-suite`
 load it explicitly with `control_library` / `--control-library`. See
 [the lifecycle](failure_bundles.md#control-library) and
 [ADR-0003](decisions/ADR-0003-control-library.md).

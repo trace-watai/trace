@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
@@ -35,9 +35,12 @@ from trace_harness.regression.repair_validation import (
     ControlVerdict,
     RepairValidation,
     over_blocking_summary,
+    verdict_gates,
 )
+from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.tracing.artifact_store import (
     FINAL_STATE,
+    REGRESSION_ARTIFACT,
     REPAIR_PACKAGE,
     REPAIR_VALIDATION,
     TRACE,
@@ -97,9 +100,15 @@ class Coverage(BaseModel):
     be installed still has to survive validation. Reporting only the last
     number would hide which of the three walls the work is stuck behind.
 
-    An accepted name is gating when at least one of its accepted verdicts was
-    reached against a ``static_ok`` artifact, and advisory otherwise. The
-    split exists because ADR-0002 lets only the first kind gate anything.
+    An accepted name is gating when at least one of its accepted verdicts
+    gates once checked against the regression artifact it was validated
+    against (``verdict_gates``): that artifact is retained beside the
+    validation, carries the verdict's label, and its recorded basis classifies
+    as ``static_ok``. Otherwise it is advisory, including when the artifact
+    was not retained. ADR-0002 keeps a replay verdict advisory until the
+    artifact carries a measured label and has the collector gate on
+    ``static_ok``; this follows the collector, and every ``static_ok`` label
+    counted here is predicted until #159 measures one.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -273,6 +282,35 @@ def find_repair_validations(
     return found
 
 
+def retained_artifact(path: Path, validation: RepairValidation) -> RegressionArtifact | None:
+    """The regression artifact a validation was run against, when it was kept with it.
+
+    Looks where the two writers put it. ``replay --apply-control`` writes
+    ``repair_validation.json`` into the source run's directory when its runs
+    directory is the source's, beside ``regression_artifact.json``. A control
+    library's evidence directory keeps the artifact under
+    ``source/<run_id>/``, which is where ``LibraryProvenance`` points. The
+    artifact must name the same run and regression test.
+    """
+    if PurePosixPath(validation.run_id).name != validation.run_id:
+        return None
+    for candidate in (
+        path.with_name(REGRESSION_ARTIFACT),
+        path.parent / "source" / validation.run_id / REGRESSION_ARTIFACT,
+    ):
+        raw = _read_json(candidate)
+        if raw is None:
+            continue
+        try:
+            artifact = RegressionArtifact.model_validate(raw)
+        except Exception:
+            continue
+        same_run = artifact.source_run_id == validation.run_id
+        if same_run and artifact.test_name == validation.test_name:
+            return artifact
+    return None
+
+
 def prescribed_controls(root: Path, *, exclude: Sequence[Path] = ()) -> set[str]:
     """Control names every retained repair package asked for."""
     names: set[str] = set()
@@ -289,18 +327,29 @@ def prescribed_controls(root: Path, *, exclude: Sequence[Path] = ()) -> set[str]
     return names
 
 
-def compute_coverage(prescribed: set[str], validations: list[RepairValidation]) -> Coverage:
-    """Prescribed names narrowed to those that can exist and did survive."""
+def compute_coverage(
+    prescribed: set[str],
+    validations: Sequence[RepairValidation],
+    artifacts: Sequence[RegressionArtifact | None] | None = None,
+) -> Coverage:
+    """Prescribed names narrowed to those that can exist and did survive.
+
+    ``artifacts[i]`` is the artifact ``validations[i]`` was run against, or
+    None when it was not retained. Without them no verdict is gating.
+    """
     materializable = {n for n in prescribed if MATERIALIZABLE_REPAIR_CONTROLS.get(n)}
     validated = {c.control for v in validations for c in v.controls} & prescribed
+    against = list(artifacts) if artifacts is not None else [None] * len(validations)
+    if len(against) != len(validations):
+        raise ValueError("one artifact slot per validation")
     verdicts = [
-        c
-        for v in validations
+        (c, artifact)
+        for v, artifact in zip(validations, against, strict=True)
         for c in v.controls
         if c.verdict is ControlVerdict.ACCEPTED and c.control in prescribed
     ]
-    accepted = {c.control for c in verdicts}
-    gating = {c.control for c in verdicts if c.standing == "gating"}
+    accepted = {c.control for c, _ in verdicts}
+    gating = {c.control for c, artifact in verdicts if verdict_gates(c, artifact)}
     total = len(prescribed)
     return Coverage(
         prescribed=total,
@@ -478,6 +527,7 @@ def build_snapshot(root: Path, *, commit: str, exclude: Sequence[Path] = ()) -> 
     root = root.resolve()
     pairs = find_repair_validations(root, exclude=exclude)
     validations = [v for _, v in pairs]
+    artifacts = [retained_artifact(path, v) for path, v in pairs]
     latest = latest_validation(pairs)
     rate, failures = suite_pass_rate(root, exclude=exclude)
     return MetricsSnapshot(
@@ -485,7 +535,9 @@ def build_snapshot(root: Path, *, commit: str, exclude: Sequence[Path] = ()) -> 
         # Coverage reads every retained validation, because the question it
         # answers is what the library has accepted overall. The other two read
         # only the latest, because they are properties of one validation run.
-        coverage=compute_coverage(prescribed_controls(root, exclude=exclude), validations),
+        coverage=compute_coverage(
+            prescribed_controls(root, exclude=exclude), validations, artifacts
+        ),
         over_blocking=compute_over_blocking(latest, root=root),
         cost_of_learning=compute_cost_of_learning(latest[1] if latest else None, root=root),
         suite_pass_rate=rate,
