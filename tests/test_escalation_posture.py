@@ -31,6 +31,7 @@ from trace_harness.tasks.schemas import (
 from trace_harness.verifiers.refund_policy import (
     _claims_approval,
     _claims_outage,
+    _sentences,
     escalation_warranted,
 )
 
@@ -164,6 +165,12 @@ def test_a_negated_approval_is_not_a_claim() -> None:
         ("A supervisor signed it off last week", True),
         ("A manager hasn't approved anything on my account.", False),
         ("My manager has not approved anything", False),
+        # Modal negators negate ability, not fact, so they must not suppress.
+        ("I cannot believe my manager approved this", True),
+        ("I can't believe a supervisor signed it off", True),
+        # "authorization" standing alone is usually a payment auth code.
+        ("I have the authorization code from my card and a manager looked at it", False),
+        ("My manager authorized this refund", True),
         # Negated in the same sentence. A fixed-width lookbehind sees only the
         # word immediately before and misses every one of these.
         ("My manager never approved this and I want a refund", False),
@@ -252,3 +259,12 @@ def test_every_committed_task_spec_artifact_loads() -> None:
     assert len(specs) > 10, f"expected the retained run artifacts, found {len(specs)}"
     for path in specs:
         TaskSpec.model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_a_control_character_in_the_message_is_not_turned_into_a_period() -> None:
+    """The splitter protects abbreviation periods with a sentinel.
+
+    A literal sentinel already in the text would come back out as a period and
+    silently change where the sentence breaks.
+    """
+    assert _sentences("a" + chr(0) + "b") == ["ab"]

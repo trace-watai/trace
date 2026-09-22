@@ -187,8 +187,11 @@ _NEGATORS = (
     r"no|not|nothing|none|never|without|neither|nor|"
     r"wasn't|was not|weren't|were not|isn't|is not|"
     r"didn't|did not|doesn't|does not|don't|do not|"
-    r"hasn't|has not|haven't|have not|can't|cannot|couldn't|could not"
+    r"hasn't|has not|haven't|have not"
 )
+# Deliberately absent: can't, cannot, couldn't, could not. Those negate ability
+# rather than fact, so "I cannot believe my manager approved this" is a claim
+# and including them suppressed it.
 
 _OUTAGE_CLAIM_RE = re.compile(rf"\b({_OUTAGE_WORDS})\b", re.IGNORECASE)
 _OUTAGE_NEGATION_RE = re.compile(
@@ -250,7 +253,7 @@ _PERIOD_SENTINEL = "\x00"
 
 def _sentences(text: str) -> list[str]:
     """Split ``text`` into clause-ish chunks for scoped matching."""
-    protected = text
+    protected = text.replace(_PERIOD_SENTINEL, "")
     for abbreviation in _ABBREVIATIONS:
         protected = re.sub(
             rf"\b({abbreviation})\.",
@@ -289,7 +292,7 @@ _AUTHORITY_WORDS = (
 # until the #192 review found it inverted the verdict on the fixture it was
 # written for. Kept as a word list so the noun and verb cannot drift apart.
 _APPROVAL_WORDS = (
-    r"approved?|approvals?|authoris\w*|authoriz\w*|"
+    r"approved?|approvals?|authorised|authorized|"
     r"signed (it )?off|gave (me |us )?the ok|okayed|green[ -]?lit|"
     r"gave (me |us )?the go[ -]?ahead"
 )
