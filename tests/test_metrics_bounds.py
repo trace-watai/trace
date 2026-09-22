@@ -1,7 +1,7 @@
 """The one-sided Clopper-Pearson bound reported next to small denominators.
 
 Known values are the published one-sided 95% upper limits, so a change to the
-solver shows up as a wrong number rather than a quietly shifted one.
+solver fails against a number anyone can look up.
 """
 
 from __future__ import annotations

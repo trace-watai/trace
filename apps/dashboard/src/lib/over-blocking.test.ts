@@ -35,6 +35,13 @@ describe("clopperPearsonUpper", () => {
   it("refuses more failures than trials", () => {
     expect(() => clopperPearsonUpper(2, 1)).toThrow(RangeError);
   });
+
+  it.each([0, 1, -0.5, 1.5, Number.NaN])(
+    "refuses confidence %f outside (0, 1)",
+    (confidence) => {
+      expect(() => clopperPearsonUpper(0, 1, confidence)).toThrow(RangeError);
+    },
+  );
 });
 
 describe("describeOverBlocking", () => {

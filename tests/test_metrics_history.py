@@ -625,3 +625,38 @@ def test_the_collector_does_not_touch_the_history_without_the_flag(
         == 0
     )
     assert not history.exists()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        json.dumps({"schema_version": "9.9.9", "commit": "from_the_future"}),
+        "{not json",
+    ],
+)
+def test_an_unreadable_history_line_does_not_change_the_gate_exit_code(
+    tmp_path: Path, tree: Path, capsys: pytest.CaptureFixture[str], line: str
+) -> None:
+    """A newer schema or a broken line skips the append; the gate keeps its own verdict."""
+    from trace_harness.cli import main
+
+    history = tmp_path / "metrics_history.jsonl"
+    history.write_text(line + "\n", encoding="utf-8")
+    before = history.read_bytes()
+    argv = [
+        "--runs-dir",
+        str(tmp_path / "runs"),
+        "collect-regressions",
+        str(tree / "acceptance"),
+        "--append-history",
+        str(history),
+        "--commit",
+        "abc123",
+        "--history-root",
+        str(tree),
+    ]
+    assert main(argv) == 0
+    out = capsys.readouterr().out
+    assert "gate:                  PASS" in out
+    assert "history:               skipped," in out
+    assert history.read_bytes() == before

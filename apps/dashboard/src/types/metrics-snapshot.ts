@@ -110,13 +110,19 @@ export const ratioValue = (ratio: Ratio): number | null =>
  *
  * Those records were computed from validations that carried no replay mode,
  * and a verdict without one reads as not recorded, which is advisory. The
- * backend reads the same lines the same way.
+ * backend reads the same lines the same way. A split that does not add up to
+ * `accepted` throws, as the backend rejects it.
  */
-const withAcceptanceSplit = (coverage: Camelize<RawCoverage>): Coverage => ({
-  ...coverage,
-  acceptedGating: coverage.acceptedGating ?? 0,
-  acceptedAdvisory: coverage.acceptedAdvisory ?? coverage.accepted,
-});
+const withAcceptanceSplit = (coverage: Camelize<RawCoverage>): Coverage => {
+  const acceptedGating = coverage.acceptedGating ?? 0;
+  const acceptedAdvisory = coverage.acceptedAdvisory ?? coverage.accepted;
+  if (acceptedGating + acceptedAdvisory !== coverage.accepted) {
+    throw new RangeError(
+      `gating and advisory acceptances must sum to accepted, got ${acceptedGating} + ${acceptedAdvisory} for ${coverage.accepted}`,
+    );
+  }
+  return { ...coverage, acceptedGating, acceptedAdvisory };
+};
 
 /**
  * Family counts as recorded, with the bound derived from them.

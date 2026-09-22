@@ -1344,7 +1344,9 @@ def _append_metrics_history(args: argparse.Namespace, store: ArtifactStore) -> N
 
     Appended after the gate has printed its verdict and it never changes the
     exit code. A history file is a record of what main looked like, so a write
-    problem here must not turn a passing gate into a failing one.
+    problem here must not turn a passing gate into a failing one. That covers
+    a history line this version cannot read, such as one from a newer schema:
+    pydantic's ValidationError is a ValueError, and so is a malformed line.
     """
     from trace_harness.metrics.history import append_snapshot, build_snapshot
 
@@ -1356,8 +1358,9 @@ def _append_metrics_history(args: argparse.Namespace, store: ArtifactStore) -> N
     try:
         snapshot = build_snapshot(Path(args.history_root), commit=commit, exclude=[store.runs_dir])
         written = append_snapshot(path, snapshot)
-    except OSError as exc:
-        _print("history:", f"skipped, {exc}")
+    except (OSError, ValueError) as exc:
+        reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        _print("history:", f"skipped, {reason}")
         return
     coverage = snapshot.coverage
     blocking = snapshot.over_blocking

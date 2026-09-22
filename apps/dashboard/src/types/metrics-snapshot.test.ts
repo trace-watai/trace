@@ -105,6 +105,15 @@ describe("parseMetricsSnapshot", () => {
     expect(snapshot.overBlocking.upperBound95).toBeNull();
   });
 
+  it("rejects a split that does not add up to accepted, as the backend does", () => {
+    expect(() =>
+      parseMetricsSnapshot({
+        ...raw,
+        coverage: { ...raw.coverage, accepted_gating: 1, accepted_advisory: 1 },
+      }),
+    ).toThrow(RangeError);
+  });
+
   it("leaves artifact paths alone", () => {
     // camelizeKeys rewrites object keys and these are string array entries, so
     // a path keeps its underscores. Worth pinning because a rewritten path

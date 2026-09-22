@@ -170,9 +170,15 @@ It reads an explicit `replay_mode` when present, defaulting older artifacts to
 | `static_ok` | Gates: pinned checks must disappear, no blocking failure may remain, and the scenario and passing siblings must complete. |
 | `live_required` or `unlabeled` | Advisory, including control failures/errors; does not affect the exit code or count as confirmed. |
 
-Until #156 labels artifacts, all control results remain advisory. Control counts
-are per artifact under the current reference-control set, not per individual
-control. #146's per-control reports can replace that validation call once merged.
+Artifacts materialized since #156 carry a label. In the CI gate today the
+retained `docs/acceptance/runs` artifact predates the label and reads as
+`unlabeled`, and the five bundle artifacts are `live_required`, so every
+control result there is advisory. Control counts are per artifact under the
+current reference-control set; the collector does not read the per-control
+verdicts in `repair_validation.json` (#146).
+
+`collect-regressions` runs no live agents, and a `--suite` given to it must
+use the fixture provider.
 
 Per-control validation and the control library apply the same rule, with
 one addition: a `static_ok` label only counts as gating there when the
@@ -183,7 +189,6 @@ entry records the same basis for its acceptance. Every `static_ok` label is
 predicted until #159 measures one. See
 [control validation](failure_bundles.md#control-validation) and
 [the control library](failure_bundles.md#control-library).
-This command runs no live agents; optional suites must use the fixture provider.
 
 | Exit | Meaning |
 |---|---|

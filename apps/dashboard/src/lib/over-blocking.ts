@@ -45,6 +45,11 @@ export const clopperPearsonUpper = (
       `need 0 <= failures <= trials, got ${failures} of ${trials}`,
     );
   }
+  if (!(confidence > 0 && confidence < 1)) {
+    throw new RangeError(
+      `confidence must be strictly between 0 and 1, got ${confidence}`,
+    );
+  }
   if (trials === 0) return null;
   const alpha = 1 - confidence;
   let low = 0;
