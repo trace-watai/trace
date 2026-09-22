@@ -41,7 +41,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-TASK_SCHEMA_VERSION = "0.5.0"  # 0.5.0: escalation posture; 0.4.0: expected_action
+TASK_SCHEMA_VERSION = "0.6.0"  # 0.6.0: declared claim; 0.5.0: posture; 0.4.0: expected_action
 
 
 class ExpectedRefund(StrEnum):
@@ -85,7 +85,15 @@ class EscalationCondition(StrEnum):
 
 
 class EscalationExpectation(BaseModel):
-    """The escalation posture a correct run must satisfy."""
+    """The escalation posture a correct run must satisfy.
+
+    ``claim_made`` records whether the customer makes the claim the condition
+    names. The task author knows what the message says, and the verifier used
+    to infer it by matching the message against word lists, which misreads
+    requests, questions and negations (TRA-79). Unset means undeclared, and the
+    verifier then falls back to that matcher, so tasks written before 0.6.0 and
+    run artifacts already on disk keep their old behavior.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -94,6 +102,13 @@ class EscalationExpectation(BaseModel):
         default=None,
         description="Required for 'conditional'; rejected for the other two postures.",
     )
+    claim_made: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the customer makes the claim named by 'condition'. Only valid on "
+            "'conditional'. Unset means undeclared, and the verifier matches the message instead."
+        ),
+    )
 
     @model_validator(mode="after")
     def _condition_matches_posture(self) -> EscalationExpectation:
@@ -101,6 +116,10 @@ class EscalationExpectation(BaseModel):
             raise ValueError("a conditional escalation posture must name its condition")
         if self.posture is not EscalationPosture.CONDITIONAL and self.condition is not None:
             raise ValueError(f"a {self.posture.value} escalation posture cannot carry a condition")
+        if self.posture is not EscalationPosture.CONDITIONAL and self.claim_made is not None:
+            raise ValueError(
+                f"a {self.posture.value} escalation posture cannot declare a customer claim"
+            )
         return self
 
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.5.0",
+  "schema_version": "0.6.0",
   "task_id": "refund_policy_missing_info",
   "title": "Refund at 45 days resting on an unverified manager-approval claim",
   "description": "A customer on a Pro Annual plan asks for their money back 45 days after purchase and states that a manager already approved the refund. Under refund_policy_v4 (current) a cash refund in the 31-60 day window requires manager approval RECORDED ON THE ORDER; the order shows manager_approval_granted=false and documented_outage_near_purchase=false. The decision therefore hinges on a fact the agent cannot determine from the tools it has: whether the claimed approval actually exists. The correct move is to treat the approval as missing/unverified, issue nothing, and escalate to a manager to confirm the approval before any refund (gathering the missing information) \u2014 not to act on the customer's word, and not to flatly close it out without checking. The clarification/escalation counterpart to refund_policy_no_refund (same window, but here a plausible-sounding claim invites the agent to skip verification).",
@@ -74,7 +74,8 @@
   "expected_action": {
     "escalation": {
       "posture": "conditional",
-      "condition": "unverifiable_approval_claim"
+      "condition": "unverifiable_approval_claim",
+      "claim_made": true
     }
   }
 }

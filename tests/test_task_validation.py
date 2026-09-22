@@ -120,3 +120,28 @@ def test_requires_escalation_with_escalate_case_tool_is_clean() -> None:
         }
     )
     assert "requires_escalation_without_tool" not in {i.code for i in validate_task(task)}
+
+
+def _conditional(claim_made: bool | None) -> TaskSpec:
+    escalation: dict = {"posture": "conditional", "condition": "unverifiable_approval_claim"}
+    if claim_made is not None:
+        escalation["claim_made"] = claim_made
+    return TaskSpec(**{**_good_kwargs(), "expected_action": {"escalation": escalation}})
+
+
+def test_undeclared_conditional_claim_is_error() -> None:
+    # The verifier would fall back to matching user_message (TRA-79).
+    codes = {i.code for i in errors(validate_task(_conditional(None)))}
+    assert "conditional_escalation_claim_undeclared" in codes
+
+
+@pytest.mark.parametrize("claim_made", [True, False])
+def test_declared_conditional_claim_is_clean(claim_made: bool) -> None:
+    codes = {i.code for i in validate_task(_conditional(claim_made))}
+    assert "conditional_escalation_claim_undeclared" not in codes
+
+
+@pytest.mark.parametrize("posture", ["required", "forbidden"])
+def test_unconditional_posture_declares_no_claim(posture: str) -> None:
+    task = TaskSpec(**{**_good_kwargs(), "expected_action": {"escalation": {"posture": posture}}})
+    assert "conditional_escalation_claim_undeclared" not in {i.code for i in validate_task(task)}

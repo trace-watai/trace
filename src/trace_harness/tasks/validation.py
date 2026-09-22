@@ -30,7 +30,7 @@ from typing import Any, Literal
 
 from trace_harness.attribution.schemas import FailureCategory
 from trace_harness.tasks.loader import TaskLoadError, load_task
-from trace_harness.tasks.schemas import TaskSpec
+from trace_harness.tasks.schemas import EscalationPosture, TaskSpec
 from trace_harness.verifiers.registry import available_verifier_ids
 
 Severity = Literal["error", "warning"]
@@ -185,6 +185,26 @@ def validate_task(task: TaskSpec) -> list[ValidationIssue]:
                 "requires_escalation_without_tool",
                 f"requires_escalation is true but available_tools does not include "
                 f"'{_ESCALATION_TOOL}'; a correct run could not escalate",
+            )
+        )
+
+    # A conditional posture turns on whether the customer made the claim. Left
+    # undeclared, the verifier infers that by matching the message, which reads
+    # requests, questions and negated clauses wrongly (TRA-79). It is an error
+    # because every committed conditional fixture declares it, and a new one
+    # that did not would decide release-blocking checks by regex.
+    escalation = task.expected_action.escalation if task.expected_action else None
+    if (
+        escalation is not None
+        and escalation.posture is EscalationPosture.CONDITIONAL
+        and escalation.claim_made is None
+    ):
+        issues.append(
+            ValidationIssue(
+                "conditional_escalation_claim_undeclared",
+                f"expected_action.escalation is conditional on {escalation.condition} but "
+                "does not declare claim_made; the verifier would infer the claim by "
+                "matching user_message, which misreads requests, questions and negations",
             )
         )
 
