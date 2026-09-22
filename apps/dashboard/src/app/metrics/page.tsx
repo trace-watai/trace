@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { loadMetricsHistory } from "@/data/metrics-history";
 import { MetricSeries } from "@/components/metric-series";
+import { describeOverBlocking } from "@/lib/over-blocking";
 import { ratioValue, type MetricsSnapshot } from "@/types/metrics-snapshot";
 
 export const dynamic = "force-dynamic";
@@ -25,11 +26,11 @@ const SERIES = [
     key: "over-blocking",
     title: "Over-blocking",
     blurb:
-      "Positive siblings that failed while a control was installed, from the latest validation. A6.",
+      "Positive siblings that failed while a control was installed, from the latest validation. Siblings in one task family share a template, so the upper bound counts families. A4 and A6.",
     point: (snapshot: MetricsSnapshot) => ({
       value: ratioValue(snapshot.overBlocking.rate),
-      label: `${snapshot.overBlocking.siblingsFailed}/${snapshot.overBlocking.siblingsRun} siblings failed`,
-      detail: snapshot.overBlocking.sources.join(", "),
+      label: describeOverBlocking(snapshot.overBlocking),
+      detail: `${snapshot.overBlocking.siblingsFailed}/${snapshot.overBlocking.siblingsRun} siblings failed; ${snapshot.overBlocking.sources.join(", ")}`,
     }),
     format: percent,
   },

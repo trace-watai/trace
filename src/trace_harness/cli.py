@@ -555,6 +555,7 @@ def _validate_controls(
         originating = ReRun(
             run_id=pinned.run_id,
             task_id=pinned.task_id,
+            task_fixture=artifact.task_fixture,
             verdict=pinned_merged.verdict.value.upper(),
             cleared_checks=sorted(expected_checks - pinned_failed) if pinned_completed else [],
             failed_checks=sorted(pinned_failed),
@@ -572,6 +573,7 @@ def _validate_controls(
                 ReRun(
                     run_id=sib.run_id,
                     task_id=sib.task_id,
+                    task_fixture=sibling.task_fixture,
                     verdict=sib_merged.verdict.value.upper(),
                     failed_checks=sib_failed,
                 )
@@ -612,6 +614,15 @@ def _validate_controls(
     ).rebuild_rollup()
     store.write_json(artifact.source_run_id, names.REPAIR_VALIDATION, validation)
     return validation
+
+
+def _over_blocking_text(failed: int | None, families: int | None, upper_bound: float | None) -> str:
+    """Family over-blocking with its bound, for every place the CLI reports it."""
+    if failed is None or families is None:
+        return "families not recorded"
+    if upper_bound is None:
+        return "nothing measured, no sibling family completed"
+    return f"{failed} of {families} families failed, true rate could be up to {upper_bound:.1%}"
 
 
 def _tag_batch(store: ArtifactStore, run_id: str, batch_id: str) -> None:
@@ -972,6 +983,13 @@ def _replay_with_report(
             f"{rollup.accepted_advisory} advisory), {rollup.rejected} rejected, "
             f"{rollup.skipped} skipped",
         )
+        blocking = rollup.over_blocking
+        _print(
+            "over-blocking:",
+            _over_blocking_text(
+                blocking.families_failed, blocking.independent_families, blocking.upper_bound_95
+            ),
+        )
         written = store.artifact_path(artifact.source_run_id, names.REPAIR_VALIDATION)
         _print("written:", str(written))
 
@@ -1133,6 +1151,13 @@ def _print_repair_validation(store: ArtifactStore, run_id: str) -> bool:
         f"  rollup: {rollup.accepted} accepted ({rollup.accepted_gating} gating, "
         f"{rollup.accepted_advisory} advisory), {rollup.rejected} rejected, "
         f"{rollup.skipped} skipped"
+    )
+    blocking = rollup.over_blocking
+    print(
+        "  over-blocking: "
+        + _over_blocking_text(
+            blocking.families_failed, blocking.independent_families, blocking.upper_bound_95
+        )
     )
     return True
 
@@ -1300,7 +1325,7 @@ def _append_metrics_history(args: argparse.Namespace, store: ArtifactStore) -> N
         _print("history:", f"skipped, {exc}")
         return
     coverage = snapshot.coverage
-    blocking = snapshot.over_blocking.rate
+    blocking = snapshot.over_blocking
     print("\nMetrics history:")
     _print("commit:", snapshot.commit)
     _print(
@@ -1308,7 +1333,13 @@ def _append_metrics_history(args: argparse.Namespace, store: ArtifactStore) -> N
         f"{coverage.accepted}/{coverage.prescribed} accepted of prescribed "
         f"({coverage.accepted_gating} gating, {coverage.accepted_advisory} advisory)",
     )
-    _print("over-blocking:", f"{blocking.numerator}/{blocking.denominator} siblings failed")
+    families = _over_blocking_text(
+        blocking.families_failed, blocking.independent_families, blocking.upper_bound_95
+    )
+    _print(
+        "over-blocking:",
+        f"{blocking.siblings_failed}/{blocking.siblings_run} siblings failed; {families}",
+    )
     _print(
         "cost of learning:",
         f"{snapshot.cost_of_learning.irreversible_actions} irreversible actions, "

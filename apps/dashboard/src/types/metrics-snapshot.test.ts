@@ -35,6 +35,9 @@ const raw: RawMetricsSnapshot = {
     siblings_run: 1,
     siblings_failed: 0,
     rate: { numerator: 0, denominator: 1, value: 0 },
+    independent_families: 1,
+    families_failed: 0,
+    upper_bound_95: 0.95,
     sources: ["fixtures/controls/evidence/4f23/repair_validation.json"],
   },
   cost_of_learning: {
@@ -77,6 +80,29 @@ describe("parseMetricsSnapshot", () => {
     });
     expect(snapshot.coverage.acceptedGating).toBe(0);
     expect(snapshot.coverage.acceptedAdvisory).toBe(1);
+  });
+
+  it("derives the family bound from the counts and ignores the written one", () => {
+    const lying = parseMetricsSnapshot({
+      ...raw,
+      over_blocking: { ...raw.over_blocking, upper_bound_95: 0.01 },
+    });
+    expect(lying.overBlocking.upperBound95).toBeCloseTo(0.95, 4);
+  });
+
+  it("reads a record from before family counts with no bound", () => {
+    const overBlocking = { ...raw.over_blocking };
+    delete overBlocking.independent_families;
+    delete overBlocking.families_failed;
+    delete overBlocking.upper_bound_95;
+    const snapshot = parseMetricsSnapshot({
+      ...raw,
+      schema_version: "0.2.0",
+      over_blocking: overBlocking,
+    });
+    expect(snapshot.overBlocking.independentFamilies).toBeNull();
+    expect(snapshot.overBlocking.familiesFailed).toBeNull();
+    expect(snapshot.overBlocking.upperBound95).toBeNull();
   });
 
   it("leaves artifact paths alone", () => {
@@ -140,6 +166,9 @@ describe("parseMetricsHistory", () => {
       expect(
         snapshot.coverage.acceptedGating + snapshot.coverage.acceptedAdvisory,
       ).toBe(snapshot.coverage.accepted);
+      if (snapshot.overBlocking.independentFamilies === null) {
+        expect(snapshot.overBlocking.upperBound95).toBeNull();
+      }
     }
   });
 });

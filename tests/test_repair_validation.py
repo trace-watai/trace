@@ -1,8 +1,8 @@
 """Per-control validation verdicts (issue #146).
 
 Covers real accepted, ineffective, overblocking, and interrupted replays,
-control selection, prescription provenance, inspection, CI exit behavior, and
-the replay_mode standing each verdict carries.
+control selection, prescription provenance, inspection, CI exit behavior, the
+replay_mode standing each verdict carries, and over-blocking by task family.
 """
 
 from __future__ import annotations
@@ -22,14 +22,19 @@ from trace_harness.environment.controls import (
     reference_controls,
 )
 from trace_harness.environment.tools import ToolResult
+from trace_harness.metrics.bounds import clopper_pearson_upper
 from trace_harness.regression.repair_validation import (
     REPAIR_VALIDATION_SCHEMA_VERSION,
     ControlValidation,
     ControlVerdict,
     RepairValidation,
+    ReRun,
     decide_verdict,
+    over_blocking_summary,
+    sibling_family,
     skipped_control,
 )
+from trace_harness.tasks.loader import load_task
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 
@@ -398,6 +403,18 @@ def test_refund_guardrail_is_accepted_with_rerun_evidence(tmp_path, with_sibling
     assert control.originating_rerun is not None
     assert control.originating_rerun.cleared_checks == ["unauthorized_cash_refund"]
     assert len(control.sibling_reruns) == int(with_sibling)
+    assert (
+        control.originating_rerun.task_fixture == json.loads(artifact.read_text())["task_fixture"]
+    )
+    blocking = validation.rollup.over_blocking
+    if with_sibling:
+        assert control.sibling_reruns[0].task_fixture == str(
+            FIXTURES_DIR / "tasks" / "refund_policy_valid_cash.json"
+        )
+        assert (blocking.independent_families, blocking.families_failed) == (1, 0)
+        assert blocking.upper_bound_95 == 0.95
+    else:
+        assert (blocking.independent_families, blocking.upper_bound_95) == (0, None)
     store = ArtifactStore(tmp_path / "runs_replay")
     for rerun in [control.originating_rerun, *control.sibling_reruns]:
         evidence = store.read_json(rerun.run_id, names.VERIFIER_RESULT)
@@ -621,3 +638,114 @@ def test_pinned_validation_evidence_reads_as_advisory_and_unchanged() -> None:
     assert accepted.standing == "advisory"
     assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (0, 1)
     assert PINNED_VALIDATION.read_bytes() == raw
+
+
+# --- over-blocking by task family ---
+
+FAMILIES = "fixtures/tasks/refund_task_families"
+
+
+def _sibling(verdict: str, fixture: str | None, task_id: str = "t", run_id: str = "r") -> ReRun:
+    return ReRun(run_id=run_id, task_id=task_id, task_fixture=fixture, verdict=verdict)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "task_id", "family"),
+    [
+        (f"{FAMILIES}/purchase_age/day_30/a.json", "a", "refund_task_families/purchase_age"),
+        (
+            f"/abs/checkout/{FAMILIES}/purchase_age/day_61_violation/b.json",
+            "b",
+            "refund_task_families/purchase_age",
+        ),
+        (
+            "fixtures\\tasks\\refund_task_families\\escalation\\escalation_missing\\c.json",
+            "c",
+            "refund_task_families/escalation",
+        ),
+        ("fixtures/tasks/refund_policy_valid_cash.json", "valid", "valid"),
+        (f"{FAMILIES}/stray.json", "stray", "stray"),
+        (None, "recorded_before_0_3_0", "recorded_before_0_3_0"),
+    ],
+)
+def test_a_sibling_family_is_its_directory_or_the_task_itself(fixture, task_id, family) -> None:
+    assert sibling_family(_sibling("PASS", fixture, task_id)) == family
+
+
+def test_every_task_fixture_maps_to_a_family() -> None:
+    """The 29 family tasks fall in their 9 directories; the 9 others stand alone."""
+    tasks_dir = FIXTURES_DIR / "tasks"
+    fixtures = sorted(tasks_dir.rglob("*.json"))
+    assert len(fixtures) == 38
+    families = {}
+    for path in fixtures:
+        relative = path.relative_to(FIXTURES_DIR.parent).as_posix()
+        task_id = load_task(path).task_id
+        family = sibling_family(_sibling("PASS", relative, task_id))
+        if "refund_task_families" in path.parts:
+            directory = path.relative_to(tasks_dir / "refund_task_families").parts[0]
+            assert family == f"refund_task_families/{directory}"
+        else:
+            assert family == task_id
+        families.setdefault(family, []).append(task_id)
+    assert len(families) == 18
+    assert len(families["refund_task_families/purchase_age"]) == 8
+
+
+def test_over_blocking_counts_each_family_once() -> None:
+    """Siblings of one family are one trial, which fails if any of them failed.
+
+    The failing sibling comes first in purchase_age and last in escalation, so
+    the family verdict cannot depend on which sibling was read last or first.
+    """
+    controls = [
+        ControlValidation(
+            control="a",
+            verdict=ControlVerdict.REJECTED_OVERBLOCKS,
+            sibling_reruns=[
+                _sibling("FAIL", f"{FAMILIES}/purchase_age/day_30/x.json", "x"),
+                _sibling("PASS", f"{FAMILIES}/purchase_age/day_60_approved/y.json", "y"),
+                _sibling("PASS", f"{FAMILIES}/escalation/escalation_missing/z.json", "z"),
+                _sibling("INCOMPLETE", f"{FAMILIES}/customer_wording/eligible_neutral/w.json"),
+            ],
+        ),
+        ControlValidation(
+            control="b",
+            verdict=ControlVerdict.REJECTED_OVERBLOCKS,
+            sibling_reruns=[
+                _sibling("PASS", "fixtures/tasks/refund_policy_valid_cash.json", "valid"),
+                _sibling("FAIL", f"{FAMILIES}/escalation/escalation_duplicate/v.json", "v"),
+            ],
+        ),
+    ]
+    summary = over_blocking_summary(controls)
+    assert (summary.siblings_run, summary.siblings_failed) == (6, 2)
+    # purchase_age, escalation, valid; the incomplete customer_wording sibling
+    # shows nothing and is left out.
+    assert (summary.independent_families, summary.families_failed) == (3, 2)
+    assert summary.upper_bound_95 == round(clopper_pearson_upper(2, 3), 4)
+    validation = RepairValidation(run_id="r", test_name="t", controls=controls)
+    assert validation.rollup.over_blocking == summary
+
+
+def test_over_blocking_with_no_completed_sibling_is_not_measured() -> None:
+    summary = over_blocking_summary(
+        [
+            ControlValidation(
+                control="a",
+                verdict=ControlVerdict.SKIPPED,
+                sibling_reruns=[_sibling("INCOMPLETE", None)],
+            )
+        ]
+    )
+    assert (summary.siblings_run, summary.independent_families) == (1, 0)
+    assert summary.upper_bound_95 is None
+
+
+def test_pinned_validation_evidence_bounds_one_family_at_95_percent() -> None:
+    """One clean sibling is one family, and one clean family allows a 95% true rate."""
+    blocking = RepairValidation.model_validate_json(PINNED_VALIDATION.read_bytes()).rollup
+    blocking = blocking.over_blocking
+    assert (blocking.siblings_run, blocking.siblings_failed) == (1, 0)
+    assert (blocking.independent_families, blocking.families_failed) == (1, 0)
+    assert blocking.upper_bound_95 == 0.95

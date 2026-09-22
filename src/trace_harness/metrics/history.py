@@ -7,7 +7,9 @@ them across time, so every claim about direction was an impression.
 
 Each measure is read out of artifacts that already exist rather than
 recomputed. Over-blocking comes from #146's ``repair_validation.json``, so the
-number in a snapshot is the same number the validation gate acted on. Cost of
+number in a snapshot is the same number the validation gate acted on, and its
+family counts and upper bound come from the same function that writes that
+file's rollup. Cost of
 learning is summed from those validations' re-run directories, counting
 irreversible tool calls and the money their final state shows moved.
 
@@ -28,7 +30,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from trace_harness.environment.controls import MATERIALIZABLE_REPAIR_CONTROLS
-from trace_harness.regression.repair_validation import ControlVerdict, RepairValidation
+from trace_harness.metrics.bounds import clopper_pearson_upper
+from trace_harness.regression.repair_validation import (
+    ControlVerdict,
+    RepairValidation,
+    over_blocking_summary,
+)
 from trace_harness.tracing.artifact_store import (
     FINAL_STATE,
     REPAIR_PACKAGE,
@@ -38,7 +45,8 @@ from trace_harness.tracing.artifact_store import (
 from trace_harness.tracing.events import utc_now
 
 # 0.2.0: coverage splits accepted controls into gating and advisory.
-METRICS_SNAPSHOT_SCHEMA_VERSION = "0.2.0"
+# 0.3.0: over-blocking adds task-family counts and a 95% upper bound.
+METRICS_SNAPSHOT_SCHEMA_VERSION = "0.3.0"
 
 #: Default history file. One JSON object per line, appended, never rewritten.
 HISTORY_PATH = Path("docs/acceptance/metrics_history.jsonl")
@@ -137,6 +145,11 @@ class OverBlocking(BaseModel):
 
     Read from the validation artifacts rather than recomputed, so a snapshot
     cannot disagree with the gate that let the control through.
+
+    ``rate`` counts siblings. The bound counts task families, because
+    siblings in one family share a template and mechanism and are not
+    independent draws (see ``OverBlockingSummary``). ``0 / 1`` families gives
+    a bound of 95%, which is what one clean sibling actually establishes.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -144,8 +157,45 @@ class OverBlocking(BaseModel):
     siblings_run: int = Field(ge=0)
     siblings_failed: int = Field(ge=0)
     rate: Ratio
+    #: Distinct task families among completed siblings, and how many had a
+    #: failing sibling. None on records written before 0.3.0.
+    independent_families: int | None = Field(default=None, ge=0)
+    families_failed: int | None = Field(default=None, ge=0)
     #: Validation artifacts the counts came from, relative to the runs root.
     sources: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_serialized_bound(cls, data: Any) -> Any:
+        """Ignore an ``upper_bound_95`` read back from a history line.
+
+        Derived from the family counts on every read, for the reason
+        ``Ratio`` drops ``value``.
+        """
+        if isinstance(data, dict) and "upper_bound_95" in data:
+            data = {k: v for k, v in data.items() if k != "upper_bound_95"}
+        return data
+
+    @model_validator(mode="after")
+    def families_are_consistent(self) -> OverBlocking:
+        if (self.independent_families is None) != (self.families_failed is None):
+            raise ValueError("independent_families and families_failed are recorded together")
+        if (
+            self.families_failed is not None
+            and self.independent_families is not None
+            and self.families_failed > self.independent_families
+        ):
+            raise ValueError("families_failed cannot exceed independent_families")
+        return self
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def upper_bound_95(self) -> float | None:
+        """One-sided 95% Clopper-Pearson bound on the family failure rate."""
+        if self.independent_families is None or self.families_failed is None:
+            return None
+        bound = clopper_pearson_upper(self.families_failed, self.independent_families)
+        return None if bound is None else round(bound, 4)
 
 
 class CostOfLearning(BaseModel):
@@ -171,7 +221,7 @@ class MetricsSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["0.1.0", "0.2.0"] = METRICS_SNAPSHOT_SCHEMA_VERSION
+    schema_version: Literal["0.1.0", "0.2.0", "0.3.0"] = METRICS_SNAPSHOT_SCHEMA_VERSION
     commit: str = Field(min_length=1)
     recorded_at: datetime = Field(default_factory=utc_now)
     coverage: Coverage
@@ -292,15 +342,20 @@ def compute_over_blocking(
     """
     if validation is None:
         return OverBlocking(
-            siblings_run=0, siblings_failed=0, rate=Ratio(numerator=0, denominator=0)
+            siblings_run=0,
+            siblings_failed=0,
+            rate=Ratio(numerator=0, denominator=0),
+            independent_families=0,
+            families_failed=0,
         )
     path, report = validation
-    siblings = [s for c in report.controls for s in c.sibling_reruns]
-    failed = sum(1 for s in siblings if s.verdict == "FAIL")
+    summary = over_blocking_summary(report.controls)
     return OverBlocking(
-        siblings_run=len(siblings),
-        siblings_failed=failed,
-        rate=Ratio(numerator=failed, denominator=len(siblings)),
+        siblings_run=summary.siblings_run,
+        siblings_failed=summary.siblings_failed,
+        rate=Ratio(numerator=summary.siblings_failed, denominator=summary.siblings_run),
+        independent_families=summary.independent_families,
+        families_failed=summary.families_failed,
         sources=[_relative(path, root)],
     )
 

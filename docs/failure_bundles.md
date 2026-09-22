@@ -160,7 +160,7 @@ notices.
 
 ### Control validation
 
-`replay --apply-control` writes `repair_validation.json` at schema `0.2.0`
+`replay --apply-control` writes `repair_validation.json` at schema `0.3.0`
 under `<output-runs-dir>/<source_run_id>/`, reading prescriptions beside the
 input regression artifact. Invalid or mismatched packages fail before replay;
 empty packages produce no verdicts. Without a package, selected reference
@@ -178,6 +178,13 @@ control held under replay, and it makes no claim about a live agent. The
 rollup splits `accepted` into `accepted_gating` and `accepted_advisory`.
 `standing` is derived on read, so an edited file cannot promote a verdict.
 Files written at `0.1.0` carry no label and read as `unlabeled`.
+
+Each re-run also records the `task_fixture` it was built from, and
+`rollup.over_blocking` reports sibling failures by task family with a
+one-sided 95% upper bound on the family failure rate. The formula and why
+it counts families are in `docs/methodology_metrics.md` (A4). Replay and
+`inspect` print it as, for example, `0 of 1 families failed, true rate
+could be up to 95.0%`.
 
 | Verdict | Condition |
 |---|---|

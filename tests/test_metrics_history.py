@@ -16,6 +16,7 @@ from conftest import REPO_ROOT
 from trace_harness.metrics.history import (
     Coverage,
     MetricsSnapshot,
+    OverBlocking,
     append_snapshot,
     build_snapshot,
     compute_cost_of_learning,
@@ -40,8 +41,8 @@ def _write(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _rerun(run_id: str, verdict: str, task_id: str = "t") -> dict:
-    return {"run_id": run_id, "task_id": task_id, "verdict": verdict}
+def _rerun(run_id: str, verdict: str, task_id: str = "t", task_fixture: str | None = None) -> dict:
+    return {"run_id": run_id, "task_id": task_id, "task_fixture": task_fixture, "verdict": verdict}
 
 
 def _run_dir(root: Path, run_id: str, *, refunds: list[float], irreversible: int) -> None:
@@ -188,7 +189,79 @@ def test_over_blocking_is_the_sibling_failure_rate(tree: Path) -> None:
     over = compute_over_blocking(latest_validation(pairs), root=tree)
     assert (over.siblings_failed, over.siblings_run) == (1, 2)
     assert over.rate.value == 0.5
+    # Both siblings are task "t" with no fixture path, so one family, failed.
+    assert (over.families_failed, over.independent_families) == (1, 1)
+    assert over.upper_bound_95 == 1.0
     assert over.sources == ["evidence/repair_validation.json"]
+
+
+def test_over_blocking_bounds_the_family_rate(tmp_path: Path) -> None:
+    """Three clean siblings in two families bound the rate at 77.6%.
+
+    Counting the siblings as three trials would have claimed 63.2%.
+    """
+    family = "fixtures/tasks/refund_task_families/purchase_age"
+    _write(
+        tmp_path / "repair_validation.json",
+        {
+            "run_id": "r",
+            "test_name": "t",
+            "controls": [
+                {
+                    "control": MATERIAL,
+                    "verdict": "accepted",
+                    "sibling_reruns": [
+                        _rerun("s1", "PASS", "day_30", f"{family}/day_30/a.json"),
+                        _rerun("s2", "PASS", "day_60", f"{family}/day_60_approved/b.json"),
+                        _rerun(
+                            "s3", "PASS", "valid", "fixtures/tasks/refund_policy_valid_cash.json"
+                        ),
+                    ],
+                }
+            ],
+        },
+    )
+    over = compute_over_blocking(
+        latest_validation(find_repair_validations(tmp_path)), root=tmp_path
+    )
+    assert (over.siblings_run, over.siblings_failed) == (3, 0)
+    assert (over.independent_families, over.families_failed) == (2, 0)
+    assert over.upper_bound_95 == 0.7764
+
+
+def test_no_validation_reports_no_bound(tmp_path: Path) -> None:
+    over = compute_over_blocking(None, root=tmp_path)
+    assert (over.independent_families, over.families_failed) == (0, 0)
+    assert over.upper_bound_95 is None
+
+
+def _over_blocking(**fields: object) -> dict:
+    return {
+        "siblings_run": 1,
+        "siblings_failed": 0,
+        "rate": {"numerator": 0, "denominator": 1},
+        **fields,
+    }
+
+
+def test_a_hand_edited_bound_is_derived_again() -> None:
+    over = OverBlocking.model_validate(
+        _over_blocking(independent_families=1, families_failed=0, upper_bound_95=0.01)
+    )
+    assert over.upper_bound_95 == 0.95
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"independent_families": 1, "families_failed": 2},
+        {"independent_families": 1},
+        {"families_failed": 0},
+    ],
+)
+def test_inconsistent_family_counts_are_rejected(fields: dict) -> None:
+    with pytest.raises(ValueError):
+        OverBlocking.model_validate(_over_blocking(**fields))
 
 
 def test_over_blocking_reads_the_latest_artifact_not_all_of_them(tree: Path) -> None:
@@ -333,6 +406,15 @@ def test_the_committed_history_file_is_readable() -> None:
         assert snapshot.commit
 
 
+def test_records_from_before_family_counts_read_with_no_bound() -> None:
+    """Family counts cannot be recovered from sibling counts, so they stay unrecorded."""
+    old = [s for s in load_history(COMMITTED_HISTORY) if s.schema_version in {"0.1.0", "0.2.0"}]
+    assert old
+    for snapshot in old:
+        assert snapshot.over_blocking.independent_families is None
+        assert snapshot.over_blocking.upper_bound_95 is None
+
+
 def test_a_record_from_before_the_split_reads_as_advisory() -> None:
     """0.1.0 records were computed from validations with no replay_mode, so unlabeled."""
     old = [s for s in load_history(COMMITTED_HISTORY) if s.schema_version == "0.1.0"]
@@ -427,7 +509,9 @@ def test_the_collector_appends_a_snapshot_and_keeps_its_own_exit_code(
         str(tree),
     ]
     assert main(argv) == 0
-    assert "Metrics history:" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Metrics history:" in out
+    assert "1/2 siblings failed; 1 of 1 families failed, true rate could be up to 100.0%" in out
 
     recorded = load_history(history)
     assert [s.commit for s in recorded] == ["abc123"]

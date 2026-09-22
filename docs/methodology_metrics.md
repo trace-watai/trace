@@ -101,19 +101,55 @@ trusted is the question #156 labels and #158 measures.
 ### A4. Overblocking rate
 
 *Meaning.* Share of positive siblings that fail when a control is
-installed. The anti-overblocking check.
+installed. The anti-overblocking check. Reported with an upper bound,
+because the denominators are small enough that a rate alone overstates
+what was learned.
 
 *Formula.* `siblings_failed / siblings_run` across
 `replay --apply-control` invocations, counting a sibling as failed when
 its run's `verifier_result.json.verdict == "fail"`.
 
-*Source.* Sibling runs get their own run directories during replay; read
-their `verifier_result.json`. Until #146 lands there is no artifact that
-aggregates this, only the printed `[2/2]` section and the exit code.
+Alongside it, the same count over task families. A sibling's family is
+the directory directly under `fixtures/tasks/refund_task_families/`, or
+the task itself for any other task. Each family counts once, and fails
+when any of its completed siblings failed:
+
+```
+k = families_failed        n = independent_families
+upper_bound_95 = the p solving P(X <= k; n, p) = 0.05,  X ~ Binomial(n, p)
+               = 1 - 0.05^(1/n)  when k = 0
+```
+
+This is the one-sided 95% Clopper-Pearson upper limit, found by bisection
+on the binomial CDF in `metrics/bounds.py`. `0` of `1` gives 95%, `0` of
+`40` gives 7.2%, `1` of `40` gives 11.3%, and a clean record needs `59`
+families before the bound falls under 5%. It is null when `n = 0`.
+
+The bound counts families because siblings in one family share a
+template and the mechanism under test, so a control that blocks one
+legitimate member tends to block its neighbors for the same reason.
+Treating them as separate trials would shrink the bound with no new
+evidence behind it.
+
+*Source.* `repair_validation.json.rollup.over_blocking` (schema `0.3.0`)
+carries `siblings_run`, `siblings_failed`, `independent_families`,
+`families_failed` and `upper_bound_95`, recounted on every read from
+`controls[].sibling_reruns[].verdict` and `.task_fixture`. Sibling runs
+also keep their own run directories and `verifier_result.json`.
 
 *Blind spot.* Siblings are named by fixture path and run from their live
 fixtures, not pinned state. And a sibling "passing" means no violation was
 recorded, which until #143 does not prove the sibling did the right thing.
+The family model assumes full dependence inside a family and none across
+families, and the second half is optimistic: every refund sibling reaches
+the same `issue_refund` tool, so families still share a mechanism and the
+real upper limit can sit above the reported one. Siblings are hand-picked
+neighbors of a failure, so the bound covers the behavior they represent
+and says nothing about legitimate requests nobody wrote a sibling for.
+Incomplete sibling re-runs are left out of the family count. A re-run
+recorded before `0.3.0` has no fixture path and counts as a family of
+one, which is exact for the one retained validation, whose sibling is the
+top-level `refund_policy_valid_cash` task.
 
 ### A5. Control coverage
 
@@ -160,6 +196,11 @@ has an answer.
 *Formula.* The A4 rate, read from the latest `repair_validation.json`
 rather than recomputed. `siblings_failed / siblings_run` over that one
 artifact's `controls[].sibling_reruns`, counting `verdict == "FAIL"`.
+Snapshots from schema `0.3.0` also record `independent_families` and
+`families_failed` for that artifact, and `upper_bound_95` is the A4 family
+bound over them, derived again on every read. The `/metrics` page shows
+it as "k of n families failed, true rate could be up to b". The retained
+validation today is `0` of `1` family, so the page reads 95%.
 
 *Source.* `repair_validation.json`, chosen by the highest `batch_id`,
 whose timestamp prefix orders chronologically. File mtime is not used
@@ -170,7 +211,9 @@ control is plotted next to a commit that validated ten with no
 indication of the difference beyond the denominator. Inherits every
 blind spot A4 has. An empty denominator is reported as null and drawn as
 a gap, because zero siblings run and zero siblings failed are not the
-same fact. Over-blocking is not split by standing. ADR-0002 keeps
+same fact. Records written before `0.3.0` have no family counts and show
+no bound; the counts cannot be recovered from sibling totals, so they are
+left null. Over-blocking is not split by standing. ADR-0002 keeps
 positive siblings gating whatever the artifact's label, so a sibling
 failure under an advisory verdict counts the same as one under a gating
 verdict.

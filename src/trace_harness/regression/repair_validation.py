@@ -21,16 +21,23 @@ lets the control library and the metrics read it the same way.
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from trace_harness.metrics.bounds import clopper_pearson_upper
 from trace_harness.regression.schemas import ReplayMode
 
 # 0.2.0: each control verdict records the artifact's replay_mode and whether
 # that makes it gating or advisory; the rollup splits accepted verdicts the
 # same way. Files written at 0.1.0 read as unlabeled, which is advisory.
-REPAIR_VALIDATION_SCHEMA_VERSION = "0.2.0"
+# 0.3.0: re-runs record their task fixture, and the rollup reports
+# over-blocking by task family with a 95% upper bound.
+REPAIR_VALIDATION_SCHEMA_VERSION = "0.3.0"
+
+#: Task families are the directories directly under this one in fixtures/tasks.
+TASK_FAMILY_ROOT = "refund_task_families"
 
 VerdictStanding = Literal["gating", "advisory"]
 
@@ -66,6 +73,9 @@ class ReRun(BaseModel):
 
     run_id: str
     task_id: str | None = None
+    # The fixture the re-run was built from, as the artifact named it. Absent
+    # before 0.3.0.
+    task_fixture: str | None = None
     verdict: Literal["PASS", "FAIL", "INCOMPLETE"]
     # Pinned checks that stopped firing once this control was installed. Only
     # meaningful on the originating re-run.
@@ -109,6 +119,69 @@ class ControlValidation(BaseModel):
         return standing_for(self.replay_mode)
 
 
+def sibling_family(rerun: ReRun) -> str:
+    """The task family a sibling re-run belongs to.
+
+    A task under ``fixtures/tasks/refund_task_families/<family>/`` belongs to
+    ``<family>``. Any other task is a family of one, keyed by task id so two
+    spellings of one path count once. A re-run recorded before 0.3.0 has no
+    fixture path and is keyed the same way.
+    """
+    if rerun.task_fixture:
+        parts = PurePosixPath(rerun.task_fixture.replace("\\", "/")).parts
+        if TASK_FAMILY_ROOT in parts:
+            index = parts.index(TASK_FAMILY_ROOT)
+            if len(parts) > index + 2:
+                return f"{TASK_FAMILY_ROOT}/{parts[index + 1]}"
+    return rerun.task_id or rerun.run_id
+
+
+class OverBlockingSummary(BaseModel):
+    """Positive siblings that failed with a control installed, counted by family.
+
+    Siblings in one task family share a template and the mechanism under
+    test, so a control that blocks one legitimate member tends to block its
+    neighbors for the same reason. Each family is therefore one trial: it
+    fails when any of its siblings failed, and ``upper_bound_95`` is the
+    one-sided Clopper-Pearson 95% bound on the family failure rate. Counting
+    siblings as trials would treat correlated re-runs as independent evidence
+    and shrink the bound without anything new being learned.
+
+    Families are counted over completed siblings only. An incomplete re-run
+    shows neither a block nor its absence. ``siblings_run`` and
+    ``siblings_failed`` keep their earlier meaning and count every re-run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    siblings_run: int = 0
+    siblings_failed: int = 0
+    independent_families: int = 0
+    families_failed: int = 0
+    # None when no family completed, since nothing was measured.
+    upper_bound_95: float | None = None
+
+
+def over_blocking_summary(controls: list[ControlValidation]) -> OverBlockingSummary:
+    """Sibling and family counts over every control's sibling re-runs."""
+    siblings = [s for c in controls for s in c.sibling_reruns]
+    families: dict[str, bool] = {}
+    for sibling in siblings:
+        if sibling.verdict == "INCOMPLETE":
+            continue
+        family = sibling_family(sibling)
+        families[family] = families.get(family, False) or sibling.verdict == "FAIL"
+    failed = sum(families.values())
+    bound = clopper_pearson_upper(failed, len(families))
+    return OverBlockingSummary(
+        siblings_run=len(siblings),
+        siblings_failed=sum(1 for s in siblings if s.verdict == "FAIL"),
+        independent_families=len(families),
+        families_failed=failed,
+        upper_bound_95=None if bound is None else round(bound, 4),
+    )
+
+
 class ValidationRollup(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -118,6 +191,7 @@ class ValidationRollup(BaseModel):
     # ``accepted`` split by standing. The two always sum to ``accepted``.
     accepted_gating: int = 0
     accepted_advisory: int = 0
+    over_blocking: OverBlockingSummary = Field(default_factory=OverBlockingSummary)
 
 
 class RepairValidation(BaseModel):
@@ -151,6 +225,7 @@ class RepairValidation(BaseModel):
             skipped=sum(1 for c in self.controls if c.verdict is ControlVerdict.SKIPPED),
             accepted_gating=sum(1 for c in accepted if c.standing == "gating"),
             accepted_advisory=sum(1 for c in accepted if c.standing == "advisory"),
+            over_blocking=over_blocking_summary(self.controls),
         )
         return self
 

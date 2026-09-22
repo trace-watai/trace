@@ -2,7 +2,7 @@
  * Metrics-history data contract.
  *
  * Mirrors `MetricsSnapshot` in `src/trace_harness/metrics/history.py`
- * (METRICS_SNAPSHOT_SCHEMA_VERSION 0.2.0), serialized one record per line into
+ * (METRICS_SNAPSHOT_SCHEMA_VERSION 0.3.0), serialized one record per line into
  * `docs/acceptance/metrics_history.jsonl` by the main workflow after a merge.
  * Lines written at an older version stay in that file and are read here too.
  *
@@ -13,11 +13,16 @@
  */
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
+import { clopperPearsonUpper } from "@/lib/over-blocking";
 
-export const METRICS_SNAPSHOT_SCHEMA_VERSION = "0.2.0";
+export const METRICS_SNAPSHOT_SCHEMA_VERSION = "0.3.0";
 
 /** Versions that can appear in the committed history, oldest first. */
-export const READABLE_METRICS_SNAPSHOT_VERSIONS = ["0.1.0", "0.2.0"] as const;
+export const READABLE_METRICS_SNAPSHOT_VERSIONS = [
+  "0.1.0",
+  "0.2.0",
+  "0.3.0",
+] as const;
 
 export interface RawRatio {
   numerator: number;
@@ -46,6 +51,17 @@ export interface RawOverBlocking {
   siblings_run: number;
   siblings_failed: number;
   rate: RawRatio;
+  /**
+   * Distinct task families among completed siblings, and how many had a
+   * failing sibling. Absent before 0.3.0.
+   */
+  independent_families?: number | null;
+  families_failed?: number | null;
+  /**
+   * One-sided 95% Clopper-Pearson bound on the family failure rate. Derived
+   * by the backend and recomputed here from the two family counts.
+   */
+  upper_bound_95?: number | null;
   sources: string[];
 }
 
@@ -69,10 +85,14 @@ export interface RawMetricsSnapshot {
 
 export type Ratio = Camelize<RawRatio>;
 export type Coverage = Camelize<Required<RawCoverage>>;
-export type OverBlocking = Camelize<RawOverBlocking>;
+export type OverBlocking = Camelize<Required<RawOverBlocking>>;
 export type CostOfLearning = Camelize<RawCostOfLearning>;
-export type MetricsSnapshot = Omit<Camelize<RawMetricsSnapshot>, "coverage"> & {
+export type MetricsSnapshot = Omit<
+  Camelize<RawMetricsSnapshot>,
+  "coverage" | "overBlocking"
+> & {
   coverage: Coverage;
+  overBlocking: OverBlocking;
 };
 
 /**
@@ -98,11 +118,37 @@ const withAcceptanceSplit = (coverage: Camelize<RawCoverage>): Coverage => ({
   acceptedAdvisory: coverage.acceptedAdvisory ?? coverage.accepted,
 });
 
+/**
+ * Family counts as recorded, with the bound derived from them.
+ *
+ * A record from before 0.3.0 has no family counts. They cannot be recovered
+ * from sibling totals, so they stay null and the page shows no bound.
+ */
+const withFamilyBound = (
+  overBlocking: Camelize<RawOverBlocking>,
+): OverBlocking => {
+  const independentFamilies = overBlocking.independentFamilies ?? null;
+  const familiesFailed = overBlocking.familiesFailed ?? null;
+  return {
+    ...overBlocking,
+    independentFamilies,
+    familiesFailed,
+    upperBound95:
+      independentFamilies === null || familiesFailed === null
+        ? null
+        : clopperPearsonUpper(familiesFailed, independentFamilies),
+  };
+};
+
 export const parseMetricsSnapshot = (
   raw: RawMetricsSnapshot,
 ): MetricsSnapshot => {
   const snapshot = camelizeKeys(raw);
-  return { ...snapshot, coverage: withAcceptanceSplit(snapshot.coverage) };
+  return {
+    ...snapshot,
+    coverage: withAcceptanceSplit(snapshot.coverage),
+    overBlocking: withFamilyBound(snapshot.overBlocking),
+  };
 };
 
 /**
