@@ -384,3 +384,54 @@ def test_unknown_field_in_control_record_is_rejected() -> None:
         )
     with pytest.raises(ValidationError, match="sources"):
         RuleRef.model_validate({"sources": "current_policy_doc"})
+
+
+# --- conflict detection at install (#193) ---
+
+
+def _behavior(action: str):
+    from trace_harness.environment.controls import BehaviorOnFailure
+
+    return BehaviorOnFailure.model_construct(action=action)
+
+
+def test_two_controls_reading_the_same_rules_with_different_behavior_conflict() -> None:
+    """Ordering would decide the outcome, and nobody decided the ordering."""
+    from trace_harness.environment.controls import ControlConflictError
+
+    env = _env_with_late_order()
+    first = _instance(control_id="ctl_block")
+    env.install_control(first)
+
+    second = _instance(control_id="ctl_warn").model_copy(
+        update={"behavior_on_failure": _behavior("warn")}
+    )
+    with pytest.raises(ControlConflictError) as exc:
+        env.install_control(second)
+
+    message = str(exc.value)
+    assert "ctl_block" in message and "ctl_warn" in message
+    assert [c.control_id for c in env.installed_controls] == ["ctl_block"]
+
+
+def test_same_guardrail_and_same_behavior_is_redundant_not_conflicting() -> None:
+    """Two controls that agree are allowed; #147 owns ordering, this owns disagreement."""
+    env = _env_with_late_order()
+    env.install_control(_instance(control_id="ctl_a"))
+    env.install_control(_instance(control_id="ctl_b"))
+
+    assert [c.control_id for c in env.installed_controls] == ["ctl_a", "ctl_b"]
+
+
+def test_different_rules_do_not_conflict() -> None:
+    """Different rules mean different questions, so different answers are fine."""
+    from trace_harness.environment.controls import RuleRef, find_conflict
+
+    a = _instance(control_id="ctl_a")
+    b = _instance(control_id="ctl_b").model_copy(
+        update={
+            "rule_ref": RuleRef(source="current_policy_doc", rules=["something_else"]),
+            "behavior_on_failure": _behavior("warn"),
+        }
+    )
+    assert find_conflict(b, [a]) is None

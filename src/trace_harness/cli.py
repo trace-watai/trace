@@ -952,6 +952,44 @@ def _replay_with_report(
     )
 
 
+def _validate_fixtures(args: argparse.Namespace) -> int:
+    """Validate every task fixture under a directory, recursively.
+
+    Three docs already told people this command existed. It did not, the
+    checker globbed the top level only, and nothing in the repo check called
+    it, so a task under refund_task_families that no suite referenced could
+    merge without ever being validated (#185).
+    """
+    from trace_harness.tasks.validation import validate_fixture_tree
+
+    root = Path(args.path)
+    if not root.is_dir():
+        raise CliInputError(f"fixture directory not found: {root}")
+
+    verdicts = validate_fixture_tree(root)
+    if not verdicts:
+        raise CliInputError(f"no task files found under {root}")
+
+    print(f"\nValidating {len(verdicts)} task fixture(s) under {root}")
+    failures = [v for v in verdicts if not v.ok]
+    for verdict in failures:
+        rel = verdict.path.relative_to(root)
+        if verdict.is_counterexample:
+            print(f"  {rel}: FAIL — counterexample is no longer flagged")
+            continue
+        for issue in verdict.errors:
+            print(f"  {rel}: {issue.code} — {issue.message}")
+
+    valid = sum(1 for v in verdicts if v.ok)
+    _print("a1 valid/total:", f"{valid}/{len(verdicts)}")
+    _print("counterexamples:", str(sum(1 for v in verdicts if v.is_counterexample)))
+    if failures:
+        _print("result:", f"FAIL ({len(failures)} file(s))")
+        return 1
+    _print("result:", "PASS")
+    return 0
+
+
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
     """Print a one-line summary per run, newest last (chronological)."""
     reader = RunReader(store)
@@ -1451,6 +1489,15 @@ def main(argv: list[str] | None = None) -> int:
     p_pipe.add_argument("--fail-on-verifier", action="store_true")
     _add_provider_args(p_pipe)
 
+    p_validate = sub.add_parser(
+        "validate-fixtures",
+        parents=[common],
+        help="authoring-validate every task fixture under a directory",
+    )
+    p_validate.add_argument(
+        "path", nargs="?", default="fixtures/tasks", help="directory to validate"
+    )
+
     p_suite = sub.add_parser(
         "run-suite",
         parents=[common],
@@ -1566,6 +1613,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
             print("\nVerifier passed: no attribution or failure bundle needed.")
         print(f"\nPipeline complete. Inspect artifacts in: {run_dir}")
         return 1 if (args.fail_on_verifier and not (merged.passed and run_completed)) else 0
+    if args.command == "validate-fixtures":
+        return _validate_fixtures(args)
     if args.command == "run-suite":
         return _run_suite(args, store)
     if args.command == "collect-regressions":

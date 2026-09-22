@@ -36,8 +36,8 @@ from trace_harness.tracing.recorder import TraceRecorder
 # --- Schema version ---
 
 
-def test_schema_version_bumped_to_0_4_0() -> None:
-    assert TRACE_SCHEMA_VERSION == "0.4.0"
+def test_schema_version_bumped_to_0_5_0() -> None:
+    assert TRACE_SCHEMA_VERSION == "0.5.0"
 
 
 def test_new_event_carries_schema_version() -> None:
@@ -46,7 +46,7 @@ def test_new_event_carries_schema_version() -> None:
         TraceEventType.RUN_FINISHED,
         payload={"status": "completed", "termination_reason": "final_answer", "steps_taken": 2},
     )
-    assert event.schema_version == "0.4.0"
+    assert event.schema_version == "0.5.0"
 
 
 # --- PAYLOAD_TYPES coverage ---

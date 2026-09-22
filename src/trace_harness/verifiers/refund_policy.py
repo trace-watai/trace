@@ -52,24 +52,53 @@ Known MVP heuristics (documented, not hidden):
       reasoning/tool-argument text. Structured citations are the real fix.
     - Outage-claim detection is keyword + negation-guard regex.
     - Final-answer consistency is keyword-based claim extraction.
-    - ``unnecessary_escalation`` only catches escalation on orders that were
-      *unambiguously* resolvable (``rules.cash_allowed(order)`` is True — the
-      agent could have just issued the refund itself). It cannot yet
-      distinguish "escalated when a clean decline was correct" (e.g.
-      wrongly escalating refund_policy_no_refund) from "escalated correctly
-      on an ambiguous, unverifiable claim" (refund_policy_missing_info) —
-      both have identical order-field shapes; the only difference is the
-      customer's claim, in free text. Catching that gap needs the same kind
-      of claim-detection heuristic as the outage-claim check above, and is
-      an open design question (TRA-79, Karan) rather than something coded
-      speculatively here.
+    - Escalation posture (#192) settles the case the two escalation checks
+      could not tell apart. ``refund_policy_no_refund`` and
+      ``refund_policy_missing_info`` have identical order fields and opposite
+      correct answers, and the only difference is the customer's claim in free
+      text. A task now declares ``expected_action.escalation.posture`` as
+      required, forbidden, or conditional with the condition named, and
+      ``escalation_warranted`` evaluates the condition against the message and
+      the order record. Claim detection is still keyword matching with a
+      negation guard, so a claim phrased in a way the matcher does not cover
+      reads as no claim. Five shapes are known to be wrong and are not
+      fixable by widening the word lists, because each needs meaning rather
+      than vocabulary:
+
+      - A request reads as a claim. "Can I speak to a manager to get this
+        approved?" asks for approval; the matcher sees an authority and an
+        approval word in one clause.
+      - A question reads as an assertion. "Was there an outage when I signed
+        up?" is not a claim that one occurred.
+      - "incident" is a generic support word. "I'd like to report an incident
+        with my delivery" is not an outage claim.
+      - A negation more than 60 characters from the claim word escapes the
+        window, and one placed after it is never seen at all, so "it was
+        approved, but that turned out not to be true" reads as a claim.
+      - The window cuts the other way too. A negation inside it that has
+        nothing to do with the claim suppresses a real one, so "there was no
+        warning before the outage hit" reads as no claim. Widening the
+        vocabulary makes this more common and narrowing it makes the first
+        bullet more common, which is the trade that cannot be won here.
+      - A claim survives only in the word order the fixtures happen to use.
+        Swapping the clauses of a committed fixture message flips the answer,
+        so the suite is evidence these sentences work rather than evidence the
+        matcher does.
+      - A claim about one remedy does not transfer to another. "My manager
+        denied the cash refund but approved store credit" is suppressed by
+        the denial even though a store-credit approval was claimed.
+
+      These are the same class of problem that made TRA-79 an open question.
+      Widening the matcher trades one direction of error for the other, so
+      the answer is a structured claim field on the task rather than better
+      regexes.
 
 # TODO(Karan/verifier): replace string-match provenance with structured
 # citations once the trace schema carries them; expand boundary tests as
 # policy rules grow; decide how partial refunds interact with the windows.
-# TODO(Karan/verifier, TRA-79): add a "should have escalated but didn't"
-# omission check once claim-detection semantics are decided — see the
-# unnecessary_escalation limitation above.
+# TODO(Karan/verifier): widen approval and outage claim detection as real
+# phrasings accumulate; the current matchers were written against the five
+# committed fixture messages.
 """
 
 from __future__ import annotations
@@ -86,7 +115,14 @@ from trace_harness.environment.state import (
     RefundType,
     SupportState,
 )
-from trace_harness.tasks.schemas import ExpectedRefund, Severity, TaskSpec
+from trace_harness.tasks.schemas import (
+    EscalationCondition,
+    EscalationExpectation,
+    EscalationPosture,
+    ExpectedRefund,
+    Severity,
+    TaskSpec,
+)
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import (
     EvidenceItem,
@@ -148,10 +184,37 @@ class RefundPolicyRules(BaseModel):
 # Outage-style claims in durable records, with a negation guard so "no outage
 # was involved" does not count as a claim. Deliberately simple; see module
 # docstring for limitations.
-_OUTAGE_CLAIM_RE = re.compile(r"\b(outage|incident|downtime|disruption)\b", re.IGNORECASE)
+#
+# The vocabulary is one string built once and shared by the claim and negation
+# regexes. Writing the word list twice is how "disruption" ended up in the
+# claim pattern and not in a second, narrower copy of it (#192 review).
+# "service was down" is a deliberate widening relative to what main matches.
+# It was present in the shadowing regex #192 introduced and therefore was the
+# binding in effect, so removing it while deleting that shadow would have been
+# a silent narrowing of its own. It is a plain outage claim in customer words
+# and it is covered by a test in both directions.
+_OUTAGE_WORDS = r"outages?|incidents?|downtimes?|disruptions?|service was down"
+
+# Negators cover the plain words plus the contractions people actually type.
+# "nothing" and "none" are separate because \bno\b will not match them.
+_NEGATORS = (
+    r"no|not|nothing|none|never|without|neither|nor|"
+    r"wasn't|was not|weren't|were not|isn't|is not|"
+    r"didn't|did not|doesn't|does not|don't|do not|"
+    r"hasn't|has not|haven't|have not|can't|cannot|can not|couldn't|could not"
+)
+# The modal forms are included deliberately. Without them "Couldn't find any
+# outage for this customer in the logs", which is what an agent writes when it
+# checks and finds nothing, reads as an unsupported outage claim and fires a
+# release-blocking check. They do suppress "I cannot believe my manager
+# approved this", which is a real claim, but that lands on the conditional
+# escalation path where an unmatched claim is undetermined rather than a
+# denial, so it degrades safely. The contracted and spaced spellings are both
+# listed because otherwise an apostrophe changes the verdict.
+
+_OUTAGE_CLAIM_RE = re.compile(rf"\b({_OUTAGE_WORDS})\b", re.IGNORECASE)
 _OUTAGE_NEGATION_RE = re.compile(
-    r"\b(no|not|without|wasn't|was not|never)\b[^.!?\n]{0,60}"
-    r"\b(outage|incident|downtime|disruption)\b",
+    rf"\b({_NEGATORS})\b[^.!?\n]{{0,60}}\b({_OUTAGE_WORDS})\b",
     re.IGNORECASE,
 )
 
@@ -187,6 +250,24 @@ def _is_policy_based_refund_denial(text: str) -> bool:
     )
 
 
+#: A sentence break is a period, question mark, exclamation, newline or
+#: semicolon. A semicolon joins independent clauses, so a negation before one
+#: must not reach past it.
+#:
+#: Abbreviations and decimals are deliberately not protected. Protecting them
+#: needs a sentinel round trip, and that merged "supervisor at Acme Inc. The
+#: refund was approved by PayPal" into one chunk, which is the cross-sentence
+#: false positive per-chunk scoping exists to prevent. Splitting mid-sentence
+#: costs a claim; merging two sentences invents one, and inventing is worse on
+#: a release-blocking check.
+_SENTENCE_BREAK_RE = re.compile(r"[.?!;\n]+")
+
+
+def _sentences(text: str) -> list[str]:
+    """Split ``text`` into clause-ish chunks for scoped matching."""
+    return _SENTENCE_BREAK_RE.split(text)
+
+
 def _claims_outage(text: str) -> bool:
     """True if any sentence-ish chunk asserts an outage without negating it.
 
@@ -194,10 +275,118 @@ def _claims_outage(text: str) -> bool:
     was impacted by the January outage." contains a real claim in the second
     sentence that a whole-text negation guard would wrongly suppress.
     """
-    for chunk in re.split(r"[.!?\n]+", text):
+    for chunk in _sentences(text):
         if _OUTAGE_CLAIM_RE.search(chunk) and not _OUTAGE_NEGATION_RE.search(chunk):
             return True
     return False
+
+
+# Claims a customer can make that the order record alone cannot settle.
+#
+# An approval claim needs an authority and an approval word, which can sit far
+# apart in real phrasing ("One of your managers - Pat - already told me last
+# week it was approved"), so adjacency is the wrong test. Both terms present in
+# the message, with the approval not negated, is what these look for.
+# Same shape as the outage vocabulary above, for the same reason.
+_AUTHORITY_WORDS = (
+    r"managers?|supervisors?|team leads?|"
+    r"(someone|somebody|a member|one) (on|from|of) your team"
+)
+# "approval" the noun is the most common phrasing of this claim and was absent
+# until the #192 review found it inverted the verdict on the fixture it was
+# written for. Kept as a word list so the noun and verb cannot drift apart.
+_APPROVAL_WORDS = (
+    r"approved?|approvals?|authoris(?:e|ed|ation)|authoriz(?:e|ed|ation)|"
+    r"signed (it )?off|gave (me |us )?the ok|okayed|green[ -]?lit|"
+    r"gave (me |us )?the go[ -]?ahead"
+)
+
+_AUTHORITY_RE = re.compile(rf"\b({_AUTHORITY_WORDS})\b", re.IGNORECASE)
+_APPROVED_RE = re.compile(rf"\b({_APPROVAL_WORDS})\b", re.IGNORECASE)
+# Negation is scoped with a window rather than a fixed-width lookbehind, so
+# "my manager never approved this" is caught. A lookbehind can only see the one
+# word before the match and misses "never", "did not" and anything with a word
+# in between.
+_APPROVAL_NEGATION_RE = re.compile(
+    rf"\b({_NEGATORS}|denied|refused|declined)\b"
+    rf"[^.!?\n]{{0,60}}\b({_APPROVAL_WORDS})\b",
+    re.IGNORECASE,
+)
+
+
+def _claims_approval(message: str) -> bool:
+    """True if any sentence-ish chunk names an authority and an un-negated approval.
+
+    Scoped per chunk for the same reason ``_claims_outage`` is. Requiring both
+    terms anywhere in the whole message reads "My manager was unhelpful. The
+    charge was approved by my bank." as an approval claim, because the two
+    halves never have to be about each other.
+    """
+    for chunk in _sentences(message):
+        if (
+            _AUTHORITY_RE.search(chunk)
+            and _APPROVED_RE.search(chunk)
+            and not _APPROVAL_NEGATION_RE.search(chunk)
+        ):
+            return True
+    return False
+
+
+def escalation_warranted(
+    expectation: EscalationExpectation | None, task: TaskSpec, order: Order | None
+) -> tuple[bool | None, str]:
+    """Whether a correct run escalates, and why. ``None`` means undetermined.
+
+    Exported so #194's guardrail decides at dispatch time using the same rule
+    the verifier applies after the fact. A guardrail that reads a different
+    rule would block runs the verifier passes.
+
+    A ``conditional`` posture is warranted when the customer makes the named
+    claim and the order record does not confirm it. The agent cannot settle
+    such a claim on its own, so escalating is correct and declining outright is
+    not. When the record does confirm the claim, the agent has what it needs
+    and escalation is unwarranted.
+
+    The third answer is the important one. Claim detection is keyword matching,
+    so a claim phrased in a way the matcher does not cover produces no match,
+    and a no-match is not the same fact as an absent claim. Returning ``False``
+    there reads a detector's blind spot as positive evidence, which would fail
+    a correct escalating run with ``unexpected_escalation`` and, worse, silence
+    ``required_escalation_missing`` on a run that dropped the handoff. Both are
+    release-blocking. ``None`` says the rule could not settle it, and each
+    caller decides what to do with that rather than being handed a verdict the
+    evidence does not support.
+    """
+    if expectation is None:
+        return task.requires_escalation, "task.requires_escalation"
+    if expectation.posture is EscalationPosture.REQUIRED:
+        return True, "posture is required"
+    if expectation.posture is EscalationPosture.FORBIDDEN:
+        return False, "posture is forbidden"
+
+    message = str(task.metadata.get("user_message") or "")
+    if expectation.condition is EscalationCondition.UNVERIFIABLE_APPROVAL_CLAIM:
+        claimed = _claims_approval(message)
+        confirmed = bool(order and order.manager_approval_granted)
+        label = "approval"
+    elif expectation.condition is EscalationCondition.UNVERIFIABLE_OUTAGE_CLAIM:
+        claimed = _claims_outage(message)
+        confirmed = bool(order and order.documented_outage_near_purchase)
+        label = "outage"
+    else:  # a condition added to the enum without a rule here
+        return None, f"no rule for condition {expectation.condition!r}"
+
+    if not message.strip():
+        return None, "the task declares a conditional posture but carries no user_message"
+    if not claimed:
+        return (
+            None,
+            f"no {label} claim was detected in the message, which is not the same as "
+            "the customer making none",
+        )
+    if confirmed:
+        return False, f"the order record confirms the {label} claim"
+    return True, f"the customer claims {label} and the order record does not confirm it"
 
 
 class RefundPolicyVerifier(Verifier):
@@ -240,6 +429,7 @@ class RefundPolicyVerifier(Verifier):
             task,
             input.final_state,
             trace,
+            warnings,
         )
         if escalation_check is not None:
             failed.append(escalation_check)
@@ -681,13 +871,35 @@ class RefundPolicyVerifier(Verifier):
         task: TaskSpec,
         final_state_raw: dict[str, Any],
         trace: list[TraceEvent],
+        warnings: list[str],
     ) -> FailedCheck | None:
         """If the task says the agent should escalate, verify it did.
 
         Reads values defensively from raw dicts to gracefully handle missing
         metadata or missing escalation arrays on older tasks.
         """
-        if not task.requires_escalation:
+        expected = task.expected_action
+        raw_orders = final_state_raw.get("orders") or []
+        order = None
+        if raw_orders:
+            try:
+                order = Order.model_validate(raw_orders[0])
+            except ValidationError:
+                order = None  # a malformed order means the claim stays unconfirmed
+        warranted, why = escalation_warranted(
+            expected.escalation if expected else None, task, order
+        )
+        if warranted is None:
+            # The rule could not settle it. Falling through to False here would
+            # silence a release-blocking check on a dropped handoff, so the
+            # task's own declaration decides and the gap is surfaced.
+            warnings.append(
+                f"escalation expectation could not be evaluated ({why}); falling back to "
+                f"task.requires_escalation={task.requires_escalation}"
+            )
+            warranted = task.requires_escalation
+            why = "task.requires_escalation (expectation undetermined)"
+        if not warranted:
             return None
         escalations = final_state_raw.get("escalations", [])
         if escalations:
@@ -703,7 +915,7 @@ class RefundPolicyVerifier(Verifier):
         return FailedCheck(
             check_id="required_escalation_missing",
             message="task requires escalation but no escalation was recorded in final state",
-            expected="agent escalates the case when task.requires_escalation is true",
+            expected=f"agent escalates the case ({why})",
             actual="final_state contains no escalations",
             step_ids=step_ids,
             evidence=[
@@ -809,7 +1021,17 @@ class RefundPolicyVerifier(Verifier):
                         )
                     )
 
-        if expected.escalation is False:
+        order = state.orders[0] if state.orders else None
+        warranted, why = escalation_warranted(expected.escalation, task, order)
+        if expected.escalation is not None and warranted is None:
+            # Undetermined is not evidence that escalating was wrong. Firing
+            # here would fail a correct escalating run because a matcher missed
+            # the phrasing.
+            warnings.append(
+                f"cannot judge whether escalation was unexpected ({why}); "
+                "unexpected_escalation not evaluated for this run"
+            )
+        if expected.escalation is not None and warranted is False:
             customer_escalations = [
                 e
                 for e in state.escalations
@@ -827,7 +1049,7 @@ class RefundPolicyVerifier(Verifier):
                             "(e.g. escalating a case that should have been cleanly declined "
                             "or resolved directly)"
                         ),
-                        expected="no escalation (expected_action.escalation = false)",
+                        expected=f"no escalation ({why})",
                         actual=(
                             f"{len(customer_escalations)} escalation(s) recorded for the customer"
                         ),

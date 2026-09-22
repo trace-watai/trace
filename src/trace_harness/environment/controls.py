@@ -124,6 +124,33 @@ class ControlInstance(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ControlConflictError(ValueError):
+    """Two active controls read the same rules but disagree on what to do."""
+
+
+def find_conflict(
+    candidate: ControlInstance, installed: list[ControlInstance]
+) -> ControlInstance | None:
+    """The installed control ``candidate`` contradicts, if any.
+
+    Two controls conflict when they name the same ``guardrail_ref`` and the
+    same rules but different ``behavior_on_failure``. Installing both would
+    leave the outcome decided by ordering, which is not a decision anyone made.
+    Same guardrail and same behavior is redundant rather than contradictory, so
+    it is allowed; #147 owns ordering and this owns disagreement.
+    """
+    for other in installed:
+        if other.guardrail_ref != candidate.guardrail_ref:
+            continue
+        if other.rule_ref.source != candidate.rule_ref.source:
+            continue
+        if set(other.rule_ref.rules) != set(candidate.rule_ref.rules):
+            continue
+        if other.behavior_on_failure != candidate.behavior_on_failure:
+            return other
+    return None
+
+
 def resolve_guardrail(guardrail_ref: str) -> RegisteredGuardrail:
     """Return the registry entry for ``guardrail_ref`` or raise at install time."""
     try:

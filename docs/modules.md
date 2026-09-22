@@ -119,6 +119,17 @@ by an installed control comes back with `ToolResult.blocked_by` set to its
 `control_id`, which the runner copies into the `tool_call_executed` and
 `tool_observation` trace events (trace schema 0.4.0).
 
+Three seams exist for controls. `register_pre_execute_hook` runs before a
+handler and can prevent the side effect. `register_post_execute_hook` runs
+after one and sees the result, so it can reject a record that should not stand,
+though the side effect has already happened. `register_final_answer_hook` runs
+on the answer itself, which never reaches the environment otherwise, and a
+block there ends the run as terminated with `blocked_by` on the `final_answer`
+event (trace schema 0.5.0). `install_control` refuses a control that reads the
+same rules through the same guardrail as an installed one but disagrees on
+`behavior_on_failure`, because ordering would otherwise decide the outcome and
+nobody decided the ordering.
+
 **Rules:** every tool declares a side-effect class (`read_only` /
 `external_durable` / `external_irreversible`) — attribution depends on it.
 Retrieval never truncates content and always carries doc `status`.
