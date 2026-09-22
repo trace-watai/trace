@@ -53,6 +53,7 @@ from trace_harness.environment.controls import (
 from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.failure_bundles.schemas import RepairPackage
+from trace_harness.metrics.history import HISTORY_PATH as DEFAULT_HISTORY_PATH
 from trace_harness.models import create_model_adapter, resolve_model_name
 from trace_harness.models.cassette import CassetteConfig, RecordingModelAdapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
@@ -1227,7 +1228,56 @@ def _collect_regressions(args: argparse.Namespace, store: ArtifactStore) -> int:
     _print("duration:", f"{summary.duration_s:.3f}s")
     _print("summary:", str(store.runs_dir / SUMMARY_NAME))
     _print("gate:", "PASS" if summary.exit_code == 0 else f"FAIL (exit {summary.exit_code})")
+    if args.append_history is not None:
+        _append_metrics_history(args, store)
     return summary.exit_code
+
+
+def _append_metrics_history(args: argparse.Namespace, store: ArtifactStore) -> None:
+    """Record the three trend measures for this commit (#207).
+
+    Appended after the gate has printed its verdict and it never changes the
+    exit code. A history file is a record of what main looked like, so a write
+    problem here must not turn a passing gate into a failing one.
+    """
+    from trace_harness.metrics.history import append_snapshot, build_snapshot
+
+    path = Path(args.append_history)
+    commit = args.commit or _current_commit()
+    if not commit:
+        _print("history:", "skipped, no commit given and git did not report one")
+        return
+    try:
+        snapshot = build_snapshot(Path(args.history_root), commit=commit, exclude=[store.runs_dir])
+        written = append_snapshot(path, snapshot)
+    except OSError as exc:
+        _print("history:", f"skipped, {exc}")
+        return
+    coverage = snapshot.coverage.accepted_over_prescribed
+    blocking = snapshot.over_blocking.rate
+    print("\nMetrics history:")
+    _print("commit:", snapshot.commit)
+    _print("coverage:", f"{coverage.numerator}/{coverage.denominator} accepted of prescribed")
+    _print("over-blocking:", f"{blocking.numerator}/{blocking.denominator} siblings failed")
+    _print(
+        "cost of learning:",
+        f"{snapshot.cost_of_learning.irreversible_actions} irreversible actions, "
+        f"${snapshot.cost_of_learning.money_moved_usd:.2f} moved",
+    )
+    _print("history:", str(path) if written else f"{path} already records {snapshot.commit}")
+
+
+def _current_commit() -> str | None:
+    """The commit being recorded, when the workflow did not pass one."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None if result.returncode == 0 else None
 
 
 def _write_and_print_suite_report(store: ArtifactStore, batch_id: str, *, print_full: bool) -> int:
@@ -1483,6 +1533,22 @@ def main(argv: list[str] | None = None) -> int:
     p_collect.add_argument("path", help="artifact file or directory to search recursively")
     p_collect.add_argument(
         "--suite", default=None, help="also generate artifacts from this offline fixture suite"
+    )
+    p_collect.add_argument(
+        "--append-history",
+        nargs="?",
+        const=str(DEFAULT_HISTORY_PATH),
+        default=None,
+        metavar="PATH",
+        help=f"append a metrics snapshot for this commit (default {DEFAULT_HISTORY_PATH})",
+    )
+    p_collect.add_argument(
+        "--commit", default=None, help="commit to record; defaults to git rev-parse HEAD"
+    )
+    p_collect.add_argument(
+        "--history-root",
+        default=".",
+        help="tree the snapshot reads artifacts from (default the working tree)",
     )
 
     args = parser.parse_args(argv)
