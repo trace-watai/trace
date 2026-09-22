@@ -1,0 +1,21 @@
+{
+  "schema_version": "0.5.0",
+  "entries": [
+    {
+      "run_id": "run_20260914T185450Z_5143402a",
+      "task_id": "refund_policy_valid_cash",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 5,
+      "started_at": "2026-09-14T18:54:50.642967Z",
+      "finished_at": "2026-09-14T18:54:50.647239Z",
+      "error": null,
+      "verifier_passed": true,
+      "failed_check_count": 0,
+      "verdict": "pass",
+      "provider": null,
+      "model": null,
+      "batch_id": null
+    }
+  ]
+}

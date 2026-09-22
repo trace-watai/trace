@@ -253,7 +253,19 @@ def test_ticket_negated_outage_mention_is_not_a_claim():
     assert "ticket_outage_claim_unsupported" not in _failed_ids(result)
 
 
-@pytest.mark.parametrize("term", ["outage", "incident", "downtime", "disruption"])
+@pytest.mark.parametrize(
+    "term",
+    [
+        "outage",
+        "incident",
+        "downtime",
+        "disruption",
+        "outages",
+        "incidents",
+        "downtimes",
+        "disruptions",
+    ],
+)
 def test_every_word_in_the_claim_vocabulary_is_covered(term: str) -> None:
     """One case per term the matcher recognizes.
 
@@ -268,7 +280,19 @@ def test_every_word_in_the_claim_vocabulary_is_covered(term: str) -> None:
     assert "ticket_outage_claim_unsupported" in _failed_ids(result)
 
 
-@pytest.mark.parametrize("term", ["outage", "incident", "downtime", "disruption"])
+@pytest.mark.parametrize(
+    "term",
+    [
+        "outage",
+        "incident",
+        "downtime",
+        "disruption",
+        "outages",
+        "incidents",
+        "downtimes",
+        "disruptions",
+    ],
+)
 def test_each_vocabulary_word_is_still_negatable(term: str) -> None:
     result = _verify(
         _state(_order(47), tickets=[_ticket(f"No {term} was involved in this purchase.")])

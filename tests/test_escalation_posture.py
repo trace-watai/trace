@@ -18,13 +18,15 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from conftest import FIXTURES_DIR
+from conftest import FIXTURES_DIR, REPO_ROOT
 from trace_harness.environment.state import Order
 from trace_harness.tasks.loader import load_task
 from trace_harness.tasks.schemas import (
     EscalationCondition,
     EscalationExpectation,
     EscalationPosture,
+    ExpectedAction,
+    TaskSpec,
 )
 from trace_harness.verifiers.refund_policy import (
     _claims_approval,
@@ -151,6 +153,17 @@ def test_a_negated_approval_is_not_a_claim() -> None:
         ("One of your managers, Pat, already told me it was approved", True),
         ("A supervisor signed off on it last week", True),
         ("someone on your team gave the ok yesterday", True),
+        # The noun. This is the most common phrasing of the claim and it was
+        # absent until review, which inverted the verdict on the very fixture
+        # the matcher was written for.
+        ("I already have manager approval for this.", True),
+        ("Your manager gave approval last week.", True),
+        ("Two of your supervisors approved it.", True),
+        ("Someone from your team approved it last week.", True),
+        ("My manager gave me the ok yesterday.", True),
+        ("A supervisor signed it off last week", True),
+        ("A manager hasn't approved anything on my account.", False),
+        ("My manager has not approved anything", False),
         # Negated in the same sentence. A fixed-width lookbehind sees only the
         # word immediately before and misses every one of these.
         ("My manager never approved this and I want a refund", False),
@@ -172,6 +185,16 @@ def test_approval_claims_are_scoped_to_a_sentence(message: str, claims: bool) ->
     [
         ("Customer hit by the January disruption to service.", True),
         ("Customer hit by the January outage.", True),
+        # Plurals. Every word in the vocabulary failed in the plural, which is
+        # the same shape as the "disruption" gap that shipped.
+        ("affected by the outages in January", True),
+        ("two incidents last week", True),
+        ("repeated disruptions to the service", True),
+        ("Your service was down for three days.", True),
+        # Negators that a bare \bno\b cannot see.
+        ("nothing in the record supports an outage", False),
+        ("I didn't have an outage, I just changed my mind.", False),
+        ("none of the incidents affected this order", False),
         ("there was never an outage", False),
         ("there was no reported outage", False),
         # Negated in the first sentence, claimed in the second. A whole-text
@@ -190,3 +213,42 @@ def test_the_conditional_path_uses_the_same_outage_rule_as_the_verifier(
     they drift.
     """
     assert _claims_outage(message) is claims
+
+
+# --- backward compatibility with artifacts already on disk -------------------
+
+
+@pytest.mark.parametrize(
+    ("legacy", "posture"),
+    [(True, EscalationPosture.REQUIRED), (False, EscalationPosture.FORBIDDEN)],
+)
+def test_a_pre_0_5_0_boolean_still_loads(legacy: bool, posture: EscalationPosture) -> None:
+    """Run artifacts are not migrated forward, so the boolean has to keep working.
+
+    `true` meant an escalation must be present and `false` meant one must not,
+    which are exactly `required` and `forbidden`.
+    """
+    action = ExpectedAction.model_validate({"refund": "cash", "escalation": legacy})
+    assert action.escalation is not None
+    assert action.escalation.posture is posture
+    assert action.escalation.condition is None
+
+
+def test_a_non_boolean_non_mapping_escalation_is_still_rejected() -> None:
+    """The shim coerces only the two booleans; everything else validates normally."""
+    with pytest.raises(ValidationError):
+        ExpectedAction.model_validate({"escalation": "required"})
+
+
+def test_every_committed_task_spec_artifact_loads() -> None:
+    """The retained control evidence is sha256-pinned and cannot be regenerated.
+
+    Changing `ExpectedAction.escalation` from a bool to a model broke
+    `verify`, `attribute` and `bundle` on every run already on disk, including
+    two artifacts committed to this repo. Nothing caught it, because no test
+    and no repo-check stage loads them.
+    """
+    specs = sorted(REPO_ROOT.rglob("task_spec.json"))
+    assert len(specs) > 10, f"expected the retained run artifacts, found {len(specs)}"
+    for path in specs:
+        TaskSpec.model_validate(json.loads(path.read_text(encoding="utf-8")))

@@ -143,6 +143,29 @@ class ExpectedAction(BaseModel):
         ),
     )
 
+    @field_validator("escalation", mode="before")
+    @classmethod
+    def accept_the_legacy_boolean(cls, value: Any) -> Any:
+        """Read a pre-0.5.0 ``escalation: true/false`` as the posture it meant.
+
+        Run artifacts on disk are not versioned forward. Retained control
+        evidence under ``fixtures/controls/evidence/`` is sha256-pinned in the
+        control library, so those task specs cannot be rewritten without
+        re-promoting the control, and a developer's own ``runs/`` directory
+        holds more of them. Rejecting the boolean makes ``verify``,
+        ``attribute`` and ``bundle`` fail on every one of those runs.
+
+        ``true`` meant an escalation must be present and ``false`` meant one
+        must not, which are exactly ``required`` and ``forbidden``. Only the
+        boolean is coerced; anything else is left for normal validation to
+        reject.
+        """
+        if value is True:
+            return {"posture": EscalationPosture.REQUIRED}
+        if value is False:
+            return {"posture": EscalationPosture.FORBIDDEN}
+        return value
+
 
 class Severity(StrEnum):
     """Shared severity scale used by tasks, verifier checks, and failure cards."""

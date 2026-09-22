@@ -61,7 +61,28 @@ Known MVP heuristics (documented, not hidden):
       ``escalation_warranted`` evaluates the condition against the message and
       the order record. Claim detection is still keyword matching with a
       negation guard, so a claim phrased in a way the matcher does not cover
-      reads as no claim.
+      reads as no claim. Five shapes are known to be wrong and are not
+      fixable by widening the word lists, because each needs meaning rather
+      than vocabulary:
+
+      - A request reads as a claim. "Can I speak to a manager to get this
+        approved?" asks for approval; the matcher sees an authority and an
+        approval word in one clause.
+      - A question reads as an assertion. "Was there an outage when I signed
+        up?" is not a claim that one occurred.
+      - "incident" is a generic support word. "I'd like to report an incident
+        with my delivery" is not an outage claim.
+      - A negation more than 60 characters from the claim word escapes the
+        window, and one placed after it is never seen at all, so "it was
+        approved, but that turned out not to be true" reads as a claim.
+      - A claim about one remedy does not transfer to another. "My manager
+        denied the cash refund but approved store credit" is suppressed by
+        the denial even though a store-credit approval was claimed.
+
+      These are the same class of problem that made TRA-79 an open question.
+      Widening the matcher trades one direction of error for the other, so
+      the answer is a structured claim field on the task rather than better
+      regexes.
 
 # TODO(Karan/verifier): replace string-match provenance with structured
 # citations once the trace schema carries them; expand boundary tests as
@@ -154,10 +175,24 @@ class RefundPolicyRules(BaseModel):
 # Outage-style claims in durable records, with a negation guard so "no outage
 # was involved" does not count as a claim. Deliberately simple; see module
 # docstring for limitations.
-_OUTAGE_CLAIM_RE = re.compile(r"\b(outage|incident|downtime|disruption)\b", re.IGNORECASE)
+#
+# The vocabulary is one string built once and shared by the claim and negation
+# regexes. Writing the word list twice is how "disruption" ended up in the
+# claim pattern and not in a second, narrower copy of it (#192 review).
+_OUTAGE_WORDS = r"outages?|incidents?|downtimes?|disruptions?|service was down"
+
+# Negators cover the plain words plus the contractions people actually type.
+# "nothing" and "none" are separate because \bno\b will not match them.
+_NEGATORS = (
+    r"no|not|nothing|none|never|without|neither|nor|"
+    r"wasn't|was not|weren't|were not|isn't|is not|"
+    r"didn't|did not|doesn't|does not|don't|do not|"
+    r"hasn't|has not|haven't|have not|can't|cannot|couldn't|could not"
+)
+
+_OUTAGE_CLAIM_RE = re.compile(rf"\b({_OUTAGE_WORDS})\b", re.IGNORECASE)
 _OUTAGE_NEGATION_RE = re.compile(
-    r"\b(no|not|without|wasn't|was not|never)\b[^.!?\n]{0,60}"
-    r"\b(outage|incident|downtime|disruption)\b",
+    rf"\b({_NEGATORS})\b[^.!?\n]{{0,60}}\b({_OUTAGE_WORDS})\b",
     re.IGNORECASE,
 )
 
@@ -193,6 +228,39 @@ def _is_policy_based_refund_denial(text: str) -> bool:
     )
 
 
+#: Abbreviations whose trailing period does not end a sentence. Splitting on
+#: every period turns "My manager, Mr. Chen, approved this" into two chunks
+#: with the authority in one and the approval in the other, so the claim
+#: disappears (#192 review).
+_ABBREVIATIONS = ("mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "inc", "ltd", "co", "vs")
+
+#: A sentence break is a period, question mark, exclamation, newline or
+#: semicolon, except a period between two digits (a decimal) or one closing a
+#: known abbreviation. A semicolon joins independent clauses, so a negation
+#: before one does not reach past it.
+_SENTENCE_BREAK_RE = re.compile(
+    r"(?<!\d)\.(?!\d)|[?!;\n]+|\.{2,}",
+)
+
+
+#: Stand-in for a period that must not split. A control character cannot occur
+#: in a ticket or a customer message, so the swap is reversible.
+_PERIOD_SENTINEL = "\x00"
+
+
+def _sentences(text: str) -> list[str]:
+    """Split ``text`` into clause-ish chunks for scoped matching."""
+    protected = text
+    for abbreviation in _ABBREVIATIONS:
+        protected = re.sub(
+            rf"\b({abbreviation})\.",
+            lambda m: m.group(1) + _PERIOD_SENTINEL,
+            protected,
+            flags=re.IGNORECASE,
+        )
+    return [chunk.replace(_PERIOD_SENTINEL, ".") for chunk in _SENTENCE_BREAK_RE.split(protected)]
+
+
 def _claims_outage(text: str) -> bool:
     """True if any sentence-ish chunk asserts an outage without negating it.
 
@@ -200,7 +268,7 @@ def _claims_outage(text: str) -> bool:
     was impacted by the January outage." contains a real claim in the second
     sentence that a whole-text negation guard would wrongly suppress.
     """
-    for chunk in re.split(r"[.!?\n]+", text):
+    for chunk in _sentences(text):
         if _OUTAGE_CLAIM_RE.search(chunk) and not _OUTAGE_NEGATION_RE.search(chunk):
             return True
     return False
@@ -212,22 +280,29 @@ def _claims_outage(text: str) -> bool:
 # apart in real phrasing ("One of your managers - Pat - already told me last
 # week it was approved"), so adjacency is the wrong test. Both terms present in
 # the message, with the approval not negated, is what these look for.
-_AUTHORITY_RE = re.compile(
-    r"\b(manager|managers|supervisor|someone on your team)\b",
-    re.IGNORECASE,
+# Same shape as the outage vocabulary above, for the same reason.
+_AUTHORITY_WORDS = (
+    r"managers?|supervisors?|team leads?|"
+    r"(someone|somebody|a member|one) (on|from|of) your team"
 )
-_APPROVED_RE = re.compile(
-    r"\b(approved|authoris|authoriz|signed off|gave the ok|green ?lit)",
-    re.IGNORECASE,
+# "approval" the noun is the most common phrasing of this claim and was absent
+# until the #192 review found it inverted the verdict on the fixture it was
+# written for. Kept as a word list so the noun and verb cannot drift apart.
+_APPROVAL_WORDS = (
+    r"approved?|approvals?|authoris\w*|authoriz\w*|"
+    r"signed (it )?off|gave (me |us )?the ok|okayed|green[ -]?lit|"
+    r"gave (me |us )?the go[ -]?ahead"
 )
+
+_AUTHORITY_RE = re.compile(rf"\b({_AUTHORITY_WORDS})\b", re.IGNORECASE)
+_APPROVED_RE = re.compile(rf"\b({_APPROVAL_WORDS})\b", re.IGNORECASE)
 # Negation is scoped with a window rather than a fixed-width lookbehind, so
 # "my manager never approved this" is caught. A lookbehind can only see the one
 # word before the match and misses "never", "did not" and anything with a word
 # in between.
 _APPROVAL_NEGATION_RE = re.compile(
-    r"\b(no|not|never|without|wasn't|was not|didn't|did not|denied|refused)\b"
-    r"[^.!?\n]{0,60}"
-    r"\b(approved|authoris|authoriz|signed off|gave the ok|green ?lit)",
+    rf"\b({_NEGATORS}|denied|refused|declined)\b"
+    rf"[^.!?\n]{{0,60}}\b({_APPROVAL_WORDS})\b",
     re.IGNORECASE,
 )
 
@@ -240,7 +315,7 @@ def _claims_approval(message: str) -> bool:
     charge was approved by my bank." as an approval claim, because the two
     halves never have to be about each other.
     """
-    for chunk in re.split(r"[.!?\n]+", message):
+    for chunk in _sentences(message):
         if (
             _AUTHORITY_RE.search(chunk)
             and _APPROVED_RE.search(chunk)
