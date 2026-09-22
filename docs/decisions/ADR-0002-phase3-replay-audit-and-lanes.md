@@ -4,9 +4,10 @@
 
 ## Context
 
-The offline product loop from ADR-0001 is built: 29 runnable tasks, a
-deterministic verifier, heuristic attribution, failure bundles, pinned
-regression artifacts, batch execution, and a dashboard reading real
+The offline product loop from ADR-0001 is built: 32 runnable tasks under the
+scripted fixture agent (harness verification, not live-model coverage, see
+issue #178), a deterministic verifier, heuristic attribution, failure bundles,
+pinned regression artifacts, batch execution, and a dashboard reading real
 artifacts. The AutoLab roadmap's Phase 2 is nearly closed and Phase 3, the
 first autonomous experiment loop, is next. Three things had to be decided
 before Phase 3 could start, and each had been argued more than once.

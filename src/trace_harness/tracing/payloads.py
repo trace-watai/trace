@@ -107,6 +107,9 @@ class ToolObservationPayload(_IgnoreExtra):
 
 class FinalAnswerPayload(_IgnoreExtra):
     final_answer: str
+    # control_id of the control that blocked this answer (0.5.0+); None when
+    # the answer stood.
+    blocked_by: str | None = None
 
 
 class RunFinishedPayload(_IgnoreExtra):

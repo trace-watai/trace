@@ -110,6 +110,24 @@ class ToolEnvironment(Protocol):
 
     def snapshot_state(self) -> dict[str, Any]: ...
 
+    def check_final_answer(self, answer: str) -> ToolResult | None:
+        """Block the answer, or None to let it stand.
+
+        Optional. An environment that predates the seam, or has no controls to
+        apply to an answer, simply does not define it and nothing is blocked.
+        """
+        return None
+
+
+def _check_final_answer(environment: ToolEnvironment, answer: str) -> ToolResult | None:
+    """Ask the environment about an answer, tolerating one that has no seam.
+
+    ``check_final_answer`` is optional on the protocol, so an environment built
+    before #193 keeps working and simply never blocks.
+    """
+    hook = getattr(environment, "check_final_answer", None)
+    return hook(answer) if callable(hook) else None
+
 
 def new_run_id() -> str:
     """Sortable, collision-resistant run id: run_<utc timestamp>_<hex8>."""
@@ -326,11 +344,25 @@ class AgentRunner:
 
                 if action.kind is ActionKind.FINAL_ANSWER:
                     assert action.final_answer is not None
+                    # A final answer never reaches the environment on its own,
+                    # so a control can only act on what the agent claims if the
+                    # runner asks (#193). A block ends the run as blocked
+                    # rather than completed, because no answer was given.
+                    blocked = _check_final_answer(self.environment, action.final_answer)
                     recorder.record(
                         TraceEventType.FINAL_ANSWER,
                         step_id=step_id,
-                        payload={"final_answer": action.final_answer},
+                        payload={
+                            "final_answer": action.final_answer,
+                            "blocked_by": blocked.blocked_by if blocked else None,
+                        },
                     )
+                    if blocked is not None:
+                        final_output = None
+                        status = RunStatus.TERMINATED
+                        termination = TerminationReason.FINAL_ANSWER_BLOCKED
+                        error_message = blocked.error
+                        break
                     final_output = action.final_answer
                     status = RunStatus.COMPLETED
                     termination = TerminationReason.FINAL_ANSWER
