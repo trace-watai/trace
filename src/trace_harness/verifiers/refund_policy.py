@@ -188,6 +188,11 @@ class RefundPolicyRules(BaseModel):
 # The vocabulary is one string built once and shared by the claim and negation
 # regexes. Writing the word list twice is how "disruption" ended up in the
 # claim pattern and not in a second, narrower copy of it (#192 review).
+# "service was down" is a deliberate widening relative to what main matches.
+# It was present in the shadowing regex #192 introduced and therefore was the
+# binding in effect, so removing it while deleting that shadow would have been
+# a silent narrowing of its own. It is a plain outage claim in customer words
+# and it is covered by a test in both directions.
 _OUTAGE_WORDS = r"outages?|incidents?|downtimes?|disruptions?|service was down"
 
 # Negators cover the plain words plus the contractions people actually type.

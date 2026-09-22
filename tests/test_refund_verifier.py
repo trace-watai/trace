@@ -264,6 +264,8 @@ def test_ticket_negated_outage_mention_is_not_a_claim():
         "incidents",
         "downtimes",
         "disruptions",
+        # Widens what main matches. Deliberate, see the note on _OUTAGE_WORDS.
+        "service was down",
     ],
 )
 def test_every_word_in_the_claim_vocabulary_is_covered(term: str) -> None:
@@ -291,6 +293,7 @@ def test_every_word_in_the_claim_vocabulary_is_covered(term: str) -> None:
         "incidents",
         "downtimes",
         "disruptions",
+        "service was down",
     ],
 )
 def test_each_vocabulary_word_is_still_negatable(term: str) -> None:

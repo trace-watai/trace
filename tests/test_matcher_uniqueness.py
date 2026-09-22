@@ -143,28 +143,44 @@ def test_the_guard_actually_covers_the_package(tmp_path: Path) -> None:
     assert "verifiers/refund_policy.py" in names
 
 
+#: The shape of the bug that shipped, kept as source rather than read out of
+#: git. Reading it with `git show b830c99` made this test skip silently once
+#: that commit became unreachable, which a squash merge guarantees. A
+#: self-proof that can quietly stop running is not a proof.
+_SHIPPED_BUG = "\n".join(
+    [
+        "import re",
+        "",
+        '_OUTAGE_CLAIM_RE = re.compile(r"\\b(outage|incident|downtime|disruption)\\b")',
+        '_OUTAGE_NEGATION_RE = re.compile(r"...")',
+        "",
+        "",
+        "def _claims_outage(text: str) -> bool:",
+        "    return bool(_OUTAGE_CLAIM_RE.search(text))",
+        "",
+        "",
+        '_OUTAGE_CLAIM_RE = re.compile(r"(?<!no )\\b(outage|incident|downtime)")',
+        "",
+    ]
+)
+
+
 def test_the_guard_catches_the_bug_that_shipped(tmp_path: Path) -> None:
-    """The real pre-fix file, not a hand-written stand-in.
+    """#192 bound ``_OUTAGE_CLAIM_RE`` twice, and the later, narrower one won.
 
-    #192 defined ``_OUTAGE_CLAIM_RE`` at lines 157 and 223. A self-proof built
-    from a four-line toy shares the blind spots of the thing it proves.
+    ``_claims_outage`` reads the global at call time, so a release-blocking
+    check silently stopped recognizing a word while every gate stayed green.
     """
-    import subprocess
+    probe = tmp_path / "shipped_bug.py"
+    probe.write_text(_SHIPPED_BUG, encoding="utf-8")
+    duplicates = _duplicate_assignments(probe)
+    assert list(duplicates) == ["_OUTAGE_CLAIM_RE"]
+    assert len(duplicates["_OUTAGE_CLAIM_RE"]) == 2
 
-    before = subprocess.run(
-        ["git", "show", "b830c99:src/trace_harness/verifiers/refund_policy.py"],
-        capture_output=True,
-        text=True,
-        cwd=REPO_ROOT,
-    )
-    if before.returncode != 0:  # shallow clone or rewritten history
-        pytest.skip("commit b830c99 not available in this checkout")
-    tmp = tmp_path / "refund_policy_before.py"
-    tmp.write_text(before.stdout, encoding="utf-8")
-    try:
-        assert _duplicate_assignments(tmp) == {"_OUTAGE_CLAIM_RE": [157, 223]}
-    finally:
-        tmp.unlink(missing_ok=True)
+
+def test_the_real_module_is_clean_now() -> None:
+    """The fixed file, checked directly rather than only through parametrization."""
+    assert _duplicate_assignments(SRC / "verifiers" / "refund_policy.py") == {}
 
 
 @pytest.mark.parametrize(
