@@ -140,7 +140,23 @@ and writes every verdict to `repair_validation.json` (issue #146).
 | `ticket_claim_grounding_check` | none yet |
 | `final_answer_state_grounding_check` | none yet |
 | `required_escalation_enforcement` | none yet |
-| `regression_test_ci_gate` | not an environment guardrail; a CI control |
+| `escalation_discipline_check` | none yet |
+| `retrieval_before_action_check` | none yet |
+| `expected_action_contract_check` | never; detection only, see below |
+| `regression_test_ci_gate` | never; a CI-side control, #161 makes it real |
+
+Two of these will never have a `guardrail_ref`, and saying so is the point.
+`expected_action_contract_check` covers a remedy that was omitted or swapped,
+and a pre-dispatch hook can only stop an action, never cause one, so blocking
+would make an omitted refund look fixed while the customer still has nothing.
+`regression_test_ci_gate` runs in CI rather than in the environment. Both are
+prescribed honestly and reported as `skipped: not_materializable` rather than
+counted as coverage.
+
+Every check id the verifier can emit has a template, enforced by
+`tests/test_control_templates_lockstep.py`. Adding a check without a severity
+or a template fails that test rather than producing a bundle with a gap nobody
+notices.
 
 ### Control validation
 

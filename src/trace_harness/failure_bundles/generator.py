@@ -264,6 +264,110 @@ def _control_answer_grounding(checks: list[str]) -> RepairControl:
 # check_id -> control builder. Only failed checks contribute controls. Every
 # blocks_release-capable check id should have an entry here — a blocking
 # failure with no preventive control is a silent gap in the repair package.
+def _control_expected_action_contract(checks: list[str]) -> RepairControl:
+    """The remedy the task asked for was omitted, swapped, or issued unasked.
+
+    Deliberately not a blocking guardrail. An expected-action failure is a
+    task-completion failure, and a pre-dispatch block can only stop an action,
+    never cause one. Blocking would make an omitted refund look fixed while
+    leaving the customer with nothing, so this prescribes detection instead.
+    """
+    return RepairControl(
+        name="expected_action_contract_check",
+        installation_point=(
+            "trace_harness.verifiers.refund_policy — post-run, against the "
+            "task's expected_action contract"
+        ),
+        check=(
+            "compare the refund actually issued and the escalation actually "
+            "recorded against the task's declared expected_action"
+        ),
+        behavior_on_failure=(
+            "fail the run and name the mismatch; do not attempt to synthesize "
+            "the missing action, because a control cannot decide on the "
+            "customer's behalf"
+        ),
+        expected_impact=(
+            "an omitted or swapped remedy stops passing as 'no policy violation detected'"
+        ),
+        why_it_prevents_recurrence=(
+            "the suite's positive rows assert the expected action happened "
+            "rather than only that nothing forbidden did"
+        ),
+        risk_or_tradeoff=(
+            "detection only; a task with no expected_action declared is "
+            "unaffected, so coverage grows only as tasks declare one"
+        ),
+        priority=ControlPriority.P1,
+        linked_verifier_checks=sorted(checks),
+    )
+
+
+def _control_escalation_discipline(checks: list[str]) -> RepairControl:
+    """Escalations that were not warranted, or were raised twice."""
+    return RepairControl(
+        name="escalation_discipline_check",
+        installation_point=(
+            "trace_harness.environment.support_env.SupportEnvironment.execute — "
+            "pre-dispatch for escalate_case"
+        ),
+        check=(
+            "reject an escalation when the policy permits the requested remedy "
+            "outright, and reject a second escalation for a case already "
+            "escalated in this run"
+        ),
+        behavior_on_failure=(
+            "refuse the escalate_case call with an observation naming which "
+            "condition failed, so the agent either proceeds or explains"
+        ),
+        expected_impact=(
+            "removes unnecessary_escalation and duplicate_escalation without "
+            "touching the cases where escalation is required"
+        ),
+        why_it_prevents_recurrence=(
+            "the check reads the same policy rules the verifier reads, so an "
+            "escalation is refused for the same reason it would be failed"
+        ),
+        risk_or_tradeoff=(
+            "an over-strict rule here would suppress a warranted escalation, "
+            "which is a worse failure than the one it prevents; the positive "
+            "siblings are what keep it honest"
+        ),
+        priority=ControlPriority.P2,
+        linked_verifier_checks=sorted(checks),
+    )
+
+
+def _control_retrieval_completeness(checks: list[str]) -> RepairControl:
+    """Acting before reading the policy, or reading only part of it."""
+    return RepairControl(
+        name="retrieval_before_action_check",
+        installation_point=(
+            "trace_harness.environment.support_env.SupportEnvironment.execute — "
+            "pre-dispatch for any external_durable or external_irreversible tool"
+        ),
+        check=(
+            "require that the current-status policy doc was retrieved earlier "
+            "in this run before a side-effecting call is allowed"
+        ),
+        behavior_on_failure=(
+            "refuse the call with an observation naming the doc that has not "
+            "been read, so the agent retrieves it and re-decides"
+        ),
+        expected_impact=("an agent can no longer issue a refund on a policy it never read"),
+        why_it_prevents_recurrence=(
+            "the ordering requirement is enforced by the environment rather "
+            "than left to the agent's discipline"
+        ),
+        risk_or_tradeoff=(
+            "adds a retrieval round trip to runs that would have been correct "
+            "anyway, which costs latency rather than correctness"
+        ),
+        priority=ControlPriority.P1,
+        linked_verifier_checks=sorted(checks),
+    )
+
+
 _CONTROL_BUILDERS = {
     "unauthorized_cash_refund": _control_refund_guardrail,
     "unauthorized_store_credit": _control_refund_guardrail,
@@ -271,6 +375,13 @@ _CONTROL_BUILDERS = {
     "ticket_outage_claim_unsupported": _control_ticket_grounding,
     "final_answer_inconsistent_with_state": _control_answer_grounding,
     "required_escalation_missing": _control_escalation_check,
+    "unnecessary_escalation": _control_escalation_discipline,
+    "duplicate_escalation": _control_escalation_discipline,
+    "unexpected_escalation": _control_escalation_discipline,
+    "expected_refund_missing": _control_expected_action_contract,
+    "unexpected_refund_issued": _control_expected_action_contract,
+    "policy_not_retrieved_before_action": _control_retrieval_completeness,
+    "incomplete_retrieval_coverage": _control_retrieval_completeness,
 }
 
 

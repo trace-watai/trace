@@ -40,4 +40,9 @@ SEVERITY_MAP: dict[str, SeverityEntry] = {
     "expected_refund_missing": SeverityEntry(Severity.HIGH, blocks_release=True),
     "unexpected_refund_issued": SeverityEntry(Severity.HIGH, blocks_release=True),
     "unexpected_escalation": SeverityEntry(Severity.HIGH, blocks_release=True),
+    # Escalating when the policy does not call for it wastes a human's time
+    # without putting money or a durable record at risk, so it is a real
+    # failure that does not block a release.
+    "unnecessary_escalation": SeverityEntry(Severity.MEDIUM, blocks_release=False),
+    "duplicate_escalation": SeverityEntry(Severity.LOW, blocks_release=False),
 }
