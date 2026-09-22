@@ -594,8 +594,11 @@ def test_every_verdict_records_the_artifact_replay_mode(tmp_path, capsys, replay
     assert {c.predicted_by for c in validation.controls} == {"heuristic_v1"}
     # The demo's basis classifies as live_required, so a static_ok label on it
     # is flagged even though the verdict records the label as stated.
-    warned = "static_ok is not supported by the artifact's own basis" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    warned = "static_ok is not supported by the artifact's own basis" in out
     assert warned == (replay_mode == "static_ok")
+    noted = "gating labels are predicted until #159 measures them" in out
+    assert noted == (standing == "gating")
     (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
     assert accepted.standing == standing
     assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (
@@ -814,5 +817,9 @@ def test_a_verdict_gates_only_against_an_artifact_that_backs_it() -> None:
     assert verdict_gates(verdict, backing)
     assert not verdict_gates(verdict, None)
     assert not verdict_gates(verdict, regression_artifact(replay_mode="unlabeled"))
+    unsupported = static_ok_basis().model_copy(update={"rule_kind": "requirement"})
+    assert not verdict_gates(
+        verdict, regression_artifact(replay_mode="static_ok", basis=unsupported)
+    )
     measured = static_ok_basis().model_copy(update={"predicted_by": "measured"})
     assert not verdict_gates(verdict, regression_artifact(replay_mode="static_ok", basis=measured))

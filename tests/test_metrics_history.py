@@ -191,7 +191,13 @@ def test_only_an_accepted_verdict_can_make_a_name_gating() -> None:
 @pytest.mark.parametrize("layout", ["run_dir", "library_evidence"])
 @pytest.mark.parametrize(
     ("artifact_label", "gating"),
-    [("static_ok_supported", 1), ("unlabeled", 0), ("static_ok_without_basis", 0), (None, 0)],
+    [
+        ("static_ok_supported", 1),
+        ("static_ok_unsupported", 0),
+        ("unlabeled", 0),
+        ("static_ok_without_basis", 0),
+        (None, 0),
+    ],
 )
 def test_snapshot_checks_a_gating_verdict_against_the_retained_artifact(
     tmp_path: Path, layout: str, artifact_label: str | None, gating: int
@@ -216,6 +222,10 @@ def test_snapshot_checks_a_gating_verdict_against_the_retained_artifact(
     )
     artifact = {
         "static_ok_supported": SUPPORTED,
+        "static_ok_unsupported": regression_artifact(
+            replay_mode="static_ok",
+            basis=static_ok_basis().model_copy(update={"rule_kind": "requirement"}),
+        ),
         "unlabeled": regression_artifact(),
         "static_ok_without_basis": regression_artifact(replay_mode="static_ok"),
         None: None,
@@ -596,6 +606,7 @@ def test_the_collector_appends_a_snapshot_and_keeps_its_own_exit_code(
     assert main(argv) == 0
     out = capsys.readouterr().out
     assert "Metrics history:" in out
+    assert "(0 gating on predicted static_ok labels, 1 advisory)" in out
     assert "1/2 siblings failed; 1 of 1 families failed, true rate could be up to 100.0%" in out
 
     recorded = load_history(history)
