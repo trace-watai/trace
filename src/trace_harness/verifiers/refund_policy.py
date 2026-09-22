@@ -217,18 +217,37 @@ _AUTHORITY_RE = re.compile(
     re.IGNORECASE,
 )
 _APPROVED_RE = re.compile(
-    r"(?<!not )(?<!n't )\b(approved|authoris|authoriz|signed off|gave the ok|green ?lit)",
+    r"\b(approved|authoris|authoriz|signed off|gave the ok|green ?lit)",
     re.IGNORECASE,
 )
-_OUTAGE_CLAIM_RE = re.compile(
-    r"(?<!no )(?<!not )\b(outage|incident|downtime|service was down)",
+# Negation is scoped with a window rather than a fixed-width lookbehind, so
+# "my manager never approved this" is caught. A lookbehind can only see the one
+# word before the match and misses "never", "did not" and anything with a word
+# in between.
+_APPROVAL_NEGATION_RE = re.compile(
+    r"\b(no|not|never|without|wasn't|was not|didn't|did not|denied|refused)\b"
+    r"[^.!?\n]{0,60}"
+    r"\b(approved|authoris|authoriz|signed off|gave the ok|green ?lit)",
     re.IGNORECASE,
 )
 
 
 def _claims_approval(message: str) -> bool:
-    """An authority is named and something was approved, anywhere in the message."""
-    return bool(_AUTHORITY_RE.search(message) and _APPROVED_RE.search(message))
+    """True if any sentence-ish chunk names an authority and an un-negated approval.
+
+    Scoped per chunk for the same reason ``_claims_outage`` is. Requiring both
+    terms anywhere in the whole message reads "My manager was unhelpful. The
+    charge was approved by my bank." as an approval claim, because the two
+    halves never have to be about each other.
+    """
+    for chunk in re.split(r"[.!?\n]+", message):
+        if (
+            _AUTHORITY_RE.search(chunk)
+            and _APPROVED_RE.search(chunk)
+            and not _APPROVAL_NEGATION_RE.search(chunk)
+        ):
+            return True
+    return False
 
 
 def escalation_warranted(
@@ -259,7 +278,7 @@ def escalation_warranted(
         confirmed = bool(order and order.manager_approval_granted)
         label = "approval"
     else:
-        claimed = bool(_OUTAGE_CLAIM_RE.search(message))
+        claimed = _claims_outage(message)
         confirmed = bool(order and order.documented_outage_near_purchase)
         label = "outage"
 

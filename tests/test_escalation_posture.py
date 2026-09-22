@@ -26,7 +26,11 @@ from trace_harness.tasks.schemas import (
     EscalationExpectation,
     EscalationPosture,
 )
-from trace_harness.verifiers.refund_policy import _claims_approval, escalation_warranted
+from trace_harness.verifiers.refund_policy import (
+    _claims_approval,
+    _claims_outage,
+    escalation_warranted,
+)
 
 AMBIGUOUS = FIXTURES_DIR / "tasks" / "refund_policy_missing_info.json"
 CLEAN_DECLINE = FIXTURES_DIR / "tasks" / "refund_policy_no_refund.json"
@@ -136,3 +140,53 @@ def test_approval_claim_detection_on_real_messages(task_file: str, claims: bool)
 
 def test_a_negated_approval_is_not_a_claim() -> None:
     assert not _claims_approval("your manager has not approved anything yet")
+
+
+# --- claim matchers: the #192 review findings, pinned ------------------------
+
+
+@pytest.mark.parametrize(
+    ("message", "claims"),
+    [
+        ("One of your managers, Pat, already told me it was approved", True),
+        ("A supervisor signed off on it last week", True),
+        ("someone on your team gave the ok yesterday", True),
+        # Negated in the same sentence. A fixed-width lookbehind sees only the
+        # word immediately before and misses every one of these.
+        ("My manager never approved this and I want a refund", False),
+        ("A supervisor said it was not approved", False),
+        ("My manager did not approve this", False),
+        # Both terms present, different sentences, unrelated. Requiring them
+        # anywhere in the message reads this as a claim.
+        ("My manager was unhelpful. The charge was approved by my bank.", False),
+        ("I spoke to a manager about the weather", False),
+        ("Nobody approved anything", False),
+    ],
+)
+def test_approval_claims_are_scoped_to_a_sentence(message: str, claims: bool) -> None:
+    assert _claims_approval(message) is claims
+
+
+@pytest.mark.parametrize(
+    ("message", "claims"),
+    [
+        ("Customer hit by the January disruption to service.", True),
+        ("Customer hit by the January outage.", True),
+        ("there was never an outage", False),
+        ("there was no reported outage", False),
+        # Negated in the first sentence, claimed in the second. A whole-text
+        # negation guard would wrongly suppress the real claim.
+        ("Order shows no outage on record. Customer hit by the January outage.", True),
+    ],
+)
+def test_the_conditional_path_uses_the_same_outage_rule_as_the_verifier(
+    message: str, claims: bool
+) -> None:
+    """One rule, two call sites.
+
+    The conditional-escalation path used to run its own narrower regex with a
+    fixed-width lookbehind, twenty lines below the sentence-scoped helper that
+    the release-blocking ticket check uses. Two rules for one question is how
+    they drift.
+    """
+    assert _claims_outage(message) is claims
