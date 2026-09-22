@@ -109,8 +109,8 @@ export const ratioValue = (ratio: Ratio): number | null =>
  * Fill the gating and advisory split on a record written before it existed.
  *
  * Those records were computed from validations that carried no replay mode,
- * and a verdict without one reads as unlabeled, which is advisory. The backend
- * reads the same lines the same way.
+ * and a verdict without one reads as not recorded, which is advisory. The
+ * backend reads the same lines the same way.
  */
 const withAcceptanceSplit = (coverage: Camelize<RawCoverage>): Coverage => ({
   ...coverage,

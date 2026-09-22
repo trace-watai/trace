@@ -36,8 +36,8 @@ from trace_harness.runner.result import RunResult
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.events import utc_now
 
-# 0.2.0: entries record their acceptance basis. A 0.1.0 entry has none and
-# reads as advisory on an unlabeled artifact, which is what it was.
+# 0.2.0: entries record their acceptance basis. A 0.1.0 entry has none; it
+# reads as advisory with its replay_mode not recorded.
 CONTROL_LIBRARY_SCHEMA_VERSION = "0.2.0"
 DEFAULT_CONTROL_LIBRARY = Path("fixtures/controls/library.json")
 
@@ -107,14 +107,16 @@ class StatusChange(BaseModel):
 class AcceptanceBasis(BaseModel):
     """The replay label an entry's accepted verdict was reached under.
 
-    Both fields default to what an entry written before 0.2.0 was actually
-    accepted on, so an old library reads as advisory without being rewritten.
-    ``check_acceptance`` holds both to the retained artifact.
+    An entry written before 0.2.0 has no basis. Nothing at acceptance time
+    recorded which label the verdict relied on, so it reads as not recorded
+    (``replay_mode`` None) and advisory, whatever label its retained artifact
+    carries now. ``check_acceptance`` holds a recorded basis to the artifact
+    and refuses a gating basis that records no label.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    replay_mode: ReplayMode = "unlabeled"
+    replay_mode: ReplayMode | None = None
     standing: VerdictStanding = "advisory"
 
     @classmethod
@@ -189,9 +191,11 @@ def check_acceptance(
 ) -> None:
     """Bind an accepted verdict to this exact control and originating failure.
 
-    The recorded basis must name the artifact's own ``replay_mode`` and the
+    A recorded basis must name the artifact's own ``replay_mode`` and the
     standing that label allows. A gating acceptance therefore needs a
     ``static_ok`` artifact, and an advisory one cannot be recorded as gating.
+    A label that was never recorded, on the verdict or on the basis, is not
+    compared with the artifact, and a basis without one can only be advisory.
     """
     run_id = source.run_id
     if {package.run_id, artifact.source_run_id, validation.run_id, control.provenance.run_id} != {
@@ -222,11 +226,18 @@ def check_acceptance(
         or any(r.verdict != "PASS" for r in verdict.sibling_reruns)
     ):
         raise ValueError(f"control {control.control_id!r} lacks complete accepted validation")
-    if verdict.replay_mode != artifact.replay_mode:
+    if verdict.replay_mode is not None and verdict.replay_mode != artifact.replay_mode:
         raise ValueError(
             f"control {control.control_id!r} was validated as {verdict.replay_mode} "
             f"but the artifact is {artifact.replay_mode}"
         )
+    if basis.replay_mode is None:
+        if basis.standing != "advisory":
+            raise ValueError(
+                f"control {control.control_id!r} records a {basis.standing} acceptance "
+                "without the replay_mode it relied on"
+            )
+        return
     if basis.replay_mode != artifact.replay_mode:
         raise ValueError(
             f"control {control.control_id!r} records replay_mode {basis.replay_mode} "

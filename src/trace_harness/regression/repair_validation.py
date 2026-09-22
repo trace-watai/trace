@@ -31,7 +31,8 @@ from trace_harness.regression.schemas import ReplayMode
 
 # 0.2.0: each control verdict records the artifact's replay_mode and whether
 # that makes it gating or advisory; the rollup splits accepted verdicts the
-# same way. Files written at 0.1.0 read as unlabeled, which is advisory.
+# same way. A 0.1.0 file records no replay_mode, which reads as not recorded
+# and advisory whatever its artifact says.
 # 0.3.0: re-runs record their task fixture, and the rollup reports
 # over-blocking by task family with a 95% upper bound.
 REPAIR_VALIDATION_SCHEMA_VERSION = "0.3.0"
@@ -42,11 +43,12 @@ TASK_FAMILY_ROOT = "refund_task_families"
 VerdictStanding = Literal["gating", "advisory"]
 
 
-def standing_for(replay_mode: ReplayMode) -> VerdictStanding:
+def standing_for(replay_mode: ReplayMode | None) -> VerdictStanding:
     """Whether a verdict reached under ``replay_mode`` can gate anything.
 
     Only ``static_ok`` gates, which is the rule the regression collector
-    already applies to control results (ADR-0002, decision 2).
+    already applies to control results (ADR-0002, decision 2). A label that
+    was never recorded (None) is advisory.
     """
     return "gating" if replay_mode == "static_ok" else "advisory"
 
@@ -96,9 +98,10 @@ class ControlValidation(BaseModel):
     control_id: str | None = None
     originating_rerun: ReRun | None = None
     sibling_reruns: list[ReRun] = Field(default_factory=list)
-    # The replay_mode of the artifact this verdict was reached against. Files
-    # written before 0.2.0 did not record it and read as unlabeled.
-    replay_mode: ReplayMode = "unlabeled"
+    # The replay_mode of the artifact this verdict was reached against. None
+    # means it was not recorded, as in every 0.1.0 file main writes today.
+    # An unrecorded label is never compared with the artifact's current one.
+    replay_mode: ReplayMode | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -295,7 +298,7 @@ def decide_verdict(
     return ControlVerdict.ACCEPTED, None
 
 
-def skipped_control(name: str, *, replay_mode: ReplayMode = "unlabeled") -> ControlValidation:
+def skipped_control(name: str, *, replay_mode: ReplayMode | None = None) -> ControlValidation:
     """A prescribed control with no registered guardrail, reported honestly."""
     return ControlValidation(
         control=name,

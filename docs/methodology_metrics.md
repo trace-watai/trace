@@ -172,7 +172,7 @@ accepted names with at least one accepted verdict whose `standing ==
 "gating"`; `accepted_advisory` counts the rest, so the two always sum to
 `accepted`. A snapshot recorded at `0.1.0` has no split and reads as all
 advisory, because the validations it was computed from carried no
-`replay_mode` and read as `unlabeled`.
+`replay_mode`, and an unrecorded label reads as advisory.
 
 *Source.* `repair_package.json.controls[].name`,
 `environment/controls.py`, and `repair_validation.json.controls[]`.

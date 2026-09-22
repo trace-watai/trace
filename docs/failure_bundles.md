@@ -177,7 +177,9 @@ verdict values are unchanged, so an advisory `accepted` still means the
 control held under replay, and it makes no claim about a live agent. The
 rollup splits `accepted` into `accepted_gating` and `accepted_advisory`.
 `standing` is derived on read, so an edited file cannot promote a verdict.
-Files written at `0.1.0` carry no label and read as `unlabeled`.
+A `0.1.0` file, which is what `main` wrote before this schema, carries no
+label. Its verdicts read as not recorded and advisory, and an unrecorded
+label is never compared with the artifact's current one.
 
 Each re-run also records the `task_fixture` it was built from, and
 `rollup.over_blocking` reports sibling failures by task family with a
@@ -238,16 +240,23 @@ commit time. The rule:
 - Advisory entries install like any active entry, so suites and replays run
   with them in place and measure their effect. Nothing downstream may report
   an advisory entry as proven.
-- Loading holds the recorded basis to the retained artifact and validation.
+- Loading holds a recorded basis to the retained artifact and validation.
   A basis naming a different `replay_mode`, or a `gating` basis on an
-  artifact that is not `static_ok`, fails to load.
+  artifact that is not `static_ok`, fails to load. A validation verdict is
+  compared with the artifact only when it recorded a `replay_mode`.
 
-Library schema `0.2.0` adds the field. A `0.1.0` entry has none and reads
-as `unlabeled` and `advisory`, which is what `ctl_refund_window_v1` was
-accepted on. The first write of an older library records that basis
-explicitly. `trace-harness controls list` prints every entry with its
-status and basis, and `run-suite --control-library` prints the gating and
-advisory split of what it installed.
+Library schema `0.2.0` adds the field. An entry without it, which covers
+every entry written before this schema including `ctl_refund_window_v1`,
+reads as `advisory` with its `replay_mode` not recorded. That holds
+whatever its retained artifact says: `ctl_refund_window_v1`'s artifact is
+`unlabeled`, and a library built by earlier code from a current artifact
+has a `live_required` one. Nothing at acceptance time recorded which label
+the verdict relied on, so the entry is not compared with the artifact, and
+a basis with no `replay_mode` cannot be `gating`. The first write of an
+older library records that basis explicitly. `trace-harness controls list`
+prints every entry with its status and basis, and `run-suite
+--control-library` prints the gating and advisory split of what it
+installed.
 
 The [retained example](../fixtures/controls/README.md) preserves all 18
 passing suite cases. Two negatives lose `unauthorized_cash_refund` but retain

@@ -595,13 +595,13 @@ def _set_acceptance(library, replay_mode, standing):
 
 
 def test_committed_library_entry_reads_as_advisory():
-    """ctl_refund_window_v1 was accepted on an unlabeled artifact and predates the field."""
+    """ctl_refund_window_v1 predates the field, so its basis reads as not recorded."""
     raw = COMMITTED_LIBRARY.read_bytes()
     assert "acceptance" not in json.loads(raw)["entries"][0]
     library = load_library(COMMITTED_LIBRARY)
     assert library.schema_version == "0.1.0"
     (entry,) = [e for e in library.entries if e.control.control_id == REFUND_WINDOW_CONTROL_ID]
-    assert entry.acceptance == AcceptanceBasis(replay_mode="unlabeled", standing="advisory")
+    assert entry.acceptance == AcceptanceBasis(replay_mode=None, standing="advisory")
     assert COMMITTED_LIBRARY.read_bytes() == raw
 
 
@@ -625,6 +625,13 @@ def test_acceptance_basis_must_name_the_artifact_replay_mode(committed):
     library, _ = committed
     _set_acceptance(library, "unlabeled", "advisory")
     with pytest.raises(ValueError, match="records replay_mode unlabeled"):
+        load_library(library)
+
+
+def test_a_basis_without_a_replay_mode_cannot_be_gating(committed):
+    library, _ = committed
+    _set_acceptance(library, None, "gating")
+    with pytest.raises(ValueError, match="without the replay_mode it relied on"):
         load_library(library)
 
 
@@ -652,7 +659,7 @@ def test_controls_list_shows_each_acceptance_basis(capsys):
     out = capsys.readouterr().out
     assert "schema 0.1.0" in out
     assert REFUND_WINDOW_CONTROL_ID in out
-    assert "active · advisory (replay_mode unlabeled)" in out
+    assert "active · advisory (replay_mode not recorded)" in out
     assert "1 active (0 gating, 1 advisory)" in out
 
 
@@ -663,8 +670,51 @@ def test_writing_an_old_library_records_its_basis_explicitly(tmp_path):
     rollback_control(copy / "library.json", REFUND_WINDOW_CONTROL_ID, "exercise the migration")
     written = json.loads((copy / "library.json").read_text())
     assert written["schema_version"] == CONTROL_LIBRARY_SCHEMA_VERSION
-    assert written["entries"][0]["acceptance"] == {
-        "replay_mode": "unlabeled",
-        "standing": "advisory",
-    }
+    assert written["entries"][0]["acceptance"] == {"replay_mode": None, "standing": "advisory"}
     assert load_library(copy / "library.json").active_controls() == []
+
+
+def _as_written_by_main(library):
+    """Reshape a committed library the way main writes one.
+
+    Main labels every artifact, so the retained artifact stays live_required,
+    but it writes repair_validation.json at 0.1.0 with no replay_mode and an
+    entry with no acceptance basis, at library schema 0.1.0.
+    """
+    doc = json.loads(library.read_text())
+    (entry,) = doc["entries"]
+    ref = entry["provenance"]["repair_validation"]
+    path = library.parent / ref["path"]
+    validation = json.loads(path.read_text())
+    validation["schema_version"] = "0.1.0"
+    for control in validation["controls"]:
+        for key in ("replay_mode", "standing", "predicted_by"):
+            control.pop(key, None)
+        for rerun in [control["originating_rerun"], *control["sibling_reruns"]]:
+            if rerun is not None:
+                rerun.pop("task_fixture", None)
+    validation["rollup"] = {k: validation["rollup"][k] for k in ("accepted", "rejected", "skipped")}
+    path.write_text(json.dumps(validation, indent=2) + "\n")
+    ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    del entry["acceptance"]
+    doc["schema_version"] = "0.1.0"
+    library.write_text(json.dumps(doc, indent=2) + "\n")
+    artifact = json.loads(
+        (library.parent / entry["provenance"]["regression_artifact"]["path"]).read_text()
+    )
+    return artifact
+
+
+def test_a_library_written_by_main_loads_as_advisory_and_rolls_back(committed, capsys):
+    """A labeled artifact beside an unlabeled validation is not a contradiction."""
+    library, _ = committed
+    artifact = _as_written_by_main(library)
+    assert artifact["replay_mode"] == "live_required"
+    (entry,) = load_library(library).entries
+    assert entry.acceptance == AcceptanceBasis(replay_mode=None, standing="advisory")
+    assert main(["controls", "list", "--control-library", str(library)]) == 0
+    assert "advisory (replay_mode not recorded)" in capsys.readouterr().out
+    rollback_control(library, REFUND_WINDOW_CONTROL_ID, "exercise a main-written library")
+    (entry,) = load_library(library, resolve_active=False).entries
+    assert entry.status == "rolled_back"
+    assert entry.acceptance.standing == "advisory"

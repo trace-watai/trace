@@ -121,8 +121,8 @@ class Coverage(BaseModel):
         """Read a 0.1.0 record, which has no gating and advisory split.
 
         Validations written before the split did not record a replay_mode, and
-        such a verdict reads as unlabeled, which is advisory. The record was
-        computed from those validations, so every accepted name in it is
+        such a verdict reads as not recorded, which is advisory. The record
+        was computed from those validations, so every accepted name in it is
         advisory under the same rule that reads the validations themselves.
         """
         if (

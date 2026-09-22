@@ -729,7 +729,8 @@ def _list_controls(path: Path) -> int:
         basis = entry.acceptance
         _print(
             entry.control.control_id,
-            f"{entry.status} · {basis.standing} (replay_mode {basis.replay_mode}) · "
+            f"{entry.status} · {basis.standing} "
+            f"(replay_mode {basis.replay_mode or 'not recorded'}) · "
             f"{entry.control.guardrail_ref}",
         )
     _print("controls:", _library_standing(library))

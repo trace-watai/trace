@@ -632,7 +632,8 @@ def test_pinned_validation_evidence_reads_as_advisory_and_unchanged() -> None:
     raw = PINNED_VALIDATION.read_bytes()
     validation = RepairValidation.model_validate_json(raw)
     assert validation.schema_version == "0.1.0"
-    assert {c.replay_mode for c in validation.controls} == {"unlabeled"}
+    # Not recorded: 0.1.0 carries no label, so none is inferred.
+    assert {c.replay_mode for c in validation.controls} == {None}
     (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
     assert accepted.control_id == REFUND_WINDOW_CONTROL_ID
     assert accepted.standing == "advisory"
