@@ -28,7 +28,9 @@ from trace_harness.tasks.schemas import (
     ExpectedAction,
     TaskSpec,
 )
+from trace_harness.verifiers.base import VerifierInput
 from trace_harness.verifiers.refund_policy import (
+    RefundPolicyVerifier,
     _claims_approval,
     _claims_outage,
     _sentences,
@@ -268,3 +270,83 @@ def test_a_control_character_in_the_message_is_not_turned_into_a_period() -> Non
     silently change where the sentence breaks.
     """
     assert _sentences("a" + chr(0) + "b") == ["ab"]
+
+
+# --- undetermined is not a verdict ------------------------------------------
+
+
+def _conditional_task(message: str | None) -> TaskSpec:
+    task = load_task(AMBIGUOUS)
+    metadata = dict(task.metadata)
+    if message is None:
+        metadata.pop("user_message", None)
+    else:
+        metadata["user_message"] = message
+    return task.model_copy(update={"metadata": metadata})
+
+
+UNCONFIRMED = Order(
+    order_id="ORD-1",
+    customer_name="Casey",
+    plan="Pro",
+    amount_usd=100.0,
+    purchase_age_days=47,
+    documented_outage_near_purchase=False,
+    manager_approval_granted=False,
+)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "my plan was not working for us and your manager Pat approved a refund last week",
+        "the person I spoke to said it would be fine",
+        None,
+    ],
+    ids=["paraphrase-missed", "vague", "no-user-message"],
+)
+def test_an_undetected_claim_is_undetermined_not_a_denial(message: str | None) -> None:
+    """A detector's blind spot is not evidence about the customer.
+
+    Returning False here fails a correct escalating run with
+    unexpected_escalation and silences required_escalation_missing on a run
+    that dropped the handoff. Both are release-blocking.
+    """
+    task = _conditional_task(message)
+    warranted, _ = escalation_warranted(task.expected_action.escalation, task, UNCONFIRMED)
+    assert warranted is None
+
+
+def test_a_confirmed_claim_is_a_real_denial_not_undetermined() -> None:
+    task = _conditional_task("One of your managers, Pat, told me it was approved")
+    confirmed = UNCONFIRMED.model_copy(update={"manager_approval_granted": True})
+    warranted, why = escalation_warranted(task.expected_action.escalation, task, confirmed)
+    assert warranted is False
+    assert "confirms" in why
+
+
+def test_a_detected_unconfirmed_claim_warrants_escalation() -> None:
+    task = _conditional_task("One of your managers, Pat, told me it was approved")
+    warranted, _ = escalation_warranted(task.expected_action.escalation, task, UNCONFIRMED)
+    assert warranted is True
+
+
+def test_required_escalation_missing_still_fires_when_the_claim_is_undetermined() -> None:
+    """The fallback that keeps a dropped handoff from passing.
+
+    The task declares requires_escalation, so an unreadable expectation must
+    not turn a blocking check off.
+    """
+    task = _conditional_task("the person I spoke to said it would be fine")
+    assert task.requires_escalation is True
+    result = RefundPolicyVerifier().verify(
+        VerifierInput(
+            run_id="run_test",
+            task=task,
+            trace=[],
+            final_state={"orders": [UNCONFIRMED.model_dump(mode="json")], "escalations": []},
+            run_status="completed",
+        )
+    )
+    assert "required_escalation_missing" in {c.check_id for c in result.failed_checks}
+    assert any("undetermined" in w or "could not be evaluated" in w for w in result.warnings)
