@@ -15,6 +15,7 @@ from pathlib import Path
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models.base import AgentAction, Message
 from trace_harness.models.cassette import (
+    USAGE_KEYS,
     CassetteEntry,
     CassetteError,
     CassetteRequestConfig,
@@ -47,6 +48,7 @@ def import_cassette(run_dir: Path, directory: Path) -> Path:
     entries: list[CassetteEntry] = []
     pending_step = None
     raw = None
+    call_record = None
     for line in (run_dir / "trace.jsonl").read_text(encoding="utf-8").splitlines():
         event = json.loads(line)  # strict: never drop a malformed trailing line
         kind, step, payload = event["event_type"], event["step_id"], event["payload"]
@@ -56,15 +58,20 @@ def import_cassette(run_dir: Path, directory: Path) -> Path:
             transcript.extend(Message.model_validate(m) for m in payload["new_messages"])
             if len(transcript) != payload["transcript_length"]:
                 raise CassetteError("retained prompt delta is incomplete")
-            pending_step, raw = step, None
+            pending_step, raw, call_record = step, None, None
         elif kind == "model_response":
             if step != pending_step or raw is not None:
                 raise CassetteError("retained response has no matching prompt")
             raw = payload["raw"]
+            # Traces written since #196 keep the call policy's record beside raw.
+            call_record = payload.get("call_record")
         elif kind == "model_action":
             if pending_step is None or step != pending_step:
                 raise CassetteError("retained action has no matching prompt")
-            response, usage = safe_response(AgentAction.model_validate({**payload, "raw": raw}))
+            action = AgentAction.model_validate({**payload, "raw": raw, "call_record": call_record})
+            response, usage = safe_response(
+                action, usage_key=USAGE_KEYS.get(config.provider, "usage_metadata")
+            )
             entries.append(
                 CassetteEntry(
                     cassette_id=fingerprint(config.model_dump(mode="json")),
@@ -74,6 +81,7 @@ def import_cassette(run_dir: Path, directory: Path) -> Path:
                     tools_hash=tools_hash,
                     response=response,
                     usage=usage,
+                    call_record=action.call_record,
                 )
             )
             pending_step = None

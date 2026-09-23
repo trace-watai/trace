@@ -13,6 +13,7 @@ import pytest
 
 from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, VALID_TASK_PATH
 from trace_harness.models.base import ActionKind, AgentAction
+from trace_harness.models.policy import default_call_policy
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.batch import BatchRunner, BatchSummary, summary_path
 from trace_harness.runner.pipeline import run_task_pipeline
@@ -428,7 +429,11 @@ def test_live_adapter_receives_recorded_agent_knobs(
         "prompt_version": "v0",
         "cassette": None,
         "task_id": "refund_policy_valid_cash",
+        # Resolved once, like the model, so the adapter runs the policy the
+        # run config records.
+        "call_policy": default_call_policy("gemini"),
     }
+    assert result.run_config.call_policy == default_call_policy("gemini")
     assert result.run_config.temperature == 0.2
     assert result.run_config.seed == 7
     assert result.run_config.timeout_seconds == 17.0

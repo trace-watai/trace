@@ -51,18 +51,32 @@ Rupert on transcript shape); wire `validate-fixtures` into `check_repo.sh`/CI
 (with Sarp); parameterized task variants that sweep boundary values
 (day 29/30/31/60/61) from one template.
 
-## models/ — model adapters *(Rupert Maiti)*
+## models/ — model adapters *(Evaluation Systems)*
 
 **What belongs here:** the provider-neutral contract types (`Message`,
 `ToolSpec`, `ToolCall`, `AgentAction`), the `ModelAdapter` protocol, and
-its implementations: `FixtureModelAdapter` (deterministic scripted agent —
-the default everywhere) and `GeminiModelAdapter` (native function calling
-through the optional `google-genai` SDK, normalized into the same
-single-action contract).
+its implementations. `FixtureModelAdapter` is the deterministic scripted
+agent and the default everywhere. `GeminiModelAdapter` and
+`AnthropicModelAdapter` and `OpenAIModelAdapter` are the three live
+providers, each normalizing native tool calling into the same single-action
+contract through its own optional SDK. Three vendors exist so a live result
+never depends on one credential, which is what #158, #159 and #217 need to
+compare model families at all.
 
 **Exposes:** `ModelAdapter.next_action(transcript, tools) -> AgentAction`;
 `create_model_adapter(provider, ...)` — the only place provider strings are
 interpreted.
+
+**Provider capability, since they are not interchangeable:**
+
+| Provider | Native tool calling | Seed | Published price | Default pacing |
+| --- | --- | --- | --- | --- |
+| `gemini` | yes | yes | `gemini-2.5-flash`, `-flash-lite` and the default `gemini-3.6-flash`, whose price doubles on 2027-01-01 | 10 requests/minute |
+| `anthropic` | yes | no, the Messages API has none | yes | 50 requests/minute |
+| `openai` | yes | yes, best-effort with `system_fingerprint` | yes | 500 requests/minute |
+
+A seeded sample plan, such as the five seeds per condition in #217, can only
+run against a provider whose seed is actually sent.
 
 **Rules:** no code path may make tests need an API key. No tool execution
 (environment) and no prompt construction (runner). Provider errors become
@@ -72,7 +86,9 @@ shared action contract supports them.
 | Mode | Configuration | Behavior |
 | --- | --- | --- |
 | Fixture (default) | `--provider fixture` | Runs a scripted fixture; no cassette, SDK, or key. |
-| Live | `--provider gemini` | Calls the provider using explicit model settings. |
+| Live | `--provider gemini` | Calls Gemini using explicit model settings. Needs `GEMINI_API_KEY` and the `gemini` extra. Token usage is read from `usage_metadata`, with thinking tokens counted as output, and priced from `GEMINI_PRICING`. A model missing from that table, the default included, reports a null cost. |
+| Live | `--provider anthropic` | Calls Claude using explicit model settings. Needs `ANTHROPIC_API_KEY` and the `anthropic` extra. Token usage is read off the response and priced, so `cost_usd` is a number. A seed is recorded and never sent, because the Messages API has none. |
+| Live | `--provider openai` | Calls an OpenAI chat model. Needs `OPENAI_API_KEY` and the `openai` extra. Priced the same way. The seed is sent, and the response's `system_fingerprint` is recorded so a seeded re-run whose backend build moved can be told apart from a real reproduction. |
 | Record | `--cassette-mode record` | `RecordingModelAdapter` wraps the selected provider and writes normalized responses. |
 | Replay | `--cassette-mode replay` | Reads recorded responses without constructing a provider; a missing or mismatched request is an error. |
 
@@ -85,18 +101,38 @@ select record/replay. Suite agent configs accept the same `cassette` object.
 Each versioned entry pins its step, transcript hash (including provider state),
 tool-declaration hash, provider, resolved model, temperature, seed, timeout,
 and prompt version. `run_config.json` retains those settings, cassette mode,
-and resolved path. `RunConfig` and `SuiteSpec` are now `0.2.0`; older `0.1.0`
-data remains readable with cassettes disabled. Changing a setting or request
-requires a new recording. Replay never falls back to the network.
+and resolved path. `RunConfig` and `SuiteSpec` added cassettes in `0.2.0` and
+are `0.3.0` since #196; older data remains readable with cassettes disabled.
+Changing a setting or request requires a new recording. Replay never falls back
+to the network. An entry recorded from a live adapter also keeps the step's
+token counts under the provider's own usage key and its `call_record`, so the
+recorded run is priced and the replay shows the same retries. A replay itself
+calls nothing, so its `cost_usd` is exactly zero.
 
 Run traces retain fresh audit IDs and timestamps. Deterministic comparisons
 exclude only those two event fields; all remaining trace bytes, tool outcomes,
 and verifier results must agree. See [cassette fixtures](../fixtures/cassettes/README.md)
 for an offline Gemini example and provenance.
 
-**Build next:** add bounded retry/backoff and token/cost extraction; decide the
-parallel-tool-call story (`AgentAction` grows a list form behind a schema
-bump); keep one controlled key-backed acceptance run outside CI.
+**Live call policy (#196):** every live adapter sends its SDK call through
+`LiveCaller` in `models/policy.py`. It retries transient errors (408, 409, 429,
+5xx except 501, and connection failures) with exponential backoff and jitter,
+honors a provider's `Retry-After` or Gemini's `retryDelay`, and never retries a
+permanent error (other 4xx, OpenAI's `insufficient_quota`) or anything that is
+not a provider error, such as `ProviderNotConfiguredError`. Refusals and content
+filters are rejected after the call returns and are never retried. Each
+provider is paced to a minimum spacing between requests, shared by the whole
+process. The runner hands each call its remaining time, and the policy gives up
+with outcome `deadline` before a retry or wait would pass it. The SDKs' own
+retries are off (`max_retries=0`), so every attempt is recorded: the
+`CallRecord` rides on `AgentAction.call_record` into the `model_response`
+event, or on the error into the `error` event, and cassettes keep it so a
+replay shows the same retries. `run_config.json` records the policy as
+`call_policy` (`RunConfig 0.3.0`); a suite agent config may override it.
+
+**Build next:** decide the parallel-tool-call story (`AgentAction` grows a list
+form behind a schema bump); keep one controlled key-backed acceptance run
+outside CI; update the `gemini-3.6-flash` price line on 2027-01-01.
 
 ## environment/ — the sandboxed world *(Evan Yang)*
 
@@ -162,6 +198,16 @@ bump `RunConfig.prompt_version` when it changes); `BatchRunner(store).run(suite)
 on-disk artifacts — checks fired, failure categories, claimed-vs-observed
 coverage; see [suite_report.md](suite_report.md)).
 
+A suite may set `max_cost_usd` (`Suite 0.3.0`). `BatchRunner` asks
+`BudgetGuard` before each run and stops the batch once the recorded spend of
+its live runs reaches the cap, which the summary's `budget` block records as
+`budget_exhausted` along with the cells never run (`BatchSummary 0.3.0`). A
+live run of an unpriced model under a cap is refused before it starts, and a
+live run that finishes with no recorded cost stops the batch after it; both are
+recorded as `budget_unenforceable` and `run-suite` exits 2. Fixture and replay
+runs cost exactly zero and are never refused on price. `run-sweep` and `branch`
+do not exist yet and are meant to drive the same `BudgetGuard`.
+
 `collector.py` exposes `collect_regressions(path, store, suite_path=...,
 experiments_path=...)` and `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
 completed failure reproduction and positive siblings. Control validation gates
@@ -182,9 +228,7 @@ violations gets no category and no warning, since there is nothing to
 attribute.
 
 **Build next:** a timeout that can interrupt a hung provider call (today
-checked only between steps); deliberate retry/backoff design for real
-adapters; `model_response` events when the first real adapter lands;
-multi-run orchestration (N runs, varied seeds) once live models make runs
+checked only between steps); multi-run orchestration (N runs, varied seeds) once live models make runs
 non-deterministic; a TypeScript `SuiteReport` mirror for the dashboard in
 the style of `apps/dashboard/src/data/run-loader.ts`.
 

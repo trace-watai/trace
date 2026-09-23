@@ -3,8 +3,10 @@
 These never touch the network or need an API key (repo-wide rule). The
 conversion helpers return plain dicts and ``_normalize_response`` is duck-typed,
 so a tiny fake response stands in for the real SDK object — no ``google-genai``
-install required. Only the live ``generate_content`` call needs the SDK, and
-that path is verified manually (``--provider gemini``), never here.
+install required. The request itself is built as a dict, so ``next_action``
+runs against a fake client in ``tests/test_live_call_policy.py``. Only a real
+``generate_content`` call needs the SDK, and that is checked by hand with
+``--provider gemini`` outside the suite.
 """
 
 from __future__ import annotations
@@ -13,16 +15,21 @@ import base64
 
 import pytest
 
+from trace_harness.models import estimate_cost_usd, is_priced
 from trace_harness.models.base import ActionKind, Message, MessageRole, ModelAdapterError, ToolSpec
 from trace_harness.models.gemini import (
     DEFAULT_GEMINI_MODEL,
+    GEMINI_PRICING,
     THOUGHT_SIGNATURE_KEY,
     GeminiModelAdapter,
     GeminiNotConfiguredError,
+    _generate_config,
     _normalize_response,
     _tools_to_declarations,
     _transcript_to_contents,
+    extract_usage,
 )
+from trace_harness.models.gemini import estimate_cost_usd as gemini_cost
 
 # --- construction (active: no SDK or key call needed) ---
 
@@ -254,3 +261,97 @@ def test_normalize_response_final_answer() -> None:
 def test_normalize_response_empty_raises() -> None:
     with pytest.raises(ModelAdapterError):
         _normalize_response(_FakeResponse())
+
+
+# --- usage and cost (#196) ---
+
+
+def test_usage_counts_thinking_as_output() -> None:
+    """Gemini bills thinking tokens at the output rate, so they are output here."""
+    raw = {
+        "usage_metadata": {
+            "prompt_token_count": 995,
+            "candidates_token_count": 19,
+            "thoughts_token_count": 152,
+            "tool_use_prompt_token_count": None,
+            "total_token_count": 1166,
+        }
+    }
+    assert extract_usage(raw) == (995, 171)
+
+
+def test_tool_use_prompt_tokens_count_as_input() -> None:
+    raw = {
+        "usage_metadata": {
+            "prompt_token_count": 100,
+            "candidates_token_count": 10,
+            "tool_use_prompt_token_count": 40,
+        }
+    }
+    assert extract_usage(raw) == (140, 10)
+
+
+def test_a_response_with_no_usage_reads_as_none_rather_than_zero() -> None:
+    assert extract_usage({}) is None
+    assert extract_usage({"usage_metadata": None}) is None
+    assert extract_usage({"usage_metadata": {"prompt_token_count": 5}}) is None
+    assert extract_usage({"usage_metadata": {"prompt_token_count": True}}) is None
+
+
+def test_cost_is_priced_from_the_recorded_usage() -> None:
+    per_input, per_output = GEMINI_PRICING["gemini-2.5-flash"]
+    raws = [
+        {"usage_metadata": {"prompt_token_count": 1_000_000, "candidates_token_count": 0}},
+        {
+            "usage_metadata": {
+                "prompt_token_count": 0,
+                "candidates_token_count": 400_000,
+                "thoughts_token_count": 600_000,
+            }
+        },
+    ]
+    assert gemini_cost("gemini-2.5-flash", raws) == pytest.approx(per_input + per_output)
+    assert estimate_cost_usd("gemini", "gemini-2.5-flash", raws) == pytest.approx(
+        per_input + per_output
+    )
+
+
+def test_an_unpriced_model_reports_null() -> None:
+    raws = [{"usage_metadata": {"prompt_token_count": 10, "candidates_token_count": 1}}]
+    assert gemini_cost("gemini-not-in-the-table", raws) is None
+    assert not is_priced("gemini", "gemini-not-in-the-table")
+
+
+def test_the_default_model_is_priced() -> None:
+    """A capped suite on the default model would otherwise be refused outright."""
+    raws = [{"usage_metadata": {"prompt_token_count": 1_000_000, "candidates_token_count": 0}}]
+    assert is_priced("gemini", DEFAULT_GEMINI_MODEL)
+    assert gemini_cost(DEFAULT_GEMINI_MODEL, raws) == pytest.approx(0.75)
+
+
+def test_other_providers_usage_does_not_price_as_gemini() -> None:
+    raws = [{"usage": {"input_tokens": 1_000_000, "output_tokens": 0}}]
+    assert gemini_cost("gemini-2.5-flash", raws) is None
+
+
+def test_every_priced_gemini_model_has_two_positive_numbers() -> None:
+    for model, (per_input, per_output) in GEMINI_PRICING.items():
+        assert per_input > 0 and per_output > 0, model
+
+
+def test_the_dict_config_is_the_typed_config_the_sdk_would_build() -> None:
+    """Checked against the real SDK models when google-genai happens to be
+    installed; skipped otherwise, since the suite never requires it."""
+    types = pytest.importorskip("google.genai.types")
+    declarations = _tools_to_declarations(
+        [ToolSpec(name="get_order", description="d", parameters={"type": "object"})]
+    )
+    typed = types.GenerateContentConfig(
+        system_instruction="sys",
+        tools=[types.Tool(function_declarations=declarations)],
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        temperature=0.2,
+        seed=7,
+    )
+    built = _generate_config("sys", declarations, temperature=0.2, seed=7)
+    assert types.GenerateContentConfig.model_validate(built) == typed

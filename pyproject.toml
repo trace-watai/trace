@@ -32,6 +32,17 @@ dev = [
 gemini = [
     "google-genai>=1.33,<2",
 ]
+# Optional: the Anthropic adapter uses the anthropic SDK. Same rule as above,
+# installing it does NOT make tests require a key. The offline tests use
+# duck-typed fakes and never import this package.
+anthropic = [
+    "anthropic>=0.40,<1",
+]
+# Optional: the OpenAI adapter uses the openai SDK. Same rule again, installing
+# it does NOT make tests require a key.
+openai = [
+    "openai>=1.60,<2",
+]
 
 [project.scripts]
 trace-harness = "trace_harness.cli:main"
