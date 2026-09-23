@@ -2,7 +2,7 @@
  * Experiment data contract.
  *
  * Mirrors `ExperimentSpec` / `ExperimentResult` in
- * `src/trace_harness/runner/experiment.py` (EXPERIMENT_SCHEMA_VERSION 0.1.0),
+ * `src/trace_harness/runner/experiment.py` (EXPERIMENT_SCHEMA_VERSION 0.2.0),
  * serialized as `experiment.json` and `result.json` under
  * `runs/experiments/{experiment_id}/`.
  *
@@ -13,7 +13,7 @@
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
-export const EXPERIMENT_SCHEMA_VERSION = "0.1.0";
+export const EXPERIMENT_SCHEMA_VERSION = "0.2.0";
 
 /**
  * What a condition does to produce its runs. `static_replay` re-runs recorded
@@ -64,14 +64,35 @@ export interface RawConditionSpec {
 }
 
 /**
+ * One frozen path from `runner/frozen_set.py`: a sha256 per file, keyed by
+ * repo-relative path, and one digest over all of them.
+ */
+export interface RawFrozenComponent {
+  path: string;
+  digest: string;
+  files: Record<string, string>;
+}
+
+/** One file that differed from the plan's frozen set at record time. */
+export interface RawFrozenFileChange {
+  component: string;
+  path: string;
+  change: "changed" | "added" | "removed";
+}
+
+/**
  * What must not change while the conditions run. If `fixtures_hash` differs
  * between two conditions they answered different questions, and comparing
- * them is void.
+ * them is void. `frozen_set` covers the verifier, environment, attribution
+ * scorer, suite, fixtures and labels, keyed by component name; it is absent
+ * on plans from schema 0.1.0.
  */
 export interface RawFrozenManifest {
   suite_id: string;
   verifier_ids: string[];
   fixtures_hash: string;
+  labels_path?: string | null;
+  frozen_set?: Record<string, RawFrozenComponent> | null;
 }
 
 export interface RawBudget {
@@ -120,9 +141,31 @@ export interface RawExperimentResult {
   report_path?: string | null;
   finished_at: string;
   metadata: Record<string, unknown>;
+  /**
+   * Absent on results from schema 0.1.0 and read as false. Both false means
+   * the plan had no frozen set, so nothing was checked; a drifted result
+   * always has decision `review`.
+   */
+  frozen_set_verified?: boolean;
+  frozen_set_drifted?: boolean;
+  frozen_set_drift?: RawFrozenFileChange[];
 }
 
-export type ExperimentSpec = Camelize<RawExperimentSpec>;
+/**
+ * `frozenSet` is keyed by component name and each component's `files` by
+ * repo-relative path. Camelizing would turn `src/trace_harness/...` into
+ * `src/traceHarness/...`, so the map is restored from the raw payload.
+ */
+export type FrozenManifest = Omit<Camelize<RawFrozenManifest>, "frozenSet"> & {
+  frozenSet: Record<string, RawFrozenComponent> | null;
+};
+
+export type ExperimentSpec = Omit<
+  Camelize<RawExperimentSpec>,
+  "frozenManifest"
+> & {
+  frozenManifest: FrozenManifest;
+};
 
 /**
  * `camelizeKeys` rewrites every object key it meets, which is right for field
@@ -141,19 +184,47 @@ export type ExperimentMetrics = Omit<
 
 export type ExperimentResult = Omit<
   Camelize<RawExperimentResult>,
-  "conditionBatches" | "metrics"
+  | "conditionBatches"
+  | "metrics"
+  | "frozenSetVerified"
+  | "frozenSetDrifted"
+  | "frozenSetDrift"
 > & {
   conditionBatches: Record<string, string>;
   metrics: ExperimentMetrics;
+  frozenSetVerified: boolean;
+  frozenSetDrifted: boolean;
+  frozenSetDrift: RawFrozenFileChange[];
 };
 
-export const parseExperimentSpec = (raw: RawExperimentSpec): ExperimentSpec =>
-  camelizeKeys(raw);
+export const parseExperimentSpec = (raw: RawExperimentSpec): ExperimentSpec => {
+  const spec = camelizeKeys(raw);
+  const frozenSet = raw.frozen_manifest.frozen_set;
+  return {
+    ...spec,
+    frozenManifest: {
+      ...spec.frozenManifest,
+      frozenSet: frozenSet
+        ? Object.fromEntries(
+            Object.entries(frozenSet).map(([name, component]) => [
+              name,
+              { ...component, files: { ...component.files } },
+            ]),
+          )
+        : null,
+    },
+  };
+};
 
 export const parseExperimentResult = (
   raw: RawExperimentResult,
 ): ExperimentResult => ({
   ...(camelizeKeys(raw) as Camelize<RawExperimentResult>),
+  frozenSetVerified: raw.frozen_set_verified ?? false,
+  frozenSetDrifted: raw.frozen_set_drifted ?? false,
+  frozenSetDrift: (raw.frozen_set_drift ?? []).map((change) => ({
+    ...change,
+  })),
   conditionBatches: { ...raw.condition_batches },
   metrics: {
     ...(camelizeKeys(raw.metrics) as Camelize<RawExperimentMetrics>),

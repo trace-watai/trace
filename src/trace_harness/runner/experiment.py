@@ -29,10 +29,14 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from trace_harness.runner.frozen_set import FrozenComponent, FrozenFileChange
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.events import utc_now
 
-EXPERIMENT_SCHEMA_VERSION = "0.1.0"
+# 0.2.0: the frozen set on the plan and the frozen_set_* fields on the result (#195)
+EXPERIMENT_SCHEMA_VERSION = "0.2.0"
+# Plans at this version predate the frozen set and may record without one.
+PRE_FROZEN_SET_SCHEMA_VERSION = "0.1.0"
 
 
 def new_experiment_id() -> str:
@@ -97,6 +101,12 @@ class FrozenManifest(BaseModel):
     ``fixtures_hash`` is what makes the freeze checkable rather than asserted.
     If the fixtures move between two conditions, the conditions answered
     different questions and the comparison is void.
+
+    ``frozen_set`` extends that to the verifier, the environment, the
+    attribution scorer, the suite and the labels (#195). ``experiment freeze``
+    writes it and sets ``fixtures_hash`` to its fixtures digest. It is None
+    only on plans from schema 0.1.0, whose ``fixtures_hash`` was entered by
+    hand and is checked by nothing.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -104,6 +114,18 @@ class FrozenManifest(BaseModel):
     suite_id: str
     verifier_ids: list[str] = Field(default_factory=list)
     fixtures_hash: str
+    labels_path: str | None = None
+    frozen_set: dict[str, FrozenComponent] | None = None
+
+    @model_validator(mode="after")
+    def _fixtures_hash_is_the_frozen_digest(self) -> FrozenManifest:
+        fixtures = (self.frozen_set or {}).get("fixtures")
+        if fixtures is not None and fixtures.digest != self.fixtures_hash:
+            raise ValueError(
+                f"fixtures_hash {self.fixtures_hash} disagrees with the frozen fixtures "
+                f"digest {fixtures.digest}"
+            )
+        return self
 
 
 class Budget(BaseModel):
@@ -183,6 +205,24 @@ class ExperimentResult(BaseModel):
     report_path: str | None = None
     finished_at: Any = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # How the plan's frozen set compared with the tree at record time (#195).
+    # Both false means the plan carried no frozen set, which is never a pass.
+    frozen_set_verified: bool = False
+    frozen_set_drifted: bool = False
+    frozen_set_drift: list[FrozenFileChange] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _drift_forces_review(self) -> ExperimentResult:
+        if self.frozen_set_verified and self.frozen_set_drifted:
+            raise ValueError("a frozen set cannot be both verified and drifted")
+        if self.frozen_set_drifted != bool(self.frozen_set_drift):
+            raise ValueError("frozen_set_drifted must be true exactly when frozen_set_drift is set")
+        if self.frozen_set_drifted and self.decision is not Decision.REVIEW:
+            raise ValueError(
+                "a result recorded over a drifted frozen set must have decision review, "
+                f"got {self.decision.value}"
+            )
+        return self
 
 
 class UnknownConditionError(ValueError):
@@ -216,6 +256,8 @@ def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -
         f"`{spec.frozen_manifest.fixtures_hash}`. "
         f"Decision **{result.decision.value}** by {result.decided_by.value}.",
         "",
+        _frozen_set_line(result),
+        "",
         "## Conditions",
         "",
         "| condition | kind | controls | batch |",
@@ -232,7 +274,22 @@ def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -
         lines.append(f"| {name} | {'not measured' if value is None else value} |")
     for name, value in sorted(result.metrics.extra.items()):
         lines.append(f"| {name} (extra) | {value} |")
+    if result.frozen_set_drift:
+        lines += ["", "## Frozen set drift", "", "| component | change | file |", "|---|---|---|"]
+        for c in result.frozen_set_drift:
+            lines.append(f"| {c.component} | {c.change} | {c.path} |")
     return "\n".join(lines) + "\n"
+
+
+def _frozen_set_line(result: ExperimentResult) -> str:
+    if result.frozen_set_drifted:
+        return (
+            f"**Frozen set drifted.** {len(result.frozen_set_drift)} file(s) differed from "
+            "the plan at record time, so the decision is forced to review."
+        )
+    if result.frozen_set_verified:
+        return "Frozen set verified: every frozen file matched the plan at record time."
+    return "Frozen set not recorded: the plan predates it, so the evaluator was not checked."
 
 
 def derive_metrics(batch_summaries: list[Any]) -> ExperimentMetrics:

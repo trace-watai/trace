@@ -216,7 +216,8 @@ def test_latency_p50_over_all_conditions() -> None:
 # --- the CLI, end to end ---
 
 
-def test_record_then_list(tmp_path, capsys) -> None:
+def test_record_then_list(tmp_path, capsys, monkeypatch) -> None:
+    monkeypatch.chdir(REPO_ROOT)  # the frozen set is hashed from the working tree
     runs_dir = tmp_path / "runs"
     store = ArtifactStore(runs_dir)
     batch_id = "batch_20260101T000000Z_aaaaaaaa"
@@ -227,6 +228,7 @@ def test_record_then_list(tmp_path, capsys) -> None:
     spec = _spec()
     plan = tmp_path / "experiment.json"
     plan.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
+    assert main(["experiment", "freeze", str(plan)]) == 0
 
     code = main(
         [
@@ -250,6 +252,7 @@ def test_record_then_list(tmp_path, capsys) -> None:
     assert result is not None
     assert result.condition_batches == {"replay_only": batch_id}
     assert result.metrics.verified_failure_count == 1
+    assert result.frozen_set_verified and not result.frozen_set_drifted
 
     capsys.readouterr()
     assert main(["--runs-dir", str(runs_dir), "list-experiments"]) == 0
