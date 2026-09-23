@@ -22,7 +22,10 @@ TASKS = [
     "fixtures/tasks/refund_policy_valid_cash.json",
     "fixtures/tasks/refund_policy_failure.json",
 ]
-AGENTS = {"langgraph_ref": "LangGraphReferenceAgent"}
+AGENTS = {
+    "langgraph_ref": "LangGraphReferenceAgent",
+    "openai_agents_ref": "OpenAIAgentsReferenceAgent",
+}
 
 
 def main() -> None:

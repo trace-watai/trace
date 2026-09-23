@@ -59,8 +59,9 @@ These temporary suite recordings are distinct from the retained live fixture.
 
 ## Reference agent cassettes
 
-`langgraph_ref/` holds the cassettes the LangGraph reference agent
-(`trace_harness.agents.langgraph_ref:agent`) replays for
+`langgraph_ref/` and `openai_agents_ref/` hold the cassettes the reference
+outside agents (`trace_harness.agents.langgraph_ref:agent` and
+`trace_harness.agents.openai_agents_ref:agent`) replay for
 `refund_policy_valid_cash` and `refund_policy_failure`. The model behind them is
 scripted. Each file was recorded by running the reference agent with the
 task's fixture script as the model, so the responses are the script's actions
@@ -76,10 +77,12 @@ Reproduce the recording into a new directory, from the repository root.
 
 ```sh
 python scripts/record_reference_cassettes.py langgraph_ref --root /tmp/reference-cassettes
+python scripts/record_reference_cassettes.py openai_agents_ref --root /tmp/reference-cassettes
 ```
 
 The reference agent tests re-record both files and require them to match the
 committed bytes. They also require the transcript fingerprint at every step to
 match the one the harness runner builds for a fixture model on the same task.
-The tool fingerprints differ, because LangChain rewrites the JSON schemas it
-binds (titles dropped, references inlined).
+The tool fingerprints match too for the Agents SDK agent, which passes the
+schemas through untouched. They differ for LangGraph, because LangChain rewrites
+the JSON schemas it binds (titles dropped, references inlined).

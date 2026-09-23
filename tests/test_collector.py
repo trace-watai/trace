@@ -16,6 +16,7 @@ from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.artifact_store import ArtifactStore
 
 RETAINED_ROOT = REPO_ROOT / "docs/acceptance/runs"
+RETAINED_EXPERIMENTS = REPO_ROOT / "docs/acceptance/experiments"
 RETAINED = RETAINED_ROOT / "run_20260820T012748Z_0e9c6172/regression_artifact.json"
 BUNDLE_SUITE = FIXTURES_DIR / "suites/refund_bundles_v0.json"
 CONTROL_DEMO = FIXTURES_DIR / "tasks/refund_policy_control_demo.json"
@@ -53,29 +54,54 @@ def demo_artifact(tmp_path: Path, **updates) -> Path:
     )
 
 
-def collect(source: Path, tmp_path: Path, suite: Path | None = None) -> CollectorSummary:
+def collect(
+    source: Path, tmp_path: Path, suite: Path | None = None, experiments: Path | None = None
+) -> CollectorSummary:
     output = tmp_path / "collected"
-    summary = collect_regressions(source, ArtifactStore(output), suite_path=suite)
+    summary = collect_regressions(
+        source, ArtifactStore(output), suite_path=suite, experiments_path=experiments
+    )
     saved = (output / SUMMARY_NAME).read_text()
     assert CollectorSummary.model_validate_json(saved) == summary
     assert (Path(summary.collection_dir) / SUMMARY_NAME).read_text() == saved
     return summary
 
 
-def test_retained_plus_bundle_suite_reproduces_six_with_advisory_controls(tmp_path):
+def test_the_gate_in_check_repo_runs_this_collection():
+    """The test below is the collection scripts/check_repo.sh runs, with the same inputs."""
+    script = " ".join(
+        (REPO_ROOT / "scripts/check_repo.sh").read_text().replace("\\\n", " ").split()
+    )
+    assert (
+        "collect-regressions docs/acceptance/runs --suite fixtures/suites/refund_bundles_v0.json "
+        "--experiments docs/acceptance/experiments"
+    ) in script
+    assert RETAINED_ROOT.relative_to(REPO_ROOT).as_posix() == "docs/acceptance/runs"
+    assert (
+        BUNDLE_SUITE.relative_to(REPO_ROOT).as_posix() == "fixtures/suites/refund_bundles_v0.json"
+    )
+    assert RETAINED_EXPERIMENTS.relative_to(REPO_ROOT).as_posix() == "docs/acceptance/experiments"
+
+
+def test_retained_plus_bundle_suite_reproduces_eight_with_advisory_controls(tmp_path):
     before = RETAINED.read_bytes()
-    summary = collect(RETAINED_ROOT, tmp_path, BUNDLE_SUITE)
+    summary = collect(RETAINED_ROOT, tmp_path, BUNDLE_SUITE, RETAINED_EXPERIMENTS)
     assert summary.exit_code == 0
-    assert summary.artifacts_found == summary.blocking == summary.reproduced == 6
-    assert summary.siblings_passed == 6
+    # Three retained artifacts (the refund_v0 failure and the two reference
+    # outside-agent runs from #210) plus five generated from the bundle suite.
+    assert summary.artifacts_found == summary.blocking == summary.reproduced == 8
+    # One retained experiment (#195), checked and undrifted.
+    assert [e.experiment_id for e in summary.experiments] == ["exp_000_baseline"]
+    assert summary.experiments_drifted == []
+    assert summary.siblings_passed == 8
     assert summary.not_reproduced == summary.siblings_failed == summary.malformed == []
     assert summary.controls_confirmed == 0
-    assert summary.controls_advisory == 6
+    assert summary.controls_advisory == 8
     assert summary.entries[0].baseline.scenario.completed
     assert all(entry.control_status == "advisory" for entry in summary.entries)
     assert any(entry.control.exit_code == 1 for entry in summary.entries)
     # Retained + newly generated versions share a name but are separate evidence.
-    assert sum(e.test_name == "regression_refund_policy_failure" for e in summary.entries) == 2
+    assert sum(e.test_name == "regression_refund_policy_failure" for e in summary.entries) == 4
     assert Path(summary.suite_summary_path).is_file()
     for entry in summary.entries:
         evidence = Path(entry.evidence_dir)

@@ -193,8 +193,13 @@ The cassettes use the harness model cassette format described in
 `fixtures/cassettes/README.md`, and `scripts/record_reference_cassettes.py`
 reproduces them. `CassetteTurns(mode="record", inner=...)` records around any
 harness model adapter, so a real model can be recorded once with credentials
-and then replayed offline by the same tests. Only the scripted source has been
-recorded so far.
+and then replayed offline through the same agent code. Only the scripted source
+has been recorded so far.
+
+One run of `refund_policy_failure` per reference agent is retained, with its
+full failure bundle, under
+`docs/acceptance/runs/reference-agents-scripted-2026-09-23/`. Its README says
+plainly that the model was scripted.
 
 ### LangGraph
 
@@ -222,6 +227,37 @@ Set the graph's `recursion_limit` to at least `2 * max_steps + 1`, because each
 tool step is two graph steps and the answer is one more. The reference agent
 uses `2 * max_steps + 2`, which leaves the harness step limit as the one that
 binds.
+
+### OpenAI Agents SDK
+
+```sh
+pip install -e ".[openai-agents]"
+trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \
+  --agent trace_harness.agents.openai_agents_ref:agent
+```
+
+`openai_agents_ref.py` builds an SDK `Agent` with the task's tools and runs it
+with `Runner.run_sync`, so the loop, the turn limit, and tool dispatch are the
+SDK's own. Any SDK agent connects to the harness with the same three pieces.
+
+- `harness_tools(tools, call_tool)` returns `FunctionTool` objects whose body
+  is the harness callback. The schemas are not made strict and arguments are
+  passed through unchecked, so the harness records malformed calls as invalid.
+- `ModelResponseForwarder(on_model_response)` is a `RunHooks`. Pass it as
+  `hooks=` and every model response is forwarded from `on_llm_end`. Reasoning
+  summaries, and any message text written next to a tool call, become the
+  reasoning.
+- The final answer is `RunResult.final_output`.
+
+Set `max_turns` to at least `max_steps + 1`, one model turn per tool step plus
+the answer. Pass `RunConfig(tracing_disabled=True)` unless you want the SDK to
+export its own traces. The reference agent always passes it, and its tests
+check that no SDK trace is started.
+
+The reference model does not carry opaque provider state such as a Gemini
+thought signature through the SDK's items, so recording a model that needs its
+state echoed back would need that added first. The LangGraph reference carries
+it.
 
 ## Out of scope
 

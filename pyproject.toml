@@ -49,6 +49,11 @@ langgraph = [
     "langgraph>=1.2,<2",
     "langchain-core>=1.6,<2",
 ]
+# The Agents SDK is pre-1.0 and its Model interface has changed between minor
+# releases, so the range stays on the minor release the reference was built on.
+openai-agents = [
+    "openai-agents>=0.22,<0.23",
+]
 
 [project.scripts]
 trace-harness = "trace_harness.cli:main"

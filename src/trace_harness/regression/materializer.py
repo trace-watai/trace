@@ -32,8 +32,9 @@ Replay
     pinned world is reconstructed.
 
     Note that ``replay_command`` is *not* that command: it is a plain
-    ``run-pipeline`` on the originating fixture, which reflects whatever that
-    fixture says today. It is a convenience for humans reproducing the run by
+    ``run-pipeline`` on the originating fixture (with ``--agent`` when an
+    outside agent produced the run), which reflects whatever that fixture says
+    today. It is a convenience for humans reproducing the run by
     hand; the gate assertions live in ``trace-harness replay``.
 """
 
@@ -161,6 +162,7 @@ def materialize_regression_artifact(
     run_id: str,
     task_fixture_path: str | None,
     attribution: AttributionResult,
+    agent_ref: str | None = None,
     checks_reachable_by_tool: dict[str, list[str]],
 ) -> RegressionArtifact:
     """Build a :class:`RegressionArtifact` from one verified failure."""
@@ -192,7 +194,9 @@ def materialize_regression_artifact(
         positive_sibling_tests=siblings,
         severity=verifier_result.severity or task.severity,
         blocks_release=verifier_result.blocks_release,
-        replay_command=f"trace-harness run-pipeline {fixture_path}",
+        # An outside agent's run is reproduced by hand with the same agent.
+        replay_command=f"trace-harness run-pipeline {fixture_path}"
+        + (f" --agent {agent_ref}" if agent_ref else ""),
         metadata={
             "source_verifier_id": verifier_result.verifier_id,
             "available_tools": list(task.available_tools),

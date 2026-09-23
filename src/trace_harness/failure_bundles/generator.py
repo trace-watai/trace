@@ -412,6 +412,7 @@ class FailureBundleGenerator:
         final_state: dict[str, Any],
         initial_state: dict[str, Any],
         task_fixture_path: str | None = None,
+        agent_ref: str | None = None,
     ) -> FailureBundle:
         if verifier_result.passed:
             raise ValueError("cannot generate a failure bundle from a passing run")
@@ -427,6 +428,7 @@ class FailureBundleGenerator:
             initial_state=initial_state,
             run_id=run_result.run_id,
             task_fixture_path=task_fixture_path,
+            agent_ref=agent_ref,
             attribution=attribution,
             checks_reachable_by_tool=CHECKS_REACHABLE_BY_TOOL,
         )

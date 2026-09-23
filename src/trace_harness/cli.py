@@ -451,7 +451,8 @@ def _bundle(run_dir: Path) -> bool:
     attribution = AttributionResult.model_validate(
         store.read_json(run_id, names.ATTRIBUTION_RESULT)
     )
-    config_metadata = store.read_json(run_id, names.RUN_CONFIG).get("metadata", {})
+    run_config = store.read_json(run_id, names.RUN_CONFIG)
+    config_metadata = run_config.get("metadata", {})
 
     bundle = FailureBundleGenerator().generate(
         task=task,
@@ -462,6 +463,7 @@ def _bundle(run_dir: Path) -> bool:
         final_state=store.read_json(run_id, names.FINAL_STATE),
         initial_state=store.read_json(run_id, names.INITIAL_STATE),
         task_fixture_path=config_metadata.get("task_fixture_path"),
+        agent_ref=run_config.get("agent_ref"),
     )
     store.write_json(run_id, names.FAILURE_CARD, bundle.failure_card)
     store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)

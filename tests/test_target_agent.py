@@ -191,6 +191,8 @@ def test_wired_failure_produces_a_full_bundle_with_the_root_cause(tmp_path):
         {"provider_state": None, **{"tool_call": None, "final_answer": None, **a}}
         for a in script["actions"]
     ]
+    regression = store.read_json(run_id, names.REGRESSION_ARTIFACT)
+    assert regression["replay_command"].endswith(f"--agent {__name__}:ScriptAgent")
     config = store.read_json(run_id, names.RUN_CONFIG)
     assert (config["provider"], config["agent_ref"]) == ("external", f"{__name__}:ScriptAgent")
     assert config["model"] == "script-agent"
@@ -543,8 +545,21 @@ def test_agent_config_requires_agent_ref_exactly_for_external():
 def test_existing_suites_and_run_configs_still_load():
     for suite in sorted((FIXTURES_DIR / "suites").glob("*.json")):
         assert all(c.agent_ref is None for c in load_suite(suite).agent_configs)
-    for path in sorted((REPO_ROOT / "docs/acceptance").rglob(names.RUN_CONFIG)):
-        assert RunConfig.model_validate_json(path.read_text()).agent_ref is None
+    configs = [
+        RunConfig.model_validate_json(path.read_text())
+        for path in sorted(REPO_ROOT.glob("docs/acceptance/**/" + names.RUN_CONFIG))
+    ]
+    # RunConfig 0.4.0 added agent_ref; #196 took 0.3.0 for call_policy.
+    older = [config for config in configs if config.schema_version < "0.4.0"]
+    assert older
+    assert all(config.agent_ref is None for config in older)
+    # The retained reference-agent runs were produced at 0.4.0 and say which agent ran.
+    external = [config for config in configs if config.provider == "external"]
+    assert len(external) == 2
+    for config in external:
+        assert config.schema_version == "0.4.0"
+        assert config.agent_ref and config.agent_ref.startswith("trace_harness.agents.")
+        assert config.call_policy is None
 
 
 def test_suite_runs_an_external_agent_config(tmp_path):

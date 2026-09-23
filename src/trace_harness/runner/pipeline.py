@@ -213,7 +213,8 @@ def attribute_and_bundle(
     attribution = HeuristicAttributor().attribute(task, trace, verifier_result, run_result)
     store.write_json(run_id, names.ATTRIBUTION_RESULT, attribution)
 
-    config_metadata = store.read_json(run_id, names.RUN_CONFIG).get("metadata", {})
+    run_config = store.read_json(run_id, names.RUN_CONFIG)
+    config_metadata = run_config.get("metadata", {})
     bundle = FailureBundleGenerator().generate(
         task=task,
         run_result=run_result,
@@ -223,6 +224,7 @@ def attribute_and_bundle(
         final_state=store.read_json(run_id, names.FINAL_STATE),
         initial_state=store.read_json(run_id, names.INITIAL_STATE),
         task_fixture_path=config_metadata.get("task_fixture_path"),
+        agent_ref=run_config.get("agent_ref"),
     )
     store.write_json(run_id, names.FAILURE_CARD, bundle.failure_card)
     store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)
