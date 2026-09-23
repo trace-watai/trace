@@ -11,6 +11,7 @@ Commands (each is one pipeline stage; ``run-pipeline`` chains them):
     trace-harness collect-regressions docs/acceptance/runs
     trace-harness report-suite batch_<...>
     trace-harness branch       <regression_artifact.json> --experiment <experiment.json>
+    trace-harness run-pipeline <task> --agent trace_harness.agents.langgraph_ref:agent
 
 ``run-suite`` runs many tasks across agent configs in one batch, isolating
 per-run failures and writing a batch summary for dashboard metrics.

@@ -56,3 +56,30 @@ The full 32-task `refund_v0` suite is tested by recording fixture adapters into
 temporary cassettes, then replaying twice with sockets and provider construction
 forbidden. All 18 expected passes and 14 expected failures must stay identical.
 These temporary suite recordings are distinct from the retained live fixture.
+
+## Reference agent cassettes
+
+`langgraph_ref/` holds the cassettes the LangGraph reference agent
+(`trace_harness.agents.langgraph_ref:agent`) replays for
+`refund_policy_valid_cash` and `refund_policy_failure`. The model behind them is
+scripted. Each file was recorded by running the reference agent with the
+task's fixture script as the model, so the responses are the script's actions
+and the requests are what the agent's graph sent for them. No live model was
+involved and none of these files is evidence of how a real model behaves.
+
+Replay is strict in the same way as above. A run whose conversation drifts from
+the recording, for example because an installed control blocked a call the
+recording saw succeed, stops with a request mismatch at that step. Use
+`:scripted_agent` for runs like that; it plays the fixture script directly.
+
+Reproduce the recording into a new directory, from the repository root.
+
+```sh
+python scripts/record_reference_cassettes.py langgraph_ref --root /tmp/reference-cassettes
+```
+
+The reference agent tests re-record both files and require them to match the
+committed bytes. They also require the transcript fingerprint at every step to
+match the one the harness runner builds for a fixture model on the same task.
+The tool fingerprints differ, because LangChain rewrites the JSON schemas it
+binds (titles dropped, references inlined).

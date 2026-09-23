@@ -166,6 +166,63 @@ empty and notes the earlier step.
   condition whose agent config has `provider: external` is refused before any
   run with an error that says so, and `branch` takes no `--agent` flag.
 
+## Reference agents
+
+Working examples ship under `src/trace_harness/agents/`, each behind its own
+extra. The core package never imports them, and their tests skip when the
+extra is not installed.
+
+The model underneath every reference agent is scripted. Its turns come from
+the task's fixture script, either directly or through a cassette recorded from
+that script, so a reference run shows the outside-agent path working end to end
+and says nothing about how a live model behaves. The agent's `name`, and so the
+`model` field of every run it produces, says which source was used, for example
+`langgraph_ref:cassette:scripted`.
+
+Each reference module has two factories.
+
+- `:agent` replays the committed cassette for the task. Cassettes are committed
+  for `refund_policy_valid_cash` and `refund_policy_failure`. Replay checks
+  every request the agent sends its model against the recording, so a run that
+  drifts from it, for example because a control blocked a call the recording
+  saw succeed, stops with a request mismatch at the next step.
+- `:scripted_agent` plays the task's fixture script directly and ignores what
+  the model is sent. It works for every task, with or without controls.
+
+The cassettes use the harness model cassette format described in
+`fixtures/cassettes/README.md`, and `scripts/record_reference_cassettes.py`
+reproduces them. `CassetteTurns(mode="record", inner=...)` records around any
+harness model adapter, so a real model can be recorded once with credentials
+and then replayed offline by the same tests. Only the scripted source has been
+recorded so far.
+
+### LangGraph
+
+```sh
+pip install -e ".[langgraph]"
+trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \
+  --agent trace_harness.agents.langgraph_ref:agent
+```
+
+`langgraph_ref.py` builds a tool-calling loop as a `StateGraph`. An `agent` node
+calls the chat model with the tools bound, a `ToolNode` runs the calls, and the
+graph ends when the model answers without one. Any graph connects to the
+harness with the same three pieces.
+
+- `harness_tools(tools, call_tool)` returns LangChain tools whose body is the
+  harness callback. Arguments are passed through unchecked so the harness
+  records malformed calls as invalid.
+- `ModelResponseForwarder(on_model_response)` is a LangChain callback handler.
+  Pass it in the graph's `config={"callbacks": [...]}` and every chat model
+  response is forwarded. Reasoning content blocks, and any text written next to
+  a tool call, become the reasoning.
+- The final answer is the text of the last message.
+
+Set the graph's `recursion_limit` to at least `2 * max_steps + 1`, because each
+tool step is two graph steps and the answer is one more. The reference agent
+uses `2 * max_steps + 2`, which leaves the harness step limit as the one that
+binds.
+
 ## Out of scope
 
 Hosting outside agents as a service, and adapters for browser or coding

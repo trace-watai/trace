@@ -43,6 +43,12 @@ anthropic = [
 openai = [
     "openai>=1.60,<2",
 ]
+# Optional: the reference outside agents (docs/bring_your_own_agent.md). The
+# core package never imports them and their tests skip when they are absent.
+langgraph = [
+    "langgraph>=1.2,<2",
+    "langchain-core>=1.6,<2",
+]
 
 [project.scripts]
 trace-harness = "trace_harness.cli:main"
