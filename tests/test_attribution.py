@@ -22,12 +22,12 @@ from trace_harness.verifiers.base import VerifierInput, VerifierResult
 from trace_harness.verifiers.registry import get_verifier
 
 
-def _verified(run):
+def _verified(run, trace=None):
     verifier = get_verifier(run.task.verifier_ids[0])
     return verifier.verify(
         VerifierInput.from_parts(
             task=run.task,
-            trace=run.trace,
+            trace=run.trace if trace is None else trace,
             final_state=run.final_state,
             run_id=run.run_id,
         )
@@ -62,27 +62,52 @@ def test_attribution_requires_a_failed_verifier_result(valid_run):
         HeuristicAttributor().attribute(valid_run.task, valid_run.trace, _verified(valid_run))
 
 
-def test_attribution_degrades_gracefully_without_reasoning(failure_run):
-    """Real models may expose no reasoning; attribution must say so and fall back."""
-    verifier_result = _verified(failure_run)
-    stripped_trace = []
-    for event in failure_run.trace:
+def _without_reasoning(trace):
+    stripped = []
+    for event in trace:
         clone = event.model_copy(deep=True)
         if clone.event_type is TraceEventType.MODEL_ACTION:
             clone.payload.pop("reasoning", None)
-        stripped_trace.append(clone)
+        stripped.append(clone)
+    return stripped
+
+
+def test_attribution_degrades_gracefully_without_reasoning(failure_run):
+    """Real models may expose no reasoning; attribution must say so and fall back."""
+    stripped_trace = _without_reasoning(failure_run.trace)
+    verifier_result = _verified(failure_run, stripped_trace)
 
     result = HeuristicAttributor().attribute(failure_run.task, stripped_trace, verifier_result)
-    # Without reasoning the deprecated-citation heuristic cannot fire, but the
-    # unsupported-claim detector still localizes the step the agent wrote a
-    # claim the order record contradicts (#190). Saying "step 6, because the
-    # ticket was written there" is evidence, not a guess.
-    assert result.root_cause_step == 6
-    assert result.first_bad_step == 6
+    # Without reasoning the deprecated-citation rule cannot fire. The
+    # unsupported ticket claim at step 6 is not the root cause either, because
+    # the unauthorized refund at step 5 failed first and the claim does not
+    # explain it (#210). The cause is somewhere at or before step 5 and the
+    # trace cannot say where, so the field stays null.
+    assert result.root_cause_step is None
+    assert result.first_bad_step == 5
     # Tool-state facts still stand.
     assert result.first_irreversible_action_step == 5
+    assert result.missed_recovery_step == 4
+    assert any("follows a failure at step 5" in note for note in result.ambiguity_notes)
     assert any("no model reasoning" in note for note in result.ambiguity_notes)
     assert result.confidence < 0.85
+
+
+def test_unsupported_assertion_is_the_root_when_nothing_failed_before_it(failure_run):
+    """The earlier-failure guard only applies when another check fired first (#190)."""
+    ticket_check = next(
+        check
+        for check in _verified(failure_run).failed_checks
+        if check.check_id == "ticket_outage_claim_unsupported"
+    )
+    ticket_only = _verified(failure_run).model_copy(update={"failed_checks": [ticket_check]})
+
+    result = HeuristicAttributor().attribute(
+        failure_run.task, _without_reasoning(failure_run.trace), ticket_only
+    )
+
+    assert result.root_cause_step == 6
+    assert result.primary_failure_category is FailureCategory.FALSE_DURABLE_RECORD
 
 
 def test_attribution_leaves_irreversible_markers_unset_without_irreversible_evidence(

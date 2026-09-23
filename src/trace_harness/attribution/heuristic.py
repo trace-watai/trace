@@ -376,9 +376,28 @@ class HeuristicAttributor:
                     confidence_delta=0.20,
                 )
             )
-        if candidates:
-            return min(candidates, key=lambda c: c.step), None
-        return None, note
+        if not candidates:
+            return None, note
+        chosen = min(candidates, key=lambda c: c.step)
+        # An assertion is its own cause only when nothing failed before it. A
+        # refund flagged at an earlier step has a cause this rule cannot see,
+        # and naming the later claim would put the root cause after a failure
+        # it does not explain. Without reasoning in the trace that is exactly
+        # what happened on the staged refund failure (#210).
+        earlier = sorted(
+            step
+            for check in verifier_result.failed_checks
+            if check.check_id not in _UNSUPPORTED_ASSERTION_CHECKS
+            for step in check.step_ids
+            if step < chosen.step
+        )
+        if earlier:
+            return None, (
+                f"the unsupported assertion at step {chosen.step} follows a failure at "
+                f"step {earlier[0]}; the root cause lies at or before step {earlier[0]} "
+                "and the trace does not show where"
+            )
+        return chosen, None
 
     def _step_carries_assertion(
         self, trace: list[TraceEvent], step: int, tool_name: str | None
