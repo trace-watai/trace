@@ -12,6 +12,7 @@ you change X" column.
 | [trace_schema.md](trace_schema.md) | Before adding/changing trace events or anything that reads `trace.jsonl`. |
 | [methodology_metrics.md](methodology_metrics.md) | Before reporting any number, or adding one. Every metric with its formula, the artifact field it reads, and its blind spot. |
 | [experiment_contract.md](experiment_contract.md) | Before running or recording an experiment. What the plan freezes, what the result records, and why there is no combined score. |
+| [branch_stage.md](branch_stage.md) | Before running an experiment condition. How `trace-harness branch` forks a recording, what divergence means, and which metrics its batches feed. |
 | [verifier_philosophy.md](verifier_philosophy.md) | Before writing pass/fail checks or proposing an LLM judge for anything release-blocking. |
 | [attribution_methodology.md](attribution_methodology.md) | Before touching attribution — the step vocabulary and why its fields must never collapse. |
 | [attribution_canonical_run_results.md](attribution_canonical_run_results.md) | Reviewing canonical attribution results, step meanings, evidence rules, and null handling. |

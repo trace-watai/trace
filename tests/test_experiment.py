@@ -195,6 +195,71 @@ def test_derives_only_what_a_batch_can_support(tmp_path) -> None:
     assert metrics.post_block_outcomes is None
 
 
+def _branch_entry(condition, status, diverged, outcome) -> BatchRunEntry:
+    return _entry("t", "fail").model_copy(
+        update={
+            "status": status,
+            "condition": condition,
+            "diverged": diverged,
+            "post_block_outcome": outcome,
+        }
+    )
+
+
+def test_branch_metrics_follow_the_memo_formulas() -> None:
+    """diverged / completed per arm, labels counted over live control-on runs (#159)."""
+    live = _summary(
+        "on",
+        [
+            _branch_entry("live", "completed", True, "substitute_violation"),
+            _branch_entry("live", "completed", False, "recovered"),
+            _branch_entry("live", "completed", True, "substitute_violation"),
+            # Incomplete: out of the rate's denominator, but its label still counts.
+            _branch_entry("live", "terminated", True, "stalled"),
+        ],
+    )
+    off = _summary(
+        "off",
+        [
+            _branch_entry("off", "completed", False, "no_block_observed"),
+            _branch_entry("off", "completed", True, "no_block_observed"),
+        ],
+    )
+    swapped = _summary("swap", [_branch_entry("swap", "completed", True, "false_success")])
+    kinds = {
+        "on": ConditionKind.LIVE,
+        "off": ConditionKind.LIVE_NO_CONTROL,
+        "swap": ConditionKind.LIVE_SWAPPED,
+    }
+
+    metrics = derive_metrics([live, off, swapped], kinds)
+
+    assert metrics.first_post_fork_divergence_rate == round(2 / 3, 4)
+    assert metrics.noise_floor_divergence_rate == 0.5
+    assert metrics.post_block_outcomes == {
+        "recovered": 1,
+        "stalled": 1,
+        "substitute_violation": 2,
+    }
+    assert metrics.extra == {
+        "first_post_fork_divergence_k": 2,
+        "first_post_fork_divergence_n": 3,
+        "noise_floor_divergence_k": 1,
+        "noise_floor_divergence_n": 2,
+    }
+    assert derive_metrics([live, off]).first_post_fork_divergence_rate is None
+
+
+def test_a_continuation_script_needs_the_fixture_provider() -> None:
+    with pytest.raises(ValidationError, match="continuation_script needs provider 'fixture'"):
+        ConditionSpec(
+            name="live",
+            kind=ConditionKind.LIVE,
+            agent_config=AgentConfig(label="g", provider="gemini"),
+            continuation_script="script.json",
+        )
+
+
 def test_cost_is_none_when_nothing_recorded_it() -> None:
     """A null cost is unknown, not zero, exactly as the memo says."""
     metrics = derive_metrics([_summary("b1", [_entry("t1", "pass")])])

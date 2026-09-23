@@ -24,6 +24,7 @@ on the evidence rather than on an average of it.
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from enum import StrEnum
 from typing import Any
 
@@ -33,8 +34,9 @@ from trace_harness.runner.frozen_set import FrozenComponent, FrozenFileChange
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.events import utc_now
 
-# 0.2.0: the frozen set on the plan and the frozen_set_* fields on the result (#195)
-EXPERIMENT_SCHEMA_VERSION = "0.2.0"
+# 0.3.0: ConditionSpec.continuation_script (#159); 0.2.0: the frozen set on the
+# plan and the frozen_set_* fields on the result (#195)
+EXPERIMENT_SCHEMA_VERSION = "0.3.0"
 # Plans at this version predate the frozen set and may record without one.
 PRE_FROZEN_SET_SCHEMA_VERSION = "0.1.0"
 
@@ -93,6 +95,19 @@ class ConditionSpec(BaseModel):
     control_ids: list[str] = Field(default_factory=list)
     seeds: list[int] = Field(default_factory=list)
     start: StartPoint | None = None
+    # A fixture script whose actions are played after the start step, for
+    # offline tests of the branch stage (#159). Absent means the recorded
+    # continuation. Only the fixture provider plays scripts.
+    continuation_script: str | None = None
+
+    @model_validator(mode="after")
+    def _script_needs_fixture_provider(self) -> ConditionSpec:
+        if self.continuation_script and self.agent_config.provider != "fixture":
+            raise ValueError(
+                f"condition {self.name!r}: continuation_script needs provider 'fixture', "
+                f"got {self.agent_config.provider!r}"
+            )
+        return self
 
 
 class FrozenManifest(BaseModel):
@@ -292,14 +307,20 @@ def _frozen_set_line(result: ExperimentResult) -> str:
     return "Frozen set not recorded: the plan predates it, so the evaluator was not checked."
 
 
-def derive_metrics(batch_summaries: list[Any]) -> ExperimentMetrics:
+def derive_metrics(
+    batch_summaries: list[Any], condition_kinds: dict[str, ConditionKind] | None = None
+) -> ExperimentMetrics:
     """Compute every metric the batch summaries can support today.
 
-    Only four of the eight are derivable from a batch alone. The divergence
-    rates and post-block outcomes need the branch stage (#159) and the
-    post-block classifier (#157) to have produced their fields, and
-    ``verdict_agreement_rate`` needs a live arm to disagree with. Those stay
-    ``None`` rather than being filled with a placeholder, because a zero here
+    ``condition_kinds`` maps a batch id to the kind of the condition it
+    answered. With it, the branch stage's entry fields (#159) give the two
+    divergence rates, over ``live`` and ``live_no_control`` batches, and the
+    post-block outcome counts over ``live`` batches, as Part B2 of
+    docs/methodology_metrics.md defines them. ``live_swapped`` batches feed
+    none of the three, because the pre-registration reports each live model on
+    its own. The counts behind each rate go in ``extra`` so the rate is never
+    read without its denominator. Nothing derives ``verdict_agreement_rate``
+    or ``sibling_failure_rate`` yet, so they stay ``None``, since a zero there
     would read as a measurement.
     """
     from trace_harness.runner.batch import BatchSummary
@@ -309,16 +330,42 @@ def derive_metrics(batch_summaries: list[Any]) -> ExperimentMetrics:
         for s in batch_summaries
     ]
     entries = [e for s in summaries for e in s.entries]
+    kinds = condition_kinds or {}
+
+    def of_kind(kind: ConditionKind) -> list[Any]:
+        return [e for s in summaries if kinds.get(s.batch_id) is kind for e in s.entries]
 
     verified_failures = sum(1 for e in entries if e.verdict == "fail")
     costs = [e.cost_usd for e in entries if e.cost_usd is not None]
     latencies = sorted(e.latency_ms for e in entries if e.latency_ms is not None)
+    extra: dict[str, float] = {}
+    control_on = of_kind(ConditionKind.LIVE)
+    outcomes = Counter(str(e.post_block_outcome) for e in control_on if e.post_block_outcome)
 
     return ExperimentMetrics(
+        first_post_fork_divergence_rate=_divergence_rate(
+            control_on, extra, "first_post_fork_divergence"
+        ),
+        noise_floor_divergence_rate=_divergence_rate(
+            of_kind(ConditionKind.LIVE_NO_CONTROL), extra, "noise_floor_divergence"
+        ),
+        post_block_outcomes=dict(sorted(outcomes.items())) or None,
         verified_failure_count=verified_failures,
         cost_usd=round(sum(costs), 6) if costs else None,
         latency_ms_p50=_median(latencies),
+        extra=extra,
     )
+
+
+def _divergence_rate(entries: list[Any], extra: dict[str, float], name: str) -> float | None:
+    """``diverged / completed`` over the completed runs the branch stage compared."""
+    compared = [e for e in entries if e.status == "completed" and e.diverged is not None]
+    if not compared:
+        return None
+    diverged = sum(1 for e in compared if e.diverged)
+    extra[f"{name}_k"] = diverged
+    extra[f"{name}_n"] = len(compared)
+    return round(diverged / len(compared), 4)
 
 
 def _median(values: list[float]) -> float | None:

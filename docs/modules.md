@@ -65,7 +65,10 @@ compare model families at all.
 
 **Exposes:** `ModelAdapter.next_action(transcript, tools) -> AgentAction`;
 `create_model_adapter(provider, ...)` — the only place provider strings are
-interpreted.
+interpreted; `ForkAdapter(prefix, continuation, switch_at_step)` (`fork.py`),
+which serves recorded actions through `switch_at_step` and delegates every
+later step, so the branch stage forks a run without the runner knowing
+([branch_stage.md](branch_stage.md)).
 
 **Provider capability, since they are not interchangeable:**
 
@@ -205,8 +208,19 @@ its live runs reaches the cap, which the summary's `budget` block records as
 live run of an unpriced model under a cap is refused before it starts, and a
 live run that finishes with no recorded cost stops the batch after it; both are
 recorded as `budget_unenforceable` and `run-suite` exits 2. Fixture and replay
-runs cost exactly zero and are never refused on price. `run-sweep` and `branch`
-do not exist yet and are meant to drive the same `BudgetGuard`.
+runs cost exactly zero and are never refused on price. `run-sweep` does not
+exist yet, and `branch` does not ask the guard yet; both are meant to drive the
+same `BudgetGuard`.
+
+`branch.py` exposes `run_branch(artifact_path, experiment, condition, store)`
+and `replay_batch(...)`, behind `trace-harness branch`. It continues a
+regression artifact's recording from each experiment condition's start step
+under that condition's agent and controls, verifies, attributes and bundles
+each run the way `run_task_pipeline` does, records divergence from the
+recording and the post-block outcome per entry, and writes one batch per
+condition (`BatchSummary` 0.4.0). `experiment record` derives the divergence
+rates and outcome counts from those batches. See
+[branch_stage.md](branch_stage.md).
 
 `collector.py` exposes `collect_regressions(path, store, suite_path=...,
 experiments_path=...)` and `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate

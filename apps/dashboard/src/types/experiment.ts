@@ -2,7 +2,8 @@
  * Experiment data contract.
  *
  * Mirrors `ExperimentSpec` / `ExperimentResult` in
- * `src/trace_harness/runner/experiment.py` (EXPERIMENT_SCHEMA_VERSION 0.2.0),
+ * `src/trace_harness/runner/experiment.py` (EXPERIMENT_SCHEMA_VERSION 0.3.0;
+ * 0.2.0 added the frozen set in #195 and 0.3.0 `continuation_script` in #159),
  * serialized as `experiment.json` and `result.json` under
  * `runs/experiments/{experiment_id}/`.
  *
@@ -13,7 +14,7 @@
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
-export const EXPERIMENT_SCHEMA_VERSION = "0.2.0";
+export const EXPERIMENT_SCHEMA_VERSION = "0.3.0";
 
 /**
  * What a condition does to produce its runs. `static_replay` re-runs recorded
@@ -61,6 +62,8 @@ export interface RawConditionSpec {
   control_ids: string[];
   seeds: number[];
   start?: RawStartPoint | null;
+  /** Fixture script played after the start step; absent means the recording (0.3.0). */
+  continuation_script?: string | null;
 }
 
 /**

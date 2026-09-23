@@ -55,6 +55,20 @@ def pinned_script(artifact: RegressionArtifact, task_id: str) -> FixtureScript |
     )
 
 
+def material_action(action: dict[str, Any]) -> dict[str, Any]:
+    """The fields of a recorded action that decide what the agent *does*.
+
+    ``reasoning`` and provider state are left out, so two actions that differ
+    only in narration compare equal. Drift notes and the branch stage's
+    divergence (#159) both compare actions through this.
+    """
+    return {
+        "kind": action.get("kind"),
+        "tool_call": action.get("tool_call"),
+        "final_answer": action.get("final_answer"),
+    }
+
+
 def describe_action_drift(pinned: list[dict[str, Any]], live: list[dict[str, Any]]) -> list[str]:
     """Differences between the pinned agent moves and the fixture script's moves.
 
@@ -67,20 +81,13 @@ def describe_action_drift(pinned: list[dict[str, Any]], live: list[dict[str, Any
     if len(pinned) != len(live):
         notes.append(f"script length: {len(pinned)} pinned action(s) -> {len(live)} in the fixture")
 
-    def _material(action: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "kind": action.get("kind"),
-            "tool_call": action.get("tool_call"),
-            "final_answer": action.get("final_answer"),
-        }
-
     def _short(value: Any) -> str:
         """Final answers are paragraphs; keep a drift line readable."""
         rendered = repr(value)
         return rendered if len(rendered) <= 80 else rendered[:77] + "..."
 
     for index, (pinned_action, live_action) in enumerate(zip(pinned, live, strict=False), start=1):
-        before, after = _material(pinned_action), _material(live_action)
+        before, after = material_action(pinned_action), material_action(live_action)
         if before == after:
             continue
         changed = sorted(field for field in before if before[field] != after[field])

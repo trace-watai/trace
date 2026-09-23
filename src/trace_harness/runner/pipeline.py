@@ -130,9 +130,9 @@ def run_task_pipeline(
     )
     run_result = AgentRunner(adapter, environment, store).run(task, config)
 
-    verifier_result = _verify_run(store, run_result, task)
+    verifier_result = verify_run(store, run_result, task)
     if verifier_result is not None and verifier_result.has_violations and bundle_on_fail:
-        _attribute_and_bundle(store, run_result.run_id, task, run_result)
+        attribute_and_bundle(store, run_result.run_id, task, run_result)
 
     return PipelineResult(
         task=task,
@@ -142,7 +142,7 @@ def run_task_pipeline(
     )
 
 
-def _verify_run(
+def verify_run(
     store: ArtifactStore, run_result: RunResult, task: TaskSpec
 ) -> VerifierResult | None:
     """Run the task's verifiers and persist the merged result. None if no verifiers.
@@ -179,7 +179,7 @@ def _verify_run(
     return merged
 
 
-def _attribute_and_bundle(
+def attribute_and_bundle(
     store: ArtifactStore, run_id: str, task: TaskSpec, run_result: RunResult
 ) -> None:
     """Attribute a verified failure and generate its failure bundle."""

@@ -10,6 +10,7 @@ Commands (each is one pipeline stage; ``run-pipeline`` chains them):
     trace-harness run-suite    fixtures/suites/refund_v0.json
     trace-harness collect-regressions docs/acceptance/runs
     trace-harness report-suite batch_<...>
+    trace-harness branch       <regression_artifact.json> --experiment <experiment.json>
 
 ``run-suite`` runs many tasks across agent configs in one batch, isolating
 per-run failures and writing a batch summary for dashboard metrics.
@@ -85,7 +86,7 @@ from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
-from trace_harness.tracing.events import TraceEvent, TraceEventType
+from trace_harness.tracing.events import TraceEvent, TraceEventType, utc_now
 from trace_harness.verifiers.base import (
     VerifierInput,
     VerifierResult,
@@ -1119,16 +1120,27 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
             )
 
     summaries = []
-    for batch_id in condition_batches.values():
+    kinds = {c.name: c.kind for c in spec.conditions}
+    for name, batch_id in condition_batches.items():
         try:
-            summaries.append(store.read_batch_summary(batch_id))
+            summary = store.read_batch_summary(batch_id)
         except FileNotFoundError as exc:
             raise CliInputError(str(exc)) from None
+        # A branch batch names the condition it ran. Recording it under another
+        # name would swap the arms, and with them the two divergence rates.
+        produced_for = (summary.get("metadata") or {}).get("condition")
+        if produced_for not in (None, name):
+            raise CliInputError(
+                f"batch {batch_id} ran condition {produced_for!r} and cannot answer {name!r}"
+            )
+        summaries.append(summary)
 
     result = ExperimentResult(
         experiment_id=spec.experiment_id,
         condition_batches=condition_batches,
-        metrics=derive_metrics(summaries),
+        metrics=derive_metrics(
+            summaries, {batch_id: kinds[name] for name, batch_id in condition_batches.items()}
+        ),
         decision=Decision.REVIEW if drift else Decision(args.decision),
         decided_by=DecidedBy(args.decided_by),
         report_path=str(store.experiment_report_path(spec.experiment_id)),
@@ -1160,6 +1172,73 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         value = getattr(result.metrics, metric)
         _print(f"  {metric}:", "not measured" if value is None else str(value))
     _print("written:", str(store.experiment_dir(spec.experiment_id)))
+    return 0
+
+
+def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
+    """Run each condition of an experiment from a regression artifact (#159).
+
+    Live conditions go through ``runner.branch``. ``static_replay`` conditions
+    reuse the ``replay --apply-control`` path and record its verdict as a batch
+    of one. Every condition is checked before any of them runs.
+    """
+    from trace_harness.runner.branch import (
+        load_artifact,
+        replay_batch,
+        run_branch,
+        validate_condition,
+    )
+    from trace_harness.runner.experiment import ConditionKind, ExperimentSpec
+
+    artifact_path, spec_path = Path(args.artifact_path), Path(args.experiment)
+    for path, what in ((artifact_path, "regression artifact"), (spec_path, "experiment plan")):
+        if not path.is_file():
+            raise CliInputError(f"{what} not found: {path}")
+    spec = ExperimentSpec.model_validate(json.loads(spec_path.read_text(encoding="utf-8")))
+    conditions = [c for c in spec.conditions if args.condition in (None, c.name)]
+    if not conditions:
+        declared = sorted(c.name for c in spec.conditions)
+        raise CliInputError(f"condition {args.condition!r} is not declared; declared: {declared}")
+    artifact = load_artifact(artifact_path)
+    for condition in conditions:
+        validate_condition(artifact, condition)
+
+    pairs: list[str] = []
+    for condition in conditions:
+        print(f"\nBranch condition: {condition.name} ({condition.kind.value})")
+        if condition.kind is ConditionKind.STATIC_REPLAY:
+            started_at = utc_now()
+            report = _replay_with_report(
+                artifact_path,
+                store,
+                apply_control=bool(condition.control_ids),
+                control_ids=condition.control_ids or None,
+            )
+            summary = replay_batch(report, spec, condition, artifact_path, store, started_at)
+        else:
+            outcome = run_branch(artifact_path, spec, condition, store)
+            if outcome.summary is None:
+                print(f"  skipped: {outcome.skipped}")
+                continue
+            summary = outcome.summary
+        for entry in summary.entries:
+            divergence = (
+                ""
+                if entry.diverged is None
+                else f", diverged={entry.diverged} "
+                f"(first at step {entry.first_post_fork_divergence_step})"
+            )
+            _print(
+                f"seed {entry.seed}:" if entry.seed is not None else "run:",
+                f"{entry.run_id} {entry.status} {entry.verdict}, "
+                f"post_block_outcome={entry.post_block_outcome}{divergence}",
+            )
+        _print("batch:", str(store.batch_summary_path(summary.batch_id)))
+        pairs.append(f"--condition {condition.name}={summary.batch_id}")
+
+    if pairs:
+        print("\nRecord with:")
+        print(f"  trace-harness experiment record {spec_path} " + " ".join(pairs))
     return 0
 
 
@@ -1753,6 +1832,17 @@ def main(argv: list[str] | None = None) -> int:
         "list-experiments", parents=[common], help="list recorded experiments, oldest first"
     )
 
+    p_branch = sub.add_parser(
+        "branch",
+        parents=[common],
+        help="continue a recorded run from each experiment condition's start step",
+    )
+    p_branch.add_argument("artifact_path", help="path to a regression_artifact.json")
+    p_branch.add_argument("--experiment", required=True, help="path to the experiment plan JSON")
+    p_branch.add_argument(
+        "--condition", default=None, metavar="NAME", help="run only this declared condition"
+    )
+
     p_suite = sub.add_parser(
         "run-suite",
         parents=[common],
@@ -1891,6 +1981,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         return _experiment_record(args, store)
     if args.command == "list-experiments":
         return _list_experiments(store)
+    if args.command == "branch":
+        return _branch(args, store)
     if args.command == "run-suite":
         return _run_suite(args, store)
     if args.command == "collect-regressions":

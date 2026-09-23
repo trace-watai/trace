@@ -7,9 +7,10 @@ a guardrail on and again with it off and you get two batch ids in the batches
 folder, with the comparison living in somebody's notes.
 
 Owner: Evaluation Systems. Schema: `trace_harness/runner/experiment.py`
-(`EXPERIMENT_SCHEMA_VERSION = 0.2.0`, which added the frozen set). Metric names
-come from [methodology_metrics.md](methodology_metrics.md) and are asserted
-against its appendix by `tests/test_experiment.py`.
+(`EXPERIMENT_SCHEMA_VERSION = 0.3.0`; 0.2.0 added the frozen set and 0.3.0
+added `continuation_script`). Metric names come from
+[methodology_metrics.md](methodology_metrics.md) and are asserted against its
+appendix by `tests/test_experiment.py`.
 
 ## Two files
 
@@ -43,7 +44,9 @@ whole evaluator; see [The frozen evaluator](#the-frozen-evaluator).
 
 A condition declares its `kind`, the `agent_config` to run under, the
 `control_ids` to install, the `seeds`, and where in a recorded run to `start`
-if not from the beginning.
+if not from the beginning. `continuation_script` is optional and names a
+fixture script the branch stage plays after the start step, for the fixture
+provider only; without one the fixture provider plays the recording.
 
 | kind | what it does |
 |---|---|
@@ -128,8 +131,8 @@ files in `frozen_set_drift`, and decision `review` whatever `--decision` said.
 
 **Plans from 0.1.0.** A plan written under schema 0.1.0 has no frozen set and
 still loads. `record` proceeds, and the result carries both flags false, which
-reads as unchecked and never as verified. A plan at 0.2.0 without a frozen set
-is refused with a pointer to `experiment freeze`.
+reads as unchecked and never as verified. A plan at 0.2.0 or later without a
+frozen set is refused with a pointer to `experiment freeze`.
 
 **Retained experiments in CI.** `check_repo.sh` passes `--experiments
 docs/acceptance/experiments` to `collect-regressions`, which recomputes every
@@ -155,10 +158,12 @@ to be made on the evidence rather than on an average of it.
 
 Every metric is nullable, and a missing one stays null rather than becoming
 zero. A condition set that never ran live cannot produce a divergence rate, and
-reporting that as `0.0` would read as a measurement that was never taken. Today
+reporting that as `0.0` would read as a measurement that was never taken.
 `experiment record` derives `verified_failure_count`, `cost_usd` and
-`latency_ms_p50` from the batch summaries; the rest arrive with the branch
-stage (#159) and the post-block classifier.
+`latency_ms_p50` from any batch summaries, and the two divergence rates and
+`post_block_outcomes` from the batches the branch stage writes, with the
+counts behind each rate in `extra` ([branch_stage.md](branch_stage.md#metrics)).
+`verdict_agreement_rate` and `sibling_failure_rate` are not derived yet.
 
 ## Commands
 
@@ -193,5 +198,6 @@ a newly frozen plan.
 
 ## Out of scope here
 
-Running any condition, which is #159. Planner or analyst agents. Any combined
+Running a condition, which is the branch stage
+([branch_stage.md](branch_stage.md)). Planner or analyst agents. Any combined
 score.

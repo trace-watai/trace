@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { getExperiment, listExperiments } from "@/data/experiment-loader";
 import {
   EXPERIMENT_METRIC_NAMES,
+  EXPERIMENT_SCHEMA_VERSION,
   parseExperimentSpec,
   type RawExperimentSpec,
 } from "@/types/experiment";
@@ -13,6 +14,20 @@ import {
 const ACCEPTANCE = path.join(process.cwd(), "..", "..", "docs", "acceptance");
 
 describe("experiment loader", () => {
+  it("mirrors the backend's schema version", () => {
+    const backend = readFileSync(
+      path.join(
+        process.cwd(),
+        "..",
+        "..",
+        "src/trace_harness/runner/experiment.py",
+      ),
+      "utf8",
+    ).match(/^EXPERIMENT_SCHEMA_VERSION = "([^"]+)"$/m)?.[1];
+
+    expect(EXPERIMENT_SCHEMA_VERSION).toBe(backend);
+  });
+
   it("reads the retained baseline", () => {
     process.env.TRACE_RUNS_DIR = ACCEPTANCE;
     expect(existsSync(path.join(ACCEPTANCE, "experiments"))).toBe(true);

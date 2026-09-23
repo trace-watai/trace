@@ -44,10 +44,11 @@ import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from trace_harness.attribution.schemas import PostBlockOutcome
 from trace_harness.environment.control_library import load_library
 from trace_harness.models import (
     estimate_cost_usd,
@@ -64,8 +65,9 @@ from trace_harness.tracing.events import TraceEventType, utc_now
 
 logger = logging.getLogger(__name__)
 
-# 0.3.0: optional budget block; 0.2.0: per-entry verdict, aggregates.incomplete
-BATCH_SUMMARY_SCHEMA_VERSION = "0.3.0"
+# 0.4.0: branch-stage entry fields and summary metadata (#159); 0.3.0: optional
+# budget block (#196); 0.2.0: per-entry verdict, aggregates.incomplete
+BATCH_SUMMARY_SCHEMA_VERSION = "0.4.0"
 
 BUDGET_EXHAUSTED = "budget_exhausted"
 BUDGET_UNENFORCEABLE = "budget_unenforceable"
@@ -96,6 +98,15 @@ class BatchRunEntry(BaseModel):
     latency_ms: float | None = None
     cost_usd: float | None = None
     error: str | None = None
+    # Filled by the branch stage (#159); None on suite entries and on files
+    # written before 0.4.0. ``diverged`` says whether the first action after
+    # the fork differed from the recording, and the step says where the run
+    # first differed at all.
+    condition: str | None = None
+    seed: int | None = None
+    first_post_fork_divergence_step: int | None = None
+    diverged: bool | None = None
+    post_block_outcome: PostBlockOutcome | None = None
 
 
 class BatchAggregates(BaseModel):
@@ -151,6 +162,9 @@ class BatchSummary(BaseModel):
     aggregates: BatchAggregates
     # Present when the suite set max_cost_usd; absent in summaries before 0.3.0.
     budget: BatchBudget | None = None
+    # Branch batches record experiment_id, condition, source_run_id and start;
+    # empty on suite batches and in summaries before 0.4.0.
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class BudgetGuard:
@@ -290,7 +304,7 @@ class BatchRunner:
             finished_at=finished_at,
             agent_configs=suite.agent_configs,
             entries=entries,
-            aggregates=_aggregate(entries),
+            aggregates=aggregate_entries(entries),
             budget=guard.record(not_run),
         )
         self._write_summary(summary)
@@ -300,7 +314,7 @@ class BatchRunner:
     def _run_cell(self, config: AgentConfig, task_path: str) -> BatchRunEntry:
         try:
             result = run_task_pipeline(task_path, config, self.store, controls=self.controls)
-            return _entry_from_pipeline(result, config, task_path, self.store.runs_dir)
+            return entry_from_pipeline(result, config, task_path, self.store.runs_dir)
         except Exception as exc:  # noqa: BLE001 — isolate the cell; the batch goes on
             logger.warning(
                 "batch cell failed (agent=%s, task=%s): %s", config.label, task_path, exc
@@ -383,7 +397,7 @@ def _cost_usd(result: PipelineResult, runs_dir: Path) -> float | None:
     )
 
 
-def _entry_from_pipeline(
+def entry_from_pipeline(
     result: PipelineResult, config: AgentConfig, task_path: str, runs_dir: Path
 ) -> BatchRunEntry:
     run = result.run_result
@@ -425,7 +439,7 @@ def _setup_error_entry(config: AgentConfig, task_path: str, exc: Exception) -> B
     )
 
 
-def _aggregate(entries: list[BatchRunEntry]) -> BatchAggregates:
+def aggregate_entries(entries: list[BatchRunEntry]) -> BatchAggregates:
     completed = [e for e in entries if e.status == str(RunStatus.COMPLETED)]
     terminated = sum(1 for e in entries if e.status == str(RunStatus.TERMINATED))
     # Pass/fail counts consider only completed runs: an incomplete run that
