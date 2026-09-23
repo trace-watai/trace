@@ -12,6 +12,15 @@ One batch per condition lands under ``runs/batches/``, tagged with the
 experiment id and condition name, which is what ``experiment record`` reads.
 ``static_replay`` conditions reuse the ``replay --apply-control`` path in the
 CLI, and :func:`replay_batch` records that verdict as a batch of one.
+
+The plan's ``budget.max_cost_usd`` caps what one ``branch`` invocation spends
+on live calls, across every condition and seed, through the #196
+:class:`~trace_harness.runner.batch.BudgetGuard`. :func:`admit_before_any_run`
+asks it once per live condition before anything runs, and :func:`run_branch`
+asks it before each live seed and charges it after. A seed that calls no
+provider (the fixture provider, or a cassette replay) costs nothing and is
+never refused. Each batch's ``budget`` block records what that condition spent
+and, when the guard stopped it, why.
 """
 
 from __future__ import annotations
@@ -27,6 +36,7 @@ from trace_harness.environment.controls import select_controls
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models import (
     create_model_adapter,
+    makes_live_calls,
     resolve_call_policy,
     resolve_model_name,
 )
@@ -44,8 +54,11 @@ from trace_harness.regression.report import ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.batch import (
+    BatchBudget,
     BatchRunEntry,
     BatchSummary,
+    BudgetGuard,
+    NotRunCell,
     aggregate_entries,
     entry_from_pipeline,
     new_batch_id,
@@ -143,17 +156,40 @@ def post_fork_divergence(
     return first_step, first_step == fork_step + 1
 
 
+def calls_a_provider(condition: ConditionSpec) -> bool:
+    """Whether a condition's runs call a live provider, and so can cost money."""
+    agent = condition.agent_config
+    return condition.kind in LIVE_KINDS and makes_live_calls(agent.provider, agent.cassette)
+
+
+def admit_before_any_run(guard: BudgetGuard, conditions: list[ConditionSpec]) -> None:
+    """Ask the guard about every live condition once, before any condition runs.
+
+    A live model with no price, or a cap of zero, stops the guard here, so no
+    live run of the invocation starts and nothing is spent on a plan whose cap
+    cannot hold. Conditions that call no provider still run afterwards.
+    """
+    for condition in conditions:
+        if calls_a_provider(condition):
+            agent = condition.agent_config
+            guard.admit(agent.provider, _live_model(condition), agent.cassette)
+
+
 def run_branch(
     artifact_path: Path | str,
     experiment: ExperimentSpec,
     condition: ConditionSpec,
     store: ArtifactStore,
+    guard: BudgetGuard | None = None,
 ) -> BranchResult:
     """Run every seed of one live condition and write its batch.
 
     A condition that replays model calls from cassettes is skipped as a whole
     when any of its seeds has no recording, so a partial set of seeds never
     stands in for the planned sample.
+
+    ``guard`` is shared by every condition of one ``branch`` invocation; a
+    caller that passes none gets one built from the plan's ``max_cost_usd``.
     """
     if condition.kind not in LIVE_KINDS:
         raise ValueError(f"{condition.kind.value} conditions run through replay, see replay_batch")
@@ -167,15 +203,34 @@ def run_branch(
     if missing:
         return BranchResult(condition.name, skipped=f"no cassette recorded at {', '.join(missing)}")
 
+    if guard is None:
+        guard = BudgetGuard(experiment.budget.max_cost_usd)
+    agent = condition.agent_config
+    live = calls_a_provider(condition)
+    model = _live_model(condition) if live else None
+    spent_before, stopped_before = guard.spent_usd, guard.stop_reason is not None
+
     started_at = utc_now()
-    entries = []
+    entries: list[BatchRunEntry] = []
+    not_run: list[NotRunCell] = []
     for seed in seeds:
+        if live and not guard.admit(agent.provider, model, agent.cassette):
+            not_run.append(
+                NotRunCell(agent_label=agent.label, task_path=artifact.task_fixture, seed=seed)
+            )
+            continue
         try:
-            entries.append(_run_seed(artifact, task, experiment, condition, fork_step, seed, store))
+            entry = _run_seed(artifact, task, experiment, condition, fork_step, seed, store)
         except Exception as exc:  # noqa: BLE001 (isolate the seed so the batch goes on)
             logger.warning("branch seed %s of %s failed: %s", seed, condition.name, exc)
-            entries.append(_setup_error(artifact, condition, seed, exc))
-    summary = _write_batch(store, experiment, condition, artifact, entries, started_at)
+            entry = _setup_error(artifact, condition, seed, exc)
+        entries.append(entry)
+        guard.charge(entry.cost_usd, agent.provider, agent.cassette, run_id=entry.run_id)
+
+    budget = _budget_block(guard, spent_before, stopped_before, not_run)
+    summary = _write_batch(
+        store, experiment, condition, artifact, entries, started_at, budget=budget
+    )
     return BranchResult(condition.name, summary=summary)
 
 
@@ -205,6 +260,7 @@ def replay_batch(
         artifact.task_fixture,
         store.runs_dir,
     ).model_copy(update={"condition": condition.name, "post_block_outcome": block.outcome})
+    # A replay calls no provider, so it spends nothing and is never refused.
     return _write_batch(
         store,
         experiment,
@@ -212,6 +268,7 @@ def replay_batch(
         artifact,
         [entry],
         started_at,
+        budget=BatchBudget(max_cost_usd=experiment.budget.max_cost_usd, spent_usd=0.0),
         replay_exit_code=report.exit_code,
     )
 
@@ -325,6 +382,33 @@ def _continuation(
     return adapter, model
 
 
+def _budget_block(
+    guard: BudgetGuard, spent_before: float, stopped_before: bool, not_run: list[NotRunCell]
+) -> BatchBudget | None:
+    """This condition's budget block, cut from a guard that spans the invocation.
+
+    ``spent_usd`` is what this batch's live runs cost, so the blocks of one
+    invocation add up to what it spent. The stop is recorded only when the guard
+    refused a seed here or stopped during this condition.
+    """
+    if guard.max_cost_usd is None:
+        return None
+    stopped_here = guard.stop_reason is not None and (bool(not_run) or not stopped_before)
+    return BatchBudget(
+        max_cost_usd=guard.max_cost_usd,
+        spent_usd=round(guard.spent_usd - spent_before, 6),
+        stop_reason=guard.stop_reason if stopped_here else None,
+        detail=guard.detail if stopped_here else None,
+        not_run=not_run,
+    )
+
+
+def _live_model(condition: ConditionSpec) -> str:
+    """The model a live condition runs, resolved as the adapter resolves it."""
+    agent = condition.agent_config
+    return resolve_model_name(agent.provider, agent.model, None)
+
+
 def _missing_cassettes(
     condition: ConditionSpec, task_id: str, seeds: list[int | None]
 ) -> list[str]:
@@ -376,6 +460,7 @@ def _write_batch(
     artifact: RegressionArtifact,
     entries: list[BatchRunEntry],
     started_at: datetime,
+    budget: BatchBudget | None = None,
     **extra: Any,
 ) -> BatchSummary:
     summary = BatchSummary(
@@ -386,6 +471,7 @@ def _write_batch(
         agent_configs=[condition.agent_config],
         entries=entries,
         aggregates=aggregate_entries(entries),
+        budget=budget,
         metadata={
             "experiment_id": experiment.experiment_id,
             "condition": condition.name,

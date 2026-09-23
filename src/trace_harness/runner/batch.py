@@ -31,10 +31,13 @@ Budget guard (#196)
     without the guard seeing it. Fixture and replay runs cost nothing and are
     never refused on price.
 
-    ``run-suite`` is the only caller on this branch. ``run-sweep`` (#198) and
-    ``branch`` do not exist yet; they are meant to build a ``BudgetGuard`` from
-    their own ``max_cost_usd`` and call ``admit`` before and ``charge`` after
-    each run, the same way ``BatchRunner.run`` does.
+    ``run-suite`` and ``branch`` drive it. ``branch`` builds one guard per
+    invocation from the experiment plan's ``budget.max_cost_usd``, shared by
+    every condition and seed, and records a budget block on each condition's
+    batch (see ``runner/branch.py``). ``run-sweep`` (#198) does not exist yet;
+    it is meant to build a ``BudgetGuard`` from its own ``max_cost_usd`` and
+    call ``admit`` before and ``charge`` after each run, the same way
+    ``BatchRunner.run`` does.
 """
 
 from __future__ import annotations
@@ -65,8 +68,9 @@ from trace_harness.tracing.events import TraceEventType, utc_now
 
 logger = logging.getLogger(__name__)
 
-# 0.4.0: branch-stage entry fields and summary metadata (#159); 0.3.0: optional
-# budget block (#196); 0.2.0: per-entry verdict, aggregates.incomplete
+# 0.4.0: branch-stage entry fields, summary metadata and the seed of a cell the
+# budget never ran (#159); 0.3.0: optional budget block (#196); 0.2.0: per-entry
+# verdict, aggregates.incomplete
 BATCH_SUMMARY_SCHEMA_VERSION = "0.4.0"
 
 BUDGET_EXHAUSTED = "budget_exhausted"
@@ -135,6 +139,8 @@ class NotRunCell(BaseModel):
 
     agent_label: str
     task_path: str
+    # The branch stage's cell is a seed (0.4.0); None on suite cells.
+    seed: int | None = None
 
 
 class BatchBudget(BaseModel):
@@ -160,7 +166,8 @@ class BatchSummary(BaseModel):
     agent_configs: list[AgentConfig]
     entries: list[BatchRunEntry]
     aggregates: BatchAggregates
-    # Present when the suite set max_cost_usd; absent in summaries before 0.3.0.
+    # Present when the suite set max_cost_usd, and on every branch batch, since
+    # an experiment plan always carries one; absent in summaries before 0.3.0.
     budget: BatchBudget | None = None
     # Branch batches record experiment_id, condition, source_run_id and start;
     # empty on suite batches and in summaries before 0.4.0.
@@ -170,10 +177,11 @@ class BatchSummary(BaseModel):
 class BudgetGuard:
     """Refuses to start a run once a batch's live spend has reached its cap.
 
-    Construct one per batch from the spec's ``max_cost_usd``; None never
-    refuses. Call :meth:`admit` before each run and :meth:`charge` after it
-    with the cost its entry recorded. Once it refuses, it refuses everything
-    after, so the batch stops at that point.
+    Construct one per batch from the spec's ``max_cost_usd``, or one per
+    ``branch`` invocation shared by its conditions; None never refuses. Call
+    :meth:`admit` before each run and :meth:`charge` after it with the cost its
+    entry recorded. Once it refuses, it refuses everything after, so the batch
+    stops at that point.
     """
 
     def __init__(self, max_cost_usd: float | None) -> None:

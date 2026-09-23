@@ -35,7 +35,7 @@ result.
 | `hypothesis` | one sentence, stated before running |
 | `frozen_manifest` | `suite_id`, `verifier_ids`, `fixtures_hash`, `labels_path`, `frozen_set` |
 | `conditions` | one per arm, names unique within the experiment |
-| `budget` | `max_runs`, `max_cost_usd` |
+| `budget` | `max_runs`, `max_cost_usd`; `branch` enforces `max_cost_usd` per invocation ([branch_stage.md](branch_stage.md#budget)), and `max_runs` is not enforced |
 
 `fixtures_hash` is what makes the freeze checkable rather than asserted. If the
 fixtures move between two conditions then the conditions answered different

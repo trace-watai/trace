@@ -46,7 +46,10 @@ const asVersion = (version: string): RawBatchSummary => {
     return {
       ...raw,
       schema_version: version,
-      budget,
+      budget: {
+        ...budget,
+        not_run: [{ ...budget.not_run[0], seed: 2 }],
+      },
       entries: raw.entries.map((entry, seed) => ({
         ...entry,
         condition: "live",
@@ -96,6 +99,9 @@ describe("parseBatchSummary", () => {
       );
       expect(summary.budget === undefined).toBe(version < "0.3.0");
       expect(summary.metadata === undefined).toBe(version < "0.4.0");
+      expect(summary.budget?.notRun[0].seed).toBe(
+        version === "0.4.0" ? 2 : undefined,
+      );
     },
   );
 

@@ -17,6 +17,7 @@ import pytest
 from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, REPO_ROOT
 from trace_harness.cli import main
 from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID
+from trace_harness.models.anthropic import ANTHROPIC_PRICING
 from trace_harness.models.base import ActionKind, AgentAction, ToolCall
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.models.fork import ForkAdapter
@@ -61,7 +62,9 @@ def _condition(name: str, kind: str, artifact: dict, step: int | None, **fields)
     return {"name": name, "kind": kind, "agent_config": {"label": name}, "start": start, **fields}
 
 
-def _spec(tmp_path: Path, *conditions: dict) -> tuple[Path, ExperimentSpec]:
+def _spec(
+    tmp_path: Path, *conditions: dict, max_cost_usd: float = 0
+) -> tuple[Path, ExperimentSpec]:
     spec = ExperimentSpec.model_validate(
         {
             "experiment_id": "exp_branch_test",
@@ -69,7 +72,7 @@ def _spec(tmp_path: Path, *conditions: dict) -> tuple[Path, ExperimentSpec]:
             # A suite that exists, so `experiment freeze` can hash it (#195).
             "frozen_manifest": {"suite_id": "refund_v0", "fixtures_hash": "sha256:test"},
             "conditions": list(conditions),
-            "budget": {"max_runs": 20, "max_cost_usd": 0},
+            "budget": {"max_runs": 20, "max_cost_usd": max_cost_usd},
         }
     )
     path = tmp_path / "experiment.json"
@@ -229,13 +232,18 @@ def test_replay_only_condition_reproduces_the_replay_verdict(tmp_path, capsys, t
 
 
 class _ScriptedGemini:
-    """Stands in for the provider while a cassette records; never used on replay."""
+    """Stands in for the provider while a cassette records; never used on replay.
+
+    Each answer carries Gemini usage, so a recording under the plan's cap is
+    priced and the budget guard admits the next seed.
+    """
 
     def __init__(
         self, model=None, *, temperature=None, seed=None, timeout_seconds=120.0, call_policy=None
     ):
         self.name = "gemini"
-        self._actions = iter(STORE_CREDIT)
+        usage = {"usage_metadata": {"prompt_token_count": 1000, "candidates_token_count": 100}}
+        self._actions = iter(a.model_copy(update={"raw": usage}) for a in STORE_CREDIT)
 
     def next_action(self, transcript, tools):
         return next(self._actions)
@@ -276,7 +284,8 @@ def test_live_condition_runs_offline_from_a_cassette_and_skips_without_one(
 
     monkeypatch.setattr(GeminiModelAdapter, "__init__", _ScriptedGemini.__init__)
     monkeypatch.setattr(GeminiModelAdapter, "next_action", _ScriptedGemini.next_action)
-    _, spec = _spec(tmp_path, live("record", cassettes))
+    # Recording calls the provider, so the plan's cap has to leave room for it.
+    _, spec = _spec(tmp_path, live("record", cassettes), max_cost_usd=1.0)
     recorded_store = ArtifactStore(tmp_path / "recorded")
     recorded = run_branch(path, spec, spec.conditions[0], recorded_store).summary
 
@@ -302,6 +311,10 @@ def test_live_condition_runs_offline_from_a_cassette_and_skips_without_one(
         # Recording calls the provider under the #196 call policy; replay calls nothing.
         assert recorded_store.read_json(before.run_id, names.RUN_CONFIG)["call_policy"]
         assert replayed_store.read_json(after.run_id, names.RUN_CONFIG)["call_policy"] is None
+
+    # The recording was priced and charged; the replay called nothing.
+    assert recorded.budget.spent_usd > 0 and recorded.budget.stop_reason is None
+    assert replayed.budget.spent_usd == 0.0
 
     spec_path, spec = _spec(tmp_path, live("replay", str(tmp_path / "never_recorded")))
     skipped = run_branch(path, spec, spec.conditions[0], ArtifactStore(tmp_path / "skipped"))
@@ -403,6 +416,177 @@ def test_batch_summaries_written_before_the_branch_stage_still_load(version):
     assert {(e.condition, e.seed, e.diverged, e.post_block_outcome) for e in summary.entries} == {
         (None, None, None, None)
     }
+
+
+# --- the experiment budget (#196) ---
+
+# 10k input and 10k output tokens on claude-sonnet-5 is $0.18 a run.
+USAGE = {"input_tokens": 10_000, "output_tokens": 10_000}
+RUN_COST = (10_000 * 3.0 + 10_000 * 15.0) / 1_000_000
+
+
+class _PricedClaude:
+    """Answers after the fork the way the Anthropic adapter does, usage included."""
+
+    name = "anthropic"
+
+    def __init__(self, usage: dict | None) -> None:
+        self.usage = usage
+
+    def next_action(self, transcript, tools):
+        raw: dict = {"stop_reason": "end_turn"}
+        if self.usage is not None:
+            raw["usage"] = self.usage
+        return AgentAction(kind=ActionKind.FINAL_ANSWER, final_answer="No refund today.", raw=raw)
+
+
+@pytest.fixture
+def live_models(monkeypatch) -> list[str]:
+    """Every live adapter the branch stage builds, by model. Fixture runs pass through."""
+    from trace_harness.models import create_model_adapter as real_create
+
+    built: list[str] = []
+
+    def create(provider, **kwargs):
+        if provider == "fixture" or kwargs.get("cassette") is not None:
+            return real_create(provider, **kwargs)
+        built.append(kwargs["model"])
+        return _PricedClaude(None if kwargs["model"] == "claude-no-usage" else USAGE)
+
+    monkeypatch.setattr("trace_harness.runner.branch.create_model_adapter", create)
+    return built
+
+
+def _claude(name: str, kind: str, artifact: dict, model: str = "claude-sonnet-5", **fields):
+    condition = _condition(name, kind, artifact, 2, seeds=[0, 1, 2], **fields)
+    condition["agent_config"] = {"label": name, "provider": "anthropic", "model": model}
+    return condition
+
+
+def _branch(tmp_path: Path, path: Path, spec_path: Path) -> tuple[int, dict[str, BatchSummary]]:
+    runs = tmp_path / "runs"
+    code = main(["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)])
+    summaries = [
+        BatchSummary.model_validate_json(p.read_text())
+        for p in (runs / "batches").glob("*/batch_summary.json")
+    ]
+    return code, {s.metadata["condition"]: s for s in summaries}
+
+
+def test_a_one_cent_budget_stops_live_conditions_after_the_first_seed(
+    tmp_path, capsys, live_models
+):
+    """One guard spans the invocation, so the next condition is refused whole."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(
+        tmp_path,
+        _claude("live", "live", artifact, control_ids=[REFUND_WINDOW_CONTROL_ID]),
+        _claude("live_no_control", "live_no_control", artifact),
+        max_cost_usd=0.01,
+    )
+    capsys.readouterr()
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 0
+    assert live_models == ["claude-sonnet-5"]
+    live, off = batches["live"], batches["live_no_control"]
+    assert [e.seed for e in live.entries] == [0]
+    assert live.entries[0].cost_usd == pytest.approx(RUN_COST)
+    assert live.budget.max_cost_usd == 0.01
+    assert live.budget.spent_usd == pytest.approx(RUN_COST)
+    assert live.budget.stop_reason == "budget_exhausted"
+    assert [(c.agent_label, c.seed) for c in live.budget.not_run] == [("live", 1), ("live", 2)]
+    assert off.entries == []
+    assert off.budget.spent_usd == 0.0
+    assert off.budget.stop_reason == "budget_exhausted"
+    assert [c.seed for c in off.budget.not_run] == [0, 1, 2]
+    out = capsys.readouterr().out
+    assert "budget_exhausted" in out and "Record with" in out
+
+
+def test_fixture_conditions_are_never_refused(tmp_path, live_models):
+    """A zero cap stops the live condition before it starts; nothing else is refused."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(
+        tmp_path,
+        _claude("claude", "live", artifact, control_ids=[REFUND_WINDOW_CONTROL_ID]),
+        _condition(
+            "scripted",
+            "live",
+            artifact,
+            2,
+            control_ids=[REFUND_WINDOW_CONTROL_ID],
+            seeds=[0, 1],
+            continuation_script=_script(tmp_path, STORE_CREDIT),
+        ),
+        _condition("recorded", "live_no_control", artifact, 2, seeds=[0, 1, 2]),
+        _condition(
+            "replay_only", "static_replay", artifact, None, control_ids=[REFUND_WINDOW_CONTROL_ID]
+        ),
+    )
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 0
+    assert live_models == []
+    assert batches["claude"].entries == []
+    assert batches["claude"].budget.stop_reason == "budget_exhausted"
+    assert len(batches["claude"].budget.not_run) == 3
+    for name, runs in (("scripted", 2), ("recorded", 3), ("replay_only", 1)):
+        summary = batches[name]
+        assert [e.status for e in summary.entries] == ["completed"] * runs
+        assert all(e.cost_usd == 0.0 for e in summary.entries)
+        assert (summary.budget.spent_usd, summary.budget.stop_reason) == (0.0, None)
+        assert summary.budget.not_run == []
+
+
+def test_an_unpriced_live_model_under_a_budget_is_refused_before_any_run(
+    tmp_path, capsys, live_models
+):
+    """A cap that cannot hold for one condition stops every live condition first."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(
+        tmp_path,
+        _claude("priced", "live", artifact, control_ids=[REFUND_WINDOW_CONTROL_ID]),
+        _claude("unpriced", "live_swapped", artifact, model="claude-not-in-the-table"),
+        max_cost_usd=5.0,
+    )
+    capsys.readouterr()
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 2
+    assert live_models == []
+    assert not list((tmp_path / "runs").glob("run_*"))
+    for summary in batches.values():
+        assert summary.entries == []
+        assert summary.budget.stop_reason == "budget_unenforceable"
+        assert "claude-not-in-the-table" in summary.budget.detail
+        assert len(summary.budget.not_run) == 3
+    out = capsys.readouterr().out
+    assert "budget_unenforceable" in out and "Record with" not in out
+
+
+def test_a_live_seed_with_no_recorded_cost_stops_the_condition(
+    tmp_path, capsys, live_models, monkeypatch
+):
+    """A null cost is never counted as zero."""
+    path, artifact = _artifact(tmp_path)
+    # Priced by name so the guard admits it; the stand-in then reports no usage.
+    monkeypatch.setitem(ANTHROPIC_PRICING, "claude-no-usage", (3.0, 15.0))
+    spec_path, _ = _spec(
+        tmp_path, _claude("live", "live", artifact, model="claude-no-usage"), max_cost_usd=5.0
+    )
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 2
+    (entry,) = batches["live"].entries
+    assert entry.cost_usd is None
+    assert batches["live"].budget.stop_reason == "budget_unenforceable"
+    assert entry.run_id in batches["live"].budget.detail
+    assert [c.seed for c in batches["live"].budget.not_run] == [1, 2]
 
 
 # --- brief 001 harness check ---

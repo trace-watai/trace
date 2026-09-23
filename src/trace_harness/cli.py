@@ -1182,7 +1182,9 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     reuse the ``replay --apply-control`` path and record its verdict as a batch
     of one. Every condition is checked before any of them runs.
     """
+    from trace_harness.runner.batch import BUDGET_UNENFORCEABLE, BudgetGuard
     from trace_harness.runner.branch import (
+        admit_before_any_run,
         load_artifact,
         replay_batch,
         run_branch,
@@ -1202,6 +1204,11 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     artifact = load_artifact(artifact_path)
     for condition in conditions:
         validate_condition(artifact, condition)
+    # One guard for the whole invocation, from the plan's cap (#196). Asking it
+    # about every live condition first means a cap that cannot hold stops every
+    # live run before the first one starts.
+    guard = BudgetGuard(spec.budget.max_cost_usd)
+    admit_before_any_run(guard, conditions)
 
     pairs: list[str] = []
     for condition in conditions:
@@ -1216,7 +1223,7 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
             )
             summary = replay_batch(report, spec, condition, artifact_path, store, started_at)
         else:
-            outcome = run_branch(artifact_path, spec, condition, store)
+            outcome = run_branch(artifact_path, spec, condition, store, guard=guard)
             if outcome.summary is None:
                 print(f"  skipped: {outcome.skipped}")
                 continue
@@ -1233,9 +1240,24 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
                 f"{entry.run_id} {entry.status} {entry.verdict}, "
                 f"post_block_outcome={entry.post_block_outcome}{divergence}",
             )
+        budget = summary.budget
+        if budget is not None and budget.stop_reason is not None:
+            _print("stopped:", f"{budget.stop_reason}; {budget.detail}")
+            _print("not run:", f"{len(budget.not_run)} seed(s)")
         _print("batch:", str(store.batch_summary_path(summary.batch_id)))
         pairs.append(f"--condition {condition.name}={summary.batch_id}")
 
+    print()
+    _print(
+        "budget:",
+        f"${guard.spent_usd:.6f} of ${guard.max_cost_usd:.6f} spent on live runs",
+    )
+    if guard.stop_reason is not None:
+        _print("stopped:", f"{guard.stop_reason}; {guard.detail}")
+    # Exits as run-suite does: a cap the harness cannot enforce is a
+    # configuration problem, and an exhausted cap is a recorded early stop.
+    if guard.stop_reason == BUDGET_UNENFORCEABLE:
+        return 2
     if pairs:
         print("\nRecord with:")
         print(f"  trace-harness experiment record {spec_path} " + " ".join(pairs))

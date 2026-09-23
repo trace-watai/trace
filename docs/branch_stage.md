@@ -108,6 +108,39 @@ batches feed none of the three, because the pre-registration reports each
 live model separately. Recording a batch under a condition other than the one
 its metadata names exits 2, since it would swap the two rates.
 
+## Budget
+
+The plan's `budget.max_cost_usd` caps what one `branch` invocation spends on
+live calls, across every selected condition and seed, through the #196
+`BudgetGuard` that `run-suite` uses. The guard is built once per invocation
+and follows the same contract: it admits a run before it starts and is charged
+the run's recorded cost after it finishes, and an unknown cost never counts as
+zero.
+
+- Before any condition runs, the guard is asked once about each live
+  condition. A live model with no price under the cap, or a cap of zero, stops
+  it there, so no live run of the invocation starts.
+- Each live seed is admitted before it starts and charged after. Once the
+  recorded spend reaches the cap, every later live seed of the invocation is
+  refused, in this condition and in the ones after it. The check is between
+  runs, so the overshoot is at most one run.
+- A live seed that finishes with no recorded cost stops the guard as
+  `budget_unenforceable`.
+- A seed that calls no provider, meaning the fixture provider or a cassette
+  replay, costs nothing and is never refused, even after the guard has
+  stopped. `static_replay` conditions never ask the guard.
+
+Every batch carries a `budget` block. Its `max_cost_usd` is the plan's cap and
+its `spent_usd` is what that batch's live runs cost, so the blocks of one
+invocation add up to what it spent. When the guard refused a seed of the
+condition, or stopped while the condition ran, the block records
+`budget_exhausted` or `budget_unenforceable` with the guard's detail and lists
+each seed never run in `not_run`. A condition refused whole still writes its
+batch, with no entries. `branch` exits as `run-suite` does without
+`--fail-on-verifier`: 2 when the cap cannot be enforced, without the
+`Record with` line, and 0 after an exhausted cap. `max_runs` is recorded in
+the plan and not enforced.
+
 ## Harness check
 
 Pre-registration 001 requires the fixture model on the `live` arm to equal
@@ -131,4 +164,5 @@ would disagree without any harness defect.
   here calls a live provider, so whether one accepts earlier turns without it
   is unexercised.
 - `verdict_agreement_rate` and `sibling_failure_rate` stay null.
-- The branch stage does not enforce the experiment's budget.
+- `max_runs` is not enforced, and the cap is per invocation, so two
+  invocations of one plan may each spend up to it.

@@ -5,9 +5,9 @@
  * `src/trace_harness/runner/batch.py` (BATCH_SUMMARY_SCHEMA_VERSION 0.4.0),
  * serialized as `runs/batches/{batch_id}/batch_summary.json`. Schema 0.2.0
  * added the per-entry verdict and `aggregates.incomplete`, 0.3.0 the optional
- * `budget` block (#196), and 0.4.0 the branch stage's per-entry fields and
- * summary metadata (#159). Files from 0.1.0 on lack some of these, so every
- * field added after 0.1.0 is optional here.
+ * `budget` block (#196), and 0.4.0 the branch stage's per-entry fields,
+ * summary metadata and not-run seeds (#159). Files from 0.1.0 on lack some of
+ * these, so every field added after 0.1.0 is optional here.
  */
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
@@ -77,6 +77,8 @@ export type BudgetStopReason = (typeof BUDGET_STOP_REASONS)[number];
 export interface RawNotRunCell {
   agent_label: string;
   task_path: string;
+  /** The seed a branch condition never ran (0.4.0); absent or null on suite cells. */
+  seed?: number | null;
 }
 
 /** What a capped batch spent, and why it stopped early if it did (0.3.0). */
@@ -98,7 +100,10 @@ export interface RawBatchSummary {
   agent_configs: RawAgentConfig[];
   entries: RawBatchRunEntry[];
   aggregates: RawBatchAggregates;
-  /** Present when the batch ran under a spend cap; absent before 0.3.0. */
+  /**
+   * Present when the batch ran under a spend cap, which every branch batch
+   * does; absent before 0.3.0.
+   */
   budget?: RawBatchBudget | null;
   /** Branch batches: experiment_id, condition, condition_kind, source_run_id, start. */
   metadata?: Record<string, unknown>;
