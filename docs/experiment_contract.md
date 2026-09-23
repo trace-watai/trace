@@ -77,9 +77,10 @@ nothing was checked.
 
 An experiment cannot change the evaluator that scores it. The plan's
 `frozen_manifest.frozen_set` holds a sha256 for every file of the evaluator,
-written once by `experiment freeze` before any condition runs. `experiment
-record` recomputes them and refuses, listing each file that changed, was added
-or was removed. The module is `trace_harness/runner/frozen_set.py`.
+written once by `experiment freeze` before any condition runs. `branch`
+recomputes them before its first run and `experiment record` recomputes them
+again, and each refuses, listing each file that changed, was added or was
+removed. The module is `trace_harness/runner/frozen_set.py`.
 
 | component | what is hashed |
 |---|---|
@@ -169,12 +170,14 @@ counts behind each rate in `extra` ([branch_stage.md](branch_stage.md#metrics)).
 
 ```bash
 trace-harness experiment freeze <experiment.json>
+trace-harness branch <regression_artifact.json> --experiment <experiment.json> [--allow-drift]
 trace-harness experiment record <experiment.json> --condition <name>=<batch_id> ... [--allow-drift]
 trace-harness list-experiments
 ```
 
 `freeze` writes the frozen set into the plan and is the only command that
-writes a plan. `record` reads the plan, never writes it, checks the frozen set,
+writes a plan. `branch` runs the conditions and prints the pairs `record`
+takes ([branch_stage.md](branch_stage.md)). `record` reads the plan, never writes it, checks the frozen set,
 computes what it can, and writes the result and report beside it.
 `list-experiments` prints one line per experiment and replaces any hand-kept
 spreadsheet of them.

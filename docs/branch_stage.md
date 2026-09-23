@@ -15,6 +15,30 @@ start step against the recording. A bad condition exits 2 with nothing
 written. The command ends by printing the `--condition name=batch_id` pairs
 that `experiment record` accepts.
 
+## From plan to result
+
+The plan is frozen before any condition runs, and both `branch` and `record`
+check the freeze
+([experiment_contract.md](experiment_contract.md#the-frozen-evaluator)). All
+three commands run from the repository root, since they hash paths relative to
+it.
+
+```bash
+trace-harness experiment freeze experiment.json
+trace-harness branch <regression_artifact.json> --experiment experiment.json
+trace-harness experiment record experiment.json \
+  --condition live=<batch_id> --condition live_no_control=<batch_id>
+```
+
+`freeze` needs the plan's `suite_id` to name a file under `fixtures/suites/`.
+A task in no suite, such as the control demo, is still frozen through the
+fixtures component. `branch` and `record` both refuse a plan past schema 0.1.0
+that was never frozen, and both exit 2 with the changed files listed when the
+verifier, environment, attribution scorer, suite or fixtures moved after the
+freeze. `branch` checks before any run, so a changed evaluator costs nothing.
+`branch --allow-drift` runs anyway and prints the drift, and `record` then
+needs the flag too, which forces the decision to review.
+
 ## What a live condition does
 
 For each seed of a `live`, `live_no_control` or `live_swapped` condition:

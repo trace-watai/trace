@@ -9,6 +9,7 @@ the ``live`` arm from each registered fork point.
 from __future__ import annotations
 
 import json
+import shutil
 import socket
 from pathlib import Path
 
@@ -25,7 +26,12 @@ from trace_harness.models.gemini import GeminiModelAdapter
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.batch import BatchSummary
 from trace_harness.runner.branch import post_fork_divergence, run_branch
-from trace_harness.runner.experiment import ExperimentResult, ExperimentSpec
+from trace_harness.runner.experiment import (
+    EXPERIMENT_SCHEMA_VERSION,
+    ExperimentResult,
+    ExperimentSpec,
+)
+from trace_harness.runner.frozen_set import CODE_COMPONENTS, freeze
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 
@@ -62,15 +68,26 @@ def _condition(name: str, kind: str, artifact: dict, step: int | None, **fields)
     return {"name": name, "kind": kind, "agent_config": {"label": name}, "start": start, **fields}
 
 
+@pytest.fixture(autouse=True)
+def _from_the_repository_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """branch and record hash the frozen set from the working directory (#195)."""
+    monkeypatch.chdir(REPO_ROOT)
+
+
 def _spec(
-    tmp_path: Path, *conditions: dict, max_cost_usd: float = 0
+    tmp_path: Path, *conditions: dict, max_cost_usd: float = 0, frozen: bool = True
 ) -> tuple[Path, ExperimentSpec]:
+    # A suite that exists, so the frozen set can hash it (#195).
+    manifest: dict = {"suite_id": "refund_v0", "fixtures_hash": "sha256:test"}
+    if frozen:
+        components = freeze(REPO_ROOT, suite_id="refund_v0")
+        manifest["frozen_set"] = {n: c.model_dump() for n, c in components.items()}
+        manifest["fixtures_hash"] = components["fixtures"].digest
     spec = ExperimentSpec.model_validate(
         {
             "experiment_id": "exp_branch_test",
             "hypothesis": "a blocked agent reaches the same outcome another way",
-            # A suite that exists, so `experiment freeze` can hash it (#195).
-            "frozen_manifest": {"suite_id": "refund_v0", "fixtures_hash": "sha256:test"},
+            "frozen_manifest": manifest,
             "conditions": list(conditions),
             "budget": {"max_runs": 20, "max_cost_usd": max_cost_usd},
         }
@@ -343,10 +360,9 @@ def test_experiment_record_fills_the_three_metrics_from_branch_batches(
             continuation_script=_script(tmp_path, STORE_CREDIT),
         ),
         _condition("live_no_control", "live_no_control", artifact, 2, seeds=[0, 1]),
+        frozen=False,
     )
-    # #195 refuses to record a plan past 0.1.0 that was never frozen, and
-    # freezes from the repository root.
-    monkeypatch.chdir(REPO_ROOT)
+    # #195 refuses to record a plan past 0.1.0 that was never frozen.
     assert main(["experiment", "freeze", str(spec_path)]) == 0
     runs = tmp_path / "runs"
     capsys.readouterr()
@@ -378,6 +394,99 @@ def test_experiment_record_fills_the_three_metrics_from_branch_batches(
     ]
     assert main(["--runs-dir", str(runs), "experiment", "record", str(spec_path), *swapped]) == 2
     assert "cannot answer" in capsys.readouterr().err
+
+
+def test_a_frozen_plan_records_after_branch_and_refuses_an_evaluator_edit(
+    tmp_path, capsys, monkeypatch
+):
+    """freeze, branch, record is the handoff; a verifier edit in between blocks it (#195)."""
+    path, artifact = _artifact(tmp_path)
+    # A copy of the frozen paths as the working directory, so the edit below
+    # never touches the checkout. The runs still execute the installed code.
+    root = tmp_path / "repo"
+    for rel in [*CODE_COMPONENTS.values(), "fixtures"]:
+        shutil.copytree(REPO_ROOT / rel, root / rel, ignore=shutil.ignore_patterns("__pycache__"))
+    monkeypatch.chdir(root)
+    spec_path, spec = _spec(
+        tmp_path,
+        _condition(
+            "live",
+            "live",
+            artifact,
+            2,
+            control_ids=[REFUND_WINDOW_CONTROL_ID],
+            seeds=[0, 1],
+            continuation_script=_script(tmp_path, STORE_CREDIT),
+        ),
+        _condition("live_no_control", "live_no_control", artifact, 2, seeds=[0, 1]),
+        frozen=False,
+    )
+    assert main(["experiment", "freeze", str(spec_path)]) == 0
+    plan = ExperimentSpec.model_validate_json(spec_path.read_text())
+    assert plan.schema_version == EXPERIMENT_SCHEMA_VERSION == "0.3.0"
+    frozen = plan.frozen_manifest
+    assert frozen.fixtures_hash == frozen.frozen_set["fixtures"].digest != "sha256:test"
+
+    runs = tmp_path / "runs"
+    capsys.readouterr()
+    assert main(["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]) == 0
+    pairs = capsys.readouterr().out.split("Record with:")[1].split(str(spec_path))[1].split()
+    record = ["--runs-dir", str(runs), "experiment", "record", str(spec_path), *pairs]
+
+    verifier = root / "src/trace_harness/verifiers/refund_policy.py"
+    original = verifier.read_text(encoding="utf-8")
+    old, new = "cash_refund_window_days: int = 30", "cash_refund_window_days: int = 31"
+    assert original.count(old) == 1
+    verifier.write_text(original.replace(old, new), encoding="utf-8")
+    assert main(record) == 2
+    assert "verifiers: changed src/trace_harness/verifiers/refund_policy.py" in (
+        capsys.readouterr().err
+    )
+    assert not (runs / "experiments").exists()
+
+    verifier.write_text(original, encoding="utf-8")
+    assert main(record) == 0
+    result = ExperimentResult.model_validate(
+        ArtifactStore(runs).read_experiment_result(spec.experiment_id)
+    )
+    assert (result.frozen_set_verified, result.frozen_set_drifted) == (True, False)
+    assert result.metrics.first_post_fork_divergence_rate == 1.0
+    assert result.metrics.noise_floor_divergence_rate == 0.0
+
+
+def test_branch_refuses_an_unfrozen_plan_before_any_run(tmp_path, capsys):
+    """Record would refuse it after the spend, so branch refuses first (#195)."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(tmp_path, _condition("live", "live", artifact, 2), frozen=False)
+    runs = tmp_path / "runs"
+    assert main(["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]) == 2
+    assert "has no frozen set" in capsys.readouterr().err
+    assert not (runs / "batches").exists()
+
+
+def test_branch_refuses_a_drifted_plan_before_any_run_unless_allowed(tmp_path, capsys, monkeypatch):
+    path, artifact = _artifact(tmp_path)
+    root = tmp_path / "repo"
+    for rel in [*CODE_COMPONENTS.values(), "fixtures"]:
+        shutil.copytree(REPO_ROOT / rel, root / rel, ignore=shutil.ignore_patterns("__pycache__"))
+    monkeypatch.chdir(root)
+    spec_path, _ = _spec(tmp_path, _condition("live", "live", artifact, 2), frozen=False)
+    assert main(["experiment", "freeze", str(spec_path)]) == 0
+    environment = root / "src/trace_harness/environment/support_env.py"
+    environment.write_text(environment.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    runs = tmp_path / "runs"
+    branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]
+    capsys.readouterr()
+    assert main(branch) == 2
+    err = capsys.readouterr().err
+    assert "branching is refused before any run" in err
+    assert "environment: changed src/trace_harness/environment/support_env.py" in err
+    assert not (runs / "batches").exists()
+
+    assert main([*branch, "--allow-drift"]) == 0
+    assert "DRIFTED, 1 file(s), running with --allow-drift" in capsys.readouterr().out
+    assert (runs / "batches").exists()
 
 
 @pytest.mark.parametrize(

@@ -1072,7 +1072,6 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     was checked.
     """
     from trace_harness.runner.experiment import (
-        PRE_FROZEN_SET_SCHEMA_VERSION,
         DecidedBy,
         Decision,
         ExperimentResult,
@@ -1081,7 +1080,7 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         render_experiment_markdown,
         validate_condition_batches,
     )
-    from trace_harness.runner.frozen_set import check_frozen_set, render_changes
+    from trace_harness.runner.frozen_set import render_changes
 
     spec_path, spec = _load_experiment_plan(args.experiment_path)
 
@@ -1097,27 +1096,13 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         raise CliInputError(str(exc)) from None
 
     manifest = spec.frozen_manifest
-    drift = []
-    if manifest.frozen_set is None:
-        if spec.schema_version != PRE_FROZEN_SET_SCHEMA_VERSION:
-            raise CliInputError(
-                f"{spec_path} has no frozen set; run `trace-harness experiment freeze "
-                f"{spec_path}` before any condition runs"
-            )
-    else:
-        drift = check_frozen_set(
-            manifest.frozen_set,
-            Path.cwd(),
-            suite_id=manifest.suite_id,
-            labels_path=manifest.labels_path,
-        )
-        if drift and not args.allow_drift:
-            listed = "\n".join(f"  {line}" for line in render_changes(drift))
-            raise CliInputError(
-                f"the frozen set of {spec.experiment_id} changed since the plan was frozen, "
-                f"so recording is refused:\n{listed}\nRestore those files, or pass "
-                "--allow-drift to record the result as drifted with decision review."
-            )
+    drift = _frozen_set_drift(
+        spec,
+        spec_path,
+        allow_drift=args.allow_drift,
+        refused="recording is refused",
+        override="--allow-drift to record the result as drifted with decision review",
+    )
 
     summaries = []
     kinds = {c.name: c.kind for c in spec.conditions}
@@ -1175,6 +1160,40 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     return 0
 
 
+def _frozen_set_drift(
+    spec: Any, spec_path: Path, *, allow_drift: bool, refused: str, override: str
+) -> list[Any]:
+    """Recompute a plan's frozen set and refuse on drift unless allowed (#195).
+
+    A 0.1.0 plan predates the frozen set and returns no drift. A later plan
+    with no frozen set is refused, since nothing could show its evaluator held.
+    """
+    from trace_harness.runner.experiment import PRE_FROZEN_SET_SCHEMA_VERSION
+    from trace_harness.runner.frozen_set import check_frozen_set, render_changes
+
+    manifest = spec.frozen_manifest
+    if manifest.frozen_set is None:
+        if spec.schema_version != PRE_FROZEN_SET_SCHEMA_VERSION:
+            raise CliInputError(
+                f"{spec_path} has no frozen set; run `trace-harness experiment freeze "
+                f"{spec_path}` before any condition runs"
+            )
+        return []
+    drift = check_frozen_set(
+        manifest.frozen_set,
+        Path.cwd(),
+        suite_id=manifest.suite_id,
+        labels_path=manifest.labels_path,
+    )
+    if drift and not allow_drift:
+        listed = "\n".join(f"  {line}" for line in render_changes(drift))
+        raise CliInputError(
+            f"the frozen set of {spec.experiment_id} changed since the plan was frozen, "
+            f"so {refused}:\n{listed}\nRestore those files, or pass {override}."
+        )
+    return drift
+
+
 def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     """Run each condition of an experiment from a regression artifact (#159).
 
@@ -1204,6 +1223,17 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     artifact = load_artifact(artifact_path)
     for condition in conditions:
         validate_condition(artifact, condition)
+    # The same check record runs, made before any spend: a sweep on a changed
+    # evaluator would be refused at record after its money was gone.
+    drift = _frozen_set_drift(
+        spec,
+        spec_path,
+        allow_drift=args.allow_drift,
+        refused="branching is refused before any run",
+        override="--allow-drift to run anyway (record will need it too)",
+    )
+    if drift:
+        _print("frozen set:", f"DRIFTED, {len(drift)} file(s), running with --allow-drift")
     # One guard for the whole invocation, from the plan's cap (#196). Asking it
     # about every live condition first means a cap that cannot hold stops every
     # live run before the first one starts.
@@ -1863,6 +1893,11 @@ def main(argv: list[str] | None = None) -> int:
     p_branch.add_argument("--experiment", required=True, help="path to the experiment plan JSON")
     p_branch.add_argument(
         "--condition", default=None, metavar="NAME", help="run only this declared condition"
+    )
+    p_branch.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="run even if the plan's frozen set changed; record will need the flag too",
     )
 
     p_suite = sub.add_parser(
