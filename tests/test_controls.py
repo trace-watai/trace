@@ -215,8 +215,30 @@ def test_every_prescribed_repair_control_has_a_materializability_entry() -> None
     assert guardrail_ref_for_repair_control("deterministic_pre_call_refund_guardrail") == (
         "unauthorized_cash_refund_guardrail"
     )
-    assert guardrail_ref_for_repair_control("current_policy_source_precedence") is None
+    assert guardrail_ref_for_repair_control("current_policy_source_precedence") == (
+        "deprecated_policy_citation_guardrail"
+    )
+    # Still unbuilt after #194: detection controls and the CI gate.
+    for name in (
+        "regression_test_ci_gate",
+        "expected_action_contract_check",
+        "escalation_discipline_check",
+        "retrieval_before_action_check",
+    ):
+        assert guardrail_ref_for_repair_control(name) is None, name
     assert guardrail_ref_for_repair_control("not_a_control") is None
+
+
+def test_every_mapped_guardrail_is_registered_and_installable() -> None:
+    """A map entry naming a guardrail nothing can install would count as coverage."""
+    from trace_harness.environment.controls import GUARDRAIL_REGISTRY, control_catalogue
+
+    catalogue = control_catalogue()
+    for name, ref in MATERIALIZABLE_REPAIR_CONTROLS.items():
+        if ref is None:
+            continue
+        assert ref in GUARDRAIL_REGISTRY, (name, ref)
+        assert any(c.provenance.repair_control == name for c in catalogue), name
 
 
 # --- positive sibling gate ---

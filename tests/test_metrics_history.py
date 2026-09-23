@@ -30,7 +30,9 @@ from trace_harness.regression.repair_validation import RepairValidation
 # The one control with a registered guardrail, so coverage has something real
 # to count as materializable.
 MATERIAL = "deterministic_pre_call_refund_guardrail"
-PAPER = "ticket_claim_grounding_check"
+# A prescribed control that still has no guardrail after #194, so coverage has
+# something real to count as unmaterializable.
+PAPER = "escalation_discipline_check"
 
 
 def _write(path: Path, payload: dict) -> None:

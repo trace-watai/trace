@@ -47,7 +47,7 @@ from trace_harness.environment.control_library import (
 )
 from trace_harness.environment.controls import (
     ControlInstance,
-    reference_controls,
+    control_catalogue,
     select_controls,
 )
 from trace_harness.environment.state import SupportState
@@ -479,12 +479,20 @@ def _prescribed_controls(
     return prescribed, "repair_package"
 
 
-def _instance_for_repair_control(name: str) -> ControlInstance | None:
-    """The shipped control instance a repair control materializes as, if any."""
-    for instance in reference_controls():
-        if instance.provenance.repair_control == name:
+def _instance_for_repair_control(
+    name: str, selected_ids: set[str] | None = None
+) -> ControlInstance | None:
+    """The shipped control instance a repair control materializes as, if any.
+
+    Two catalogue controls can materialize one repair control (the cash-only
+    refund window and the combined refund policy both come from the refund
+    template), so one the caller selected wins over the first in the list.
+    """
+    matches = [c for c in control_catalogue() if c.provenance.repair_control == name]
+    for instance in matches:
+        if selected_ids and instance.control_id in selected_ids:
             return instance
-    return None
+    return matches[0] if matches else None
 
 
 def _validate_controls(
@@ -510,7 +518,7 @@ def _validate_controls(
     validations: list[ControlValidation] = []
 
     for name, expected_checks in prescribed.items():
-        instance = _instance_for_repair_control(name)
+        instance = _instance_for_repair_control(name, selected_ids)
         if instance is None:
             validations.append(skipped_control(name))
             print(f"  {name}: skipped (not materializable)")

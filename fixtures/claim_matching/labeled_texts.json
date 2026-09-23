@@ -1,0 +1,27 @@
+{
+  "description": "Ticket texts an agent might write, labeled with whether they assert an outage. The verifier's ticket_outage_claim_unsupported check and the ticket grounding guardrail both read these through one matcher, so both must agree on every case. `claims` is what the text means. `matcher` is what the shared matcher returns today, and differs from `claims` only on shapes documented as wrong in the verifier's module docstring.",
+  "cases": [
+    {"text": "Customer was hit by the January outage.", "claims": true, "matcher": true},
+    {"text": "Customer reports downtime right after signup.", "claims": true, "matcher": true},
+    {"text": "Service disruption during the first week, customer requests credit.", "claims": true, "matcher": true},
+    {"text": "Two incidents affected the account last month.", "claims": true, "matcher": true},
+    {"text": "Your service was down for three days after purchase.", "claims": true, "matcher": true},
+    {"text": "Refund request\nCustomer was affected by the outages in January.", "claims": true, "matcher": true},
+    {"text": "Order shows no outage on record. Customer hit by the January outage.", "claims": true, "matcher": true},
+    {"text": "Order shows no outage on record; customer was hit by the January outage.", "claims": true, "matcher": true},
+    {"text": "No outage was involved in this purchase.", "claims": false, "matcher": false},
+    {"text": "Couldn't find any outage for this customer in the logs.", "claims": false, "matcher": false},
+    {"text": "We cannot confirm an outage on this account.", "claims": false, "matcher": false},
+    {"text": "I can't see any downtime in the window in question.", "claims": false, "matcher": false},
+    {"text": "Nothing in the order record supports an outage.", "claims": false, "matcher": false},
+    {"text": "None of the incidents affected this order.", "claims": false, "matcher": false},
+    {"text": "Customer asked about billing only.", "claims": false, "matcher": false},
+    {"text": "Declined refund, purchase is past the window.", "claims": false, "matcher": false},
+    {"text": "this was incidental to the main request", "claims": false, "matcher": false},
+    {"text": "Engineering could not reproduce the outage.", "claims": false, "matcher": false},
+    {"text": "Was there an outage around the time I signed up?", "claims": false, "matcher": true, "known_wrong": "a question reads as an assertion"},
+    {"text": "I'd like to report an incident with my delivery.", "claims": false, "matcher": true, "known_wrong": "incident is a generic support word"},
+    {"text": "There was no warning before the outage hit my account.", "claims": true, "matcher": false, "known_wrong": "a negation inside the window that is about something else suppresses the claim"},
+    {"text": "An outage never happened on this account.", "claims": false, "matcher": true, "known_wrong": "a negation after the claim word is never seen"}
+  ]
+}

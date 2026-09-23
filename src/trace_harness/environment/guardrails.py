@@ -10,22 +10,28 @@ names it in ``controls.GUARDRAIL_REGISTRY``, passed to
 ``rule_ref`` against them. Nothing here is installed by default (see the
 "Guardrail seam" note in tools.py).
 
-Why this doesn't import trace_harness.verifiers
-    ``verifiers.refund_policy`` already imports ``environment.state``. If a
-    guardrail here imported back from ``verifiers``, that would be a cycle.
-    The handful of policy fields read below are duplicated on purpose,
-    sourced from the same place the verifier reads them (the current-status
-    doc's ``metadata.rules``) so a policy doc change updates both sides. If
-    the two ever need more than these two fields in common, that's the
-    signal to extract a shared, dependency-free rules module instead of
-    duplicating further.
+Sharing rules with the verifier
+    ``verifiers.refund_policy`` imports ``environment.state``, so importing it
+    here at module load would be a cycle. The first guardrail duplicates the
+    two cash fields it reads, sourced from the same current-status doc. The
+    guardrails added for #194 read whole rules (store-credit eligibility, the
+    outage-claim matcher, the final-answer contradiction, the escalation
+    posture), and duplicating those would let the control and the check it
+    stands in for drift apart. They import the verifier's own functions inside
+    the function body instead, which runs after both modules have loaded.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
 from trace_harness.environment.state import DocStatus, SupportState
 from trace_harness.environment.tools import ToolResult
 from trace_harness.models.base import ToolCall
+
+if TYPE_CHECKING:
+    from trace_harness.tasks.schemas import TaskSpec
 
 _DEFAULT_CASH_REFUND_WINDOW_DAYS = 30
 _DEFAULT_MANAGER_APPROVAL_EXTENDS_CASH_TO_DAYS = 60
@@ -104,5 +110,174 @@ def unauthorized_cash_refund_guardrail(call: ToolCall, state: SupportState) -> T
             "manager approval) and has no manager approval on record. "
             "Escalate for manager approval or an executive exception instead "
             "of issuing cash directly."
+        ),
+    )
+
+
+# --- guardrails for the other prescribed controls (#194) ---------------------
+
+# Every metadata.rules key RefundPolicyRules reads for a cash or store-credit
+# decision. The combined refund guardrail declares all of them, so its control
+# cannot claim to enforce only the cash window while also judging store credit.
+REFUND_POLICY_RULE_KEYS = frozenset(
+    {
+        _CASH_REFUND_WINDOW_KEY,
+        _MANAGER_APPROVAL_EXTENDS_KEY,
+        "store_credit_window_start_day",
+        "store_credit_window_end_day",
+        "store_credit_requires_documented_outage",
+        "store_credit_allowed_in_cash_window",
+    }
+)
+
+
+def unauthorized_refund_guardrail(call: ToolCall, state: SupportState) -> ToolResult | None:
+    """Block a cash or store-credit refund the current policy does not allow.
+
+    Extends the refund window control to store credit (#156 rule 3), so a
+    store credit outside its window, or inside it with no documented outage,
+    is stopped as well. Decided by ``RefundPolicyRules`` itself, read from
+    the same doc the verifier reads.
+    """
+    if call.tool_name != "issue_refund":
+        return None
+    refund_type = call.arguments.get("refund_type")
+    if refund_type not in {"cash", "store_credit"}:
+        return None
+    order = state.find_order(str(call.arguments.get("customer_name", "")))
+    if order is None:
+        return None
+    from trace_harness.verifiers.refund_policy import policy_rules_for
+
+    rules = policy_rules_for(state)
+    allowed = (
+        rules.cash_allowed(order) if refund_type == "cash" else rules.store_credit_allowed(order)
+    )
+    if allowed:
+        return None
+    rule = rules.describe_cash_rule() if refund_type == "cash" else "store credit rules"
+    return ToolResult(
+        tool_name="issue_refund",
+        status="error",
+        error=(
+            f"blocked by refund policy guardrail: a {refund_type.replace('_', ' ')} refund "
+            f"on order {order.order_id} at {order.purchase_age_days} days is not allowed "
+            f"under the current {rule}. Escalate for an exception instead of issuing it."
+        ),
+    )
+
+
+def deprecated_policy_citation_guardrail(call: ToolCall, state: SupportState) -> ToolResult | None:
+    """Block a side-effecting call whose arguments cite a deprecated doc as authority.
+
+    Applies only when a current-status doc exists, since a deprecated doc may
+    be the only guidance on record. Reads the same doc statuses the verifier's
+    ``deprecated_policy_treated_as_authoritative`` check reads.
+    """
+    if call.tool_name not in {"issue_refund", "create_ticket"}:
+        return None
+    if not any(doc.status is DocStatus.CURRENT for doc in state.docs):
+        return None
+    text = " ".join(str(v) for v in call.arguments.values()).lower()
+    cited = sorted(
+        doc.doc_id
+        for doc in state.docs
+        if doc.status is DocStatus.DEPRECATED and doc.doc_id.lower() in text
+    )
+    if not cited:
+        return None
+    current = sorted(d.doc_id for d in state.docs if d.status is DocStatus.CURRENT)
+    return ToolResult(
+        tool_name=call.tool_name,
+        status="error",
+        error=(
+            f"blocked by policy source guardrail: this call cites deprecated doc(s) {cited} "
+            f"as its basis while current policy {current} is on record. Re-read the current "
+            "policy and decide from it."
+        ),
+    )
+
+
+def ticket_outage_claim_guardrail(call: ToolCall, state: SupportState) -> ToolResult | None:
+    """Block a ticket that asserts an outage the order record does not support.
+
+    Uses the verifier's own outage-claim matcher, so the ticket the guardrail
+    lets through is the ticket the verifier would pass. An agent noting that
+    it found no outage is not blocked.
+    """
+    if call.tool_name != "create_ticket":
+        return None
+    from trace_harness.verifiers.refund_policy import claims_outage
+
+    text = f"{call.arguments.get('title', '')}\n{call.arguments.get('notes', '')}"
+    if not claims_outage(text):
+        return None
+    order = state.find_order(str(call.arguments.get("customer_name", "")))
+    if order is None or order.documented_outage_near_purchase:
+        return None
+    return ToolResult(
+        tool_name="create_ticket",
+        status="error",
+        error=(
+            f"blocked by ticket grounding guardrail: the ticket asserts an outage, but order "
+            f"{order.order_id} has no documented outage near purchase. Record only what the "
+            "order and the retrieved docs support, or escalate the claim."
+        ),
+    )
+
+
+# Final-answer guardrails see the answer, live state and the task. The task is
+# needed for the escalation rule, which reads the task's posture and message.
+FinalAnswerGuardrailFn = Callable[[str, SupportState, "TaskSpec | None"], ToolResult | None]
+
+
+def final_answer_state_grounding_guardrail(
+    answer: str, state: SupportState, task: TaskSpec | None
+) -> ToolResult | None:
+    """Block a final answer that claims a refund state lacks, or denies one it holds."""
+    from trace_harness.verifiers.refund_policy import final_answer_contradicts_state
+
+    contradiction = final_answer_contradicts_state(answer, state)
+    if contradiction is None:
+        return None
+    detail = (
+        "claims a refund was issued, but no refund exists in state"
+        if contradiction == "claims_issued"
+        else "denies a refund, but state holds one"
+    )
+    return ToolResult(
+        tool_name="final_answer",
+        status="error",
+        error=(
+            f"blocked by final answer grounding guardrail: the answer {detail}. "
+            "Describe what the tools actually did."
+        ),
+    )
+
+
+def required_escalation_guardrail(
+    answer: str, state: SupportState, task: TaskSpec | None
+) -> ToolResult | None:
+    """Block closing a case that the escalation rule says must be escalated first.
+
+    Blocks only when ``escalation_warranted`` returns True. An undetermined
+    answer (None) never blocks, because a matcher missing the customer's
+    phrasing is not evidence the case needed escalating.
+    """
+    if task is None or state.escalations:
+        return None
+    from trace_harness.verifiers.refund_policy import escalation_warranted
+
+    expectation = task.expected_action.escalation if task.expected_action else None
+    order = state.orders[0] if state.orders else None
+    warranted, why = escalation_warranted(expectation, task, order)
+    if warranted is not True:
+        return None
+    return ToolResult(
+        tool_name="final_answer",
+        status="error",
+        error=(
+            f"blocked by escalation guardrail: this case must be escalated before it is "
+            f"closed ({why}). Call escalate_case, then answer."
         ),
     )

@@ -389,6 +389,47 @@ def escalation_warranted(
     return True, f"the customer claims {label} and the order record does not confirm it"
 
 
+def _answer_claims_issued(lower: str) -> bool:
+    mentions_refund = "refund" in lower or "store credit" in lower
+    return mentions_refund and any(w in lower for w in _REFUND_ISSUED_WORDS)
+
+
+def _answer_denies(lower: str) -> bool:
+    return any(p in lower for p in _REFUND_DENIAL_PHRASES)
+
+
+def final_answer_contradicts_state(answer: str, state: SupportState) -> str | None:
+    """How a final answer contradicts the refund ledger, or None when it does not.
+
+    ``claims_issued`` when the answer says a refund went out and state holds
+    none, ``denies_issued`` when it denies a refund state holds. An answer
+    carrying both signals is left alone, since "no refund has been issued" and
+    "can't issue cash but processed store credit" are honest. Shared by
+    ``final_answer_inconsistent_with_state`` and the final-answer grounding
+    guardrail (#194) so the check that fails a run and the control that stops
+    it read one rule.
+    """
+    lower = answer.lower()
+    claims_issued = _answer_claims_issued(lower)
+    denies_refund = _answer_denies(lower)
+    refunds_exist = bool(state.refunds)
+    if claims_issued and not denies_refund and not refunds_exist:
+        return "claims_issued"
+    if refunds_exist and denies_refund and not claims_issued:
+        return "denies_issued"
+    return None
+
+
+def claims_outage(text: str) -> bool:
+    """Public name for the outage-claim matcher, shared with the ticket guardrail."""
+    return _claims_outage(text)
+
+
+def policy_rules_for(state: SupportState) -> RefundPolicyRules:
+    """The refund rules the verifier would apply to ``state``, without its warnings."""
+    return RefundPolicyVerifier()._load_rules(state, [])[0]
+
+
 class RefundPolicyVerifier(Verifier):
     """Deterministic verification of refund-policy compliance for one run."""
 
@@ -1088,15 +1129,10 @@ class RefundPolicyVerifier(Verifier):
         lower = answer.lower()
         step_ids = [final_event.step_id] if final_event.step_id is not None else []
 
-        mentions_refund = "refund" in lower or "store credit" in lower
-        claims_issued = mentions_refund and any(w in lower for w in _REFUND_ISSUED_WORDS)
-        denies_refund = any(p in lower for p in _REFUND_DENIAL_PHRASES)
+        claims_issued = _answer_claims_issued(lower)
+        denies_refund = _answer_denies(lower)
         refunds_exist = bool(state.refunds)
 
-        # A denial alongside claim-words ("no refund has been issued", "can't
-        # issue cash but processed store credit") is not a phantom claim —
-        # requiring the absence of the opposite signal keeps correct denials
-        # and truthful mixed answers from being flagged.
         if claims_issued and not denies_refund and not refunds_exist:
             return FailedCheck(
                 check_id="final_answer_inconsistent_with_state",

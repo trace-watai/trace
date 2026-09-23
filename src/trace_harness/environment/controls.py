@@ -33,8 +33,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from trace_harness.environment.guardrails import (
+    REFUND_POLICY_RULE_KEYS,
     UNAUTHORIZED_CASH_REFUND_RULE_KEYS,
+    FinalAnswerGuardrailFn,
+    deprecated_policy_citation_guardrail,
+    final_answer_state_grounding_guardrail,
+    required_escalation_guardrail,
+    ticket_outage_claim_guardrail,
     unauthorized_cash_refund_guardrail,
+    unauthorized_refund_guardrail,
 )
 from trace_harness.environment.state import SupportState
 from trace_harness.environment.tools import ToolResult
@@ -54,12 +61,17 @@ class RegisteredGuardrail:
     guardrail ignores nor leave out rules it enforces.
     """
 
-    fn: GuardrailFn
+    fn: GuardrailFn | FinalAnswerGuardrailFn
     rule_source: str
     rule_keys: frozenset[str]
     # Replay classification describes executable coverage, not repair-package prose.
     checks_covered: frozenset[str] = frozenset()
     rule_kind: Literal["prohibition", "requirement"] | None = None
+    # Where the environment runs it. A pre-call guardrail sees a tool call
+    # before dispatch; a final-answer guardrail sees the answer before the run
+    # accepts it (#193) and receives the task, since the escalation rule reads
+    # the task's posture and message.
+    seam: Literal["pre_call", "final_answer"] = "pre_call"
 
 
 # guardrail_ref -> implementation. Seeded with the one guardrail the repository
@@ -71,6 +83,47 @@ GUARDRAIL_REGISTRY: dict[str, RegisteredGuardrail] = {
         rule_keys=UNAUTHORIZED_CASH_REFUND_RULE_KEYS,
         checks_covered=frozenset({"unauthorized_cash_refund"}),
         rule_kind="prohibition",
+    ),
+    # #194. The first entry stays exactly as registered, because the pinned
+    # control library installs it and a control only installs when its
+    # rule_ref matches what its guardrail reads. Store credit is covered by a
+    # separate combined guardrail instead of by widening that one.
+    "unauthorized_refund_guardrail": RegisteredGuardrail(
+        fn=unauthorized_refund_guardrail,
+        rule_source="current_policy_doc",
+        rule_keys=REFUND_POLICY_RULE_KEYS,
+        checks_covered=frozenset({"unauthorized_cash_refund", "unauthorized_store_credit"}),
+        rule_kind="prohibition",
+    ),
+    "deprecated_policy_citation_guardrail": RegisteredGuardrail(
+        fn=deprecated_policy_citation_guardrail,
+        rule_source="doc_status",
+        rule_keys=frozenset(),
+        checks_covered=frozenset({"deprecated_policy_treated_as_authoritative"}),
+        rule_kind="prohibition",
+    ),
+    "ticket_outage_claim_guardrail": RegisteredGuardrail(
+        fn=ticket_outage_claim_guardrail,
+        rule_source="order_record",
+        rule_keys=frozenset({"documented_outage_near_purchase"}),
+        checks_covered=frozenset({"ticket_outage_claim_unsupported"}),
+        rule_kind="prohibition",
+    ),
+    "final_answer_state_grounding_guardrail": RegisteredGuardrail(
+        fn=final_answer_state_grounding_guardrail,
+        rule_source="final_state",
+        rule_keys=frozenset({"refunds"}),
+        checks_covered=frozenset({"final_answer_inconsistent_with_state"}),
+        rule_kind="prohibition",
+        seam="final_answer",
+    ),
+    "required_escalation_guardrail": RegisteredGuardrail(
+        fn=required_escalation_guardrail,
+        rule_source="task_expectation",
+        rule_keys=frozenset({"expected_action.escalation", "requires_escalation"}),
+        checks_covered=frozenset({"required_escalation_missing"}),
+        rule_kind="requirement",
+        seam="final_answer",
     ),
 }
 
@@ -161,7 +214,7 @@ def resolve_guardrail(guardrail_ref: str) -> RegisteredGuardrail:
         ) from None
 
 
-def resolve_control(instance: ControlInstance) -> GuardrailFn:
+def resolve_control(instance: ControlInstance) -> GuardrailFn | FinalAnswerGuardrailFn:
     """The guardrail ``instance`` installs, checked now rather than at dispatch.
 
     Raises ``UnknownGuardrailError`` for an unregistered ``guardrail_ref`` and
@@ -208,15 +261,65 @@ def reference_controls() -> list[ControlInstance]:
     ]
 
 
-def select_controls(control_ids: list[str] | None) -> list[ControlInstance]:
-    """Reference controls filtered to ``control_ids`` (all when ``None``).
+def _control(control_id: str, guardrail_ref: str, repair_control: str) -> ControlInstance:
+    registered = GUARDRAIL_REGISTRY[guardrail_ref]
+    return ControlInstance(
+        control_id=control_id,
+        guardrail_ref=guardrail_ref,
+        rule_ref=RuleRef(source=registered.rule_source, rules=sorted(registered.rule_keys)),
+        provenance=ControlProvenance(repair_control=repair_control),
+    )
 
-    Raises ``UnknownGuardrailError``'s sibling, ``ValueError``, for an id that
-    is not a reference control, so a typo fails before any run starts.
+
+def control_catalogue() -> list[ControlInstance]:
+    """Every control the repository can install: the reference set plus #194's.
+
+    The reference set is what ``replay --apply-control`` installs by default
+    and what the materializer installs to predict an artifact's replay mode.
+    It stays one control on purpose, since widening it changes the replay
+    label of every artifact and every pinned expectation built on one. The
+    others are selected by id with ``--control``, and per-control validation
+    finds them by the repair control they materialize.
     """
-    available = reference_controls()
+    return [
+        *reference_controls(),
+        _control(
+            "ctl_refund_policy_v2",
+            "unauthorized_refund_guardrail",
+            "deterministic_pre_call_refund_guardrail",
+        ),
+        _control(
+            "ctl_policy_source_v1",
+            "deprecated_policy_citation_guardrail",
+            "current_policy_source_precedence",
+        ),
+        _control(
+            "ctl_ticket_grounding_v1",
+            "ticket_outage_claim_guardrail",
+            "ticket_claim_grounding_check",
+        ),
+        _control(
+            "ctl_final_answer_grounding_v1",
+            "final_answer_state_grounding_guardrail",
+            "final_answer_state_grounding_check",
+        ),
+        _control(
+            "ctl_required_escalation_v1",
+            "required_escalation_guardrail",
+            "required_escalation_enforcement",
+        ),
+    ]
+
+
+def select_controls(control_ids: list[str] | None) -> list[ControlInstance]:
+    """Controls from the catalogue by id, or the reference set when ``None``.
+
+    Raises ``ValueError`` for an id that is not in the catalogue, so a typo
+    fails before any run starts.
+    """
     if control_ids is None:
-        return available
+        return reference_controls()
+    available = control_catalogue()
     by_id = {c.control_id: c for c in available}
     unknown = [cid for cid in control_ids if cid not in by_id]
     if unknown:
@@ -231,10 +334,10 @@ def select_controls(control_ids: list[str] | None) -> list[ControlInstance]:
 # ``skipped: not_materializable`` rather than pretending.
 MATERIALIZABLE_REPAIR_CONTROLS: dict[str, str | None] = {
     "deterministic_pre_call_refund_guardrail": "unauthorized_cash_refund_guardrail",
-    "current_policy_source_precedence": None,
-    "ticket_claim_grounding_check": None,
-    "final_answer_state_grounding_check": None,
-    "required_escalation_enforcement": None,
+    "current_policy_source_precedence": "deprecated_policy_citation_guardrail",
+    "ticket_claim_grounding_check": "ticket_outage_claim_guardrail",
+    "final_answer_state_grounding_check": "final_answer_state_grounding_guardrail",
+    "required_escalation_enforcement": "required_escalation_guardrail",
     # A CI-side control, not an environment guardrail; the regression
     # collector (issue #161) is what makes it real.
     "regression_test_ci_gate": None,

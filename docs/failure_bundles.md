@@ -133,17 +133,41 @@ implements it, or to `None` when nothing does yet. Per-control validation
 reports the latter as `skipped: not_materializable` rather than pretending,
 and writes every verdict to `repair_validation.json` (issue #146).
 
-| Prescribed `RepairControl.name` | Executable `guardrail_ref` |
-|---|---|
-| `deterministic_pre_call_refund_guardrail` | `unauthorized_cash_refund_guardrail` (installed by `ctl_refund_window_v1`) |
-| `current_policy_source_precedence` | none yet |
-| `ticket_claim_grounding_check` | none yet |
-| `final_answer_state_grounding_check` | none yet |
-| `required_escalation_enforcement` | none yet |
-| `escalation_discipline_check` | none yet |
-| `retrieval_before_action_check` | none yet |
-| `expected_action_contract_check` | never; detection only, see below |
-| `regression_test_ci_gate` | never; a CI-side control, #161 makes it real |
+| Prescribed `RepairControl.name` | Executable `guardrail_ref` | Seam | Static validation on the bundle suite |
+|---|---|---|---|
+| `deterministic_pre_call_refund_guardrail` | `unauthorized_cash_refund_guardrail` (`ctl_refund_window_v1`, the default) and `unauthorized_refund_guardrail` (`ctl_refund_policy_v2`, cash and store credit) | pre-call | rejected, overblocks |
+| `current_policy_source_precedence` | `deprecated_policy_citation_guardrail` (`ctl_policy_source_v1`) | pre-call | rejected, overblocks |
+| `ticket_claim_grounding_check` | `ticket_outage_claim_guardrail` (`ctl_ticket_grounding_v1`) | pre-call | accepted |
+| `final_answer_state_grounding_check` | `final_answer_state_grounding_guardrail` (`ctl_final_answer_grounding_v1`) | final answer | skipped, incomplete |
+| `required_escalation_enforcement` | `required_escalation_guardrail` (`ctl_required_escalation_v1`) | final answer | skipped, incomplete |
+| `escalation_discipline_check` | none yet | | |
+| `retrieval_before_action_check` | none yet | | |
+| `expected_action_contract_check` | never; detection only, see below | | |
+| `regression_test_ci_gate` | never; a CI-side control, #161 makes it real | | |
+
+Every row with a guardrail is executable and blocks what its check names,
+and each guardrail reads the rule the matching verifier check reads (#194).
+The last column is what `replay --apply-control --control <id>` records
+against the bundle suite's failing tasks, and four of the five verdicts
+describe static replay rather than the control. When a refund is blocked, the
+recorded script goes on to tell the customer the refund went out, which adds
+`final_answer_inconsistent_with_state` and reads as overblocking. When a
+final answer is blocked, the run ends before the verifier can pass it, so the
+validation is incomplete. A live agent would react to the block and a script
+cannot, which is the gap brief 001 measures and the reason ADR-0002 treats
+static control verdicts as advisory.
+
+Only `ctl_refund_window_v1` is in the default set that `replay` installs and
+the materializer uses to predict replay mode. The others are in
+`control_catalogue()` and are selected with `--control`. Widening the default
+set would change the replay label of every artifact and every pinned
+expectation built on one, so that is left for a separate change.
+
+The ticket matcher is shared by the verifier and the guardrail, and
+`fixtures/claim_matching/labeled_texts.json` holds 22 ticket texts both are
+tested against. Four are labeled with a meaning the shared matcher gets wrong
+today, one per shape documented in the verifier's module docstring, and are
+pinned as known wrong rather than fixed by widening the matcher.
 
 Two of these will never have a `guardrail_ref`, and saying so is the point.
 `expected_action_contract_check` covers a remedy that was omitted or swapped,
