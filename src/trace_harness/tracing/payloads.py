@@ -54,6 +54,10 @@ class ModelPromptPayload(_IgnoreExtra):
 
 class ModelResponsePayload(_IgnoreExtra):
     raw: dict[str, Any] | None = None
+    # The live call policy's record of how this response was obtained: attempts,
+    # failures, delays, rate-limit wait (models/policy.py CallRecord). Absent
+    # in traces written before #196 and in cassette replays of older recordings.
+    call_record: dict[str, Any] | None = None
 
 
 class ModelActionPayload(_IgnoreExtra):
@@ -122,6 +126,8 @@ class ErrorPayload(_IgnoreExtra):
     error: str
     kind: str
     traceback: str | None = None
+    # On a model_error from a live call: the attempts made before giving up.
+    call_record: dict[str, Any] | None = None
 
 
 TracePayload = (

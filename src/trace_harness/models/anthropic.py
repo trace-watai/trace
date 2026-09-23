@@ -30,8 +30,12 @@ Where Anthropic differs from Gemini, and what that costs
     ``max_tokens`` is required by the API rather than optional. The default
     below is large enough for a refund-task turn and is a constructor knob.
 
-Out of scope, the same as the Gemini adapter: retries, backoff, rate limiting,
-parallel tool calls, streaming.
+Retries, backoff and the rate limit come from the shared policy in
+``models/policy.py`` (#196). The SDK's own two default retries are switched off
+with ``max_retries=0``, so every attempt is one the policy made and recorded.
+Anthropic's 529 overloaded is a 5xx and is retried like one.
+
+Out of scope, the same as the Gemini adapter: parallel tool calls, streaming.
 """
 
 from __future__ import annotations
@@ -48,6 +52,14 @@ from trace_harness.models.base import (
     ProviderNotConfiguredError,
     ToolCall,
     ToolSpec,
+)
+from trace_harness.models.policy import (
+    CallPolicy,
+    ErrorVerdict,
+    LiveCaller,
+    classify_provider_error,
+    default_call_policy,
+    with_call_record,
 )
 
 if TYPE_CHECKING:  # typing only, the runtime import stays lazy inside methods
@@ -73,6 +85,11 @@ ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
     "claude-sonnet-5": (3.0, 15.0),
     "claude-haiku-4-5-20251001": (1.0, 5.0),
 }
+
+
+#: The SDK error base this adapter has always mapped to a model error. A
+#: status-less error under it is still the provider's, and permanent.
+_SDK_ERROR_NAMES = frozenset({"APIError"})
 
 
 class AnthropicNotConfiguredError(ProviderNotConfiguredError):
@@ -300,6 +317,11 @@ def estimate_cost_usd(model: str, raws: list[dict[str, Any]]) -> float | None:
     return round(total, 6)
 
 
+def classify_error(exc: Exception) -> ErrorVerdict | None:
+    """Anthropic's errors under the shared rules in ``models/policy.py``."""
+    return classify_provider_error(exc, sdk_error_names=_SDK_ERROR_NAMES)
+
+
 class AnthropicModelAdapter:
     """Adapter for Anthropic Claude models.
 
@@ -319,6 +341,8 @@ class AnthropicModelAdapter:
         seed: int | None = None,
         timeout_seconds: float = 120.0,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        call_policy: CallPolicy | None = None,
+        caller: LiveCaller | None = None,
     ):
         self.model = model or DEFAULT_ANTHROPIC_MODEL
         self.temperature = temperature
@@ -327,6 +351,12 @@ class AnthropicModelAdapter:
         self.seed = seed
         self.timeout_seconds = timeout_seconds
         self.max_tokens = max_tokens
+        self._caller = caller or LiveCaller(
+            self.name,
+            call_policy or default_call_policy(self.name),
+            budget_seconds=timeout_seconds,
+        )
+        self.call_policy = self._caller.policy
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not self.api_key:
             raise AnthropicNotConfiguredError(
@@ -354,6 +384,8 @@ class AnthropicModelAdapter:
                 # Seconds here, unlike Gemini's milliseconds. Complements the
                 # runner's between-call timeout rather than replacing it.
                 timeout=self.timeout_seconds,
+                # The policy owns retries, so each attempt is recorded.
+                max_retries=0,
             )
         return self._client_obj
 
@@ -361,8 +393,6 @@ class AnthropicModelAdapter:
         client = self._client()
         system, messages = _transcript_to_messages(transcript)
         definitions = _tools_to_definitions(tools)
-
-        import anthropic
 
         request: dict[str, Any] = {
             "model": self.model,
@@ -376,9 +406,9 @@ class AnthropicModelAdapter:
         if self.temperature is not None:
             request["temperature"] = self.temperature
 
-        try:
-            response = client.messages.create(**request)
-        except anthropic.APIError as exc:
-            # Map provider errors to the runner's clean model_error termination.
-            raise ModelAdapterError(f"Anthropic API call failed: {exc}") from exc
-        return _normalize_response(response)
+        # A provider error the policy gives up on is a ProviderCallError, the
+        # runner's clean model_error termination, with the attempts attached.
+        response, record = self._caller.call(
+            lambda: client.messages.create(**request), classify_error
+        )
+        return with_call_record(record, lambda: _normalize_response(response))

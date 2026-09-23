@@ -43,8 +43,13 @@ google-genai API reference (verify against the pinned version while implementing
     resp.function_calls  # list[FunctionCall] with .name / .args
     resp.text            # str | None
 
-Out of scope (separate work): retries, rate limiting, cost tracking, parallel
-tool calls, streaming.
+Retries, backoff and the rate limit come from the shared policy in
+``models/policy.py`` (#196), which the request goes through. The request config
+is a plain dict that the SDK validates into ``types.GenerateContentConfig``, so
+the whole call path runs offline against a fake client. Token usage is read
+from ``usage_metadata`` and priced from ``GEMINI_PRICING``.
+
+Out of scope (separate work): parallel tool calls, streaming.
 
 # TODO(Rupert/runner): JSON tool-mode fallback for providers/models without
 # native function calling.
@@ -66,6 +71,14 @@ from trace_harness.models.base import (
     ToolCall,
     ToolSpec,
 )
+from trace_harness.models.policy import (
+    CallPolicy,
+    ErrorVerdict,
+    LiveCaller,
+    classify_provider_error,
+    default_call_policy,
+    with_call_record,
+)
 
 if TYPE_CHECKING:  # typing only — the runtime import stays lazy inside methods
     from google import genai
@@ -76,6 +89,21 @@ DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 # holding the base64-encoded thought signature Gemini attached to a
 # function-call part. Stored as text so it survives the JSON trace.
 THOUGHT_SIGNATURE_KEY = "thought_signature"
+
+#: USD per million tokens, keyed by model name, as (input, output). Kept as data,
+#: so a price change is a one-line diff and an unpriced model is visibly
+#: absent. Output includes thinking tokens, which Gemini bills at the
+#: output rate. Only models with one flat text price are listed; a model whose
+#: price is unknown here, the default included, reports a null cost until its
+#: line is added.
+GEMINI_PRICING: dict[str, tuple[float, float]] = {
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+}
+
+#: google-genai's error base class. A status-less error under it is still the
+#: provider's, and permanent.
+_SDK_ERROR_NAMES = frozenset({"APIError"})
 
 
 class GeminiNotConfiguredError(ProviderNotConfiguredError):
@@ -190,6 +218,32 @@ def _tools_to_declarations(tools: list[ToolSpec]) -> list[FunctionDeclaration]:
     ]
 
 
+def _generate_config(
+    system: str | None,
+    declarations: list[FunctionDeclaration],
+    *,
+    temperature: float | None,
+    seed: int | None,
+) -> dict[str, Any]:
+    """The ``GenerateContentConfig`` for one request, in dict form.
+
+    ``generate_content`` validates a dict config into the same model the typed
+    constructor builds, so this is the same request without the SDK import.
+    Automatic function calling stays disabled, because tools run in the
+    harness environment.
+    """
+    config: dict[str, Any] = {"automatic_function_calling": {"disable": True}}
+    if system is not None:
+        config["system_instruction"] = system
+    if declarations:
+        config["tools"] = [{"function_declarations": declarations}]
+    if temperature is not None:
+        config["temperature"] = temperature
+    if seed is not None:
+        config["seed"] = seed
+    return config
+
+
 def _normalize_response(response: Any) -> AgentAction:
     """Normalize a Gemini response into exactly one AgentAction.
 
@@ -302,6 +356,87 @@ def _response_to_dict(response: Any) -> dict[str, Any]:
         return {}
 
 
+def _retry_delay_seconds(exc: BaseException) -> float | None:
+    """Gemini's own retry hint, from the ``RetryInfo`` detail on a 429.
+
+    Gemini says when to come back in the error body (``"retryDelay": "17s"``)
+    and often sends no ``Retry-After`` header, so this is its equivalent.
+    """
+    details = getattr(exc, "details", None)
+    error = details.get("error") if isinstance(details, dict) else None
+    items = error.get("details") if isinstance(error, dict) else None
+    for item in items if isinstance(items, list) else []:
+        delay = item.get("retryDelay") if isinstance(item, dict) else None
+        if isinstance(delay, str) and delay.endswith("s"):
+            try:
+                seconds = float(delay[:-1])
+            except ValueError:
+                continue
+            if seconds >= 0:
+                return seconds
+    return None
+
+
+def classify_error(exc: Exception) -> ErrorVerdict | None:
+    """Gemini's errors under the shared rules, with its ``retryDelay`` as the hint.
+
+    google-genai reports the HTTP status as ``code`` and lets httpx transport
+    errors through unwrapped; the shared classifier reads both.
+    """
+    verdict = classify_provider_error(exc, sdk_error_names=_SDK_ERROR_NAMES)
+    if verdict is None or verdict.retry_after_seconds is not None:
+        return verdict
+    hint = _retry_delay_seconds(exc)
+    return verdict if hint is None else ErrorVerdict(verdict.transient, verdict.status_code, hint)
+
+
+def extract_usage(raw: dict[str, Any]) -> tuple[int, int] | None:
+    """Read (input, output) tokens out of a recorded raw response.
+
+    Input is ``prompt_token_count`` plus any ``tool_use_prompt_token_count``.
+    Output is ``candidates_token_count`` plus ``thoughts_token_count``, since
+    thinking is billed as output. Returns None when the response carries no
+    usage, which is what a fixture looks like; None and ``(0, 0)`` mean
+    different things, so an absent block never becomes a zero cost.
+    """
+    usage = raw.get("usage_metadata")
+    if not isinstance(usage, dict):
+        return None
+    prompt = usage.get("prompt_token_count")
+    candidates = usage.get("candidates_token_count")
+    if not _is_count(prompt) or not _is_count(candidates):
+        return None
+    tool_prompt = usage.get("tool_use_prompt_token_count")
+    thoughts = usage.get("thoughts_token_count")
+    return (
+        prompt + (tool_prompt if _is_count(tool_prompt) else 0),
+        candidates + (thoughts if _is_count(thoughts) else 0),
+    )
+
+
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def estimate_cost_usd(model: str, raws: list[dict[str, Any]]) -> float | None:
+    """Price every recorded response for ``model``, or None if it cannot be priced.
+
+    An unpriced model returns None, and so does a run with no recorded usage,
+    so a cost that was never measured is never reported as zero.
+    """
+    price = GEMINI_PRICING.get(model)
+    if price is None:
+        return None
+    per_input, per_output = price
+    usages = [usage for raw in raws if (usage := extract_usage(raw)) is not None]
+    if not usages:
+        return None
+    total = sum(
+        (got_in * per_input + got_out * per_output) / 1_000_000 for got_in, got_out in usages
+    )
+    return round(total, 6)
+
+
 class GeminiModelAdapter:
     """Adapter for Google Gemini models.
 
@@ -320,11 +455,21 @@ class GeminiModelAdapter:
         temperature: float | None = None,
         seed: int | None = None,
         timeout_seconds: float = 120.0,
+        call_policy: CallPolicy | None = None,
+        caller: LiveCaller | None = None,
     ):
         self.model = model or DEFAULT_GEMINI_MODEL
         self.temperature = temperature
         self.seed = seed
         self.timeout_seconds = timeout_seconds
+        # Every request goes through the shared policy. A test injects a
+        # caller with a fake clock; otherwise one is built from the policy.
+        self._caller = caller or LiveCaller(
+            self.name,
+            call_policy or default_call_policy(self.name),
+            budget_seconds=timeout_seconds,
+        )
+        self.call_policy = self._caller.policy
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         if not self.api_key:
             raise GeminiNotConfiguredError(
@@ -352,7 +497,8 @@ class GeminiModelAdapter:
                 api_key=self.api_key,
                 # HttpOptions.timeout is milliseconds — verify against the
                 # pinned SDK version. Complements the runner's between-call
-                # daemon-thread timeout (TRA-58).
+                # daemon-thread timeout (TRA-58). retry_options stays unset,
+                # so the SDK makes one attempt and every retry is the policy's.
                 http_options=types.HttpOptions(timeout=int(self.timeout_seconds * 1000)),
             )
         return self._client_obj
@@ -360,25 +506,18 @@ class GeminiModelAdapter:
     def next_action(self, transcript: list[Message], tools: list[ToolSpec]) -> AgentAction:
         client = self._client()
         system, contents = _transcript_to_contents(transcript)
-        declarations = _tools_to_declarations(tools)
-
-        from google.genai import errors as genai_errors
-        from google.genai import types
-
-        config = types.GenerateContentConfig(
-            system_instruction=system,
-            tools=[types.Tool(function_declarations=declarations)] if declarations else None,
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        config = _generate_config(
+            system,
+            _tools_to_declarations(tools),
             temperature=self.temperature,
             seed=self.seed,
         )
-        try:
-            response = client.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=config,
-            )
-        except genai_errors.APIError as exc:
-            # Map provider errors to the runner's clean model_error termination.
-            raise ModelAdapterError(f"Gemini API call failed: {exc}") from exc
-        return _normalize_response(response)
+        # A provider error the policy gives up on is a ProviderCallError, the
+        # runner's clean model_error termination, with the attempts attached.
+        response, record = self._caller.call(
+            lambda: client.models.generate_content(
+                model=self.model, contents=contents, config=config
+            ),
+            classify_error,
+        )
+        return with_call_record(record, lambda: _normalize_response(response))

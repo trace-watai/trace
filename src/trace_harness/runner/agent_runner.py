@@ -21,10 +21,17 @@ Failure behavior
     ``run_finished``, ``run_result.json``); only a hard kill leaves a trace
     truncated mid-stream. Partial evidence beats no evidence.
 
-# TODO(Rupert/runner): retries/backoff policy for real adapters. The per-call
-# timeout now bounds a hung provider call so the run terminates on time, but
-# Python can't truly cancel the thread — it runs on as a daemon until process
-# exit; real cancellation needs provider-level request timeouts.
+Live calls
+    Retries, backoff and the per-provider rate limit live in
+    ``models/policy.py`` (#196). The runner hands each model call its remaining
+    time through ``call_budget``, so the policy never starts a retry or a
+    rate-limit wait that would end past it, and writes the policy's
+    ``call_record`` into the ``model_response`` or ``error`` event.
+
+# TODO(Rupert/runner): the per-call timeout bounds a hung provider call so the
+# run terminates on time, but Python can't truly cancel the thread. It runs on
+# as a daemon until process exit; real cancellation needs provider-level
+# request timeouts.
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ from trace_harness.models.base import (
     ScriptExhaustedError,
     ToolSpec,
 )
+from trace_harness.models.policy import call_budget
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunResult, RunStatus, TerminationReason
 from trace_harness.tasks.schemas import TaskSpec
@@ -71,12 +79,18 @@ def _call_with_timeout(fn: Callable[[], Any], timeout: float) -> Any:
     in the background — but it runs as a *daemon*, so it never blocks process
     exit, and the run terminates on time instead of hanging forever. Any
     exception raised inside ``fn`` is re-raised to the caller unchanged.
+
+    The same ``timeout`` is handed to the live call policy through
+    ``call_budget``, set inside the thread that makes the call. The policy
+    stops retrying before it would pass it, so an abandoned thread never
+    starts another request after the run has moved on.
     """
     box: dict[str, Any] = {}
 
     def target() -> None:
         try:
-            box["value"] = fn()
+            with call_budget(timeout):
+                box["value"] = fn()
         except BaseException as exc:  # noqa: BLE001 — re-raised in the caller's thread
             box["error"] = exc
 
@@ -315,10 +329,14 @@ class AgentRunner:
                     error_message = str(exc)
                     break
                 except ModelAdapterError as exc:
+                    error_payload: dict[str, Any] = {"error": str(exc), "kind": "model_error"}
+                    # A live call that failed after retries says so here.
+                    if exc.call_record is not None:
+                        error_payload["call_record"] = exc.call_record
                     recorder.record(
                         TraceEventType.ERROR,
                         step_id=step_id,
-                        payload={"error": str(exc), "kind": "model_error"},
+                        payload=error_payload,
                     )
                     status = RunStatus.ERROR
                     termination = TerminationReason.MODEL_ERROR
@@ -326,19 +344,23 @@ class AgentRunner:
                     break
 
                 steps_taken = step_id
-                # Real adapters stash the provider's raw response in action.raw;
-                # record that provider event before the normalized model_action.
-                # Fixture runs leave raw=None and emit nothing.
-                if action.raw is not None:
+                # Real adapters stash the provider's raw response in action.raw
+                # and the call policy's record in action.call_record; record
+                # that provider event before the normalized model_action.
+                # Fixture runs leave both None and emit nothing.
+                if action.raw is not None or action.call_record is not None:
+                    response_payload: dict[str, Any] = {"raw": action.raw}
+                    if action.call_record is not None:
+                        response_payload["call_record"] = action.call_record
                     recorder.record(
                         TraceEventType.MODEL_RESPONSE,
                         step_id=step_id,
-                        payload={"raw": action.raw},
+                        payload=response_payload,
                     )
                 recorder.record(
                     TraceEventType.MODEL_ACTION,
                     step_id=step_id,
-                    payload=action.model_dump(mode="json", exclude={"raw"}),
+                    payload=action.model_dump(mode="json", exclude={"raw", "call_record"}),
                 )
                 transcript.append(_action_to_assistant_message(action))
 

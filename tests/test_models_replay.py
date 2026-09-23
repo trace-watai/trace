@@ -22,6 +22,7 @@ from trace_harness.models.cassette import (
 )
 from trace_harness.models.fixture import FixtureModelAdapter
 from trace_harness.models.gemini import GeminiModelAdapter
+from trace_harness.models.policy import default_call_policy
 from trace_harness.runner.batch import BatchRunner
 from trace_harness.runner.pipeline import run_task_pipeline
 from trace_harness.runner.suite import AgentConfig, load_suite
@@ -306,9 +307,13 @@ def test_retained_import_is_reproducible_and_never_overwrites(tmp_path: Path) ->
 def test_cli_records_and_replays_same_knobs_without_keys(tmp_path, monkeypatch) -> None:
     captured = {}
 
-    def stub_init(self, model, *, temperature, seed, timeout_seconds):
+    def stub_init(self, model, *, temperature, seed, timeout_seconds, call_policy):
         captured.update(
-            model=model, temperature=temperature, seed=seed, timeout_seconds=timeout_seconds
+            model=model,
+            temperature=temperature,
+            seed=seed,
+            timeout_seconds=timeout_seconds,
+            call_policy=call_policy.model_dump(mode="json"),
         )
 
     monkeypatch.setattr(GeminiModelAdapter, "__init__", stub_init)
@@ -334,6 +339,8 @@ def test_cli_records_and_replays_same_knobs_without_keys(tmp_path, monkeypatch) 
         "temperature": 0.25,
         "seed": 9,
         "timeout_seconds": 17.0,
+        # Recording calls the provider, so it runs under the default policy.
+        "call_policy": default_call_policy("gemini").model_dump(mode="json"),
     }
     saved = json.loads(next(runs.glob("*/run_config.json")).read_text())
     assert {key: saved[key] for key in captured} == captured

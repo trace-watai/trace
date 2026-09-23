@@ -3,6 +3,12 @@
 Requests are fingerprints, never raw prompts or SDK request objects. Responses
 contain action fields and allowlisted token counts, never raw SDK responses.
 Replay loads and validates the entire cassette before serving any actions.
+
+An entry recorded from a live adapter also keeps the call policy's record of
+that step (#196): the attempts, their error classes and statuses, and the
+delays. Replay serves it back verbatim, so a replayed trace shows the same
+retries without calling anything. Entries without one serialize exactly as
+before, so older cassettes and the retained import stay byte-identical.
 """
 
 from __future__ import annotations
@@ -13,7 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
 
 from trace_harness.models.base import (
     AgentAction,
@@ -22,18 +28,36 @@ from trace_harness.models.base import (
     ModelAdapterError,
     ToolSpec,
 )
+from trace_harness.models.policy import CallRecord
 
 CASSETTE_SCHEMA_VERSION = "0.1"
 TOKEN_FIELDS = frozenset(
     {
+        # Gemini, under usage_metadata
         "prompt_token_count",
         "candidates_token_count",
         "total_token_count",
         "cached_content_token_count",
         "thoughts_token_count",
         "tool_use_prompt_token_count",
+        # Anthropic, under usage
+        "input_tokens",
+        "output_tokens",
+        # OpenAI, under usage
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
     }
 )
+
+#: Where each provider's raw response keeps its token counts. Recording reads
+#: from this key and replay rebuilds it, so a recorded live run is priced from
+#: the same counts in both modes.
+USAGE_KEYS = {"gemini": "usage_metadata", "anthropic": "usage", "openai": "usage"}
+
+#: Fields of AgentAction a cassette response never holds: the raw SDK payload,
+#: and the call record, which an entry keeps in its own field.
+_NOT_IN_RESPONSE = frozenset({"raw", "call_record"})
 _SECRET_FIELDS = frozenset(
     {"apikey", "authorization", "proxyauthorization", "headers", "httpheaders", "accesstoken"}
 )
@@ -72,6 +96,15 @@ class CassetteEntry(BaseModel):
     tools_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     response: dict[str, Any]
     usage: dict[str, int] = Field(default_factory=dict)
+    call_record: CallRecord | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_call_record(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # An entry without a record writes exactly the bytes it always did.
+        data = handler(self)
+        if self.call_record is None:
+            data.pop("call_record", None)
+        return data
 
 
 def _json(value: Any) -> str:
@@ -109,10 +142,12 @@ def _check_response(value: Any, secret: str | None = None) -> None:
         raise CassetteError("credential value in cassette response")
 
 
-def safe_response(action: AgentAction, *, secret: str | None = None) -> tuple[dict, dict]:
-    response = action.model_dump(mode="json", exclude={"raw"})
+def safe_response(
+    action: AgentAction, *, secret: str | None = None, usage_key: str = "usage_metadata"
+) -> tuple[dict, dict]:
+    response = action.model_dump(mode="json", exclude=set(_NOT_IN_RESPONSE))
     _check_response(response, secret)
-    raw_usage = (action.raw or {}).get("usage_metadata", {})
+    raw_usage = (action.raw or {}).get(usage_key, {})
     usage = (
         {k: v for k, v in raw_usage.items() if k in TOKEN_FIELDS and type(v) is int and v >= 0}
         if isinstance(raw_usage, dict)
@@ -124,7 +159,7 @@ def safe_response(action: AgentAction, *, secret: str | None = None) -> tuple[di
 def _action(entry: CassetteEntry) -> AgentAction:
     # AgentAction normally ignores unknown fields. At a disk boundary that would
     # hide a raw SDK payload or a misspelled field, so validate the exact shape.
-    allowed = set(AgentAction.model_fields) - {"raw"}
+    allowed = set(AgentAction.model_fields) - _NOT_IN_RESPONSE
     if set(entry.response) != allowed:
         raise CassetteError("invalid cassette response fields")
     _check_response(entry.response)
@@ -132,12 +167,18 @@ def _action(entry: CassetteEntry) -> AgentAction:
         raise CassetteError("invalid cassette usage fields")
     try:
         action = AgentAction.model_validate(entry.response)
-        if action.model_dump(mode="json", exclude={"raw"}) != entry.response:
+        if action.model_dump(mode="json", exclude=set(_NOT_IN_RESPONSE)) != entry.response:
             raise ValueError("response does not round trip")
     except ValueError:
         raise CassetteError("invalid cassette action") from None
+    usage_key = USAGE_KEYS.get(entry.config.provider, "usage_metadata")
     return action.model_copy(
-        update={"raw": {"usage_metadata": entry.usage} if entry.usage else None}
+        update={
+            "raw": {usage_key: entry.usage} if entry.usage else None,
+            "call_record": (
+                entry.call_record.model_dump(mode="json") if entry.call_record else None
+            ),
+        }
     )
 
 
@@ -223,12 +264,18 @@ class RecordingModelAdapter:
             assert self._inner is not None
             try:
                 action = self._inner.next_action(transcript, tools)
-            except Exception:
+            except Exception as exc:
                 # Provider exception strings may contain request headers/keys.
-                raise CassetteError(f"recording model call failed at step {step}") from None
+                # The call record holds only classes, statuses and delays, so
+                # it survives, and the live trace still shows the attempts.
+                error = CassetteError(f"recording model call failed at step {step}")
+                error.call_record = getattr(exc, "call_record", None)
+                raise error from None
             secret = getattr(self._inner, "api_key", None)
             response, usage = safe_response(
-                action, secret=secret if isinstance(secret, str) else None
+                action,
+                secret=secret if isinstance(secret, str) else None,
+                usage_key=USAGE_KEYS.get(self.config.provider, "usage_metadata"),
             )
             entry = CassetteEntry(
                 cassette_id=self._cassette_id,
@@ -238,6 +285,7 @@ class RecordingModelAdapter:
                 tools_hash=tools_hash,
                 response=response,
                 usage=usage,
+                call_record=action.call_record,
             )
             _action(entry)
             with self.path.open("a", encoding="utf-8") as output:

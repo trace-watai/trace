@@ -12,9 +12,29 @@ Outputs:
       referencing those run ids, with per-run metadata and aggregates for the
       dashboard.
 
-Fixture cost is recorded as exactly zero. Providers that do not expose usage
-telemetry record ``null`` instead of inventing a number; aggregate coverage
-makes that missing telemetry visible.
+Fixture and cassette-replay runs call no provider, so their cost is recorded as
+exactly zero. A live run is priced from the usage its own trace recorded. A
+provider or model with no price records ``null``, and aggregate coverage makes
+that missing telemetry visible.
+
+Budget guard (#196)
+    A suite may set ``max_cost_usd``. :class:`BudgetGuard` is asked before
+    every run and stops the batch, recorded as ``budget_exhausted`` in the
+    summary's ``budget`` block, once the recorded spend of its live runs has
+    reached the cap. The check happens between runs, so the run that crosses
+    the cap finishes and the overshoot is at most one run's cost.
+
+    Only recorded costs count, and an unknown cost is never taken as zero. A
+    live run whose model has no price is refused before it starts, and a live
+    run that finishes without a cost stops the batch after it. Both are
+    recorded as ``budget_unenforceable``, since either could pass the cap
+    without the guard seeing it. Fixture and replay runs cost nothing and are
+    never refused on price.
+
+    ``run-suite`` is the only caller on this branch. ``run-sweep`` (#198) and
+    ``branch`` do not exist yet; they are meant to build a ``BudgetGuard`` from
+    their own ``max_cost_usd`` and call ``admit`` before and ``charge`` after
+    each run, the same way ``BatchRunner.run`` does.
 """
 
 from __future__ import annotations
@@ -24,11 +44,18 @@ import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from trace_harness.environment.control_library import load_library
-from trace_harness.models import estimate_cost_usd
+from trace_harness.models import (
+    estimate_cost_usd,
+    is_priced,
+    makes_live_calls,
+    resolve_model_name,
+)
+from trace_harness.models.cassette import CassetteConfig
 from trace_harness.runner.pipeline import PipelineResult, run_task_pipeline
 from trace_harness.runner.result import RunResult, RunStatus
 from trace_harness.runner.suite import AgentConfig, SuiteSpec
@@ -37,7 +64,12 @@ from trace_harness.tracing.events import TraceEventType, utc_now
 
 logger = logging.getLogger(__name__)
 
-BATCH_SUMMARY_SCHEMA_VERSION = "0.2.0"  # 0.2.0: per-entry verdict, aggregates.incomplete
+# 0.3.0: optional budget block; 0.2.0: per-entry verdict, aggregates.incomplete
+BATCH_SUMMARY_SCHEMA_VERSION = "0.3.0"
+
+BUDGET_EXHAUSTED = "budget_exhausted"
+BUDGET_UNENFORCEABLE = "budget_unenforceable"
+BudgetStopReason = Literal["budget_exhausted", "budget_unenforceable"]
 
 # Entry statuses that mean "did not produce a usable, completed run".
 _ERROR_STATUSES = ("error", "setup_error")
@@ -87,6 +119,25 @@ class BatchAggregates(BaseModel):
     by_agent: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
+class NotRunCell(BaseModel):
+    """A cell the budget guard never started."""
+
+    agent_label: str
+    task_path: str
+
+
+class BatchBudget(BaseModel):
+    """What a capped batch spent, and why it stopped early if it did."""
+
+    max_cost_usd: float
+    # Sum of the recorded costs of the batch's live runs. Fixture and replay
+    # runs cost nothing and add nothing.
+    spent_usd: float
+    stop_reason: BudgetStopReason | None = None
+    detail: str | None = None
+    not_run: list[NotRunCell] = Field(default_factory=list)
+
+
 class BatchSummary(BaseModel):
     """The dashboard-consumable result of one batch run."""
 
@@ -98,6 +149,98 @@ class BatchSummary(BaseModel):
     agent_configs: list[AgentConfig]
     entries: list[BatchRunEntry]
     aggregates: BatchAggregates
+    # Present when the suite set max_cost_usd; absent in summaries before 0.3.0.
+    budget: BatchBudget | None = None
+
+
+class BudgetGuard:
+    """Refuses to start a run once a batch's live spend has reached its cap.
+
+    Construct one per batch from the spec's ``max_cost_usd``; None never
+    refuses. Call :meth:`admit` before each run and :meth:`charge` after it
+    with the cost its entry recorded. Once it refuses, it refuses everything
+    after, so the batch stops at that point.
+    """
+
+    def __init__(self, max_cost_usd: float | None) -> None:
+        self.max_cost_usd = max_cost_usd
+        self.spent_usd = 0.0
+        self.stop_reason: BudgetStopReason | None = None
+        self.detail: str | None = None
+
+    def admit(
+        self, provider: str, model: str | None, cassette: CassetteConfig | None = None
+    ) -> bool:
+        """Whether the next run may start. ``model`` is the resolved model name.
+
+        A run that makes no live call costs nothing, so it is refused only once
+        the batch has already stopped. A zero cap therefore still runs fixture
+        and replay cells.
+        """
+        if self.max_cost_usd is None:
+            return True
+        if self.stop_reason is not None:
+            return False
+        if not makes_live_calls(provider, cassette):
+            return True
+        if self.spent_usd >= self.max_cost_usd:
+            self._stop(
+                BUDGET_EXHAUSTED,
+                f"recorded live spend ${self.spent_usd:.6f} reached the "
+                f"${self.max_cost_usd:.6f} cap",
+            )
+            return False
+        if not is_priced(provider, model):
+            self._stop(
+                BUDGET_UNENFORCEABLE,
+                f"{provider} model {model!r} has no price, so a run of it could pass the "
+                "cap unseen",
+            )
+            return False
+        return True
+
+    def charge(
+        self,
+        cost_usd: float | None,
+        provider: str,
+        cassette: CassetteConfig | None = None,
+        *,
+        run_id: str | None = None,
+    ) -> None:
+        """Add a finished run's recorded cost.
+
+        A live run with no recorded cost stops the batch, because what it
+        spent is unknown. A cell that failed before any run existed
+        (``run_id`` None) made no provider call and adds nothing.
+        """
+        if self.max_cost_usd is None or run_id is None:
+            return
+        if not makes_live_calls(provider, cassette):
+            return
+        if cost_usd is None:
+            if self.stop_reason is None:
+                self._stop(
+                    BUDGET_UNENFORCEABLE,
+                    f"live run {run_id} finished without a recorded cost",
+                )
+            return
+        self.spent_usd = round(self.spent_usd + cost_usd, 6)
+
+    def _stop(self, reason: BudgetStopReason, detail: str) -> None:
+        self.stop_reason = reason
+        self.detail = detail
+
+    def record(self, not_run: list[NotRunCell]) -> BatchBudget | None:
+        """The summary's budget block, or None for an uncapped batch."""
+        if self.max_cost_usd is None:
+            return None
+        return BatchBudget(
+            max_cost_usd=self.max_cost_usd,
+            spent_usd=self.spent_usd,
+            stop_reason=self.stop_reason,
+            detail=self.detail,
+            not_run=not_run,
+        )
 
 
 def new_batch_id() -> str:
@@ -128,9 +271,16 @@ class BatchRunner:
         started_at = utc_now()
         batch_id = new_batch_id()  # generated before the loop so cells can tag their entries
         entries: list[BatchRunEntry] = []
+        guard = BudgetGuard(suite.max_cost_usd)
+        not_run: list[NotRunCell] = []
         for config in suite.agent_configs:
             for task_path in suite.tasks:
-                entries.append(self._run_cell(config, task_path))
+                if not guard.admit(config.provider, _guard_model(config), config.cassette):
+                    not_run.append(NotRunCell(agent_label=config.label, task_path=str(task_path)))
+                    continue
+                entry = self._run_cell(config, task_path)
+                entries.append(entry)
+                guard.charge(entry.cost_usd, config.provider, config.cassette, run_id=entry.run_id)
         finished_at = utc_now()
 
         summary = BatchSummary(
@@ -141,6 +291,7 @@ class BatchRunner:
             agent_configs=suite.agent_configs,
             entries=entries,
             aggregates=_aggregate(entries),
+            budget=guard.record(not_run),
         )
         self._write_summary(summary)
         self._enrich_index_entries(summary)
@@ -201,15 +352,29 @@ def _recorded_provider_responses(runs_dir: Path, run: RunResult) -> list[dict]:
     return raws
 
 
+def _guard_model(config: AgentConfig) -> str | None:
+    """The model a live cell would run, for the budget guard's price check.
+
+    Only live providers resolve a model here; the fixture provider needs a
+    script to name one and is never checked for a price.
+    """
+    if not makes_live_calls(config.provider, config.cassette):
+        return config.model
+    return resolve_model_name(config.provider, config.model, None)
+
+
 def _cost_usd(result: PipelineResult, runs_dir: Path) -> float | None:
     """What this run cost, or None when that cannot be established.
 
-    Fixture runs cost nothing and say so. A live run is priced from the usage
-    its own trace recorded, and a provider or model with no price table stays
-    null, because a run that moved money and reports zero is worse than one
-    that reports nothing.
+    Fixture and cassette-replay runs call no provider, so they cost nothing and
+    say so. A live run is priced from the usage its own trace recorded, and a
+    provider or model with no price table stays null, so a live run whose cost
+    is unknown is never reported as free.
     """
-    if result.run_config.provider == "fixture":
+    config = result.run_config
+    if config.provider == "fixture" or (
+        config.cassette is not None and config.cassette.mode == "replay"
+    ):
         return 0.0
     return estimate_cost_usd(
         result.run_config.provider,

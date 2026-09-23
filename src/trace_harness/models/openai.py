@@ -32,8 +32,13 @@ Where OpenAI differs from the other two
     seeded request, so it is recorded on the action. A seeded run whose
     fingerprint moved is not a reproduction, and #195 is what will act on that.
 
-Out of scope, the same as the other adapters: retries, backoff, rate limiting,
-parallel tool calls, streaming.
+Retries, backoff and the rate limit come from the shared policy in
+``models/policy.py`` (#196). The SDK's own two default retries are switched off
+with ``max_retries=0``, so every attempt is one the policy made and recorded. A
+429 whose code is ``insufficient_quota`` is permanent here: the account is out
+of credit, and no retry within a run brings it back.
+
+Out of scope, the same as the other adapters: parallel tool calls, streaming.
 """
 
 from __future__ import annotations
@@ -51,6 +56,14 @@ from trace_harness.models.base import (
     ProviderNotConfiguredError,
     ToolCall,
     ToolSpec,
+)
+from trace_harness.models.policy import (
+    CallPolicy,
+    ErrorVerdict,
+    LiveCaller,
+    classify_provider_error,
+    default_call_policy,
+    with_call_record,
 )
 
 if TYPE_CHECKING:  # typing only, the runtime import stays lazy inside methods
@@ -75,6 +88,11 @@ OPENAI_PRICING: dict[str, tuple[float, float]] = {
     "gpt-4.1": (2.0, 8.0),
     "gpt-4.1-mini": (0.4, 1.6),
 }
+
+
+#: The SDK error base this adapter has always mapped to a model error. A
+#: status-less error under it is still the provider's, and permanent.
+_SDK_ERROR_NAMES = frozenset({"OpenAIError"})
 
 
 class OpenAINotConfiguredError(ProviderNotConfiguredError):
@@ -326,6 +344,19 @@ def estimate_cost_usd(model: str, raws: list[dict[str, Any]]) -> float | None:
     return round(total, 6)
 
 
+def classify_error(exc: Exception) -> ErrorVerdict | None:
+    """OpenAI's errors under the shared rules in ``models/policy.py``.
+
+    A 429 is usually a rate limit and transient. With the error code
+    ``insufficient_quota`` it means the account has no credit left, which does
+    not recover within a run, so it is permanent.
+    """
+    verdict = classify_provider_error(exc, sdk_error_names=_SDK_ERROR_NAMES)
+    if verdict is not None and getattr(exc, "code", None) == "insufficient_quota":
+        return verdict.permanent()
+    return verdict
+
+
 class OpenAIModelAdapter:
     """Adapter for OpenAI chat models.
 
@@ -344,6 +375,8 @@ class OpenAIModelAdapter:
         temperature: float | None = None,
         seed: int | None = None,
         timeout_seconds: float = 120.0,
+        call_policy: CallPolicy | None = None,
+        caller: LiveCaller | None = None,
     ):
         self.model = model or DEFAULT_OPENAI_MODEL
         self.temperature = temperature
@@ -351,6 +384,12 @@ class OpenAIModelAdapter:
         # side, which is what system_fingerprint exists to expose.
         self.seed = seed
         self.timeout_seconds = timeout_seconds
+        self._caller = caller or LiveCaller(
+            self.name,
+            call_policy or default_call_policy(self.name),
+            budget_seconds=timeout_seconds,
+        )
+        self.call_policy = self._caller.policy
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not self.api_key:
             raise OpenAINotConfiguredError(
@@ -378,6 +417,8 @@ class OpenAIModelAdapter:
                 # Seconds, matching the Anthropic client. Complements the
                 # runner's between-call timeout rather than replacing it.
                 timeout=self.timeout_seconds,
+                # The policy owns retries, so each attempt is recorded.
+                max_retries=0,
             )
         return self._client_obj
 
@@ -385,8 +426,6 @@ class OpenAIModelAdapter:
         client = self._client()
         messages = _transcript_to_messages(transcript)
         definitions = _tools_to_definitions(tools)
-
-        import openai
 
         request: dict[str, Any] = {"model": self.model, "messages": messages}
         if definitions:
@@ -399,9 +438,9 @@ class OpenAIModelAdapter:
         if self.seed is not None:
             request["seed"] = self.seed
 
-        try:
-            response = client.chat.completions.create(**request)
-        except openai.OpenAIError as exc:
-            # Map provider errors to the runner's clean model_error termination.
-            raise ModelAdapterError(f"OpenAI API call failed: {exc}") from exc
-        return _normalize_response(response)
+        # A provider error the policy gives up on is a ProviderCallError, the
+        # runner's clean model_error termination, with the attempts attached.
+        response, record = self._caller.call(
+            lambda: client.chat.completions.create(**request), classify_error
+        )
+        return with_call_record(record, lambda: _normalize_response(response))

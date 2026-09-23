@@ -7,6 +7,10 @@ that is a reproducibility bug — add it.
 ``temperature`` and ``seed`` are recorded but meaningless for the fixture
 provider; they exist so real adapters have a home for them from day one.
 
+``call_policy`` is the retry, backoff and rate-limit policy a live run executed
+under (#196). It is null for runs that make no live call: the fixture provider
+and cassette replay.
+
 Known metadata keys used by the harness today:
     task_fixture_path    — repo path of the task fixture the CLI ran
                            (regression artifacts use it for replay commands)
@@ -21,8 +25,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from trace_harness.models.cassette import CassetteConfig
+from trace_harness.models.policy import CallPolicy
 
-RUN_CONFIG_SCHEMA_VERSION = "0.2.0"  # optional explicit cassette configuration
+# 0.3.0: optional live call policy; 0.2.0: optional explicit cassette configuration
+RUN_CONFIG_SCHEMA_VERSION = "0.3.0"
 
 # Version of the system/user prompt template built by
 # runner.agent_runner.build_initial_transcript. Bump when that template
@@ -55,4 +61,5 @@ class RunConfig(BaseModel):
     prompt_version: str = PROMPT_VERSION
     tool_mode: ToolMode = ToolMode.NATIVE
     cassette: CassetteConfig | None = None
+    call_policy: CallPolicy | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
