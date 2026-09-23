@@ -82,6 +82,12 @@ from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.batch import new_batch_id
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
 from trace_harness.runner.result import RunResult, RunStatus
+from trace_harness.runner.target_agent import (
+    EXTERNAL_PROVIDER,
+    TargetAgent,
+    load_target_agent,
+    run_target_agent,
+)
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
@@ -152,6 +158,12 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
         help="model provider: 'fixture' (scripted, default) or 'gemini'",
     )
     parser.add_argument(
+        "--agent",
+        default=None,
+        metavar="MODULE:FACTORY",
+        help="run an outside agent (provider 'external'); see docs/bring_your_own_agent.md",
+    )
+    parser.add_argument(
         "--model",
         default=None,
         help="model name for real providers (e.g. gemini-3.6-flash); ignored by fixture",
@@ -211,12 +223,19 @@ def _run_fixture(
     )
     temperature = getattr(args, "temperature", None)
     seed = getattr(args, "seed", None)
+    agent_ref = getattr(args, "agent", None)
+    provider = EXTERNAL_PROVIDER if agent_ref else args.provider
+    agent = _external_agent(args, agent_ref, cassette) if provider == EXTERNAL_PROVIDER else None
     # A single live run uses the provider's default policy; suites can override it.
-    call_policy = resolve_call_policy(args.provider, None, cassette)
+    # An outside agent makes its own model calls, so its run records none.
+    call_policy = resolve_call_policy(provider, None, cassette)
 
     # The fixture provider replays a script; real providers (gemini) drive the
     # agent live and need no script — only the fixture path is required.
-    if args.provider == "fixture" and pinned_script is not None:
+    if agent is not None:
+        adapter = None
+        model = args.model or agent.name
+    elif args.provider == "fixture" and pinned_script is not None:
         if cassette is not None:
             raise CliInputError("regression replay cannot also use model cassettes")
         # Replaying pinned actions: the script file is not consulted at all, so
@@ -247,7 +266,7 @@ def _run_fixture(
 
     config = RunConfig(
         task_id=task.task_id,
-        provider=args.provider,
+        provider=provider,
         model=model,
         max_steps=args.max_steps,
         timeout_seconds=args.timeout,
@@ -255,10 +274,14 @@ def _run_fixture(
         seed=seed,
         cassette=cassette,
         call_policy=call_policy,
+        agent_ref=agent_ref,
         metadata=metadata,
     )
-    runner = AgentRunner(adapter, environment, store)
-    result = runner.run(task, config)
+    if agent is not None:
+        result = run_target_agent(agent, environment, store, task, config)
+    else:
+        runner = AgentRunner(adapter, environment, store)
+        result = runner.run(task, config)
 
     print(f"\nRun complete: {task.task_id}")
     _print("run_id:", result.run_id)
@@ -272,6 +295,31 @@ def _run_fixture(
         raise CliInputError(result.error or "cassette run failed")
     print(f"\nNext: trace-harness verify {store.run_dir(result.run_id)}")
     return result
+
+
+def _external_agent(
+    args: argparse.Namespace, agent_ref: str | None, cassette: CassetteConfig | None
+) -> TargetAgent:
+    """Load the outside agent for ``--agent``, refusing flags that cannot apply to it."""
+    if not agent_ref:
+        raise CliInputError("provider 'external' needs --agent package.module:factory")
+    if args.provider not in ("fixture", EXTERNAL_PROVIDER):
+        raise CliInputError(f"--agent runs provider 'external'; it cannot use '{args.provider}'")
+    model_flags = [
+        flag
+        for flag, value in (
+            ("--script", getattr(args, "script", None)),
+            ("--cassette-mode", cassette),
+            ("--temperature", getattr(args, "temperature", None)),
+            ("--seed", getattr(args, "seed", None)),
+        )
+        if value is not None
+    ]
+    if model_flags:
+        raise CliInputError(
+            f"--agent cannot take {', '.join(model_flags)}; the outside agent owns its model"
+        )
+    return load_target_agent(agent_ref)
 
 
 def _repo_relative(path: Path) -> str:

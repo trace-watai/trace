@@ -53,6 +53,8 @@ export interface RawAgentConfig {
   seed?: number | null;
   max_steps: number;
   timeout_seconds: number;
+  /** The outside agent, as `package.module:factory`, when provider is `external` (#210). */
+  agent_ref?: string | null;
 }
 
 export interface RawConditionSpec {

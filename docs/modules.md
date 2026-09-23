@@ -223,6 +223,19 @@ condition (`BatchSummary` 0.4.0). `experiment record` derives the divergence
 rates and outcome counts from those batches. See
 [branch_stage.md](branch_stage.md).
 
+`target_agent.py` runs an outside agent (provider `external`). It exposes the
+`TargetAgent` protocol, `TargetAgentBridge` (a model adapter that serves the
+outside agent's tool calls and final answer to `AgentRunner` one step at a
+time), `load_target_agent("package.module:factory")`, and `run_target_agent`.
+The runner loop is unchanged for these runs, so step numbering, controls,
+`blocked_by`, the final-answer seam, and the step and time limits behave as
+they do for every adapter. The bridge sends no provider request, so no call
+policy wraps it and `run_config.json` records `call_policy` as null. An error
+from the outside agent ends the run as `model_error` and is never retried. The
+budget guard refuses provider `external` under a cap as `budget_unenforceable`,
+since its spend is invisible, and `branch` refuses it before any run. See
+[bring_your_own_agent.md](bring_your_own_agent.md).
+
 `collector.py` exposes `collect_regressions(path, store, suite_path=...,
 experiments_path=...)` and `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
 completed failure reproduction and positive siblings. Control validation gates

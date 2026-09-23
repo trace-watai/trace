@@ -66,6 +66,7 @@ the agent the whole run from step 1.
 | provider `fixture`, no `continuation_script` | The recorded actions after the start step |
 | provider `fixture` with `continuation_script` | That script's actions, from the step after the start |
 | A live provider | `create_model_adapter` with the condition's model, temperature, timeout, prompt version, cassette and call policy, and the seed. `run_config.json` records the call policy as `run_task_pipeline` does |
+| provider `external` (an outside agent, #210) | Not supported yet. The condition is refused before any run, since an outside agent runs its own loop from the task prompt and cannot take over a recorded run partway |
 
 A live condition whose cassette mode is `replay` runs offline. When any of its
 seeds has no cassette file, the whole condition is skipped: no runs, no batch,

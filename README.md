@@ -109,6 +109,10 @@ for every contract and a sub-second offline test suite.
   `trace-harness run-fixture <task> --provider gemini --model gemini-3.6-flash`.
   Fixture provider stays the default everywhere; tests never need a key or the
   SDK. (JSON tool-mode fallback is still TODO.)
+- **Outside agents.** An agent with its own loop and model calls runs through
+  the same environment, trace, and verifier with
+  `trace-harness run-pipeline <task> --agent package.module:factory`. See
+  [docs/bring_your_own_agent.md](docs/bring_your_own_agent.md).
 - **Refund guardrails** — off by default so the canonical failure remains real;
   regression replay can apply the generated deterministic pre-execution
   control and prove that positive sibling cases are not overblocked.

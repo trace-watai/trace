@@ -21,10 +21,17 @@ from trace_harness.environment.controls import ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models import create_model_adapter, resolve_call_policy, resolve_model_name
 from trace_harness.models.cassette import RecordingModelAdapter
+from trace_harness.models.policy import CallPolicy
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
 from trace_harness.runner.result import RunResult, RunStatus
 from trace_harness.runner.suite import AgentConfig
+from trace_harness.runner.target_agent import (
+    EXTERNAL_PROVIDER,
+    TargetAgent,
+    load_target_agent,
+    run_target_agent,
+)
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
@@ -93,27 +100,37 @@ def run_task_pipeline(
     if environment.installed_controls:
         metadata["controls"] = [c.model_dump(mode="json") for c in environment.installed_controls]
     script_path = None
-    if agent_config.provider == "fixture":
-        script_path = _resolve_fixture_script(task, task_path)
-        metadata["fixture_script_path"] = _repo_relative(script_path)
-    model = resolve_model_name(agent_config.provider, agent_config.model, script_path)
-    call_policy = resolve_call_policy(
-        agent_config.provider, agent_config.call_policy, agent_config.cassette
-    )
-    adapter = create_model_adapter(
-        agent_config.provider,
-        script_path=script_path,
-        model=model,
-        temperature=agent_config.temperature,
-        seed=agent_config.seed,
-        timeout_seconds=agent_config.timeout_seconds,
-        prompt_version=agent_config.prompt_version or PROMPT_VERSION,
-        cassette=agent_config.cassette,
-        task_id=task.task_id,
-        call_policy=call_policy,
-    )
-    if isinstance(adapter, RecordingModelAdapter):
-        metadata["cassette_path"] = _repo_relative(adapter.path)
+    agent: TargetAgent | None = None
+    # An outside agent makes its own model calls, so the harness has none to
+    # retry or pace, and run_config.json records a null call_policy for it as
+    # it does for fixture and replay runs (#196).
+    call_policy: CallPolicy | None = None
+    if agent_config.provider == EXTERNAL_PROVIDER:
+        assert agent_config.agent_ref is not None  # AgentConfig enforces this
+        agent = load_target_agent(agent_config.agent_ref)
+        model = agent_config.model or agent.name
+    else:
+        if agent_config.provider == "fixture":
+            script_path = _resolve_fixture_script(task, task_path)
+            metadata["fixture_script_path"] = _repo_relative(script_path)
+        model = resolve_model_name(agent_config.provider, agent_config.model, script_path)
+        call_policy = resolve_call_policy(
+            agent_config.provider, agent_config.call_policy, agent_config.cassette
+        )
+        adapter = create_model_adapter(
+            agent_config.provider,
+            script_path=script_path,
+            model=model,
+            temperature=agent_config.temperature,
+            seed=agent_config.seed,
+            timeout_seconds=agent_config.timeout_seconds,
+            prompt_version=agent_config.prompt_version or PROMPT_VERSION,
+            cassette=agent_config.cassette,
+            task_id=task.task_id,
+            call_policy=call_policy,
+        )
+        if isinstance(adapter, RecordingModelAdapter):
+            metadata["cassette_path"] = _repo_relative(adapter.path)
 
     config = RunConfig(
         task_id=task.task_id,
@@ -126,9 +143,13 @@ def run_task_pipeline(
         prompt_version=agent_config.prompt_version or PROMPT_VERSION,
         cassette=agent_config.cassette,
         call_policy=call_policy,
+        agent_ref=agent_config.agent_ref,
         metadata=metadata,
     )
-    run_result = AgentRunner(adapter, environment, store).run(task, config)
+    if agent is not None:
+        run_result = run_target_agent(agent, environment, store, task, config)
+    else:
+        run_result = AgentRunner(adapter, environment, store).run(task, config)
 
     verifier_result = verify_run(store, run_result, task)
     if verifier_result is not None and verifier_result.has_violations and bundle_on_fail:
