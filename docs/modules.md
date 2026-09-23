@@ -289,9 +289,13 @@ simple merge).
 attributor (`heuristic.py`) that explain *where and why* a verified
 failure happened.
 
-**Exposes:** `HeuristicAttributor.attribute(task, trace, verifier_result)
--> AttributionResult` (requires a *failed* verifier result; raises on
-passed ones); `FailureCategory` (extend, never repurpose values).
+**Exposes:** `HeuristicAttributor.attribute(task, trace, verifier_result,
+run_result=None) -> AttributionResult` (requires a *failed* verifier result;
+raises on passed ones); `FailureCategory` (extend, never repurpose values);
+`classify_post_block_outcome(trace, verifier_result, run_result)`
+(`post_block.py`), which returns the first control block step and a
+`PostBlockOutcome` label for any run, passed or failed (see
+[failure_taxonomy.md](failure_taxonomy.md#post-block-outcome-labels)).
 
 **Rules:** `root_cause_step`, `missed_recovery_step`,
 `first_unrecoverable_step`, and `first_irreversible_action_step` are

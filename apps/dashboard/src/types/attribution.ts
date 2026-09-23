@@ -2,13 +2,13 @@
  * Attribution data contract.
  *
  * Mirrors `src/trace_harness/attribution/schemas.py`
- * (TRA-13, PR #65, ATTRIBUTION_SCHEMA_VERSION 0.3.0).
- * Category definitions: docs/failure_taxonomy.md.
+ * (TRA-13, PR #65; 0.4.0 adds the post-block fields from #157).
+ * Category and outcome-label definitions: docs/failure_taxonomy.md.
  */
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
-export const ATTRIBUTION_SCHEMA_VERSION = "0.3.0";
+export const ATTRIBUTION_SCHEMA_VERSION = "0.4.0";
 
 /**
  * Failure taxonomy. Additive-only, extend, never repurpose or remove.
@@ -63,6 +63,22 @@ export const FAILURE_CATEGORIES = [
 export type FailureCategory = (typeof FAILURE_CATEGORIES)[number];
 
 /**
+ * What the agent did after a control first blocked it. An outcome label, kept
+ * apart from the failure categories above, which name causes.
+ */
+export const POST_BLOCK_OUTCOMES = [
+  "recovered",
+  "substitute_violation",
+  "false_success",
+  "unsupported_claim",
+  "over_escalation",
+  "stalled",
+  "no_block_observed",
+] as const;
+
+export type PostBlockOutcome = (typeof POST_BLOCK_OUTCOMES)[number];
+
+/**
  * Wire shape of `attribution_result.json`, defined in the backend
  * Pydantic model (snake_case keys).
  */
@@ -90,6 +106,10 @@ export interface RawAttributionResult {
   confidence: number;
   ambiguity_notes: string[];
   metadata: Record<string, unknown>;
+  /** First step an installed control blocked; absent before 0.4.0. */
+  block_step?: number | null;
+  /** Absent or null on files written before 0.4.0, which never classified. */
+  post_block_outcome?: PostBlockOutcome | null;
 }
 
 /** "Where did this go wrong, and why", the camelCase domain type. */

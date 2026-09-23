@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.3.0",
+  "schema_version": "0.4.0",
   "run_id": "run_20260101T000000Z_sample01",
   "root_cause_step": 3,
   "first_bad_step": 3,
@@ -33,5 +33,7 @@
     "deprecated_doc_ids_seen": [
       "refund_policy_v2"
     ]
-  }
+  },
+  "block_step": null,
+  "post_block_outcome": "no_block_observed"
 }
