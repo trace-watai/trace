@@ -107,6 +107,12 @@ than on anything the agent said.
 - A check whose step id does not match any corroborating act in the trace.
   Naming that step anyway would make the attribution look better without making
   it truer.
+- An unsupported assertion that comes after another failed check. The staged
+  refund failure without its reasoning is the case (#210). The ticket claim at
+  step 6 follows the unauthorized refund at step 5, so it cannot be what caused
+  the run to fail, and the cause of the refund sits in reasoning the trace does
+  not carry. The attributor leaves the root cause null and notes the earlier
+  step.
 
 Each of those writes an ambiguity note rather than a number. Two staged rows in
 `refund_v0` moved from null to a real step when this landed,
