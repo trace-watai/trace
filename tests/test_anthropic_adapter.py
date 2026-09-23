@@ -359,7 +359,8 @@ def test_no_usage_anywhere_reports_null() -> None:
 def test_the_dispatcher_prices_anthropic_and_leaves_other_providers_null() -> None:
     raws = [{"usage": {"input_tokens": 1_000_000, "output_tokens": 0}}]
     assert estimate_cost_usd("anthropic", "claude-sonnet-5", raws) == pytest.approx(3.0)
-    # The default Gemini model has no price, so its runs keep reporting null.
+    # Gemini reads usage_metadata, so Anthropic's usage field does not price
+    # under Gemini's table.
     assert estimate_cost_usd("gemini", "gemini-3.6-flash", raws) is None
 
 

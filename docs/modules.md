@@ -71,7 +71,7 @@ interpreted.
 
 | Provider | Native tool calling | Seed | Published price | Default pacing |
 | --- | --- | --- | --- | --- |
-| `gemini` | yes | yes | `gemini-2.5-flash` and `-flash-lite`; the default `gemini-3.6-flash` has none yet, so its `cost_usd` stays null | 10 requests/minute |
+| `gemini` | yes | yes | `gemini-2.5-flash`, `-flash-lite` and the default `gemini-3.6-flash`, whose price doubles on 2027-01-01 | 10 requests/minute |
 | `anthropic` | yes | no, the Messages API has none | yes | 50 requests/minute |
 | `openai` | yes | yes, best-effort with `system_fingerprint` | yes | 500 requests/minute |
 
@@ -132,7 +132,7 @@ replay shows the same retries. `run_config.json` records the policy as
 
 **Build next:** decide the parallel-tool-call story (`AgentAction` grows a list
 form behind a schema bump); keep one controlled key-backed acceptance run
-outside CI; add a verified price for the default Gemini model.
+outside CI; update the `gemini-3.6-flash` price line on 2027-01-01.
 
 ## environment/ — the sandboxed world *(Evan Yang)*
 

@@ -129,13 +129,13 @@ def test_the_cap_is_checked_between_runs(tmp_path: Path, adapters: list[str]) ->
 def test_an_unpriced_live_model_under_a_cap_never_starts(
     tmp_path: Path, adapters: list[str]
 ) -> None:
-    """The default Gemini model has no price, so nothing could see it pass the cap."""
-    config = AgentConfig(label="gemini", provider="gemini")
+    """A model with no price could pass the cap without anything seeing it."""
+    config = AgentConfig(label="gemini", provider="gemini", model="gemini-not-in-the-table")
     summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(_suite(5.0, config))
     assert adapters == []
     assert summary.entries == []
     assert summary.budget.stop_reason == BUDGET_UNENFORCEABLE
-    assert "gemini-3.6-flash" in summary.budget.detail
+    assert "gemini-not-in-the-table" in summary.budget.detail
     assert len(summary.budget.not_run) == 3
 
 
@@ -156,7 +156,7 @@ def test_a_live_run_with_no_recorded_cost_stops_the_batch(
 
 def test_without_a_cap_nothing_changes(tmp_path: Path, adapters: list[str]) -> None:
     """Old suites run exactly as before: unpriced runs go ahead, cost stays null."""
-    config = AgentConfig(label="gemini", provider="gemini")
+    config = AgentConfig(label="gemini", provider="gemini", model="gemini-not-in-the-table")
     summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(_suite(None, config))
     assert len(summary.entries) == 3
     assert summary.budget is None
@@ -181,7 +181,7 @@ def test_a_zero_cap_refuses_the_first_live_run(tmp_path: Path, adapters: list[st
 def test_a_replay_is_free_and_never_refused_on_price(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The retained Gemini cassette is an unpriced model, but a replay calls nothing."""
+    """A replay calls nothing, so it costs zero and is never refused on price."""
     monkeypatch.chdir(REPO_ROOT)
     suite = load_suite(FIXTURES_DIR / "suites/refund_policy_gemini_replay.json")
     suite.max_cost_usd = 0.01
@@ -207,8 +207,9 @@ def test_the_guard_is_usable_on_its_own() -> None:
     fresh.charge(None, "anthropic", run_id=None)
     assert fresh.stop_reason is None
     # A record-mode cassette is live; replay is not.
-    assert not BudgetGuard(1.0).admit("gemini", "gemini-3.6-flash", CassetteConfig(mode="record"))
-    assert BudgetGuard(1.0).admit("gemini", "gemini-3.6-flash", CassetteConfig(mode="replay"))
+    unpriced = "gemini-not-in-the-table"
+    assert not BudgetGuard(1.0).admit("gemini", unpriced, CassetteConfig(mode="record"))
+    assert BudgetGuard(1.0).admit("gemini", unpriced, CassetteConfig(mode="replay"))
 
 
 def test_a_negative_cap_is_rejected() -> None:

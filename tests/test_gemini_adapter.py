@@ -316,12 +316,17 @@ def test_cost_is_priced_from_the_recorded_usage() -> None:
     )
 
 
-def test_an_unpriced_model_reports_null_including_the_default() -> None:
+def test_an_unpriced_model_reports_null() -> None:
     raws = [{"usage_metadata": {"prompt_token_count": 10, "candidates_token_count": 1}}]
-    assert DEFAULT_GEMINI_MODEL not in GEMINI_PRICING
-    assert gemini_cost(DEFAULT_GEMINI_MODEL, raws) is None
-    assert not is_priced("gemini", DEFAULT_GEMINI_MODEL)
-    assert is_priced("gemini", "gemini-2.5-flash")
+    assert gemini_cost("gemini-not-in-the-table", raws) is None
+    assert not is_priced("gemini", "gemini-not-in-the-table")
+
+
+def test_the_default_model_is_priced() -> None:
+    """A capped suite on the default model would otherwise be refused outright."""
+    raws = [{"usage_metadata": {"prompt_token_count": 1_000_000, "candidates_token_count": 0}}]
+    assert is_priced("gemini", DEFAULT_GEMINI_MODEL)
+    assert gemini_cost(DEFAULT_GEMINI_MODEL, raws) == pytest.approx(0.75)
 
 
 def test_other_providers_usage_does_not_price_as_gemini() -> None:

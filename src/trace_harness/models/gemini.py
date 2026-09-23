@@ -96,9 +96,14 @@ THOUGHT_SIGNATURE_KEY = "thought_signature"
 #: output rate. Only models with one flat text price are listed; a model whose
 #: price is unknown here, the default included, reports a null cost until its
 #: line is added.
+#: USD per million input and output tokens, paid tier, from
+#: https://ai.google.dev/gemini-api/docs/pricing as read on 2026-09-23. Thinking
+#: tokens bill as output. The gemini-3.6-flash price doubles to (1.50, 7.50) on
+#: 2027-01-01, and this line has to change that day.
 GEMINI_PRICING: dict[str, tuple[float, float]] = {
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.5-flash-lite": (0.10, 0.40),
+    "gemini-3.6-flash": (0.75, 3.75),
 }
 
 #: google-genai's error base class. A status-less error under it is still the
