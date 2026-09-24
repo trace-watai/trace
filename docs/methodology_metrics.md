@@ -210,7 +210,12 @@ Snapshots from schema `0.3.0` also record `independent_families` and
 `families_failed` for that artifact, and `upper_bound_95` is the A4 family
 bound over them, derived again on every read. The `/metrics` page shows
 it as "k of n families failed, true rate could be up to b". The retained
-validation today is `0` of `1` family, so the page reads 95%.
+validation today is `0` of `1` family, a bound of 95%, but the page shows
+that only once a `0.3.0` snapshot is appended. The committed history holds
+one `0.1.0` line, which has no family counts, so until then the page reads
+"0/1 siblings failed, families not recorded". The history job on main
+skips its append while the `METRICS_HISTORY_TOKEN` secret is unset (see
+`docs/team_ownership.md`).
 
 *Source.* `repair_validation.json`, chosen by the highest `batch_id`,
 whose timestamp prefix orders chronologically. File mtime is not used
