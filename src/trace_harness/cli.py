@@ -1133,6 +1133,10 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         validate_condition_batches,
     )
     from trace_harness.runner.frozen_set import render_changes
+    from trace_harness.runner.repair_effectiveness import (
+        build_repair_effectiveness,
+        write_repair_effectiveness,
+    )
     from trace_harness.runner.verdict_agreement import (
         pair_table,
         recorded_batches,
@@ -1178,13 +1182,14 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
             )
         summaries.append(summary)
 
-    # The live verdicts read each run's failed checks and their steps, which a
-    # batch entry does not keep (#200).
+    # The live verdicts and B1 read each run's failed checks and their steps,
+    # which a batch entry does not keep (#200).
     parsed = [BatchSummary.model_validate(s) for s in summaries]
     by_batch = {batch_id: declared[name] for name, batch_id in condition_batches.items()}
     verdicts = _verifier_results(store, run_ids(parsed))
     recorded = recorded_batches(parsed, by_batch)
     pairs = score_pairs(recorded, verdicts)
+    repair = build_repair_effectiveness(spec.experiment_id, recorded, verdicts)
     result = ExperimentResult(
         experiment_id=spec.experiment_id,
         condition_batches=condition_batches,
@@ -1199,8 +1204,9 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     )
     store.write_experiment_spec(spec.experiment_id, spec)
     store.write_experiment_result(
-        spec.experiment_id, result, markdown=render_experiment_markdown(spec, result)
+        spec.experiment_id, result, markdown=render_experiment_markdown(spec, result, repair)
     )
+    sidecar = write_repair_effectiveness(store.experiment_dir(spec.experiment_id), repair)
 
     print(f"\nExperiment recorded: {spec.experiment_id}")
     _print("hypothesis:", spec.hypothesis)
@@ -1225,6 +1231,7 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         _print("excluded pairs:", f"{len(excluded)}, left out of verdict_agreement_rate")
         for pair in excluded:
             print(f"    {pair.kind} {pair.model} {pair.task_id} {pair.control}: {pair.excluded}")
+    _print("repair effectiveness:", f"{len(repair.entries)} entr(ies) in {sidecar}")
     _print("written:", str(store.experiment_dir(spec.experiment_id)))
     return 0
 

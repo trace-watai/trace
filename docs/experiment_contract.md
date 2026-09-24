@@ -19,6 +19,7 @@ runs/experiments/{experiment_id}/
   experiment.json    the plan, written before anything runs
   result.json        which batch answered which condition, and what was decided
   report.md          the same thing for a human
+  repair_effectiveness.json   B1 per artifact, control and model, live conditions only
 ```
 
 **The plan comes first.** That ordering is the point. A plan composed after
@@ -167,6 +168,18 @@ counts behind each rate in `extra` ([branch_stage.md](branch_stage.md#metrics)).
 `verdict_agreement_rate` and `sibling_failure_rate` come from the same batches
 and each run's verifier result, per model, with a pair of fewer than five
 completed seeds left out and named, so a complete experiment fills all eight.
+
+B1 repair effectiveness from Part B1 of the memo is not one of the eight.
+`record` writes it to `repair_effectiveness.json` beside the result
+(`runner/repair_effectiveness.py`, schema 0.1.0), one entry per control-on arm,
+artifact, control and model. The control-on side is that arm's runs and the
+control-off side is the `live_no_control` runs of the same artifact, fork step
+and model, and both count blocking failures after the fork over completed
+runs. Static replay never enters it. When a side has no completed run, or the
+control-off side never violated, the value is null and `null_reason` says
+which. `artifact_id` is the artifact's source run id, the one identifier every
+batch and plan condition carries. `report.md` prints the entries in their own
+section.
 
 ## Commands
 

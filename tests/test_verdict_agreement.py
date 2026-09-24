@@ -1,4 +1,4 @@
-"""Verdict agreement and sibling failures on a synthetic experiment computed by hand (#200).
+"""Verdict agreement, sibling failures and B1 on a synthetic experiment computed by hand (#200).
 
 Three artifacts share one control. The worked numbers are in the comments
 beside each batch, so every assertion below can be checked with a pencil.
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from trace_harness.runner.batch import BatchRunEntry, BatchSummary, aggregate_entries
 from trace_harness.runner.experiment import ConditionSpec, derive_metrics
+from trace_harness.runner.repair_effectiveness import build_repair_effectiveness
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.runner.verdict_agreement import (
     blocking_after_fork,
@@ -272,6 +273,36 @@ def test_the_pairs_state_every_exclusion():
         ("live", "task_d"): (False, 2, 4, None, "4 completed seed(s), fewer than 5"),
         ("live_swapped", "task_a"): (True, 0, 5, False, None),
     }
+
+
+def test_b1_by_hand():
+    summaries, conditions = _experiment()
+    report = build_repair_effectiveness("exp", recorded_batches(summaries, conditions), VERDICTS)
+    rows = {
+        (e.artifact_id, e.model): (
+            (e.control_on.blocking_failures_after_fork, e.control_on.completed_runs),
+            (e.control_off.blocking_failures_after_fork, e.control_off.completed_runs),
+            e.repair_effectiveness,
+            e.null_reason,
+        )
+        for e in report.entries
+    }
+    assert rows == {
+        ("run_A", GEMINI): ((1, 5), (4, 5), 0.75, None),
+        ("run_B", GEMINI): ((3, 6), (0, 5), None, "the baseline nB recorded no blocking failure"),
+        ("run_D", GEMINI): ((2, 4), (0, 0), None, "no completed runs under live_no_control"),
+        ("run_A", CLAUDE): ((5, 5), (0, 0), None, "no completed runs under live_no_control"),
+    }
+    by_artifact = {(e.artifact_id, e.model): e for e in report.entries}
+    assert by_artifact[("run_A", GEMINI)].fork_step == 5
+    assert by_artifact[("run_A", GEMINI)].control_on.condition == "lA"
+    assert by_artifact[("run_A", GEMINI)].control_off.batch_id == "nA"
+
+
+def test_static_replay_never_enters_b1():
+    summaries, conditions = _experiment()
+    report = build_repair_effectiveness("exp", recorded_batches(summaries, conditions), VERDICTS)
+    assert all(e.control_on.condition[0] in "lw" for e in report.entries)
 
 
 def test_two_models_on_the_live_arm_are_never_pooled():

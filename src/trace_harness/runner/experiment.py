@@ -261,8 +261,14 @@ def validate_condition_batches(spec: ExperimentSpec, condition_batches: dict[str
         )
 
 
-def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -> str:
-    """A short human-readable report, written beside the two JSON files."""
+def render_experiment_markdown(
+    spec: ExperimentSpec, result: ExperimentResult, repair: Any | None = None
+) -> str:
+    """A short human-readable report, written beside the two JSON files.
+
+    ``repair`` is the B1 sidecar (:class:`RepairEffectivenessReport`), shown in
+    its own section because it is not one of the eight metrics.
+    """
     lines = [
         f"# {spec.experiment_id}",
         "",
@@ -291,6 +297,22 @@ def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -
     for name, value in sorted(result.metrics.extra.items()):
         lines.append(f"| {name} (extra) | {value} |")
     lines += _pair_lines(result.metadata.get("verdict_agreement_pairs") or [])
+    if repair is not None and repair.entries:
+        lines += [
+            "",
+            "## Repair effectiveness (B1, outside the eight)",
+            "",
+            "| artifact | control | model | control on | control off | B1 |",
+            "|---|---|---|---|---|---|",
+        ]
+        for e in repair.entries:
+            on, off = e.control_on, e.control_off
+            value = e.repair_effectiveness if e.null_reason is None else f"null: {e.null_reason}"
+            lines.append(
+                f"| {e.artifact_id} | {e.control_id} | {e.model} "
+                f"| {on.blocking_failures_after_fork}/{on.completed_runs} "
+                f"| {off.blocking_failures_after_fork}/{off.completed_runs} | {value} |"
+            )
     if result.frozen_set_drift:
         lines += ["", "## Frozen set drift", "", "| component | change | file |", "|---|---|---|"]
         for c in result.frozen_set_drift:

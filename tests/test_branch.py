@@ -32,6 +32,10 @@ from trace_harness.runner.experiment import (
     ExperimentSpec,
 )
 from trace_harness.runner.frozen_set import CODE_COMPONENTS, freeze
+from trace_harness.runner.repair_effectiveness import (
+    REPAIR_EFFECTIVENESS_FILE,
+    RepairEffectivenessReport,
+)
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 
@@ -391,6 +395,31 @@ def test_experiment_record_fills_the_three_metrics_from_branch_batches(
     assert extra["verdict_agreement_excluded"] == 1
     (pair,) = result.metadata["verdict_agreement_pairs"]
     assert pair["excluded"] == "2 completed seed(s), fewer than 5"
+    # B1 beside the result, from the two live conditions only (#200).
+    sidecar = RepairEffectivenessReport.model_validate_json(
+        (
+            ArtifactStore(runs).experiment_dir(spec.experiment_id) / REPAIR_EFFECTIVENESS_FILE
+        ).read_text()
+    )
+    (entry,) = sidecar.entries
+    assert (entry.artifact_id, entry.control_id, entry.fork_step, entry.model) == (
+        artifact["source_run_id"],
+        REFUND_WINDOW_CONTROL_ID,
+        2,
+        "fixture",
+    )
+    assert (entry.control_on.condition, entry.control_off.condition) == ("live", "live_no_control")
+    # Store credit at step 3 on both seeds; the recorded cash refund is at the fork step.
+    assert (entry.control_on.blocking_failures_after_fork, entry.control_on.completed_runs) == (
+        2,
+        2,
+    )
+    assert (entry.control_off.blocking_failures_after_fork, entry.control_off.completed_runs) == (
+        0,
+        2,
+    )
+    assert entry.repair_effectiveness is None
+    assert entry.null_reason == "the baseline live_no_control recorded no blocking failure"
 
     swapped = [
         pairs[0],
