@@ -270,15 +270,15 @@ only the failing cells.
 
 | Quantity | Measured |
 |---|---|
-| `docs/acceptance/`, 139 files | 1,144,146 bytes |
+| `docs/acceptance/`, 139 files | 1,144,293 bytes |
 | One retained run directory on disk, min / mean / max over 15 | 43,990 / 71,470 / 104,462 bytes |
-| One hosted run row as JSON, min / mean / max | 34,965 / 60,529 / 88,026 bytes |
-| Hosted rows as JSON, 15 runs + 2 batches + 1 experiment | 907,929 + 50,625 + 1,701 bytes |
+| One hosted run row as JSON, min / mean / max | 34,977 / 60,552 / 88,073 bytes |
+| Hosted rows as JSON, 15 runs + 2 batches + 1 experiment | 908,284 + 50,625 + 1,701 bytes |
 | Postgres size of the retained set, tables with TOAST and indexes | 884,736 bytes |
-| A stored run row as a share of its JSON, min / mean / max | 41.5 / 51.9 / 70.2 percent |
-| One sweep as JSON, 320 run rows copied from the retained rows largest first, plus two 160-entry batches | 19,497,081 + 372,894 bytes |
+| A stored run row as a share of its JSON, min / mean / max | 41.6 / 51.9 / 70.2 percent |
+| One sweep as JSON, 320 run rows copied from the retained rows largest first, plus two 160-entry batches | 19,504,736 + 372,894 bytes |
 | Postgres size of the retained set plus that sweep | 11,968,512 bytes (11.4 MiB) |
-| `list_runs()` response for all 335 runs | 149,225 bytes |
+| `list_runs()` response for all 335 runs | 155,255 bytes |
 
 The script builds the rows the way the uploader does, loads them into a
 throwaway PostgreSQL 16.14 cluster through the same statement PostgREST runs
@@ -295,7 +295,7 @@ databases, excluding WAL. The retained set plus one sweep is about 12 MB, under
 3 percent of that. The empty project's own system schemas also count, and
 their size was not measured here, because no project exists yet. At about 11
 MB per fully hosted sweep, dozens of sweeps fit. For egress, 5 GB is about
-80,000 full run reads at the mean row size, or about 33,000 loads of the whole
+80,000 full run reads at the mean row size, or about 32,000 loads of the whole
 run list, before any compression.
 
 Free projects are paused after a week without enough database activity. Each
