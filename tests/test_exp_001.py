@@ -15,6 +15,13 @@ B1 sidecar exactly. It runs in a scratch folder and is never retained.
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from conftest import REPO_ROOT
@@ -22,7 +29,8 @@ from trace_harness.cli import main
 from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID
 from trace_harness.models import is_priced
 from trace_harness.runner.branch import load_artifact, replacement_seeds, validate_condition
-from trace_harness.runner.experiment import ExperimentSpec
+from trace_harness.runner.experiment import ExperimentMetrics, ExperimentSpec
+from trace_harness.runner.repair_effectiveness import RepairEffectivenessReport
 
 EXP_DIR = REPO_ROOT / "docs" / "acceptance" / "experiments" / "exp_001_replay_validity"
 PLAN = ExperimentSpec.model_validate_json((EXP_DIR / "experiment.json").read_text())
@@ -135,3 +143,184 @@ def test_each_fork_point_still_materializes_as_retained(tmp_path, task):
     )
     for field in fields:
         assert getattr(fresh, field) == getattr(retained, field), field
+
+
+# --- the offline rehearsal, which is the harness check ---
+
+
+def _env() -> dict[str, str]:
+    """The tree under test on the path, and no provider key to reach for."""
+    env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(REPO_ROOT / "src"), env.get("PYTHONPATH")])
+    )
+    env["PYTHON"] = sys.executable
+    return env
+
+
+@pytest.fixture(scope="module")
+def dry_run(tmp_path_factory) -> tuple[subprocess.CompletedProcess, Path]:
+    work = tmp_path_factory.mktemp("exp_001") / "dry_run"
+    script = REPO_ROOT / "scripts" / "dry_run_exp_001.py"
+    ran = subprocess.run(
+        [sys.executable, str(script), "--work", str(work)],
+        capture_output=True,
+        text=True,
+        env=_env(),
+        cwd=REPO_ROOT,
+    )
+    return ran, work / "retained"
+
+
+def _load(retained: Path, name: str) -> dict:
+    return json.loads((retained / name).read_text())
+
+
+def test_the_dry_run_passes_the_harness_check(dry_run):
+    ran, retained = dry_run
+    assert ran.returncode == 0, ran.stdout[-3000:] + ran.stderr[-3000:]
+    assert "harness check: PASS" in ran.stdout
+    assert "result.json: identical, leaving out finished_at, report_path" in ran.stdout
+    assert "repair_effectiveness.json: identical" in ran.stdout
+    # A scratch folder, never the retained one.
+    assert not (EXP_DIR / "result.json").exists()
+    assert not (EXP_DIR / "runs").exists()
+
+
+def test_the_dry_run_fills_all_eight_metrics(dry_run):
+    _, retained = dry_run
+    result = _load(retained, "result.json")
+    metrics, extra = result["metrics"], result["metrics"]["extra"]
+    assert result["experiment_id"] == "exp_001_replay_validity_dry_run"
+    assert (result["decision"], result["decided_by"]) == ("review", "human")
+    assert result["frozen_set_verified"] is True
+    assert set(result["condition_batches"]) == {c.name for c in PLAN.conditions}
+    # The fixture replays each recording: the replay fires on all three pairs
+    # and no seed is clear after the fork, so every pair agrees.
+    assert metrics["verdict_agreement_rate"] == 1.0
+    assert (extra["verdict_agreement_k"], extra["verdict_agreement_n"]) == (3, 3)
+    assert extra["verdict_agreement_excluded"] == 0
+    assert extra["verdict_agreement_rate/live_swapped/fixture"] == 1.0
+    for pair in result["metadata"]["verdict_agreement_pairs"]:
+        assert (pair["static_clear"], pair["clear_seeds"], pair["completed_seeds"]) == (False, 0, 5)
+    # 3 fork points x 5 seeds on each live arm, none diverging.
+    assert metrics["first_post_fork_divergence_rate"] == 0.0
+    assert (extra["first_post_fork_divergence_k"], extra["first_post_fork_divergence_n"]) == (0, 15)
+    assert metrics["noise_floor_divergence_rate"] == 0.0
+    assert (extra["noise_floor_divergence_k"], extra["noise_floor_divergence_n"]) == (0, 15)
+    # The recorded final answer still claims the blocked refund.
+    assert metrics["post_block_outcomes"] == {"false_success": 15}
+    # Three replays, one sibling each, all passing with the control installed.
+    assert metrics["sibling_failure_rate"] == 0.0
+    assert (extra["sibling_failure_k"], extra["sibling_failure_n"]) == (0, 3)
+    # 3 static replays + 15 live + 15 swapped stand-ins + 15 without the control,
+    # where the recorded refund at the fork step still fails every run.
+    assert metrics["verified_failure_count"] == 48
+    assert metrics["cost_usd"] == 0.0
+    assert metrics["latency_ms_p50"] is not None
+    assert all(metrics[name] is not None for name in ExperimentMetrics.memo_field_names())
+
+
+def test_the_dry_run_sidecar(dry_run):
+    _, retained = dry_run
+    sidecar = RepairEffectivenessReport.model_validate(_load(retained, "repair_effectiveness.json"))
+    rows = {
+        (e.control_on.condition, e.fork_step): (
+            e.control_on.blocking_failures_after_fork,
+            e.control_on.completed_runs,
+            e.control_off.blocking_failures_after_fork,
+            e.control_off.completed_runs,
+            e.repair_effectiveness,
+        )
+        for e in sidecar.entries
+    }
+    # refund_policy_failure keeps failing after step 5 either way (ticket and
+    # escalation checks), so B1 is 0. The purchase_age recordings do nothing
+    # blocking after the fork without the control, so their baseline is 0 and
+    # B1 is null with that reason.
+    for arm in ("live", "live_swapped"):
+        assert rows[(f"{arm}__refund_policy_failure", 5)] == (5, 5, 5, 5, 0.0)
+        for task, step in (
+            ("refund_cash_age_boundary_day_31_no_approval", 4),
+            ("refund_cash_age_boundary_day_61_violation", 3),
+        ):
+            assert rows[(f"{arm}__{task}", step)] == (5, 5, 0, 5, None)
+    assert len(rows) == 6
+    for entry in sidecar.entries:
+        assert entry.control_id == REFUND_WINDOW_CONTROL_ID
+        assert entry.model == "fixture"
+        assert (entry.null_reason is None) == (entry.repair_effectiveness is not None)
+        assert not entry.control_on.condition.startswith("static_replay")
+
+
+@pytest.mark.parametrize(
+    ("name", "edit"),
+    [
+        ("result.json", lambda d: d["metrics"].update(verdict_agreement_rate=0.5)),
+        ("result.json", lambda d: d["metrics"]["extra"].update(sibling_failure_n=4)),
+        ("repair_effectiveness.json", lambda d: d["entries"][0].update(repair_effectiveness=0.1)),
+    ],
+)
+def test_regenerate_catches_an_edited_number(dry_run, tmp_path, name, edit):
+    _, retained = dry_run
+    copy = tmp_path / "retained"
+    shutil.copytree(retained, copy)
+    data = _load(copy, name)
+    edit(data)
+    (copy / name).write_text(json.dumps(data, indent=2) + "\n")
+    ran = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "regenerate_exp_001.sh"), str(copy)],
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+    assert ran.returncode == 1, ran.stdout + ran.stderr
+    assert f"{name}: DIFFERS" in ran.stdout
+
+
+def test_regenerate_ignores_only_the_timestamp_and_the_report_path(dry_run, tmp_path):
+    _, retained = dry_run
+    copy = tmp_path / "retained"
+    shutil.copytree(retained, copy)
+    data = _load(copy, "result.json")
+    data["finished_at"] = "2000-01-01T00:00:00Z"
+    data["report_path"] = "elsewhere/report.md"
+    (copy / "result.json").write_text(json.dumps(data, indent=2) + "\n")
+    ran = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "regenerate_exp_001.sh"), str(copy)],
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+
+
+def test_regenerate_says_when_nothing_is_retained(tmp_path):
+    ran = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "regenerate_exp_001.sh"), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+    assert ran.returncode == 2
+    assert "has not been retained there" in ran.stderr
+
+
+def test_retain_refuses_a_credential(dry_run, tmp_path):
+    _, retained = dry_run
+    runs = retained.parent / "runs"
+    target = tmp_path / "retained"
+    target.mkdir()
+    shutil.copy(retained / "experiment.json", target / "experiment.json")
+    leaky = tmp_path / "runs"
+    shutil.copytree(runs, leaky)
+    (leaky / "note.txt").write_text("key sk-ant-" + "a" * 30 + "\n")
+    ran = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "retain_exp_001.sh"), str(leaky), str(target)],
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+    assert ran.returncode == 1
+    assert "nothing was retained" in ran.stderr
+    assert not (target / "result.json").exists()
