@@ -33,7 +33,7 @@ from trace_harness.models.cassette import (
     RecordingModelAdapter,
     cassette_path,
 )
-from trace_harness.models.policy import LIVE_PROVIDERS, CallPolicy, default_call_policy
+from trace_harness.models.policy import LIVE_PROVIDERS, CallPolicy, merge_call_policy
 
 KNOWN_PROVIDERS = ("fixture", "gemini", "anthropic", "openai")
 
@@ -78,12 +78,13 @@ def resolve_call_policy(
     """The call policy a run executes under, resolved once like the model name.
 
     None for a run that makes no live call, so ``run_config.json`` never claims
-    a policy that did not apply. Otherwise the suite's override, or the
-    provider's default.
+    a policy that did not apply. Otherwise the provider's default with every
+    field the suite's override sets in its place, so an override that only
+    raises ``max_attempts`` keeps the provider's pacing.
     """
     if not makes_live_calls(provider, cassette):
         return None
-    return override or default_call_policy(provider)
+    return merge_call_policy(provider, override)
 
 
 def create_model_adapter(
@@ -111,8 +112,8 @@ def create_model_adapter(
     cassette adapter and requires neither the provider SDK nor its credentials.
 
     ``call_policy`` is the retry and rate-limit policy a live adapter runs
-    under; None gives the provider's default. The fixture provider and replay
-    ignore it, since they make no call.
+    under, overlaid on the provider's default; None gives the default. The
+    fixture provider and replay ignore it, since they make no call.
     """
     if cassette is not None:
         if not task_id:

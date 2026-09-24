@@ -61,8 +61,8 @@ from trace_harness.models.policy import (
     CallPolicy,
     ErrorVerdict,
     LiveCaller,
+    build_live_caller,
     classify_provider_error,
-    default_call_policy,
     with_call_record,
 )
 
@@ -384,10 +384,8 @@ class OpenAIModelAdapter:
         # side, which is what system_fingerprint exists to expose.
         self.seed = seed
         self.timeout_seconds = timeout_seconds
-        self._caller = caller or LiveCaller(
-            self.name,
-            call_policy or default_call_policy(self.name),
-            budget_seconds=timeout_seconds,
+        self._caller = caller or build_live_caller(
+            self.name, call_policy, seed=seed, timeout_seconds=timeout_seconds
         )
         self.call_policy = self._caller.policy
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")

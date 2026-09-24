@@ -13,12 +13,18 @@ What is retried
 
     - Transient, retried: HTTP 408, 409, 429 and every 5xx except 501, which
       covers Anthropic's 529 overloaded, plus connection failures that carry no
-      status (a reset, refused or dropped connection, or a network timeout).
+      status (a reset, refused or dropped connection, a network timeout, or a
+      proxy that could not be reached).
     - Permanent, never retried: every other status, which covers 400 invalid
-      request, 401 and 403 credentials, 404 unknown model, 413 and 422. Also a
-      provider SDK error with no status that is not a connection failure.
-      Adapters can narrow this further; OpenAI's 429 ``insufficient_quota`` is
-      permanent because an exhausted quota does not come back within a run.
+      request, 401 and 403 credentials, 404 unknown model, 413, 422 and 501.
+      Also a provider SDK error with no status that is not a connection
+      failure, and two transport errors a resend cannot fix: a request that
+      breaks HTTP before it is sent (httpx's ``LocalProtocolError``) and a URL
+      whose scheme httpx cannot send (``UnsupportedProtocol``). Anthropic and
+      OpenAI wrap those two as a connection error, so the exception's cause is
+      read as well. Adapters can narrow this further; OpenAI's 429
+      ``insufficient_quota`` is permanent because an exhausted quota does not
+      come back within a run.
     - Not a provider error, re-raised untouched and never retried: anything
       else. That includes ``ProviderNotConfiguredError`` and bugs in the
       harness itself, so a ``TypeError`` is never retried and never recorded
@@ -32,10 +38,13 @@ What is retried
 How long it waits
     Exponential backoff from ``initial_delay_seconds``, capped at
     ``max_delay_seconds``. With ``jitter`` on, each delay is scaled into 50% to
-    100% of that value by an injected ``random.Random``, so a seeded generator
-    gives the same delays every time. A provider's own hint (``Retry-After``,
-    or Gemini's ``retryDelay``) raises the delay to at least that hint, because
-    a retry sent sooner than the provider asked is refused again.
+    100% of that value by a ``random.Random``. A live adapter seeds it with the
+    run's seed when the run has one, so a seeded run that meets the same
+    failures sleeps the same delays; a run without a seed draws from an
+    unseeded generator. Tests inject their own. Either way the record keeps
+    the delay actually slept. A provider's own hint (``Retry-After``, or
+    Gemini's ``retryDelay``) raises the delay to at least that hint, because a
+    retry sent sooner than the provider asked is refused again.
 
 The time budget
     The runner already bounds each model call by the run's remaining time
@@ -56,7 +65,9 @@ Rate limit
     whole process, because a batch builds a fresh adapter for every cell and a
     provider's limit applies to the account. Every attempt, retries included,
     takes a slot. Only requests per minute are modeled; a token-per-minute
-    limit surfaces as a 429 and goes through the retry path.
+    limit surfaces as a 429 and goes through the retry path. A suite's
+    ``call_policy`` overrides the provider default field by field, so one that
+    only raises ``max_attempts`` keeps the provider's pacing.
 
 What is recorded
     :class:`CallRecord` gives the requests sent, each failed attempt's error
@@ -124,8 +135,15 @@ CONNECTION_ERROR_NAMES = frozenset(
         "TimeoutException",
         "NetworkError",
         "RemoteProtocolError",
+        "ProxyError",
     }
 )
+
+#: httpx transport errors no resend can fix: a request that breaks HTTP before
+#: it leaves the client, and a URL with a scheme httpx cannot send. Matched on
+#: the exception and on its cause, since Anthropic and OpenAI raise their
+#: connection error ``from`` the httpx one.
+PERMANENT_TRANSPORT_ERROR_NAMES = frozenset({"LocalProtocolError", "UnsupportedProtocol"})
 
 # "abandoned": the runner's timeout ended the call before the policy did, with
 # the last attempt still in flight. Only a model_timeout error event carries it.
@@ -153,6 +171,21 @@ class CallPolicy(BaseModel):
 def default_call_policy(provider: str) -> CallPolicy:
     """The policy a live provider runs under when nothing overrides it."""
     return CallPolicy(requests_per_minute=DEFAULT_REQUESTS_PER_MINUTE.get(provider))
+
+
+def merge_call_policy(provider: str, override: CallPolicy | None = None) -> CallPolicy:
+    """The provider's default policy with every field ``override`` sets in its place.
+
+    A field counts as set when the suite file or the constructor names it, even
+    as null, so ``"requests_per_minute": null`` still turns pacing off on
+    purpose, while an override that leaves it out keeps the provider's rate.
+    """
+    default = default_call_policy(provider)
+    if override is None:
+        return default
+    return CallPolicy.model_validate(
+        {**default.model_dump(), **override.model_dump(exclude_unset=True)}
+    )
 
 
 class FailedAttempt(BaseModel):
@@ -264,6 +297,11 @@ def classify_provider_error(
             status_code=status,
             retry_after_seconds=retry_after_seconds(exc),
         )
+    cause = exc.__cause__
+    if (names | (_mro_names(cause) if cause is not None else set())) & (
+        PERMANENT_TRANSPORT_ERROR_NAMES
+    ):
+        return ErrorVerdict(transient=False)
     if names & CONNECTION_ERROR_NAMES or isinstance(exc, ConnectionError | TimeoutError):
         return ErrorVerdict(transient=True)
     if names & sdk_error_names:
@@ -367,7 +405,8 @@ class LiveCaller:
     ``clock``, ``sleep``, ``rng`` and ``limiter`` are injectable so tests are
     deterministic and never sleep. ``budget_seconds`` is the fallback budget
     when no :func:`call_budget` encloses the call, which is the case only when
-    an adapter is used outside the runner.
+    an adapter is used outside the runner. Adapters build theirs with
+    :func:`build_live_caller`.
     """
 
     def __init__(
@@ -514,6 +553,28 @@ class LiveCaller:
                 f"next one would start past the run's remaining time: {cause}"
             )
         return ProviderCallError(message, call_record=record.model_dump(mode="json"))
+
+
+def build_live_caller(
+    provider: str,
+    call_policy: CallPolicy | None,
+    *,
+    seed: int | None,
+    timeout_seconds: float,
+) -> LiveCaller:
+    """The caller a live adapter uses when a test does not inject one.
+
+    It runs the provider default overlaid with ``call_policy`` (see
+    :func:`merge_call_policy`). Its jitter generator is seeded with the run's
+    seed when there is one, so the delays of a seeded run depend only on which
+    attempts failed; with no seed it is unseeded.
+    """
+    return LiveCaller(
+        provider,
+        merge_call_policy(provider, call_policy),
+        rng=None if seed is None else random.Random(seed),
+        budget_seconds=timeout_seconds,
+    )
 
 
 def with_call_record(

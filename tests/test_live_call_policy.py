@@ -14,6 +14,7 @@ import random
 import socket
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from typing import Any
 import pytest
 
 from conftest import VALID_TASK_PATH
+from trace_harness.models import resolve_call_policy
 from trace_harness.models.anthropic import ANTHROPIC_PRICING, AnthropicModelAdapter
 from trace_harness.models.anthropic import classify_error as anthropic_classify
 from trace_harness.models.base import (
@@ -151,7 +153,23 @@ class ConnectError(NetworkError):
     pass
 
 
-class RemoteProtocolError(TransportError):
+class ProtocolError(TransportError):
+    pass
+
+
+class RemoteProtocolError(ProtocolError):
+    pass
+
+
+class LocalProtocolError(ProtocolError):
+    pass
+
+
+class ProxyError(TransportError):
+    pass
+
+
+class UnsupportedProtocol(TransportError):
     pass
 
 
@@ -247,7 +265,12 @@ def test_transient_errors_are_retried(error: Exception) -> None:
 
 @pytest.mark.parametrize(
     "error",
-    [ReadTimeout("read"), ConnectError("refused"), RemoteProtocolError("dropped")],
+    [
+        ReadTimeout("read"),
+        ConnectError("refused"),
+        RemoteProtocolError("dropped"),
+        ProxyError("proxy refused the tunnel"),
+    ],
     ids=lambda e: type(e).__name__,
 )
 def test_httpx_transport_errors_gemini_lets_through_are_retried(error: Exception) -> None:
@@ -256,6 +279,45 @@ def test_httpx_transport_errors_gemini_lets_through_are_retried(error: Exception
     _, record = live.call(fn, gemini_classify)
     assert len(calls) == 2
     assert record.failures[0].error_class == type(error).__name__
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LocalProtocolError("Illegal header value"),
+        UnsupportedProtocol("Request URL is missing an 'http://' or 'https://' protocol."),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_httpx_errors_a_resend_cannot_fix_are_one_attempt_and_a_model_error(
+    error: Exception,
+) -> None:
+    """Gemini lets these through unwrapped. They are the provider call
+    failing, so they end as a model error with a record, never retried and
+    never mistaken for a harness bug."""
+    live, clock = caller(provider="gemini")
+    fn, calls = scripted(error, "never reached")
+    with pytest.raises(ProviderCallError) as caught:
+        live.call(fn, gemini_classify)
+    assert len(calls) == 1
+    assert clock.sleeps == []
+    assert caught.value.call_record["outcome"] == "permanent_error"
+    assert caught.value.call_record["failures"][0]["error_class"] == type(error).__name__
+
+
+def test_a_wrapped_local_protocol_error_is_permanent_for_every_provider() -> None:
+    """Anthropic and OpenAI raise their connection error from the httpx one,
+    so the cause decides, and a plain wrapped connection failure still retries."""
+
+    def wrapped(cause: Exception) -> APIConnectionError:
+        try:
+            raise APIConnectionError("Connection error.") from cause
+        except APIConnectionError as exc:
+            return exc
+
+    assert anthropic_classify(wrapped(LocalProtocolError("bad header"))).transient is False
+    assert anthropic_classify(wrapped(ConnectError("refused"))).transient is True
+    assert anthropic_classify(wrapped(ProxyError("proxy down"))).transient is True
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422, 501])
@@ -514,11 +576,83 @@ def test_adapters_share_one_process_wide_limiter_by_default() -> None:
     assert limiters == {id(SHARED_RATE_LIMITER)}
 
 
+class _SlowDict(dict):
+    """Widens the gap between reading a provider's last slot and claiming the next."""
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        value = super().get(key, default)
+        time.sleep(0.001)
+        return value
+
+
+def test_the_rate_limiter_hands_out_distinct_slots_across_threads() -> None:
+    """Eight threads claim slots at once. The lock keeps any two from reading
+    the same last slot, so every slot is one full spacing after another."""
+    limiter = RateLimiter()
+    limiter._last_start = _SlowDict()
+    barrier = threading.Barrier(8)
+    waits: list[float] = []
+
+    def claim() -> None:
+        barrier.wait()
+        for _ in range(5):
+            waits.append(limiter.reserve("gemini", 60.0, now=0.0, deadline=None))
+
+    threads = [threading.Thread(target=claim) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(waits) == [float(slot) for slot in range(40)]
+
+
 def test_default_policies_pace_each_provider() -> None:
     for provider in ("gemini", "anthropic", "openai"):
         policy = default_call_policy(provider)
         assert policy.requests_per_minute is not None and policy.requests_per_minute > 0
         assert policy.max_attempts > 1
+
+
+def test_an_override_keeps_every_field_it_leaves_out_from_the_provider_default() -> None:
+    """A suite that only raises max_attempts must not switch pacing off."""
+    policy = resolve_call_policy("gemini", CallPolicy(max_attempts=3))
+    assert policy.max_attempts == 3
+    assert policy.requests_per_minute == default_call_policy("gemini").requests_per_minute
+    # Loaded from a suite file, the same.
+    suite = SuiteSpec.model_validate(
+        {
+            "suite_id": "override",
+            "tasks": [str(VALID_TASK_PATH)],
+            "agent_configs": [
+                {
+                    "label": "claude",
+                    "provider": "anthropic",
+                    "call_policy": {"max_attempts": 2, "jitter": False},
+                }
+            ],
+        }
+    )
+    loaded = resolve_call_policy("anthropic", suite.agent_configs[0].call_policy)
+    assert (loaded.max_attempts, loaded.jitter, loaded.requests_per_minute) == (2, False, 50.0)
+    # Named explicitly, even as null, the override wins.
+    assert (
+        resolve_call_policy("gemini", CallPolicy(requests_per_minute=None)).requests_per_minute
+        is None
+    )
+    # An adapter built directly merges the same way.
+    adapter = OpenAIModelAdapter(api_key="k", call_policy=CallPolicy(max_attempts=2))
+    assert adapter.call_policy.requests_per_minute == 500.0
+
+
+@pytest.mark.parametrize("build", [AnthropicModelAdapter, OpenAIModelAdapter, GeminiModelAdapter])
+def test_an_adapter_seeds_its_jitter_with_the_runs_seed(build) -> None:
+    seeded = build(api_key="k", seed=7)
+    assert seeded._caller._rng.random() == random.Random(7).random()
+    again = build(api_key="k", seed=7)
+    assert again._caller._rng.random() == random.Random(7).random()
+    # Without a seed each adapter gets a generator of its own.
+    first, second = build(api_key="k"), build(api_key="k")
+    assert first._caller._rng is not second._caller._rng
 
 
 # --- the three adapters, with fake clients and no SDK ------------------------
@@ -868,9 +1002,11 @@ def test_a_run_whose_retries_run_out_ends_as_a_model_error_with_the_attempts(
     assert error["kind"] == "model_error"
     assert error["call_record"]["outcome"] == "retries_exhausted"
     assert error["call_record"]["attempts"] == 3
-    # A suite's override is what the run config records.
+    # A suite's override is what the run config records, on top of the
+    # provider's default for every field it leaves out.
     config = store.read_json(entry.run_id, "run_config.json")
     assert config["call_policy"]["max_attempts"] == 3
+    assert config["call_policy"]["requests_per_minute"] == 10.0
 
 
 @pytest.mark.parametrize("mode", [None, "record"])
