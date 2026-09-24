@@ -25,11 +25,13 @@ Stages communicate only through run artifacts on disk — ``verify`` reads
 exactly what ``run-fixture`` wrote — so any stage can be re-run later, and
 the dashboard/API see the same data the pipeline used.
 
-Exit codes: 0 success; 1 verifier failed AND --fail-on-verifier was passed
-(CI gate mode); 2 usage or input errors (argparse errors, bad paths,
-malformed fixtures, missing artifacts, cassette errors, a suite budget cap that
-cannot be enforced). Without the flag a verified
-failure exits 0 — finding failures is this tool succeeding.
+Exit codes: 0 success; 1 with --fail-on-verifier (CI gate mode) when a run
+failed verification or did not complete, and for ``run-suite`` also when a run
+errored or the suite budget stopped the batch before every cell ran; 2 usage
+or input errors (argparse errors, bad paths, malformed fixtures, missing
+artifacts, cassette errors, a suite budget cap that cannot be enforced).
+Without the flag a verified failure exits 0, since finding failures is this
+tool succeeding.
 
 argparse over typer: subcommands this simple don't justify a dependency.
 Revisit if the CLI grows rich help/completions needs.
@@ -59,7 +61,13 @@ from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.failure_bundles.schemas import RepairPackage
 from trace_harness.metrics.history import HISTORY_PATH as DEFAULT_HISTORY_PATH
-from trace_harness.models import create_model_adapter, resolve_call_policy, resolve_model_name
+from trace_harness.models import (
+    KNOWN_PROVIDERS,
+    create_model_adapter,
+    resolve_call_policy,
+    resolve_model_name,
+    unsent_seed_metadata,
+)
 from trace_harness.models.base import ProviderNotConfiguredError
 from trace_harness.models.cassette import CassetteConfig, RecordingModelAdapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
@@ -158,7 +166,10 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--provider",
         default="fixture",
-        help="model provider: 'fixture' (scripted, default) or 'gemini'",
+        help=(
+            f"model provider: one of {', '.join(KNOWN_PROVIDERS)} (default fixture, "
+            "scripted; the others are live and need their own key and SDK extra)"
+        ),
     )
     parser.add_argument(
         "--agent",
@@ -169,7 +180,10 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--model",
         default=None,
-        help="model name for real providers (e.g. gemini-3.6-flash); ignored by fixture",
+        help=(
+            "model name for live providers (e.g. gemini-3.6-flash, claude-sonnet-5, gpt-5); "
+            "ignored by fixture"
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -233,8 +247,9 @@ def _run_fixture(
     # An outside agent makes its own model calls, so its run records none.
     call_policy = resolve_call_policy(provider, None, cassette)
 
-    # The fixture provider replays a script; real providers (gemini) drive the
-    # agent live and need no script — only the fixture path is required.
+    # The fixture provider replays a script. The live providers (gemini,
+    # anthropic, openai) drive the agent live and need no script, so only the
+    # fixture path is required. An outside agent brings its own model.
     if agent is not None:
         adapter = None
         model = args.model or agent.name
@@ -266,6 +281,7 @@ def _run_fixture(
         )
         if isinstance(adapter, RecordingModelAdapter):
             metadata["cassette_path"] = _repo_relative(adapter.path)
+    metadata.update(unsent_seed_metadata(provider, seed))
 
     config = RunConfig(
         task_id=task.task_id,
@@ -1060,14 +1076,16 @@ def _validate_fixtures(args: argparse.Namespace) -> int:
 
 
 def _load_experiment_plan(path: str) -> tuple[Path, Any]:
-    from trace_harness.runner.experiment import ExperimentSpec
+    """Read a plan file the way every experiment command does, through load_plan."""
+    from trace_harness.runner.experiment import load_plan
 
     spec_path = Path(path)
     if not spec_path.is_file():
         raise CliInputError(f"experiment plan not found: {spec_path}")
-    return spec_path, ExperimentSpec.model_validate(
-        json.loads(spec_path.read_text(encoding="utf-8"))
-    )
+    try:
+        return spec_path, load_plan(json.loads(spec_path.read_text(encoding="utf-8")))
+    except ValueError as exc:
+        raise CliInputError(f"{spec_path}: {exc}") from None
 
 
 def _experiment_freeze(args: argparse.Namespace) -> int:
@@ -1076,11 +1094,13 @@ def _experiment_freeze(args: argparse.Namespace) -> int:
     Paths resolve against the working directory like every other CLI path, so
     this runs from the repository root. A plan that already carries a frozen
     set is refused: freezing it again after the evaluator moved would turn
-    drift into a clean record.
+    drift into a clean record. The check reads only the plan it is given, so
+    a plan whose frozen set was deleted by hand freezes again; git history of
+    the plan is the record against that.
     """
     from trace_harness.runner.experiment import EXPERIMENT_SCHEMA_VERSION, ExperimentSpec
     from trace_harness.runner.frozen_set import FrozenSetError, freeze
-    from trace_harness.tracing.artifact_store import _atomic_write_text
+    from trace_harness.tracing.artifact_store import atomic_write_text
 
     spec_path, spec = _load_experiment_plan(args.experiment_path)
     manifest = spec.frozen_manifest
@@ -1098,7 +1118,7 @@ def _experiment_freeze(args: argparse.Namespace) -> int:
     data["frozen_manifest"]["frozen_set"] = {n: c.model_dump() for n, c in frozen.items()}
     data["frozen_manifest"]["fixtures_hash"] = frozen["fixtures"].digest
     spec = ExperimentSpec.model_validate(data)
-    _atomic_write_text(spec_path, json.dumps(spec.model_dump(mode="json"), indent=2) + "\n")
+    atomic_write_text(spec_path, json.dumps(spec.model_dump(mode="json"), indent=2) + "\n")
 
     print(f"\nExperiment frozen: {spec.experiment_id}")
     for name, component in frozen.items():
@@ -1113,23 +1133,31 @@ def _experiment_freeze(args: argparse.Namespace) -> int:
 def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     """Record which batch answered which condition, and what was decided.
 
-    The plan is read, never written here. Recording cannot invent a condition:
-    a ``--condition`` naming something the spec does not declare is a usage
-    error, because a result that describes different arms than the plan is not
-    a result for that experiment.
+    The plan file itself is read, never written here. The first record of an
+    experiment stores a copy of the plan beside the result, and no later record
+    rewrites it. Recording again with a plan that differs from the stored one
+    is refused, because changing the plan after the numbers came in is exactly
+    what writing it first is meant to prevent.
+
+    Recording cannot invent a condition: a ``--condition`` naming something the
+    spec does not declare is a usage error, because a result that describes
+    different arms than the plan is not a result for that experiment. A batch
+    that ran another suite than the plan froze is refused for the same reason.
 
     Recording also recomputes the plan's frozen set (#195) and refuses, with
     the files listed, when anything differs. ``--allow-drift`` records anyway,
     marks the result drifted and forces its decision to review. A plan from
     schema 0.1.0 has no frozen set; it records, and the result says nothing
-    was checked.
+    was checked. Every refusal happens before anything is written.
     """
+    from trace_harness.runner.batch import BatchSummary
     from trace_harness.runner.experiment import (
         DecidedBy,
         Decision,
         ExperimentResult,
-        UnknownConditionError,
+        check_frozen_suite,
         derive_metrics,
+        load_plan,
         render_experiment_markdown,
         validate_condition_batches,
     )
@@ -1137,16 +1165,37 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
 
     spec_path, spec = _load_experiment_plan(args.experiment_path)
 
+    stored_path = store.experiment_spec_path(spec.experiment_id)
+    stored = None
+    if stored_path.is_file():
+        try:
+            stored = load_plan(store.read_experiment_spec(spec.experiment_id))
+        except ValueError as exc:
+            raise CliInputError(f"{stored_path}: {exc}") from None
+        if stored.model_dump(mode="json") != spec.model_dump(mode="json"):
+            raise CliInputError(
+                f"{stored_path} already holds a different plan for {spec.experiment_id}. "
+                "A stored plan is never rewritten: record against that plan, or give "
+                "the changed plan a new experiment_id."
+            )
+
     condition_batches: dict[str, str] = {}
     for pair in args.condition or []:
         name, _, batch_id = pair.partition("=")
         if not name or not batch_id:
             raise CliInputError(f"--condition expects name=batch_id, got {pair!r}")
+        if name in condition_batches:
+            raise CliInputError(f"--condition names {name!r} twice; each condition has one batch")
+        if batch_id in condition_batches.values():
+            raise CliInputError(
+                f"--condition gives batch {batch_id} to two conditions; each batch answers one"
+            )
         condition_batches[name] = batch_id
     try:
         validate_condition_batches(spec, condition_batches)
-    except UnknownConditionError as exc:
+    except ValueError as exc:
         raise CliInputError(str(exc)) from None
+    declared = {condition.name: condition for condition in spec.conditions}
 
     manifest = spec.frozen_manifest
     drift = _frozen_set_drift(
@@ -1158,26 +1207,41 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     )
 
     summaries = []
-    kinds = {c.name: c.kind for c in spec.conditions}
     for name, batch_id in condition_batches.items():
         try:
-            summary = store.read_batch_summary(batch_id)
+            summary = BatchSummary.model_validate(store.read_batch_summary(batch_id))
         except FileNotFoundError as exc:
             raise CliInputError(str(exc)) from None
-        # A branch batch names the condition it ran. Recording it under another
-        # name would swap the arms, and with them the two divergence rates.
-        produced_for = (summary.get("metadata") or {}).get("condition")
+        # A branch batch names the experiment and condition it ran. Recording
+        # it under another name would swap the arms, and with them the two
+        # divergence rates, and under another plan it answers a different
+        # question.
+        ran_for = summary.metadata.get("experiment_id")
+        if ran_for not in (None, spec.experiment_id):
+            raise CliInputError(
+                f"batch {batch_id} ran for experiment {ran_for!r} and cannot answer "
+                f"{spec.experiment_id!r}"
+            )
+        produced_for = summary.metadata.get("condition")
         if produced_for not in (None, name):
             raise CliInputError(
                 f"batch {batch_id} ran condition {produced_for!r} and cannot answer {name!r}"
             )
         summaries.append(summary)
+    try:
+        check_frozen_suite(
+            spec,
+            {name: s.suite_id for name, s in zip(condition_batches, summaries, strict=True)},
+        )
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from None
 
     result = ExperimentResult(
         experiment_id=spec.experiment_id,
         condition_batches=condition_batches,
         metrics=derive_metrics(
-            summaries, {batch_id: kinds[name] for name, batch_id in condition_batches.items()}
+            summaries,
+            conditions={batch: declared[name] for name, batch in condition_batches.items()},
         ),
         decision=Decision.REVIEW if drift else Decision(args.decision),
         decided_by=DecidedBy(args.decided_by),
@@ -1186,7 +1250,8 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         frozen_set_drifted=bool(drift),
         frozen_set_drift=drift,
     )
-    store.write_experiment_spec(spec.experiment_id, spec)
+    if stored is None:
+        store.write_experiment_spec(spec.experiment_id, spec)
     store.write_experiment_result(
         spec.experiment_id, result, markdown=render_experiment_markdown(spec, result)
     )
@@ -1209,6 +1274,8 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     for metric in type(result.metrics).memo_field_names():
         value = getattr(result.metrics, metric)
         _print(f"  {metric}:", "not measured" if value is None else str(value))
+    if excluded := result.metrics.extra.get("live_fixture_batches_excluded"):
+        _print("left out:", f"{excluded} fixture batch(es) from the live metrics")
     _print("written:", str(store.experiment_dir(spec.experiment_id)))
     return 0
 
@@ -1257,18 +1324,18 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     from trace_harness.runner.batch import BUDGET_UNENFORCEABLE, BudgetGuard
     from trace_harness.runner.branch import (
         admit_before_any_run,
+        check_cassette_paths,
         load_artifact,
         replay_batch,
         run_branch,
         validate_condition,
     )
-    from trace_harness.runner.experiment import ConditionKind, ExperimentSpec
+    from trace_harness.runner.experiment import ConditionKind
 
-    artifact_path, spec_path = Path(args.artifact_path), Path(args.experiment)
-    for path, what in ((artifact_path, "regression artifact"), (spec_path, "experiment plan")):
-        if not path.is_file():
-            raise CliInputError(f"{what} not found: {path}")
-    spec = ExperimentSpec.model_validate(json.loads(spec_path.read_text(encoding="utf-8")))
+    artifact_path = Path(args.artifact_path)
+    if not artifact_path.is_file():
+        raise CliInputError(f"regression artifact not found: {artifact_path}")
+    spec_path, spec = _load_experiment_plan(args.experiment)
     conditions = [c for c in spec.conditions if args.condition in (None, c.name)]
     if not conditions:
         declared = sorted(c.name for c in spec.conditions)
@@ -1276,6 +1343,9 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     artifact = load_artifact(artifact_path)
     for condition in conditions:
         validate_condition(artifact, condition)
+    # Recording never overwrites a cassette, so a collision found at a later
+    # seed would come after earlier seeds had spent.
+    check_cassette_paths(artifact, conditions)
     # The same check record runs, made before any spend: a sweep on a changed
     # evaluator would be refused at record after its money was gone.
     drift = _frozen_set_drift(
@@ -1348,21 +1418,34 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
 
 
 def _list_experiments(store: ArtifactStore) -> int:
-    """One line per experiment, replacing any hand-kept spreadsheet of them."""
+    """One line per experiment, replacing any hand-kept spreadsheet of them.
+
+    An experiment whose files do not load gets an ``unreadable`` line and its
+    error on stderr, and the rest are still listed. The exit code is 1 when any
+    was unreadable, so a script reading the list can tell.
+    """
     reader = RunReader(store)
-    specs = reader.list_experiments()
-    if not specs:
+    experiment_ids = store.list_experiments()
+    if not experiment_ids:
         print(f"no experiments found in {store.runs_dir}")
         return 0
-    for spec in specs:
-        _, result = reader.get_experiment(spec.experiment_id)
+    unreadable = 0
+    for experiment_id in experiment_ids:
+        try:
+            spec, result = reader.get_experiment(experiment_id)
+        except (OSError, ValueError) as exc:
+            unreadable += 1
+            print(f"{experiment_id}  unreadable")
+            print(f"error: {experiment_id}: {exc}", file=sys.stderr)
+            continue
         decision = (
             f"{result.decision.value}/{result.decided_by.value}" if result else "not recorded"
         )
         conditions = ", ".join(c.name for c in spec.conditions)
         print(f"{spec.experiment_id}  {decision}  [{conditions}]  {spec.hypothesis[:60]}")
-    print(f"\n{len(specs)} experiment(s) in {store.runs_dir}")
-    return 0
+    summary = f"\n{len(experiment_ids)} experiment(s) in {store.runs_dir}"
+    print(summary + (f", {unreadable} unreadable" if unreadable else ""))
+    return 1 if unreadable else 0
 
 
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
@@ -1995,7 +2078,7 @@ def main(argv: list[str] | None = None) -> int:
     p_exp_freeze.add_argument("experiment_path", help="path to the experiment plan JSON")
 
     sub.add_parser(
-        "list-experiments", parents=[common], help="list recorded experiments, oldest first"
+        "list-experiments", parents=[common], help="list recorded experiments in id order"
     )
 
     p_branch = sub.add_parser(

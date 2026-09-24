@@ -8,7 +8,9 @@ the ``live`` arm from each registered fork point.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import re
 import shutil
 import socket
 from pathlib import Path
@@ -18,11 +20,13 @@ import pytest
 from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, REPO_ROOT
 from trace_harness.cli import main
 from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID
+from trace_harness.environment.tools import support_tool_definitions
 from trace_harness.models.anthropic import ANTHROPIC_PRICING
 from trace_harness.models.base import ActionKind, AgentAction, ToolCall
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.models.fork import ForkAdapter
 from trace_harness.models.gemini import GeminiModelAdapter
+from trace_harness.regression.replay import describe_action_drift
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.batch import BatchSummary
 from trace_harness.runner.branch import post_fork_divergence, run_branch
@@ -141,7 +145,152 @@ def test_divergence_ignores_reasoning_and_counts_only_after_the_fork():
     )
     assert post_fork_divergence(recorded, [*recorded[:3], _action("x")], 2) == (4, False)
     assert post_fork_divergence(recorded, recorded[:3], 2) == (4, False)
-    assert post_fork_divergence(recorded, recorded[:2], 2) == (3, None)
+
+
+@pytest.mark.parametrize("taken", [2, 1, 0])
+def test_a_run_that_never_acted_after_the_fork_has_no_divergence_at_all(taken):
+    """Nothing after the fork to compare, so neither field claims a step."""
+    recorded = [_action("a"), _action("b"), _action("c"), _action("d")]
+    assert post_fork_divergence(recorded, recorded[:taken], 2) == (None, None)
+
+
+def _call(tool: str, **arguments) -> dict:
+    return {
+        "kind": "tool_call",
+        "tool_call": {"tool_name": tool, "arguments": arguments},
+        "final_answer": None,
+    }
+
+
+def _answer(text: str) -> dict:
+    return {"kind": "final_answer", "tool_call": None, "final_answer": text}
+
+
+CASH = {"customer_name": CUSTOMER, "refund_type": "cash"}
+
+
+@pytest.mark.parametrize(
+    ("recorded", "actual", "diverged"),
+    [
+        # Free-text arguments and answer text never count.
+        (
+            _call("issue_refund", **CASH, reason="outage"),
+            _call("issue_refund", **CASH, reason="goodwill"),
+            False,
+        ),
+        (
+            _call("create_ticket", customer_name=CUSTOMER, title="a", notes="b"),
+            _call("create_ticket", customer_name=CUSTOMER, title="c", notes="d"),
+            False,
+        ),
+        (
+            _call("escalate_case", customer_name=CUSTOMER, reason="a"),
+            _call("escalate_case", customer_name=CUSTOMER, reason="b"),
+            False,
+        ),
+        (
+            _call("search_docs", query="refund window"),
+            _call("search_docs", query="how long can I get a refund", top_k=5),
+            False,
+        ),
+        (_answer("No refund."), _answer("I cannot refund this order."), False),
+        # The tool, its structured arguments and the kind of action do.
+        (
+            _call("issue_refund", **CASH, reason="r"),
+            _call("issue_refund", customer_name=CUSTOMER, refund_type="store_credit", reason="r"),
+            True,
+        ),
+        (
+            _call("get_order", customer_name=CUSTOMER),
+            _call("get_order", customer_name="Someone Else"),
+            True,
+        ),
+        (
+            _call("search_docs", query="q"),
+            _call("search_docs", query="q", status_filter="current"),
+            True,
+        ),
+        (
+            _call("issue_refund", **CASH, reason="r"),
+            _call("escalate_case", customer_name=CUSTOMER, reason="r"),
+            True,
+        ),
+        (_answer("No refund."), _call("escalate_case", customer_name=CUSTOMER, reason="r"), True),
+        # A call the environment refuses is another action, free text included.
+        (
+            _call("issue_refund", **CASH, reason="r"),
+            _call("issue_refund", **CASH, reason="r", amount=5),
+            True,
+        ),
+        (_call("issue_refund", **CASH, reason="r"), _call("issue_refund", **CASH), True),
+        (_call("issue_refund", **CASH, amount=5), _call("issue_refund", **CASH, amount=5), False),
+        (_call("issue_refund", **CASH), _call("issue_refund", **CASH, reason="r"), True),
+        # A tool the environment does not offer compares every argument.
+        (_call("send_email", body="a"), _call("send_email", body="b"), True),
+    ],
+)
+def test_divergence_compares_the_call_and_never_free_text(recorded, actual, diverged):
+    assert post_fork_divergence([recorded], [actual], 0) == (1 if diverged else None, diverged)
+
+
+# Each support tool's free-text arguments, as docs/branch_stage.md#divergence lists them.
+FREE_TEXT = {
+    "search_docs": {"query"},
+    "get_order": set(),
+    "issue_refund": {"reason"},
+    "create_ticket": {"title", "notes"},
+    "escalate_case": {"reason"},
+}
+# The string arguments that pick something, and so are compared.
+STRUCTURED_STRINGS = {
+    "search_docs": {"status_filter"},
+    "get_order": {"customer_name"},
+    "issue_refund": {"customer_name"},
+    "create_ticket": {"customer_name"},
+    "escalate_case": {"customer_name"},
+}
+
+
+def _is_plain_string(schema: dict) -> bool:
+    options = schema.get("anyOf", [schema])
+    return any(o.get("type") == "string" and "enum" not in o for o in options)
+
+
+def test_every_string_argument_of_every_tool_is_declared_free_text_or_not():
+    """A new tool, or a new string argument, cannot join the divergence rule unclassified."""
+    tools = support_tool_definitions()
+    assert {t.name for t in tools} == set(FREE_TEXT)
+    for tool in tools:
+        properties = tool.args_model.model_json_schema()["properties"]
+        strings = {name for name, schema in properties.items() if _is_plain_string(schema)}
+        assert tool.free_text_arguments == FREE_TEXT[tool.name], tool.name
+        assert strings - tool.free_text_arguments == STRUCTURED_STRINGS[tool.name], tool.name
+
+
+def test_the_documented_free_text_list_matches_the_tools():
+    doc = (REPO_ROOT / "docs" / "branch_stage.md").read_text(encoding="utf-8")
+    for tool in support_tool_definitions():
+        (row,) = [line for line in doc.splitlines() if line.startswith(f"| `{tool.name}` |")]
+        free, compared = (set(re.findall(r"`(\w+)`", cell)) for cell in row.split("|")[2:4])
+        assert free == tool.free_text_arguments, tool.name
+        assert compared == set(tool.args_model.model_fields) - free, tool.name
+
+
+def test_a_free_text_argument_the_tool_does_not_take_fails_at_definition():
+    (tool,) = [t for t in support_tool_definitions() if t.name == "get_order"]
+    with pytest.raises(ValueError, match="names no argument of get_order"):
+        dataclasses.replace(tool, free_text_arguments=frozenset({"reason"}))
+
+
+def test_replay_drift_notes_still_compare_free_text():
+    """Only divergence narrows; replay's drift notes are unchanged, byte for byte."""
+    pinned = [_call("issue_refund", **CASH, reason="outage"), _answer("No refund.")]
+    live = [_call("issue_refund", **CASH, reason="goodwill"), _answer("Refund issued.")]
+    call = "{'tool_name': 'issue_refund', 'arguments': {'customer_name': 'Priya Shah', 'r..."
+    assert describe_action_drift(pinned, live) == [
+        f"action 1 changed (tool_call: {call} -> {call})",
+        "action 2 changed (final_answer: 'No refund.' -> 'Refund issued.')",
+    ]
 
 
 # --- acceptance criteria ---
@@ -344,6 +493,70 @@ def test_live_condition_runs_offline_from_a_cassette_and_skips_without_one(
     assert not (runs / "batches").exists()
 
 
+def test_cassette_recordings_that_would_collide_are_refused_before_any_run(
+    tmp_path, monkeypatch, capsys
+):
+    """The cassette path has no condition in it, and recording never overwrites (#159)."""
+    path, artifact = _artifact(tmp_path)
+    cassettes = tmp_path / "cassettes"
+    built: list[int | None] = []
+
+    def scripted(self, *args, **kwargs):
+        built.append(kwargs.get("seed"))
+        _ScriptedGemini.__init__(self, *args, **kwargs)
+
+    monkeypatch.setattr(GeminiModelAdapter, "__init__", scripted)
+    monkeypatch.setattr(GeminiModelAdapter, "next_action", _ScriptedGemini.next_action)
+
+    def recording(name: str, kind: str, **fields) -> dict:
+        condition = _condition(name, kind, artifact, 2, seeds=[0, 1], **fields)
+        condition["agent_config"] = {
+            "label": name,
+            "provider": "gemini",
+            "cassette": {"mode": "record", "directory": str(cassettes)},
+        }
+        return condition
+
+    live = recording("live", "live", control_ids=[REFUND_WINDOW_CONTROL_ID])
+    runs = tmp_path / "runs"
+    branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment"]
+
+    # Two conditions recording into one directory would meet at every seed.
+    spec_path, _ = _spec(tmp_path, live, recording("off", "live_no_control"), max_cost_usd=1.0)
+    capsys.readouterr()
+    assert main([*branch, str(spec_path)]) == 2
+    assert "condition 'live' seed 0 and condition 'off' seed 0 share" in capsys.readouterr().err
+    assert (built, cassettes.exists(), runs.exists()) == ([], False, False)
+
+    # A second invocation would find the first one's files.
+    spec_path, _ = _spec(tmp_path, live, max_cost_usd=1.0)
+    assert main([*branch, str(spec_path)]) == 0
+    assert built == [0, 1]
+    capsys.readouterr()
+    assert main([*branch, str(spec_path)]) == 2
+    err = capsys.readouterr().err
+    assert "condition 'live' seed 0 would record to" in err and "which already exists" in err
+    assert built == [0, 1]
+    assert len(list((runs / "batches").iterdir())) == 1
+    # A caller that skips the CLI gets the same check per condition.
+    _, spec = _spec(tmp_path, live, max_cost_usd=1.0)
+    with pytest.raises(ValueError, match="which already exists"):
+        run_branch(path, spec, spec.conditions[0], ArtifactStore(tmp_path / "direct"))
+    assert built == [0, 1]
+
+
+@pytest.mark.parametrize("missing", ["artifact", "plan"])
+def test_branch_names_a_missing_input(tmp_path, capsys, missing):
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(tmp_path, _condition("off", "live_no_control", artifact, 2))
+    gone = tmp_path / "gone.json"
+    artifact_arg, plan_arg = (gone, spec_path) if missing == "artifact" else (path, gone)
+    capsys.readouterr()
+    assert main(["branch", str(artifact_arg), "--experiment", str(plan_arg)]) == 2
+    what = "regression artifact" if missing == "artifact" else "experiment plan"
+    assert f"{what} not found: {gone}" in capsys.readouterr().err
+
+
 def test_experiment_record_fills_the_three_metrics_from_branch_batches(
     tmp_path, capsys, monkeypatch
 ):
@@ -379,12 +592,20 @@ def test_experiment_record_fills_the_three_metrics_from_branch_batches(
     assert result.metrics.first_post_fork_divergence_rate == 1.0
     assert result.metrics.noise_floor_divergence_rate == 0.0
     assert result.metrics.post_block_outcomes == {"substitute_violation": 2}
-    assert result.metrics.extra == {
+    # #155's cost coverage and per-condition counts ride beside the rate
+    # counts. The per-condition medians are timings and vary run to run.
+    extra = result.metrics.extra
+    assert {k: v for k, v in extra.items() if not k.startswith("latency_ms_p50.")} == {
+        "cost_recorded_k": 4,
+        "cost_recorded_n": 4,
+        "verified_failure_count.live": 2,
+        "verified_failure_count.live_no_control": 2,
         "first_post_fork_divergence_k": 2,
         "first_post_fork_divergence_n": 2,
         "noise_floor_divergence_k": 0,
         "noise_floor_divergence_n": 2,
     }
+    assert {"latency_ms_p50.live", "latency_ms_p50.live_no_control"} <= set(extra)
 
     swapped = [
         pairs[0],
@@ -394,6 +615,29 @@ def test_experiment_record_fills_the_three_metrics_from_branch_batches(
     ]
     assert main(["--runs-dir", str(runs), "experiment", "record", str(spec_path), *swapped]) == 2
     assert "cannot answer" in capsys.readouterr().err
+
+
+def test_record_refuses_a_batch_another_experiment_ran(tmp_path, capsys):
+    """Same condition name, other plan: the batch answers the experiment it ran for."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, spec = _spec(tmp_path, _condition("off", "live_no_control", artifact, 2, seeds=[0]))
+    runs = tmp_path / "runs"
+    assert main(["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]) == 0
+    (batch,) = (runs / "batches").iterdir()
+    other = tmp_path / "other.json"
+    other.write_text(
+        spec.model_copy(update={"experiment_id": "exp_other"}).model_dump_json(), encoding="utf-8"
+    )
+    record = ["--runs-dir", str(runs), "experiment", "record"]
+    capsys.readouterr()
+
+    assert main([*record, str(other), "--condition", f"off={batch.name}"]) == 2
+    assert (
+        f"batch {batch.name} ran for experiment 'exp_branch_test' and cannot answer 'exp_other'"
+        in capsys.readouterr().err
+    )
+    assert not (runs / "experiments").exists()
+    assert main([*record, str(spec_path), "--condition", f"off={batch.name}"]) == 0
 
 
 def test_a_frozen_plan_records_after_branch_and_refuses_an_evaluator_edit(
@@ -502,7 +746,15 @@ def test_a_bad_condition_fails_before_anything_runs(tmp_path, capsys, change, me
     path, artifact = _artifact(tmp_path)
     condition = _condition("live", "live", artifact, change.get("start_step", 2))
     fields = {key: value for key, value in change.items() if key != "start_step"}
-    spec_path, _ = _spec(tmp_path, {**condition, **fields})
+    if "control_ids" in fields:
+        # An unknown control id fails when the plan loads (#155), so this plan
+        # file is written as JSON without going through the model.
+        spec_path, _ = _spec(tmp_path, condition)
+        data = json.loads(spec_path.read_text(encoding="utf-8"))
+        data["conditions"][0].update(fields)
+        spec_path.write_text(json.dumps(data), encoding="utf-8")
+    else:
+        spec_path, _ = _spec(tmp_path, {**condition, **fields})
     runs = tmp_path / "runs"
     capsys.readouterr()
     assert main(["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]) == 2
@@ -529,6 +781,26 @@ def test_branch_refuses_an_outside_agent_before_any_run(tmp_path, capsys):
     assert not runs.exists()
 
 
+def test_a_start_the_agent_would_never_act_after_fails_before_anything_runs(tmp_path, capsys):
+    """A run ending at or before the fork has nothing to compare, so the rate would drop it."""
+    path, artifact = _artifact(tmp_path)
+    script = _script(tmp_path, STORE_CREDIT)
+    at_the_answer = _condition("answer", "live", artifact, 3, continuation_script=script)
+    out_of_steps = _condition("short", "live", artifact, 2, continuation_script=script)
+    out_of_steps["agent_config"]["max_steps"] = 2
+    for condition, message in (
+        (at_the_answer, "starts at step 3, where the recording gives its final answer"),
+        (out_of_steps, "max_steps 2 ends the run by step 2"),
+    ):
+        spec_path, _ = _spec(tmp_path, condition)
+        runs = tmp_path / "runs"
+        capsys.readouterr()
+        branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]
+        assert main(branch) == 2
+        assert message in capsys.readouterr().err
+        assert not runs.exists()
+
+
 @pytest.mark.parametrize("version", ["0.2.0", "0.3.0"])
 def test_batch_summaries_written_before_the_branch_stage_still_load(version):
     """The retained summary is 0.2.0; 0.3.0 is the same with #196's budget block."""
@@ -548,9 +820,11 @@ def test_batch_summaries_written_before_the_branch_stage_still_load(version):
 
 # --- the experiment budget (#196) ---
 
-# 10k input and 10k output tokens on claude-sonnet-5 is $0.18 a run.
+# 10k input and 10k output tokens on claude-sonnet-5, priced from the table the
+# guard reads, so a price correction in models/anthropic.py moves both sides.
 USAGE = {"input_tokens": 10_000, "output_tokens": 10_000}
-RUN_COST = (10_000 * 3.0 + 10_000 * 15.0) / 1_000_000
+_INPUT_PRICE, _OUTPUT_PRICE = ANTHROPIC_PRICING["claude-sonnet-5"]
+RUN_COST = (10_000 * _INPUT_PRICE + 10_000 * _OUTPUT_PRICE) / 1_000_000
 
 
 class _PricedClaude:
@@ -715,6 +989,159 @@ def test_a_live_seed_with_no_recorded_cost_stops_the_condition(
     assert batches["live"].budget.stop_reason == "budget_unenforceable"
     assert entry.run_id in batches["live"].budget.detail
     assert [c.seed for c in batches["live"].budget.not_run] == [1, 2]
+
+
+def test_a_seed_the_provider_cannot_send_is_marked_unsent(tmp_path, live_models):
+    """Anthropic has no seed parameter, so a branch run says its seed was never sent (#160)."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(
+        tmp_path,
+        _claude("live", "live", artifact, control_ids=[REFUND_WINDOW_CONTROL_ID]),
+        _condition("recorded", "live_no_control", artifact, 2, seeds=[0]),
+        max_cost_usd=5.0,
+    )
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 0
+    store = ArtifactStore(tmp_path / "runs")
+    live = [store.read_json(e.run_id, names.RUN_CONFIG) for e in batches["live"].entries]
+    assert [(c["seed"], c["metadata"].get("seed_sent")) for c in live] == [
+        (0, False),
+        (1, False),
+        (2, False),
+    ]
+    # The fixture provider plays a recording and is not marked either way.
+    (recorded,) = batches["recorded"].entries
+    assert "seed_sent" not in store.read_json(recorded.run_id, names.RUN_CONFIG)["metadata"]
+
+
+def _break(monkeypatch, name: str) -> None:
+    def broken(*args, **kwargs):
+        raise RuntimeError(f"{name} broke")
+
+    monkeypatch.setattr(f"trace_harness.runner.branch.{name}", broken)
+
+
+def test_a_seed_that_fails_after_its_run_is_still_charged(tmp_path, live_models, monkeypatch):
+    """The run called the provider, so its cost counts even when scoring it raised."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(tmp_path, _claude("live", "live", artifact), max_cost_usd=0.01)
+    _break(monkeypatch, "classify_post_block_outcome")
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 0
+    live = batches["live"]
+    (entry,) = live.entries
+    assert (entry.status, entry.seed, entry.condition) == ("setup_error", 0, "live")
+    assert entry.run_id is not None and (tmp_path / "runs" / entry.run_id).is_dir()
+    assert entry.error == "RuntimeError: classify_post_block_outcome broke"
+    assert (entry.model, entry.cost_usd) == ("claude-sonnet-5", pytest.approx(RUN_COST))
+    assert live.budget.spent_usd == pytest.approx(RUN_COST)
+    assert live.budget.stop_reason == "budget_exhausted"
+    assert [c.seed for c in live.budget.not_run] == [1, 2]
+
+
+def test_a_seed_whose_runner_raises_after_the_call_is_priced_from_its_trace(
+    tmp_path, live_models, monkeypatch
+):
+    """run_result.json could not be written, so the runner raised after the call.
+
+    The seed is priced the way a run-suite cell is (#196): the trace it left
+    carries the billed response, and the guard charges it.
+    """
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(tmp_path, _claude("live", "live", artifact), max_cost_usd=0.01)
+    real_write = ArtifactStore.write_json
+
+    def write_json(self, run_id, name, payload):
+        if name == names.RUN_RESULT:
+            raise OSError("disk full")
+        return real_write(self, run_id, name, payload)
+
+    monkeypatch.setattr(ArtifactStore, "write_json", write_json)
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 0
+    live = batches["live"]
+    (entry,) = live.entries
+    assert (entry.status, entry.error) == ("setup_error", "OSError: disk full")
+    assert entry.run_id is not None
+    assert entry.cost_usd == pytest.approx(RUN_COST)
+    assert live.budget.stop_reason == "budget_exhausted"
+    assert [c.seed for c in live.budget.not_run] == [1, 2]
+
+
+def test_a_seed_whose_cost_cannot_be_read_after_its_run_stops_the_guard(
+    tmp_path, live_models, monkeypatch
+):
+    """Unknown spend is never counted as zero, even on the error path."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(tmp_path, _claude("live", "live", artifact), max_cost_usd=5.0)
+    store = ArtifactStore(tmp_path / "runs")
+
+    def lose_the_trace(_store, run, _task):
+        store.trace_path(run.run_id).unlink()
+        raise RuntimeError("the trace is gone")
+
+    monkeypatch.setattr("trace_harness.runner.branch.verify_run", lose_the_trace)
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 2
+    (entry,) = batches["live"].entries
+    assert entry.run_id is not None and entry.cost_usd is None
+    assert batches["live"].budget.stop_reason == "budget_unenforceable"
+    assert entry.run_id in batches["live"].budget.detail
+
+
+def _record(tmp_path: Path, spec_path: Path, batches: dict[str, BatchSummary]) -> list[str]:
+    pairs = [arg for n, b in batches.items() for arg in ("--condition", f"{n}={b.batch_id}")]
+    return ["--runs-dir", str(tmp_path / "runs"), "experiment", "record", str(spec_path), *pairs]
+
+
+def test_record_reads_the_live_metrics_from_one_real_model(tmp_path, capsys, live_models):
+    """Two models are refused; a fixture batch beside one model is left out (#159)."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, spec = _spec(
+        tmp_path,
+        _claude("live", "live", artifact, control_ids=[REFUND_WINDOW_CONTROL_ID]),
+        _claude("live_no_control", "live_no_control", artifact, model="claude-haiku-4-5-20251001"),
+        _condition("check", "live", artifact, 2, control_ids=[REFUND_WINDOW_CONTROL_ID], seeds=[0]),
+        max_cost_usd=5.0,
+    )
+    code, batches = _branch(tmp_path, path, spec_path)
+    assert code == 0
+    capsys.readouterr()
+
+    two_models = {n: batches[n] for n in ("live", "live_no_control")}
+    assert main(_record(tmp_path, spec_path, two_models)) == 2
+    assert (
+        "ran more than one model (anthropic claude-haiku-4-5-20251001, anthropic claude-sonnet-5)"
+        in capsys.readouterr().err
+    )
+    assert not (tmp_path / "runs" / "experiments").exists()
+
+    beside_a_check = {n: batches[n] for n in ("live", "check")}
+    assert main(_record(tmp_path, spec_path, beside_a_check)) == 0
+    assert "1 fixture batch(es) from the live metrics" in capsys.readouterr().out
+    result = ExperimentResult.model_validate(
+        ArtifactStore(tmp_path / "runs").read_experiment_result(spec.experiment_id)
+    )
+    # Claude answers where the recording answered, in other words: no divergence.
+    assert result.metrics.first_post_fork_divergence_rate == 0.0
+    extra = result.metrics.extra
+    assert {k: v for k, v in extra.items() if not k.startswith("latency_ms_p50.")} == {
+        "cost_recorded_k": 4,
+        "cost_recorded_n": 4,
+        "verified_failure_count.check": 0,
+        "verified_failure_count.live": 0,
+        "first_post_fork_divergence_k": 0,
+        "first_post_fork_divergence_n": 3,
+        "live_fixture_batches_excluded": 1,
+    }
 
 
 # --- brief 001 harness check ---

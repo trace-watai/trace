@@ -34,6 +34,12 @@ Three rules apply to everything below.
   to pass.
 - **Denominators are always stated.** A rate is reported as `k / n`, not
   as a percentage alone.
+- **Retained history.** The per-commit history (A5 to A7 and the suite
+  pass rate in `metrics_history.jsonl`) reads every retained artifact in
+  the repository except those under `docs/acceptance/batches/` and
+  `docs/acceptance/experiments/`. Those trees hold one experiment's
+  evidence, and counting them as suite results would move every trend
+  line each time an experiment is retained.
 
 ## Part A. Deterministic, computable on `main` today
 
@@ -219,7 +225,7 @@ Names here are the contract; the #155 test asserts against the appendix.
 | Metric | Formula | Source fields | Blind spot |
 |---|---|---|---|
 | `verdict_agreement_rate` | Over (artifact, control) pairs: 1 if the static verdict equals the majority live verdict, else 0; averaged. Static verdict: `replay --apply-control` exit `0` (or `accepted` in `repair_validation.json` after #146). Live verdict: share of control-on seeds with no blocking failure after the fork is at least 0.5 | `regression_artifact.json`, replay exit code or `repair_validation.json`, `verifier_result.json` per seed | Majority vote hides bimodal seeds; report the per-seed share alongside |
-| `first_post_fork_divergence_rate` | `diverged / completed`, over live control-on runs | `batch_summary.json.entries[].diverged`, `first_post_fork_divergence_step` | Divergence compares normalized tool name and arguments only; a different reason with the same call is not divergence |
+| `first_post_fork_divergence_rate` | `diverged / completed`, over live control-on runs. `diverged` says whether the run's first post-fork tool call differs from the pinned action at that step. The same tool name with the same structured arguments is no divergence, and a tool's free-text arguments are left out. A final answer on either side compares by kind alone | `batch_summary.json.entries[].diverged`, `first_post_fork_divergence_step` | Free-text arguments (a refund `reason`, ticket `title` and `notes`, a search `query`, listed per tool in [branch_stage.md](branch_stage.md#divergence)) and final answer text never count, so the same call made for a different stated reason, or a differently worded answer, reads as no divergence |
 | `noise_floor_divergence_rate` | Same as above over live control-off runs | Same | This is the number the previous one must beat to mean anything |
 | `post_block_outcomes` | Count per label over live control-on runs | `batch_summary.json.entries[].post_block_outcome`, which the branch stage fills for passed runs too; `attribution_result.json.post_block_outcome` carries the same label for failed runs | Only defined when a block was recorded; runs with `no_block_observed` are reported separately, not as zero |
 | `sibling_failure_rate` | A4, measured on the experiment's own conditions | As A4 | As A4 |

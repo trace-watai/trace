@@ -17,9 +17,10 @@ export const TRACE_SCHEMA_VERSION = "0.5.0";
 
 /**
  * Every kind of event a run may emit (mirrors the backend `TraceEventType`
- * StrEnum). MVP runs emit a subset: the fixture adapter produces no separate
- * `model_response`, which is reserved for real provider adapters whose raw
- * response differs from the normalized action.
+ * StrEnum). MVP runs emit a subset. The fixture adapter produces no separate
+ * `model_response`. That type is for real provider adapters, whose raw
+ * response differs from the normalized action, and for outside agents
+ * (provider `external`), whose forwarded responses it records (#210).
  */
 export const TRACE_EVENT_TYPES = [
   "run_started",
@@ -75,11 +76,17 @@ export interface RawFailedAttempt {
 
 /**
  * How the live call policy obtained a response or gave up (#196), mirroring
- * `CallRecord` in `src/trace_harness/models/policy.py`.
+ * `CallRecord` in `src/trace_harness/models/policy.py`. `abandoned` means the
+ * runner's timeout ended the call with an attempt still in flight.
  */
 export interface RawCallRecord {
   attempts: number;
-  outcome: "ok" | "permanent_error" | "retries_exhausted" | "deadline";
+  outcome:
+    | "ok"
+    | "permanent_error"
+    | "retries_exhausted"
+    | "deadline"
+    | "abandoned";
   rate_limit_wait_seconds: number;
   failures: RawFailedAttempt[];
 }
@@ -165,7 +172,11 @@ export interface RawErrorPayload {
   error: string;
   kind: string;
   traceback?: string | null;
-  /** On a `model_error` from a live call: the attempts made before giving up. */
+  /**
+   * From a live call: on a `model_error`, the attempts made before the policy
+   * gave up; on a `model_timeout`, the attempts made before the runner
+   * abandoned the call.
+   */
   call_record?: RawCallRecord | null;
 }
 
