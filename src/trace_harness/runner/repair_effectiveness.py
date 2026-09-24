@@ -13,10 +13,20 @@ deciding whether to keep a control.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from collections.abc import Mapping
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+if TYPE_CHECKING:
+    from trace_harness.tracing.artifact_store import ArtifactStore
 
 REPAIR_EFFECTIVENESS_SCHEMA_VERSION = "0.1.0"
 REPAIR_EFFECTIVENESS_FILE = "repair_effectiveness.json"
+#: The memo's blind spot for B1: with fewer completed runs a side's rate is noise.
+#: It matches pre-registration 001's pair rule (``MIN_COMPLETED_SEEDS``).
+MIN_COMPLETED_RUNS = 5
 
 
 class ConditionViolations(BaseModel):
@@ -33,6 +43,16 @@ class ConditionViolations(BaseModel):
     blocking_failures_after_fork: int = Field(ge=0)
     completed_runs: int = Field(ge=0)
 
+    @model_validator(mode="after")
+    def _failures_within_completed_runs(self) -> ConditionViolations:
+        # Each completed run counts at most once, so a larger count is a bug upstream.
+        if self.blocking_failures_after_fork > self.completed_runs:
+            raise ValueError(
+                f"{self.condition}: {self.blocking_failures_after_fork} blocking failure(s) "
+                f"after the fork over {self.completed_runs} completed run(s); a run counts once"
+            )
+        return self
+
     @property
     def violation_rate(self) -> float | None:
         if self.completed_runs == 0:
@@ -41,7 +61,11 @@ class ConditionViolations(BaseModel):
 
 
 class RepairEffectivenessEntry(BaseModel):
-    """B1 for one starting point, one control and one live model."""
+    """B1 for one starting point, one control and one live model.
+
+    ``arm`` is the kind of the control-on condition, ``live`` or
+    ``live_swapped``, since two arms can share a model and are never pooled.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -49,6 +73,7 @@ class RepairEffectivenessEntry(BaseModel):
     control_id: str
     fork_step: int
     model: str | None = None
+    arm: str | None = None
     control_on: ConditionViolations
     control_off: ConditionViolations
     repair_effectiveness: float | None = None
@@ -71,14 +96,95 @@ def repair_effectiveness(
     """``1 - violation_rate(on) / violation_rate(off)``, or null with a reason.
 
     The control-off condition is the baseline. Without completed runs on both
-    sides, or with a baseline that never violated, the ratio has no meaning,
-    and a number would read as a measurement nobody took.
+    sides, with fewer than :data:`MIN_COMPLETED_RUNS` on either, or with a
+    baseline that never violated, the ratio has no meaning, and a number would
+    read as a measurement nobody took.
     """
     on, off = control_on.violation_rate, control_off.violation_rate
     if on is None:
         return None, f"no completed runs under {control_on.condition}"
     if off is None:
         return None, f"no completed runs under {control_off.condition}"
+    for side in (control_on, control_off):
+        if side.completed_runs < MIN_COMPLETED_RUNS:
+            return None, (
+                f"only {side.completed_runs} completed run(s) under {side.condition}, "
+                f"fewer than {MIN_COMPLETED_RUNS}"
+            )
     if off == 0:
         return None, f"the baseline {control_off.condition} recorded no blocking failure"
     return 1 - on / off, None
+
+
+def build_repair_effectiveness(
+    experiment_id: str, batches: list[Any], verdicts: Mapping[str, Any]
+) -> RepairEffectivenessReport:
+    """B1 for every control-on arm, artifact, control and model the experiment ran live.
+
+    ``batches`` are :class:`~trace_harness.runner.verdict_agreement.RecordedBatch`
+    items and ``verdicts`` maps a run id to its verifier result. Static replay
+    never enters. The control-off side is the ``live_no_control`` runs of the
+    same artifact, fork step and model; when there are none, that side has no
+    completed runs and the formula returns null with its reason. Each arm gets
+    its own entry, so a model that answers two arms is never pooled.
+    """
+    from trace_harness.runner.experiment import ConditionKind
+    from trace_harness.runner.verdict_agreement import CONTROL_ON_KINDS, model_key
+
+    on_groups: dict[tuple[str, str, str, int, str], list[tuple[Any, list[Any]]]] = {}
+    off_groups: dict[tuple[str, int, str], list[tuple[Any, list[Any]]]] = {}
+    for batch in batches:
+        if batch.source_run_id is None:
+            continue
+        by_model: dict[str, list[Any]] = {}
+        for entry in batch.summary.entries:
+            by_model.setdefault(model_key(entry), []).append(entry)
+        for model, entries in by_model.items():
+            if batch.kind in CONTROL_ON_KINDS and batch.control:
+                key = (batch.kind.value, batch.source_run_id, batch.control, batch.fork_step, model)
+                on_groups.setdefault(key, []).append((batch, entries))
+            elif batch.kind is ConditionKind.LIVE_NO_CONTROL and not batch.control:
+                off_key = (batch.source_run_id, batch.fork_step, model)
+                off_groups.setdefault(off_key, []).append((batch, entries))
+
+    report_entries = []
+    for (arm, artifact, control, fork_step, model), on_runs in sorted(on_groups.items()):
+        off_runs = off_groups.get((artifact, fork_step, model), [])
+        control_on = _violations(on_runs, verdicts, fork_step, "live")
+        control_off = _violations(off_runs, verdicts, fork_step, "live_no_control")
+        value, reason = repair_effectiveness(control_on, control_off)
+        report_entries.append(
+            RepairEffectivenessEntry(
+                artifact_id=artifact,
+                control_id=control,
+                fork_step=fork_step,
+                model=model,
+                arm=arm,
+                control_on=control_on,
+                control_off=control_off,
+                repair_effectiveness=value,
+                null_reason=reason,
+            )
+        )
+    return RepairEffectivenessReport(experiment_id=experiment_id, entries=report_entries)
+
+
+def _violations(
+    runs: list[tuple[Any, list[Any]]], verdicts: Mapping[str, Any], fork_step: int, kind: str
+) -> ConditionViolations:
+    """Blocking failures after the fork over completed runs, across one side's batches."""
+    from trace_harness.runner.verdict_agreement import blocking_after_fork, judged
+
+    completed = [v for _, entries in runs for e in entries if (v := judged(e, verdicts))]
+    names = sorted({batch.condition.name for batch, _ in runs})
+    return ConditionViolations(
+        condition="+".join(names) or kind,
+        batch_id=runs[0][0].summary.batch_id if len(runs) == 1 else None,
+        blocking_failures_after_fork=sum(1 for v in completed if blocking_after_fork(v, fork_step)),
+        completed_runs=len(completed),
+    )
+
+
+def write_repair_effectiveness(store: ArtifactStore, report: RepairEffectivenessReport) -> Path:
+    """Write the sidecar beside ``result.json``, atomically, as every artifact is written."""
+    return store.write_experiment_file(report.experiment_id, REPAIR_EFFECTIVENESS_FILE, report)

@@ -39,8 +39,11 @@ class TargetAgent(Protocol):
 - `on_model_response(raw, reasoning=None)` forwards one model response. Call it
   once per response, before acting on it. `raw` is a JSON object describing
   the response and `reasoning` is any text the model gave for its decision.
-  The harness stores `raw` in `trace.jsonl` as given, so leave out anything you
-  would not want written to a file.
+  The harness writes `raw` to `trace.jsonl` as a JSON round trip, so leave out
+  anything you would not want written to a file. A value JSON cannot hold is
+  stored as its string form, a `raw` that is not a dict is stored as
+  `{"response": raw}`, and when several responses arrive before one move they
+  are stored together as `{"responses": [...]}`.
 - Return the final answer to the customer as a string.
 - `name` becomes the run's `model` label in `run_config.json` and the run
   index, so make it say what ran, for example `my-graph:gpt-5`.
@@ -79,7 +82,8 @@ Suite manifests that name an outside agent are Suite 0.4.0.
 `--max-steps` and `--timeout` apply as usual. `--script`, `--cassette-mode`,
 `--temperature`, and `--seed` are refused with `--agent`, because the outside
 agent owns its model and the harness would be recording settings it never
-applied.
+applied. A suite agent config with `provider: external` refuses `cassette`,
+`call_policy`, `temperature`, and `seed` for the same reason.
 
 ## What the harness guarantees
 
@@ -90,10 +94,16 @@ agents.
 - **Steps.** Each `call_tool` is one step and the final answer is one more,
   numbered from 1. Every event a step causes carries its step id, which is what
   verifier checks and attribution point at.
-- **Validation.** A call to an unknown tool or with arguments that do not match
-  the schema is recorded as `tool_call_validated` with `valid: false` and is
-  never executed. Your agent gets the validation error as the observation and
-  can recover.
+- **Validation.** A `call_tool` that names an unknown tool, or whose arguments
+  do not match the schema, is recorded as `tool_call_validated` with
+  `valid: false` and is never executed. Your agent gets the validation error as
+  the observation and can recover. A framework may catch an unknown tool name
+  before it ever reaches `call_tool`, and then the harness records no tool call
+  for it. Under the reference agents, LangGraph's `ToolNode` answers the model
+  with its own error and the graph goes on, and the Agents SDK raises
+  `ModelBehaviorError`, which ends the run as `model_error`. Either way the
+  forwarded model response that named the tool is still in the trace.
+  Arguments that miss the schema reach the harness under both.
 - **Controls.** Controls installed through `install_control` run at the
   pre-call seam before any handler. A blocked call returns `status: error` with
   the control's message, and the trace records the control id as `blocked_by`
@@ -110,7 +120,8 @@ agents.
 - **Failures.** An exception out of `run` ends the run as `model_error` with the
   exception type and message in the trace. So does returning something other
   than a string. A `ScriptExhaustedError` from a scripted model keeps its own
-  `script_exhausted` reason.
+  `script_exhausted` reason. Model responses forwarded before the exception
+  are recorded as a `model_response` at that step, ahead of the `error` event.
 - **Regressions.** Every move is recorded as a `model_action`, so a failure's
   regression artifact pins your agent's moves and `trace-harness replay`
   reproduces the failure offline without your agent installed.
@@ -121,7 +132,8 @@ The callback is optional, and leaving it out changes what attribution can say.
 
 With it wired, every forwarded response becomes a `model_response` event at the
 step of the move that followed it, and its `reasoning` lands on that step's
-`model_action`. Attribution can then find a root cause the agent stated in its
+`model_action`. A response followed by an exception instead of a move is
+recorded at the step the exception ended. Attribution can then find a root cause the agent stated in its
 own words, such as committing to a deprecated policy document, and the verifier
 can see those citations too.
 
@@ -187,7 +199,14 @@ Each reference module has two factories.
   drifts from it, for example because a control blocked a call the recording
   saw succeed, stops with a request mismatch at the next step.
 - `:scripted_agent` plays the task's fixture script directly and ignores what
-  the model is sent. It works for every task, with or without controls.
+  the model is sent. The script is the one the task's `metadata.fixture_script`
+  names, the same file the fixture provider plays, found by task id under
+  `fixtures/tasks/`. It works for every task, with or without controls.
+
+Both factories find the committed cassettes and task fixtures from where the
+package sits in the repository, so they run the same from any working
+directory. They need the source checkout (an editable install), since the
+fixtures are not part of the package.
 
 The cassettes use the harness model cassette format described in
 `fixtures/cassettes/README.md`, and `scripts/record_reference_cassettes.py`
@@ -236,9 +255,18 @@ trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \
   --agent trace_harness.agents.openai_agents_ref:agent
 ```
 
+The extra names `openai>=3,<4` beside the SDK, because the reference imports
+openai's response types directly and openai-agents 0.22 requires openai 3. The
+`openai` extra takes the same range since #160, so every extra installs
+together, and a test checks the ranges in `pyproject.toml` still allow it.
+
 `openai_agents_ref.py` builds an SDK `Agent` with the task's tools and runs it
-with `Runner.run_sync`, so the loop, the turn limit, and tool dispatch are the
-SDK's own. Any SDK agent connects to the harness with the same three pieces.
+with `Runner.run` under `asyncio.run`, so the loop, the turn limit, and tool
+dispatch are the SDK's own. `Runner.run_sync` would leave its event loop open on
+the agent's thread, and with it the executor threads the tools call `call_tool`
+from, until garbage collection. `asyncio.run` closes the loop and joins them
+before the run returns. Any SDK agent connects to the harness with the same
+three pieces.
 
 - `harness_tools(tools, call_tool)` returns `FunctionTool` objects whose body
   is the harness callback. The schemas are not made strict and arguments are
@@ -254,10 +282,12 @@ the answer. Pass `RunConfig(tracing_disabled=True)` unless you want the SDK to
 export its own traces. The reference agent always passes it, and its tests
 check that no SDK trace is started.
 
-The reference model does not carry opaque provider state such as a Gemini
-thought signature through the SDK's items, so recording a model that needs its
-state echoed back would need that added first. The LangGraph reference carries
-it.
+The reference model carries opaque provider state, such as a Gemini thought
+signature or Anthropic's tool-use id and thinking blocks, through the SDK's
+items. `output_items` keeps it in the turn's reasoning item, in the
+`encrypted_content` field the SDK replays unchanged, and `transcript_of` puts
+it back on the harness turn for the next request. The LangGraph reference
+carries it in the message's `additional_kwargs`.
 
 ## Out of scope
 

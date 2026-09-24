@@ -59,8 +59,9 @@ def material_action(action: dict[str, Any]) -> dict[str, Any]:
     """The fields of a recorded action that decide what the agent *does*.
 
     ``reasoning`` and provider state are left out, so two actions that differ
-    only in narration compare equal. Drift notes and the branch stage's
-    divergence (#159) both compare actions through this.
+    only in narration compare equal. Drift notes compare actions through this.
+    The branch stage's divergence (#159) compares less, see
+    ``runner/branch.py``'s ``compared_action``.
     """
     return {
         "kind": action.get("kind"),

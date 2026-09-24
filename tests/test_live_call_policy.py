@@ -13,6 +13,8 @@ import json
 import random
 import socket
 import sys
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,7 +23,9 @@ from typing import Any
 import pytest
 
 from conftest import VALID_TASK_PATH
-from trace_harness.models.anthropic import AnthropicModelAdapter
+from fake_provider_sdk import install_anthropic, install_openai
+from trace_harness.models import resolve_call_policy
+from trace_harness.models.anthropic import ANTHROPIC_PRICING, AnthropicModelAdapter
 from trace_harness.models.anthropic import classify_error as anthropic_classify
 from trace_harness.models.base import (
     ActionKind,
@@ -150,7 +154,23 @@ class ConnectError(NetworkError):
     pass
 
 
-class RemoteProtocolError(TransportError):
+class ProtocolError(TransportError):
+    pass
+
+
+class RemoteProtocolError(ProtocolError):
+    pass
+
+
+class LocalProtocolError(ProtocolError):
+    pass
+
+
+class ProxyError(TransportError):
+    pass
+
+
+class UnsupportedProtocol(TransportError):
     pass
 
 
@@ -246,7 +266,12 @@ def test_transient_errors_are_retried(error: Exception) -> None:
 
 @pytest.mark.parametrize(
     "error",
-    [ReadTimeout("read"), ConnectError("refused"), RemoteProtocolError("dropped")],
+    [
+        ReadTimeout("read"),
+        ConnectError("refused"),
+        RemoteProtocolError("dropped"),
+        ProxyError("proxy refused the tunnel"),
+    ],
     ids=lambda e: type(e).__name__,
 )
 def test_httpx_transport_errors_gemini_lets_through_are_retried(error: Exception) -> None:
@@ -255,6 +280,45 @@ def test_httpx_transport_errors_gemini_lets_through_are_retried(error: Exception
     _, record = live.call(fn, gemini_classify)
     assert len(calls) == 2
     assert record.failures[0].error_class == type(error).__name__
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LocalProtocolError("Illegal header value"),
+        UnsupportedProtocol("Request URL is missing an 'http://' or 'https://' protocol."),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_httpx_errors_a_resend_cannot_fix_are_one_attempt_and_a_model_error(
+    error: Exception,
+) -> None:
+    """Gemini lets these through unwrapped. They are the provider call
+    failing, so they end as a model error with a record, never retried and
+    never mistaken for a harness bug."""
+    live, clock = caller(provider="gemini")
+    fn, calls = scripted(error, "never reached")
+    with pytest.raises(ProviderCallError) as caught:
+        live.call(fn, gemini_classify)
+    assert len(calls) == 1
+    assert clock.sleeps == []
+    assert caught.value.call_record["outcome"] == "permanent_error"
+    assert caught.value.call_record["failures"][0]["error_class"] == type(error).__name__
+
+
+def test_a_wrapped_local_protocol_error_is_permanent_for_every_provider() -> None:
+    """Anthropic and OpenAI raise their connection error from the httpx one,
+    so the cause decides, and a plain wrapped connection failure still retries."""
+
+    def wrapped(cause: Exception) -> APIConnectionError:
+        try:
+            raise APIConnectionError("Connection error.") from cause
+        except APIConnectionError as exc:
+            return exc
+
+    assert anthropic_classify(wrapped(LocalProtocolError("bad header"))).transient is False
+    assert anthropic_classify(wrapped(ConnectError("refused"))).transient is True
+    assert anthropic_classify(wrapped(ProxyError("proxy down"))).transient is True
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422, 501])
@@ -513,11 +577,83 @@ def test_adapters_share_one_process_wide_limiter_by_default() -> None:
     assert limiters == {id(SHARED_RATE_LIMITER)}
 
 
+class _SlowDict(dict):
+    """Widens the gap between reading a provider's last slot and claiming the next."""
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        value = super().get(key, default)
+        time.sleep(0.001)
+        return value
+
+
+def test_the_rate_limiter_hands_out_distinct_slots_across_threads() -> None:
+    """Eight threads claim slots at once. The lock keeps any two from reading
+    the same last slot, so every slot is one full spacing after another."""
+    limiter = RateLimiter()
+    limiter._last_start = _SlowDict()
+    barrier = threading.Barrier(8)
+    waits: list[float] = []
+
+    def claim() -> None:
+        barrier.wait()
+        for _ in range(5):
+            waits.append(limiter.reserve("gemini", 60.0, now=0.0, deadline=None))
+
+    threads = [threading.Thread(target=claim) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(waits) == [float(slot) for slot in range(40)]
+
+
 def test_default_policies_pace_each_provider() -> None:
     for provider in ("gemini", "anthropic", "openai"):
         policy = default_call_policy(provider)
         assert policy.requests_per_minute is not None and policy.requests_per_minute > 0
         assert policy.max_attempts > 1
+
+
+def test_an_override_keeps_every_field_it_leaves_out_from_the_provider_default() -> None:
+    """A suite that only raises max_attempts must not switch pacing off."""
+    policy = resolve_call_policy("gemini", CallPolicy(max_attempts=3))
+    assert policy.max_attempts == 3
+    assert policy.requests_per_minute == default_call_policy("gemini").requests_per_minute
+    # Loaded from a suite file, the same.
+    suite = SuiteSpec.model_validate(
+        {
+            "suite_id": "override",
+            "tasks": [str(VALID_TASK_PATH)],
+            "agent_configs": [
+                {
+                    "label": "claude",
+                    "provider": "anthropic",
+                    "call_policy": {"max_attempts": 2, "jitter": False},
+                }
+            ],
+        }
+    )
+    loaded = resolve_call_policy("anthropic", suite.agent_configs[0].call_policy)
+    assert (loaded.max_attempts, loaded.jitter, loaded.requests_per_minute) == (2, False, 50.0)
+    # Named explicitly, even as null, the override wins.
+    assert (
+        resolve_call_policy("gemini", CallPolicy(requests_per_minute=None)).requests_per_minute
+        is None
+    )
+    # An adapter built directly merges the same way.
+    adapter = OpenAIModelAdapter(api_key="k", call_policy=CallPolicy(max_attempts=2))
+    assert adapter.call_policy.requests_per_minute == 500.0
+
+
+@pytest.mark.parametrize("build", [AnthropicModelAdapter, OpenAIModelAdapter, GeminiModelAdapter])
+def test_an_adapter_seeds_its_jitter_with_the_runs_seed(build) -> None:
+    seeded = build(api_key="k", seed=7)
+    assert seeded._caller._rng.random() == random.Random(7).random()
+    again = build(api_key="k", seed=7)
+    assert again._caller._rng.random() == random.Random(7).random()
+    # Without a seed each adapter gets a generator of its own.
+    first, second = build(api_key="k"), build(api_key="k")
+    assert first._caller._rng is not second._caller._rng
 
 
 # --- the three adapters, with fake clients and no SDK ------------------------
@@ -527,6 +663,19 @@ TRANSCRIPT = [
     Message(role=MessageRole.USER, content="Refund me."),
 ]
 TOOLS = [ToolSpec(name="get_order", description="Look up an order", parameters={})]
+
+
+@pytest.fixture(autouse=True)
+def _fake_provider_sdks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Anthropic and OpenAI adapters import their SDK when built (#160).
+
+    Every adapter built here, by the builders below or directly, finds the
+    stand-in modules from ``fake_provider_sdk`` instead, so this file passes
+    with both packages absent. The builders then swap in their own client, and
+    a test that needs a different module installs it over these.
+    """
+    install_anthropic(monkeypatch)
+    install_openai(monkeypatch)
 
 
 @dataclass
@@ -539,6 +688,10 @@ class ScriptedEndpoint:
     def __call__(self, **request: Any) -> Any:
         self.requests.append(request)
         item = self.outcomes.pop(0)
+        if isinstance(item, threading.Event):
+            # A request that hangs until the test releases it.
+            item.wait(10)
+            raise APIConnectionError("released after the run moved on")
         if isinstance(item, BaseException):
             raise item
         return item
@@ -717,6 +870,39 @@ def test_an_openai_content_filter_is_not_retried() -> None:
 
 
 @pytest.mark.parametrize(
+    ("build", "response", "usage_key"),
+    [
+        (
+            anthropic_adapter,
+            lambda: AnthropicResponse([AnthropicText("No.")], stop_reason="refusal"),
+            "usage",
+        ),
+        (
+            openai_adapter,
+            lambda: OpenAIResponse(
+                [OpenAIChoice(OpenAIMessage(content=None), finish_reason="content_filter")]
+            ),
+            "usage",
+        ),
+        (gemini_adapter, lambda: GeminiResponse(""), "usage_metadata"),
+    ],
+    ids=["anthropic_refusal", "openai_content_filter", "gemini_empty"],
+)
+def test_a_rejected_answer_keeps_the_billed_response_on_the_error(
+    build, response, usage_key: str
+) -> None:
+    """The answer arrived and cost tokens before the adapter rejected it, so
+    the error carries the raw response and its usage, beside the record."""
+    adapter, endpoint = build([response()])
+    with pytest.raises(ModelAdapterError) as caught:
+        adapter.next_action(TRANSCRIPT, TOOLS)
+    assert len(endpoint.requests) == 1
+    assert caught.value.call_record["outcome"] == "ok"
+    assert caught.value.raw is not None
+    assert caught.value.raw[usage_key]
+
+
+@pytest.mark.parametrize(
     ("module_name", "class_name", "build"),
     [
         ("anthropic", "Anthropic", lambda: AnthropicModelAdapter(api_key="k")),
@@ -830,9 +1016,87 @@ def test_a_run_whose_retries_run_out_ends_as_a_model_error_with_the_attempts(
     assert error["kind"] == "model_error"
     assert error["call_record"]["outcome"] == "retries_exhausted"
     assert error["call_record"]["attempts"] == 3
-    # A suite's override is what the run config records.
+    # A suite's override is what the run config records, on top of the
+    # provider's default for every field it leaves out.
     config = store.read_json(entry.run_id, "run_config.json")
     assert config["call_policy"]["max_attempts"] == 3
+    assert config["call_policy"]["requests_per_minute"] == 10.0
+
+
+@pytest.mark.parametrize("mode", [None, "record"])
+def test_a_rejected_answer_is_in_the_trace_and_priced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str | None
+) -> None:
+    """A refusal ends the run as a model_error, and the billed answer is a
+    model_response before it, so the run's cost counts it. Recording keeps
+    only its token counts, as it does for an accepted answer."""
+    refusal = AnthropicResponse([AnthropicText("No.")], stop_reason="refusal")
+    monkeypatch.setattr(
+        "trace_harness.models.anthropic.AnthropicModelAdapter",
+        lambda **kw: anthropic_adapter([refusal])[0],
+    )
+    cassette = None
+    if mode is not None:
+        cassette = CassetteConfig(mode=mode, directory=str(tmp_path / "cassettes"))
+    store = ArtifactStore(tmp_path / "runs")
+    suite = _suite("anthropic", "claude-sonnet-5", cassette=cassette)
+    entry = BatchRunner(store).run(suite).entries[0]
+
+    assert entry.status == "error"
+    assert entry.termination_reason == "model_error"
+    [response] = _events(store, entry.run_id, "model_response")
+    [error] = _events(store, entry.run_id, "error")
+    assert response["step_id"] == error["step_id"] == 1
+    assert response["payload"]["raw"]["usage"] == refusal.usage
+    assert response["payload"]["call_record"]["outcome"] == "ok"
+    assert error["payload"]["kind"] == "model_error"
+    assert "call_record" not in error["payload"]
+    per_input, per_output = ANTHROPIC_PRICING["claude-sonnet-5"]
+    expected = (1000 * per_input + 100 * per_output) / 1_000_000
+    assert entry.cost_usd == pytest.approx(expected)
+
+
+def test_a_call_abandoned_at_the_timeout_keeps_its_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first attempt got a 503 and the second hung past the run's time.
+    The model_timeout error lists both, and the run's cost stays unknown,
+    because the hung request may still be billed."""
+    release = threading.Event()
+    built: list[Any] = []
+    monkeypatch.setattr(
+        "trace_harness.runner.pipeline.create_model_adapter",
+        _live_gemini([GenaiAPIError(503), release], built),
+    )
+    policy = CallPolicy(initial_delay_seconds=0.01, jitter=False, requests_per_minute=6000.0)
+    suite = _suite("gemini", "gemini-2.5-flash", call_policy=policy, timeout_seconds=0.5)
+    store = ArtifactStore(tmp_path / "runs")
+    try:
+        entry = BatchRunner(store).run(suite).entries[0]
+    finally:
+        release.set()
+
+    assert entry.termination_reason == "timeout"
+    assert len(built[0].requests) == 2
+    [error] = _events(store, entry.run_id, "error")
+    assert error["payload"]["kind"] == "model_timeout"
+    record = error["payload"]["call_record"]
+    assert record["outcome"] == "abandoned"
+    assert record["attempts"] == 2
+    assert [(f["status_code"], f["delay_seconds"]) for f in record["failures"]] == [(503, 0.01)]
+    assert _events(store, entry.run_id, "model_response") == []
+    assert entry.cost_usd is None
+
+
+def test_a_timeout_with_no_live_call_records_no_attempts() -> None:
+    """A fixture-style adapter makes no request, so there is nothing to list."""
+    release = threading.Event()
+    try:
+        with pytest.raises(Exception, match="did not return") as caught:
+            _call_with_timeout(lambda: release.wait(10), 0.05)
+    finally:
+        release.set()
+    assert caught.value.call_record is None
 
 
 def test_a_fixture_run_records_no_policy_and_no_call_record(tmp_path: Path) -> None:
@@ -894,6 +1158,21 @@ def test_a_cassette_replays_the_same_retry_record_without_calling_anything(
     assert len(built) == 1
 
 
+#: Usage with every count the price tables read beyond input and output.
+ANTHROPIC_CACHED_USAGE = {
+    "input_tokens": 1000,
+    "output_tokens": 100,
+    "cache_read_input_tokens": 5000,
+    "cache_creation_input_tokens": 2000,
+    "cache_creation": {"ephemeral_5m_input_tokens": 1500, "ephemeral_1h_input_tokens": 500},
+}
+OPENAI_CACHED_USAGE = {
+    "prompt_tokens": 6000,
+    "completion_tokens": 100,
+    "prompt_tokens_details": {"cached_tokens": 5000, "audio_tokens": 0},
+}
+
+
 @pytest.mark.parametrize(
     ("provider", "model", "response"),
     [
@@ -904,14 +1183,29 @@ def test_a_cassette_replays_the_same_retry_record_without_calling_anything(
             "gpt-5",
             lambda: OpenAIResponse([OpenAIChoice(OpenAIMessage(content="Done."))]),
         ),
+        (
+            "anthropic",
+            "claude-sonnet-5",
+            lambda: AnthropicResponse([AnthropicText("Done.")], usage=ANTHROPIC_CACHED_USAGE),
+        ),
+        (
+            "openai",
+            "gpt-5",
+            lambda: OpenAIResponse(
+                [OpenAIChoice(OpenAIMessage(content="Done."))], usage=OPENAI_CACHED_USAGE
+            ),
+        ),
     ],
+    ids=["gemini", "anthropic", "openai", "anthropic-cache", "openai-cache"],
 )
 def test_a_live_run_is_priced_for_every_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, model: str, response
 ) -> None:
     """A live run-suite entry has a numeric cost for each provider, directly and
     through a recording cassette, which keeps each provider's token counts under
-    its own key. Replaying that cassette calls nothing and costs nothing."""
+    its own key. Cache reads and writes, and OpenAI's cached prompt tokens,
+    are kept too, so the recorded run costs what the direct one did. Replaying
+    that cassette calls nothing and costs nothing."""
     classes = {
         "gemini": "trace_harness.models.gemini.GeminiModelAdapter",
         "anthropic": "trace_harness.models.anthropic.AnthropicModelAdapter",

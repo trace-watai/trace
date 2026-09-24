@@ -150,8 +150,9 @@ trace-harness collect-regressions docs/acceptance/runs \
 ```
 
 `--experiments` also recomputes each retained experiment's frozen set. Drift
-there is a warning recorded in the summary and never changes the exit code; an
-experiment that fails to load is malformed. See
+there is a warning recorded in the summary and never changes the exit code. An
+experiment that fails to load, whose frozen set cannot be hashed, or whose plan
+and result contradict each other about the frozen set is malformed. See
 [the frozen evaluator](experiment_contract.md#the-frozen-evaluator).
 
 The command recursively finds `regression_artifact.json` files (or accepts one
@@ -163,6 +164,12 @@ Two of the retained artifacts come from the reference outside agents (#210) and
 replay from their pinned moves, so neither SDK is needed. The one retained
 experiment, `exp_000_baseline`, is checked beside them. `tests/test_collector.py`
 runs this same collection and pins both counts.
+
+A generated run that reproduced an earlier card holds a `bundle_ref.json`
+pointer and no artifact of its own (#211). It passes the suite's coverage check
+through the artifact of the run it points to and is not collected, so each
+bundle key is replayed once. See
+[failure_bundles.md](failure_bundles.md#replay-and-the-regression-gate).
 
 Each pinned failure must reproduce and every declared positive sibling must pass.
 Both require completed runs: a partial run cannot satisfy the collector even if

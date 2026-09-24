@@ -13,13 +13,19 @@ whether a run came from ``run-pipeline`` or ``run-suite``.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from trace_harness.environment.controls import ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.models import create_model_adapter, resolve_call_policy, resolve_model_name
+from trace_harness.models import (
+    create_model_adapter,
+    resolve_call_policy,
+    resolve_model_name,
+    unsent_seed_metadata,
+)
 from trace_harness.models.cassette import RecordingModelAdapter
 from trace_harness.models.policy import CallPolicy
 from trace_harness.runner.agent_runner import AgentRunner
@@ -44,6 +50,9 @@ from trace_harness.verifiers.base import (
 )
 from trace_harness.verifiers.registry import get_verifier
 
+if TYPE_CHECKING:
+    from trace_harness.failure_bundles.generator import RecordedBundle
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +64,21 @@ class PipelineResult:
     run_config: RunConfig
     run_result: RunResult
     verifier_result: VerifierResult | None  # None when the task declares no verifiers
+
+
+@dataclass
+class PipelineProgress:
+    """How far one ``run_task_pipeline`` call got, filled in as it goes.
+
+    A caller that has to account for a failure passes one in. When a later
+    stage raises, ``run_id`` says whether the agent run had already started,
+    and so whether a live run may have spent money that its trace can still
+    price. ``run_config`` is the configuration that run executed. Both stay
+    None when the pipeline failed before the run, which calls no provider.
+    """
+
+    run_id: str | None = None
+    run_config: RunConfig | None = None
 
 
 def _repo_relative(path: Path) -> str:
@@ -82,8 +106,19 @@ def run_task_pipeline(
     bundle_on_fail: bool = True,
     control_library: Path | str | None = None,
     controls: list[ControlInstance] | None = None,
+    bundle_scope: Collection[str] | None = None,
+    progress: PipelineProgress | None = None,
 ) -> PipelineResult:
-    """Run one task under one agent config and produce all pipeline artifacts."""
+    """Run one task under one agent config and produce all pipeline artifacts.
+
+    ``bundle_scope`` limits which runs' failure cards a failing run may join
+    (see :func:`attribute_and_bundle`). None joins a card anywhere in the runs
+    directory.
+
+    ``progress``, when given, records the run's id and configuration as soon
+    as the run starts, so a caller can still find the run if a later stage
+    raises.
+    """
     task_path = Path(task_path).resolve()
     task = load_task(task_path)
     docs = load_docs_for_task(task, task_path)
@@ -131,6 +166,7 @@ def run_task_pipeline(
         )
         if isinstance(adapter, RecordingModelAdapter):
             metadata["cassette_path"] = _repo_relative(adapter.path)
+        metadata.update(unsent_seed_metadata(agent_config.provider, agent_config.seed))
 
     config = RunConfig(
         task_id=task.task_id,
@@ -146,14 +182,21 @@ def run_task_pipeline(
         agent_ref=agent_config.agent_ref,
         metadata=metadata,
     )
+    if progress is not None:
+        progress.run_config = config
     if agent is not None:
-        run_result = run_target_agent(agent, environment, store, task, config)
+        run_result = run_target_agent(agent, environment, store, task, config, progress=progress)
     else:
-        run_result = AgentRunner(adapter, environment, store).run(task, config)
+        runner = AgentRunner(adapter, environment, store)
+        try:
+            run_result = runner.run(task, config)
+        finally:
+            if progress is not None:
+                progress.run_id = runner.run_id
 
     verifier_result = verify_run(store, run_result, task)
     if verifier_result is not None and verifier_result.has_violations and bundle_on_fail:
-        attribute_and_bundle(store, run_result.run_id, task, run_result)
+        attribute_and_bundle(store, run_result.run_id, task, run_result, scope=bundle_scope)
 
     return PipelineResult(
         task=task,
@@ -201,11 +244,23 @@ def verify_run(
 
 
 def attribute_and_bundle(
-    store: ArtifactStore, run_id: str, task: TaskSpec, run_result: RunResult
-) -> None:
-    """Attribute a verified failure and generate its failure bundle."""
+    store: ArtifactStore,
+    run_id: str,
+    task: TaskSpec,
+    run_result: RunResult,
+    *,
+    scope: Collection[str] | None = None,
+) -> RecordedBundle:
+    """Attribute a verified failure and record its failure bundle.
+
+    The bundle is written to the run's directory, or the run joins the card
+    that already has its bundle key (#211); the returned record says which.
+    ``scope`` names the runs whose cards the run may join, for a caller that
+    keeps one card per key within a batch or an experiment. None searches the
+    whole runs directory.
+    """
     from trace_harness.attribution.heuristic import HeuristicAttributor
-    from trace_harness.failure_bundles.generator import FailureBundleGenerator
+    from trace_harness.failure_bundles.generator import FailureBundleGenerator, record_bundle
 
     trace = store.read_trace(run_id)
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
@@ -225,7 +280,6 @@ def attribute_and_bundle(
         initial_state=store.read_json(run_id, names.INITIAL_STATE),
         task_fixture_path=config_metadata.get("task_fixture_path"),
         agent_ref=run_config.get("agent_ref"),
+        run_config=run_config,
     )
-    store.write_json(run_id, names.FAILURE_CARD, bundle.failure_card)
-    store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)
-    store.write_json(run_id, names.REGRESSION_ARTIFACT, bundle.regression_artifact)
+    return record_bundle(store, bundle, scope=scope)

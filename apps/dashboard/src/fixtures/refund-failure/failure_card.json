@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.4.0",
+  "schema_version": "0.5.0",
   "run_id": "run_20260101T000000Z_sample01",
   "task_id": "refund_policy_failure",
   "title": "Refund request at 47 days (no approval, no outage): task requires escalation but no escalation was recorded in final state",
@@ -222,5 +222,15 @@
   "metadata": {
     "primary_failure_category": "stale_source_authority",
     "attribution_confidence": 0.85
-  }
+  },
+  "bundle_key": "v1:stale_source_authority:issue_refund:5d5539fd98990b68",
+  "occurrences": [
+    {
+      "run_id": "run_20260101T000000Z_sample01",
+      "task_id": "refund_policy_failure",
+      "provider": "fixture",
+      "model": "scripted:refund_policy_failure_script",
+      "seed": null
+    }
+  ]
 }

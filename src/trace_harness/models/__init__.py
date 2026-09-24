@@ -3,15 +3,17 @@
 The runner only ever talks to the :class:`~trace_harness.models.base.ModelAdapter`
 protocol. Concrete adapters:
 
-- :class:`~trace_harness.models.fixture.FixtureModelAdapter` — deterministic,
-  scripted, no API keys. The default everywhere (tests, CI, fixtures).
-- :class:`~trace_harness.models.gemini.GeminiModelAdapter` — native function
-  calling through the optional ``google-genai`` SDK.
-- :class:`~trace_harness.models.anthropic.AnthropicModelAdapter` — native tool
-  use through the optional ``anthropic`` SDK.
-- :class:`~trace_harness.models.openai.OpenAIModelAdapter` — native function
-  calling through the optional ``openai`` SDK, and the only one of the three
-  that both accepts a seed and publishes a per-token price.
+- :class:`~trace_harness.models.fixture.FixtureModelAdapter`, deterministic
+  and scripted, with no API keys. The default everywhere (tests, CI, fixtures).
+- :class:`~trace_harness.models.gemini.GeminiModelAdapter`, native function
+  calling through the optional ``google-genai`` SDK. It sends a seed and is
+  priced from a table here.
+- :class:`~trace_harness.models.anthropic.AnthropicModelAdapter`, native tool
+  use through the optional ``anthropic`` SDK. It is priced from a table here,
+  and the Messages API has no seed.
+- :class:`~trace_harness.models.openai.OpenAIModelAdapter`, native function
+  calling through the optional ``openai`` SDK. It sends a seed and is priced
+  from a table here.
 
 Three live vendors exist so a live result never depends on one key, and so the
 two-model conditions in #158, #159 and #217 have something to compare. All
@@ -33,9 +35,25 @@ from trace_harness.models.cassette import (
     RecordingModelAdapter,
     cassette_path,
 )
-from trace_harness.models.policy import LIVE_PROVIDERS, CallPolicy, default_call_policy
+from trace_harness.models.policy import LIVE_PROVIDERS, CallPolicy, merge_call_policy
 
 KNOWN_PROVIDERS = ("fixture", "gemini", "anthropic", "openai")
+
+#: Live providers whose API has no seed parameter. A seed configured for one
+#: of them stays in run_config.json as asked, and the run's metadata says it
+#: was never sent, so the run cannot pass for a seeded one.
+PROVIDERS_WITHOUT_SEED = frozenset({"anthropic"})
+
+
+def unsent_seed_metadata(provider: str, seed: int | None) -> dict[str, bool]:
+    """``{"seed_sent": False}`` when a seed was configured and cannot be sent.
+
+    Merged into ``RunConfig.metadata`` by every path that builds a live run.
+    Empty otherwise, so runs of other providers are unchanged.
+    """
+    if seed is not None and provider in PROVIDERS_WITHOUT_SEED:
+        return {"seed_sent": False}
+    return {}
 
 
 def resolve_model_name(provider: str, model: str | None, script_path: Path | str | None) -> str:
@@ -78,12 +96,13 @@ def resolve_call_policy(
     """The call policy a run executes under, resolved once like the model name.
 
     None for a run that makes no live call, so ``run_config.json`` never claims
-    a policy that did not apply. Otherwise the suite's override, or the
-    provider's default.
+    a policy that did not apply. Otherwise the provider's default with every
+    field the suite's override sets in its place, so an override that only
+    raises ``max_attempts`` keeps the provider's pacing.
     """
     if not makes_live_calls(provider, cassette):
         return None
-    return override or default_call_policy(provider)
+    return merge_call_policy(provider, override)
 
 
 def create_model_adapter(
@@ -111,8 +130,8 @@ def create_model_adapter(
     cassette adapter and requires neither the provider SDK nor its credentials.
 
     ``call_policy`` is the retry and rate-limit policy a live adapter runs
-    under; None gives the provider's default. The fixture provider and replay
-    ignore it, since they make no call.
+    under, overlaid on the provider's default; None gives the default. The
+    fixture provider and replay ignore it, since they make no call.
     """
     if cassette is not None:
         if not task_id:
@@ -189,10 +208,10 @@ def create_model_adapter(
 def estimate_cost_usd(provider: str, model: str, raws: list[dict]) -> float | None:
     """Price a run's recorded provider responses, or None when it cannot be priced.
 
-    Dispatches per provider because token accounting and prices are facts about
-    each vendor. A provider or model with no price returns None,
-    which is what ``BatchRunEntry.cost_usd`` carries for such a run and is
-    honest about the gap.
+    Dispatches per provider because token accounting and prices belong to each
+    vendor, and the harness only reads them. A provider or model with no price
+    returns None, which is what ``BatchRunEntry.cost_usd`` carries for such a
+    run and is honest about the gap.
     """
     if provider == "gemini":
         from trace_harness.models.gemini import estimate_cost_usd as gemini_cost

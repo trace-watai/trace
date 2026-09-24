@@ -30,7 +30,13 @@ from trace_harness.runner.batch import BUDGET_UNENFORCEABLE, BatchRunner, Budget
 from trace_harness.runner.config import RUN_CONFIG_SCHEMA_VERSION, RunConfig
 from trace_harness.runner.pipeline import run_task_pipeline
 from trace_harness.runner.result import RunStatus, TerminationReason
-from trace_harness.runner.suite import SUITE_SCHEMA_VERSION, AgentConfig, SuiteSpec, load_suite
+from trace_harness.runner.suite import (
+    SUITE_SCHEMA_VERSION,
+    AgentConfig,
+    SuiteLoadError,
+    SuiteSpec,
+    load_suite,
+)
 from trace_harness.runner.target_agent import (
     RunEnded,
     TargetAgent,
@@ -246,6 +252,21 @@ def test_responses_attach_to_the_next_move_and_are_made_json_safe(tmp_path):
     assert actions[1].payload["reasoning"] is None
 
 
+def test_a_response_that_is_not_a_dict_is_stored_wrapped(tmp_path):
+    """docs/bring_your_own_agent.md says a non-dict raw is stored as {"response": raw}."""
+
+    class TextResponse:
+        name = "text-response"
+
+        def run(self, prompt, tools, call_tool, on_model_response=None):
+            on_model_response("plain text from the model")
+            return "done"
+
+    _, trace, _ = _run(TextResponse(), VALID_TASK_PATH, tmp_path)
+    (response,) = _events(trace, TraceEventType.MODEL_RESPONSE)
+    assert response.payload["raw"] == {"response": "plain text from the model"}
+
+
 # --- controls and the final-answer seam ---
 
 
@@ -354,6 +375,34 @@ def test_agent_exception_is_recorded_as_a_model_error(tmp_path):
     assert "ValueError: boom" in errors[0].payload["error"]
 
 
+@pytest.mark.parametrize(
+    ("error", "kind"),
+    [
+        (ValueError("could not parse the model's reply"), "model_error"),
+        (ScriptExhaustedError("script 'x' exhausted after 1 actions"), "script_exhausted"),
+    ],
+    ids=["raised", "script_exhausted"],
+)
+def test_responses_forwarded_before_the_agent_raises_are_recorded(error, kind, tmp_path):
+    class ForwardsThenRaises:
+        name = "forwards-then-raises"
+
+        def run(self, prompt, tools, call_tool, on_model_response=None):
+            call_tool("get_order", {"customer_name": "Riley Chen"})
+            on_model_response({"id": "resp_2", "output": "unparseable"}, reasoning="thinking")
+            raise error
+
+    result, trace, _ = _run(ForwardsThenRaises(), VALID_TASK_PATH, tmp_path)
+    assert result.termination_reason.value == kind
+    at_step_2 = [(e.event_type, e.payload) for e in trace if e.step_id == 2]
+    kinds = [event_type for event_type, _ in at_step_2]
+    # The response is recorded at the failing step, ahead of the error.
+    assert kinds[-2:] == [TraceEventType.MODEL_RESPONSE, TraceEventType.ERROR]
+    assert at_step_2[-2][1]["raw"] == {"id": "resp_2", "output": "unparseable"}
+    assert at_step_2[-1][1]["kind"] == kind
+    assert _events(trace, TraceEventType.MODEL_ACTION)[-1].step_id == 1
+
+
 def test_a_scripted_model_running_out_keeps_its_termination_reason(tmp_path):
     class RunsOut:
         name = "runs-out"
@@ -459,6 +508,124 @@ def test_parallel_calls_left_over_at_the_step_limit_are_all_released(tmp_path):
     assert sorted(outcomes) == ["ended"] * 5 + ["result"]
 
 
+def _prompt_messages() -> list[Message]:
+    return [
+        Message(role=MessageRole.SYSTEM, content="system"),
+        Message(role=MessageRole.USER, content="user"),
+    ]
+
+
+def test_a_call_taken_by_an_abandoned_move_is_released_when_the_bridge_closes():
+    """The runner abandons next_action on a timeout, and close() can run while it is mid-move.
+
+    Here the abandoned move has already taken the agent's tool call off the
+    queue when close() drains it. The call must still end with RunEnded
+    instead of waiting forever for a result nobody will send.
+    """
+    taken = threading.Event()
+    closed = threading.Event()
+    outcome: list[str] = []
+
+    class OneCall:
+        name = "one-call"
+
+        def run(self, prompt, tools, call_tool, on_model_response=None):
+            try:
+                call_tool("get_order", {"customer_name": "Riley Chen"})
+                outcome.append("result")
+            except RunEnded:
+                outcome.append("ended")
+                raise
+            return "done"
+
+    bridge = TargetAgentBridge(OneCall(), task_id="t", max_steps=4)
+    drain = bridge._drain_responses
+
+    def paused_after_taking_the_call():
+        taken.set()
+        closed.wait(5)
+        return drain()
+
+    bridge._drain_responses = paused_after_taking_the_call
+    errors: list[BaseException] = []
+
+    def abandoned_move() -> None:
+        try:
+            bridge.next_action(_prompt_messages(), [])
+        except TargetAgentError as exc:
+            errors.append(exc)
+
+    mover = threading.Thread(target=abandoned_move, daemon=True)
+    mover.start()
+    assert taken.wait(5)
+    bridge.close()
+    closed.set()
+    mover.join(5)
+    assert bridge._thread is not None
+    bridge._thread.join(5)
+    assert not bridge._thread.is_alive()
+    assert outcome == ["ended"]
+    assert [str(e) for e in errors] == ["the target agent bridge is closed"]
+
+
+def test_close_and_a_late_move_never_both_answer_the_same_call():
+    """close() and an abandoned next_action can both reach the call waiting on a result.
+
+    Whichever answers first wins and the other is ignored, so close() never
+    raises from a full reply queue however the two interleave.
+    """
+    release = threading.Event()
+
+    class TwoCalls:
+        name = "two-calls"
+
+        def run(self, prompt, tools, call_tool, on_model_response=None):
+            call_tool("get_order", {"customer_name": "Riley Chen"})
+            release.wait(5)
+            return "done"
+
+    bridge = TargetAgentBridge(TwoCalls(), task_id="t", max_steps=4)
+    first = bridge.next_action(_prompt_messages(), [])
+    assert first.tool_call is not None
+    observation = Message(
+        role=MessageRole.TOOL,
+        content="",
+        metadata={"tool_name": "get_order", "status": "ok", "result": {}, "error": None},
+    )
+    pending = bridge._pending
+    assert pending is not None
+    # The late move answers the waiting call just before close() reaches it.
+    pending.reply.put_nowait(ToolObservation(tool_name="get_order", status="ok"))
+    bridge.close()
+    release.set()
+    with pytest.raises(TargetAgentError, match="closed"):
+        bridge.next_action([*_prompt_messages(), observation], [])
+
+
+def test_a_transcript_without_the_observation_still_leaves_the_call_for_close():
+    outcome: list[str] = []
+
+    class OneCall:
+        name = "one-call"
+
+        def run(self, prompt, tools, call_tool, on_model_response=None):
+            try:
+                call_tool("get_order", {"customer_name": "Riley Chen"})
+            except RunEnded:
+                outcome.append("ended")
+                raise
+            return "done"
+
+    bridge = TargetAgentBridge(OneCall(), task_id="t", max_steps=4)
+    bridge.next_action(_prompt_messages(), [])
+    with pytest.raises(TargetAgentError, match="expected the runner's tool observation"):
+        bridge.next_action(_prompt_messages(), [])
+    bridge.close()
+    assert bridge._thread is not None
+    bridge._thread.join(5)
+    assert outcome == ["ended"]
+
+
 # --- loading agents and configuring runs ---
 
 AGENT_INSTANCE = ScriptAgent()
@@ -540,6 +707,36 @@ def test_agent_config_requires_agent_ref_exactly_for_external():
     with pytest.raises(ValueError, match="cannot use a harness cassette"):
         _external(cassette={"mode": "replay"})
     assert _external().agent_ref == f"{__name__}:ScriptAgent"
+
+
+@pytest.mark.parametrize(
+    "setting", [{"temperature": 0.0}, {"seed": 7}], ids=lambda s: next(iter(s))
+)
+def test_a_suite_refuses_model_settings_for_an_outside_agent(setting, tmp_path):
+    """The CLI refuses --temperature and --seed with --agent, and a suite does the same.
+
+    Accepting them would write a run_config.json claiming settings the harness
+    never applied, since the outside agent owns its model.
+    """
+    with pytest.raises(ValueError, match="the outside agent owns its model"):
+        _external(**setting)
+    manifest = tmp_path / "suite.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "suite_id": "byoa",
+                "tasks": [str(VALID_TASK_PATH)],
+                "agent_configs": [
+                    {"label": "x", "provider": "external", "agent_ref": "m:f", **setting}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(SuiteLoadError, match="the outside agent owns its model"):
+        load_suite(manifest)
+    # A null setting is what every other external config carries, and still loads.
+    assert _external(temperature=None, seed=None).temperature is None
 
 
 def test_existing_suites_and_run_configs_still_load():
@@ -710,6 +907,29 @@ def test_an_uncapped_suite_runs_an_outside_agent_with_an_unknown_cost(tmp_path):
     (entry,) = summary.entries
     assert (entry.provider, entry.verdict) == ("external", "pass")
     # Never reported as free, since the harness did not see the spend.
+    assert entry.cost_usd is None
+
+
+def test_an_outside_agent_cell_that_fails_after_its_run_keeps_the_run(tmp_path, monkeypatch):
+    """A run-suite cell whose pipeline raised after the run is named like a live one (#196).
+
+    run_target_agent hands the runner's id to the pipeline's progress, so the
+    setup_error entry points at the run the agent made, and its cost stays
+    unknown, since the harness never saw the agent's spend.
+    """
+
+    def crash(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("verifier crashed")
+
+    monkeypatch.setattr(pipeline, "verify_run", crash)
+    suite = SuiteSpec(
+        suite_id="byoa_failed_after", tasks=[str(VALID_TASK_PATH)], agent_configs=[_external()]
+    )
+    runs = tmp_path / "runs"
+    (entry,) = BatchRunner(ArtifactStore(runs)).run(suite).entries
+    assert (entry.status, entry.error) == ("setup_error", "RuntimeError: verifier crashed")
+    assert entry.run_id is not None and (runs / entry.run_id / "trace.jsonl").is_file()
+    assert entry.model == "script-agent"
     assert entry.cost_usd is None
 
 

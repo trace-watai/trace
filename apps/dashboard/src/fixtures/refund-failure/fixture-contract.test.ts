@@ -57,6 +57,9 @@ describe("refund-failure fixture contracts", () => {
     expect(card.schemaVersion).toBe(FAILURE_CARD_SCHEMA_VERSION);
     expect(card.contributingFailures.length).toBeGreaterThan(0);
     expect(card.stepIds).toEqual([3, 4, 5, 6, 7]);
+    expect(card.occurrences.map((occurrence) => occurrence.runId)).toEqual([
+      card.runId,
+    ]);
   });
 
   it("keeps every derived artifact on its current contract and source run", () => {

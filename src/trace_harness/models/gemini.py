@@ -75,8 +75,8 @@ from trace_harness.models.policy import (
     CallPolicy,
     ErrorVerdict,
     LiveCaller,
+    build_live_caller,
     classify_provider_error,
-    default_call_policy,
     with_call_record,
 )
 
@@ -90,15 +90,13 @@ DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 # function-call part. Stored as text so it survives the JSON trace.
 THOUGHT_SIGNATURE_KEY = "thought_signature"
 
-#: USD per million tokens, keyed by model name, as (input, output). Kept as data,
-#: so a price change is a one-line diff and an unpriced model is visibly
-#: absent. Output includes thinking tokens, which Gemini bills at the
-#: output rate. Only models with one flat text price are listed; a model whose
-#: price is unknown here, the default included, reports a null cost until its
-#: line is added.
-#: USD per million input and output tokens, paid tier, from
-#: https://ai.google.dev/gemini-api/docs/pricing as read on 2026-09-23. Thinking
-#: tokens bill as output. The gemini-3.6-flash price doubles to (1.50, 7.50) on
+#: USD per million tokens, keyed by model name, as (input, output), paid tier,
+#: from https://ai.google.dev/gemini-api/docs/pricing as read on 2026-09-23.
+#: Kept as data, so a price change is a one-line diff and an unpriced model is
+#: visibly absent. Output includes thinking tokens, which Gemini bills at the
+#: output rate. Only models with one flat text price are listed, the default
+#: gemini-3.6-flash among them; a model missing here reports a null cost until
+#: its line is added. The gemini-3.6-flash price doubles to (1.50, 7.50) on
 #: 2027-01-01, and this line has to change that day.
 GEMINI_PRICING: dict[str, tuple[float, float]] = {
     "gemini-2.5-flash": (0.30, 2.50),
@@ -265,9 +263,19 @@ def _normalize_response(response: Any) -> AgentAction:
         - neither -> raise ModelAdapterError (empty/blocked response)
 
     For ``raw``, prefer ``response.model_dump(mode="json")`` when available,
-    else best-effort ``dict(response)`` / ``{}``.
+    else best-effort ``dict(response)`` / ``{}``. A response that cannot become
+    one action was still billed, so the error carries ``raw`` too, and the
+    runner records it before the error.
     """
     raw = _response_to_dict(response)
+    try:
+        return _action_from_response(response, raw)
+    except ModelAdapterError as exc:
+        exc.raw = raw
+        raise
+
+
+def _action_from_response(response: Any, raw: dict[str, Any]) -> AgentAction:
     function_calls = getattr(response, "function_calls", None)
     if function_calls and len(function_calls) != 1:
         raise ModelAdapterError(
@@ -469,10 +477,8 @@ class GeminiModelAdapter:
         self.timeout_seconds = timeout_seconds
         # Every request goes through the shared policy. A test injects a
         # caller with a fake clock; otherwise one is built from the policy.
-        self._caller = caller or LiveCaller(
-            self.name,
-            call_policy or default_call_policy(self.name),
-            budget_seconds=timeout_seconds,
+        self._caller = caller or build_live_caller(
+            self.name, call_policy, seed=seed, timeout_seconds=timeout_seconds
         )
         self.call_policy = self._caller.policy
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
