@@ -1289,11 +1289,13 @@ def _branch_conditions(
     store: ArtifactStore,
     *,
     allow_drift: bool,
+    skipped: dict[str, str] | None = None,
 ) -> tuple[int, list[tuple[str, str]]]:
     """Check, then run, the given conditions; return the exit code and each condition's batch.
 
     Shared by ``branch`` and ``validate-control`` (#203). A condition skipped
-    for a missing cassette has no batch and no pair.
+    for a missing cassette has no batch and no pair, and when ``skipped`` is
+    given it gains the condition's name and why.
     """
     from trace_harness.runner.batch import BUDGET_UNENFORCEABLE, BudgetGuard
     from trace_harness.runner.branch import (
@@ -1351,6 +1353,8 @@ def _branch_conditions(
             outcome = run_branch(artifact_path, spec, condition, store, guard=guard)
             if outcome.summary is None:
                 print(f"  skipped: {outcome.skipped}")
+                if skipped is not None:
+                    skipped[condition.name] = outcome.skipped or "no batch"
                 continue
             summary = outcome.summary
         for entry in summary.entries:
@@ -1393,25 +1397,25 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
     record``, which writes the result with decision review by policy. The keep
     rule then reads that result's metrics, the static verdict on the replay-only
     batch and the B1 sidecar beside the result, and the result is written again
-    with the rule's decision by policy. A static_ok artifact runs only its
-    replay-only conditions, the short path. Nothing here writes the control
-    library. A keep names the ``replay --apply-control --commit`` a human runs.
+    with the rule's decision by policy. The path is chosen once, before any run,
+    and the rule judges that path; on the static_ok short path only the
+    replay-only conditions run. Nothing here writes the control library. A keep
+    names the ``replay --apply-control --commit`` a human runs.
     """
+    from trace_harness.runner.batch import BatchSummary
     from trace_harness.runner.branch import load_artifact
-    from trace_harness.runner.experiment import (
-        DecidedBy,
-        Decision,
-        ExperimentResult,
-        render_experiment_markdown,
-    )
+    from trace_harness.runner.experiment import DecidedBy, Decision, ExperimentResult
     from trace_harness.runner.validate_control import (
         STATIC_OK_SHORT_PATH,
         KeepEvidence,
         conditions_for_control,
         decide_keep,
         effectiveness_entry,
+        live_arm,
         read_repair_effectiveness,
+        recovered_with_blocking_failure,
         render_keep_markdown,
+        short_path_for,
         static_evidence,
     )
 
@@ -1429,7 +1433,7 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
     select_controls([control_id])
     artifact = load_artifact(artifact_path)
     selected = conditions_for_control(spec, control_id)
-    short = artifact.replay_mode == "static_ok" and bool(selected.static)
+    short, path_note = short_path_for(artifact, control_id, selected)
     conditions = selected.to_run(short)
     skipped_by_short_path = [c.name for c in selected.to_run(short=False) if c not in conditions]
 
@@ -1440,8 +1444,11 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
             "static_ok short path, replay only; not run: "
             + (", ".join(skipped_by_short_path) or "nothing"),
         )
+    elif path_note:
+        _print("path:", path_note)
+    skipped: dict[str, str] = {}
     code, pairs = _branch_conditions(
-        artifact_path, spec_path, spec, conditions, store, allow_drift=False
+        artifact_path, spec_path, spec, conditions, store, allow_drift=False, skipped=skipped
     )
     if code:
         return code
@@ -1461,33 +1468,52 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
     result = ExperimentResult.model_validate(store.read_experiment_result(spec.experiment_id))
 
     recorded = result.condition_batches
+
+    def batch(condition: Any) -> BatchSummary | None:
+        if condition is None or condition.name not in recorded:
+            return None
+        return BatchSummary.model_validate(store.read_batch_summary(recorded[condition.name]))
+
+    def verdict_of(run_id: str) -> VerifierResult | None:
+        if not store.exists(run_id, names.VERIFIER_RESULT):
+            return None
+        return VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
+
     static = None
     for condition in selected.static:
-        if condition.name in recorded:
-            summary = store.read_batch_summary(recorded[condition.name])
-            static = static_evidence(summary.get("metadata") or {}, control_id)
-            if static is not None:
-                break
-    live = selected.live.name if selected.live and selected.live.name in recorded else None
-    noise = selected.noise_floor
-    noise_floor = noise.name if noise and noise.name in recorded else None
-    entry, note = effectiveness_entry(
-        read_repair_effectiveness(store.experiment_dir(spec.experiment_id)),
-        artifact,
-        control_id,
-        live,
-        noise_floor,
+        summary = batch(condition)
+        static = static_evidence(summary.metadata, control_id) if summary else None
+        if static is not None:
+            break
+    live_batch, noise_batch = batch(selected.live), batch(selected.noise_floor)
+    live, live_gap = live_arm(
+        selected.live, live_batch, skipped.get(selected.live.name) if selected.live else None
     )
+    noise = selected.noise_floor
+    noise_floor, noise_floor_gap = live_arm(
+        noise, noise_batch, skipped.get(noise.name) if noise else None
+    )
+    recovered_failed = None
+    if live_batch is not None and selected.live is not None:
+        fork_step = selected.live.start.step_id if selected.live.start else 0
+        recovered_failed = recovered_with_blocking_failure(live_batch, verdict_of, fork_step)
+    sidecar = read_repair_effectiveness(store.experiment_dir(spec.experiment_id))
+    entry, note = effectiveness_entry(sidecar, artifact, control_id, live, noise_floor, recorded)
     outcome = decide_keep(
         KeepEvidence(
             control_id=control_id,
             replay_mode=artifact.replay_mode,
+            short_path=short,
+            path_note=path_note,
             static=static,
             live_condition=live,
             noise_floor_condition=noise_floor,
+            live_gap=live_gap,
+            noise_floor_gap=noise_floor_gap,
             verdict_agreement_rate=result.metrics.verdict_agreement_rate,
             sibling_failure_rate=result.metrics.sibling_failure_rate,
             post_block_outcomes=result.metrics.post_block_outcomes,
+            recovered_with_blocking_failure=recovered_failed,
             effectiveness=entry,
             effectiveness_note=note,
         ),
@@ -1511,6 +1537,7 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
                     "test_name": artifact.test_name,
                     "conditions_run": [name for name, _ in pairs],
                     "not_run_on_short_path": skipped_by_short_path,
+                    "skipped_conditions": skipped,
                     "keep_rule": spec.keep_rule.model_dump(mode="json"),
                     "commit_command": commit_command,
                 },
@@ -1520,7 +1547,7 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
     store.write_experiment_result(
         spec.experiment_id,
         result,
-        markdown=render_experiment_markdown(spec, result)
+        markdown=_experiment_markdown(spec, result, sidecar)
         + render_keep_markdown(outcome, commit_command),
     )
 
@@ -1542,6 +1569,23 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
         print(f"  {commit_command}")
     _print("written:", str(store.experiment_result_path(spec.experiment_id)))
     return 0
+
+
+def _experiment_markdown(spec: Any, result: Any, sidecar: Any) -> str:
+    """``report.md`` as record renders it, with the B1 sidecar when the renderer takes one.
+
+    #200 gives ``render_experiment_markdown`` a ``repair`` argument for the
+    sidecar. Passing it whenever the renderer accepts it keeps the B1 section
+    that record wrote when validate-control rewrites the report, on either
+    signature.
+    """
+    import inspect
+
+    from trace_harness.runner.experiment import render_experiment_markdown
+
+    if sidecar is not None and "repair" in inspect.signature(render_experiment_markdown).parameters:
+        return render_experiment_markdown(spec, result, repair=sidecar)
+    return render_experiment_markdown(spec, result)
 
 
 def _list_experiments(store: ArtifactStore) -> int:

@@ -1,9 +1,9 @@
 # Control lifecycle
 
 The loop from a verified failure to a control in the library, with the command
-at each step. A control is kept on live evidence, meaning live agents
-continuing from the block, and static replay decides alone only for artifacts
-labeled `static_ok`. Issue #203, Linear TRA-125. Code:
+at each step. A control is kept on live evidence, meaning agents that continue
+from the block and can react to it, and static replay decides alone only for
+artifacts labeled `static_ok`. Issue #203, Linear TRA-125. Code:
 `runner/validate_control.py` and `validate-control` in `cli.py`.
 
 ## The loop
@@ -59,6 +59,11 @@ thresholds of the keep rule. `validate-control` refuses a plan without a
 }
 ```
 
+`min_sibling_pass_rate` must be 1.0. Siblings have zero tolerance, since any
+failing positive sibling discards the control, so a lower minimum could never
+change a decision and the plan is refused with one. The plan still states it,
+so the rule a result records is the whole rule.
+
 The conditions that answer for a control are the ones whose `control_ids` is
 exactly that control, of any kind, and the `live_no_control` condition with
 nothing installed, which is the noise floor. A condition that installs the
@@ -74,13 +79,27 @@ feed none of the metrics.
 recorded evidence and the plan's `keep_rule`. Its inputs are the #146 verdict
 of the control from the replay-only batch, with its sibling re-runs,
 `verdict_agreement_rate`, `sibling_failure_rate` and `post_block_outcomes` from
-the recorded result, and the one B1 entry in `repair_effectiveness.json` for
-this artifact, this control, the live condition and the noise floor. The
-sibling pass rate is `1 - sibling_failure_rate`.
+the recorded result, the verifier results of the live runs labeled `recovered`,
+and the one B1 entry in `repair_effectiveness.json` for this artifact, this
+control and the batches recorded for the live condition and the noise floor.
+The sibling pass rate is `1 - sibling_failure_rate`.
 
-**Which path.** A `static_ok` artifact with no live condition recorded takes
-the short path, replay only. Every other artifact takes the live path, and so
-does a `static_ok` artifact whose live conditions ran.
+**Which path.** The path is chosen once, before any condition runs, and the
+rule judges the path the command ran. A `static_ok` artifact takes the short
+path, replay only, when its label was predicted with the control installed
+(`replay_mode_basis.control_ids` names it) and the plan declares a replay-only
+condition for the control. Every other artifact takes the live path, and a
+`static_ok` artifact that does says why in a note.
+
+**Live evidence.** A live agent reacting to the block, or a cassette of what
+one answered, is live evidence. A fixture arm is live evidence only when it
+plays a `continuation_script` and at least one completed run's actions left
+the recording after the fork. A fixture arm with no script plays the recorded
+actions after the fork, which is static replay under another name, and a
+script that repeats the recording is the same, so neither is live evidence
+for either the live condition or the noise floor. A condition that branch
+skipped, because nobody recorded its cassette, is not live evidence either,
+and the result names it.
 
 **Discard** when any of these holds.
 
@@ -88,7 +107,8 @@ does a `static_ok` artifact whose live conditions ran.
   reason names the #146 verdict, which is `rejected_overblocks` whenever the
   pinned failure cleared. Siblings run whole from their own fixtures and never
   from the recording, so this holds on any `replay_mode`.
-- The sibling pass rate is below `min_sibling_pass_rate`.
+- `sibling_failure_rate` is above zero, however small, which is the sibling
+  pass rate falling below `min_sibling_pass_rate` of 1.0.
 - On the short path, the #146 verdict is `rejected_failure_persists` or
   `rejected_overblocks`, since a `static_ok` replay is trusted.
 - On the live path, the share of completed control-on runs with a blocking
@@ -99,54 +119,74 @@ does a `static_ok` artifact whose live conditions ran.
 
 | Check | Short path | Live path |
 |---|---|---|
-| `static_verdict` | #146 verdict `accepted` | |
-| `live_evidence` | | A live control-on condition and a noise floor were recorded |
+| `live_evidence` | | A live control-on condition and a noise floor were recorded, and both are live evidence |
+| `static_verdict` | #146 verdict `accepted` | #146 verdict `accepted` |
 | `verdict_agreement_rate` | | At least `min_verdict_agreement_rate` |
-| `sibling_pass_rate` | At least `min_sibling_pass_rate` | At least `min_sibling_pass_rate` |
+| `sibling_pass_rate` | 1.0 | 1.0 |
 | `repair_effectiveness` | | B1 at least `min_repair_effectiveness` |
 | `margin_over_noise_floor` | | At least `min_margin_over_noise_floor` |
 
+`static_verdict` is a keep check on both paths because step 7,
+`replay --apply-control --commit`, reruns the replay and commits only a control
+it accepts. A keep that step would refuse is never recorded.
+
 The margin over the noise floor is the share of blocked control-on runs
-labeled `recovered` in `post_block_outcomes`, minus the share of completed
-noise floor runs with no blocking failure after the fork. Runs labeled
+labeled `recovered` in `post_block_outcomes` with no blocking failure after the
+fork, minus the share of completed noise floor runs with no blocking failure
+after the fork. A run the post-block classifier labels `recovered` can still
+fail a check it does not map, such as a missing escalation, and that run
+counts against the control as it would on the noise floor. Runs labeled
 `no_block_observed` say nothing about the control and stay out of the first
 share. Incomplete runs stay in it as `stalled`, so a control that leaves the
 agent stuck cannot pass here on runs B1 leaves out. The margin must be above
 zero, so a tie never beats the noise floor.
 
 **Review** otherwise, with every unmet check as a reason. A missing sidecar, a
-missing or ambiguous B1 entry, a null B1 and a null metric are each an unmet
-check, so none of them can reach keep.
+missing, stale or ambiguous B1 entry, a null B1 and a null metric are each an
+unmet check, so none of them can reach keep. An entry is stale when it names
+batches other than the ones this result recorded for the two conditions, as a
+sidecar left from an earlier record of the same plan would.
 
-On the live path a static verdict that rests on the recording is advisory and
-appears as a note. That is `rejected_failure_persists`, or
-`rejected_overblocks` with every sibling passing. `refund_policy_failure` is
-the standing example. The refund window control earns `rejected_overblocks` in
-static replay only because the recorded answer still claims the refund after
-the block.
+On the live path a static rejection that rests on the recording does not
+discard. That is `rejected_failure_persists`, or `rejected_overblocks` with
+every sibling passing. It still leaves `static_verdict` unmet, so the decision
+is review, no commit command is written or printed, and a note says the
+verdict rests on the recording. `refund_policy_failure` is the standing
+example. The refund window control earns `rejected_overblocks` in static
+replay only because the recorded answer still claims the refund after the
+block, and a human reads the live evidence before deciding.
 
-Guarantees, each pinned by a test in `tests/test_keep_rule.py` and
-`tests/test_validate_control.py`.
+A value is compared with its threshold exactly, with room only for floating
+point error, so 3 of 5 minus 2 of 5 meets a minimum of 0.2 and 0.19996 does
+not. A check records the value rounded to four places, or the exact value when
+rounding would carry it across the threshold.
+
+Guarantees, each pinned by a test in `tests/test_keep_rule.py`,
+`tests/test_validate_control.py` and `tests/test_experiment.py`.
 
 - A `live_required` or `unlabeled` artifact never reaches keep through static
-  replay alone, whatever the other numbers say.
-- A missing sidecar or a null B1 is review with its reason.
-- Every threshold is the plan's. Moving any one of them past the evidence
-  changes the decision.
+  replay alone, whatever the other numbers say, and a fixture arm that replays
+  the recording is static replay.
+- A keep is always a control `replay --apply-control --commit` accepts.
+- A missing or stale sidecar, or a null B1, is review with its reason.
+- Every threshold is the plan's. Moving any of the four that can move past the
+  evidence changes the decision, and `min_sibling_pass_rate` is fixed at 1.0.
 - `validate-control` never writes the library.
 
 ## The static_ok short path
 
 A `static_ok` artifact is one whose static replay the materializer judged
-sufficient. The control blocks the first irreversible action, it covers every
-check that action can reach, and no other irreversible tool is available.
-For such an artifact `validate-control` runs only the replay-only conditions
-for the control, calls no provider and spends nothing. The result says so in
-three places. `metadata.validate_control.path` is `static_ok_short_path`,
-`not_run_on_short_path` lists the live conditions left out, and the notes and
-`report.md` state that the live quantities are not part of the decision. When
-the plan has no replay-only condition for the control, a `static_ok` artifact
-takes the live path with the conditions it has.
+sufficient with the controls in `replay_mode_basis.control_ids` installed. The
+control blocks the first irreversible action, it covers every check that
+action can reach, and no other irreversible tool is available. When the
+control being validated is one of those controls, `validate-control` runs only
+the replay-only conditions for it, calls no provider and spends nothing. The
+result says so in three places. `metadata.validate_control.path` is
+`static_ok_short_path`, `not_run_on_short_path` lists the live conditions left
+out, and the notes and `report.md` state that the live quantities are not part
+of the decision. When the label was predicted with other controls, or the plan
+has no replay-only condition for the control, a `static_ok` artifact takes the
+live path with the conditions it has, and a note says which.
 
 ## What validate-control writes
 
@@ -158,24 +198,27 @@ with decision `review` by `policy`, so the metrics are the ones record
 derives. Once the rule has run, `result.json` is written again with the rule's
 decision by `policy` and `metadata.validate_control`, which holds the path,
 the checks with their values and thresholds, the reasons, the notes, the
-plan's `keep_rule`, the conditions run and, on keep, the commit command.
-`report.md` gains a Keep rule section. The command exits 0 on every decision,
-2 on a usage error and 2 when the budget cannot be enforced.
+plan's `keep_rule`, the conditions run, `skipped_conditions` with the reason
+branch skipped each one, and, on keep, the commit command. `report.md` is
+rendered again as record renders it, with the B1 sidecar when the renderer
+takes one (#200), and gains a Keep rule section. The command exits 0 on every
+decision, 2 on a usage error and 2 when the budget cannot be enforced.
 
 The replay-only batch carries each installed control's #146 verdict in
 `metadata.control_validations` ([branch_stage.md](branch_stage.md#replay-only-conditions)),
 which is where the rule reads the static verdict and the sibling results.
 
-## Before #200
+## Before and after #200
 
 `verdict_agreement_rate` and `sibling_failure_rate` are derived by #200, which
-also writes `repair_effectiveness.json`. Until it lands, record leaves both
+also writes `repair_effectiveness.json`. Without #200, record leaves both
 metrics null and no sidecar exists, so `validate-control` returns review and
-names each missing input. The end-to-end tests stand in for #200 through two
-seams, a wrapper around `derive_metrics` and one around
-`ArtifactStore.write_experiment_result` that writes the sidecar, both
-computing from the recorded batches by the formulas in
-[methodology_metrics.md](methodology_metrics.md).
+names each missing input. The end-to-end tests stand in for #200 through one
+seam, a wrapper around `ArtifactStore.write_experiment_result`, which takes the
+same arguments on both sides of #200. It fills only the metrics record left
+null, from the recorded batches by the formulas in
+[methodology_metrics.md](methodology_metrics.md), and writes the sidecar beside
+the result. With #200 merged, #200's own numbers stand.
 
 ## Limits
 
@@ -189,9 +232,14 @@ computing from the recorded batches by the formulas in
 - **One result per plan.** The result is keyed by the plan's experiment id, so
   validating a second control from the same plan replaces the first control's
   result. A plan per control avoids it.
-- **The margin's two denominators differ.** The recovered share keeps
-  incomplete runs, and the noise floor's clean share counts completed runs
-  only. The difference leans toward review.
+- **The margin's two denominators differ.** Both shares count a run as clean
+  only with no blocking failure after the fork. The recovered share also keeps
+  incomplete runs in its denominator, and the noise floor's clean share counts
+  completed runs only. The difference leans toward review.
+- **Scripted arms are offline stand-ins.** A scripted fixture arm counts as
+  live evidence so the rule can be tested end to end without a provider. It
+  answers the block only as its author wrote it, so a keep on scripted arms
+  shows the rule and the command at work and says nothing about a live model.
 - **Siblings are fixture runs.** A sibling runs its own scripted fixture with
   the control installed, so a sibling that passes shows no overblocking for
   that script and says nothing about a live agent on the same task.

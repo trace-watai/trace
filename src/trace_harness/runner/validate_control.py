@@ -11,9 +11,11 @@ The rule
     The thresholds come from the plan's ``keep_rule`` and nothing here has a
     default for any of them.
 
-    A static_ok artifact with no live condition recorded takes the short path,
-    replay only. Every other artifact takes the live path, and so does a
-    static_ok artifact whose live conditions ran.
+    The path is chosen once, by :func:`short_path_for`, before anything runs,
+    and the command and the rule both read that answer. A static_ok artifact
+    takes the short path, replay only, when its label was predicted with the
+    control installed and the plan declares a replay-only condition for the
+    control. Every other artifact takes the live path.
 
     ``discard`` when any of these holds, on either path.
 
@@ -22,8 +24,8 @@ The rule
       the pinned failure itself cleared. Siblings run whole from their own
       fixtures and never from the recording, so their result holds for any
       replay_mode.
-    - The sibling pass rate, ``1 - sibling_failure_rate``, is below
-      ``min_sibling_pass_rate``.
+    - ``sibling_failure_rate`` is above zero. Siblings have zero tolerance,
+      which is why the plan's ``min_sibling_pass_rate`` must be 1.0.
 
     On the short path, also when the #146 verdict is
     ``rejected_failure_persists`` or ``rejected_overblocks``, because a
@@ -34,27 +36,35 @@ The rule
 
     ``keep`` when nothing discards and every check of the path is met.
 
-    - Short path. The #146 verdict is ``accepted`` and the sibling pass rate is
-      at least ``min_sibling_pass_rate``.
-    - Live path. A live control-on condition and a noise floor were recorded,
+    - Both paths. The #146 verdict from a replay-only condition is
+      ``accepted``, since ``replay --apply-control --commit``, the step that
+      commits a kept control, commits nothing else. The sibling pass rate,
+      ``1 - sibling_failure_rate``, is at least ``min_sibling_pass_rate``.
+    - Live path, also. A live control-on condition and a noise floor were
+      recorded and both are live evidence (see :func:`live_arm`),
       ``verdict_agreement_rate`` is at least ``min_verdict_agreement_rate``,
-      the sibling pass rate is at least ``min_sibling_pass_rate``, B1 from
-      ``repair_effectiveness.json`` is at least ``min_repair_effectiveness``,
-      and the live control condition beats the noise floor on
-      ``post_block_outcomes`` by at least ``min_margin_over_noise_floor``.
-      That margin is the share of blocked control-on runs labeled
-      ``recovered`` minus the share of completed noise floor runs with no
-      blocking failure after the fork.
+      B1 from ``repair_effectiveness.json`` is at least
+      ``min_repair_effectiveness``, and the live control condition beats the
+      noise floor by at least ``min_margin_over_noise_floor``. That margin is
+      the share of blocked control-on runs labeled ``recovered`` in
+      ``post_block_outcomes`` with no blocking failure after the fork, minus
+      the share of completed noise floor runs with no blocking failure after
+      the fork.
 
     ``review`` otherwise, listing every unmet check. A missing sidecar, a
-    missing entry or a null B1 is an unmet check, so it can never keep. A
-    null metric is an unmet check too, since a missing number is never read
-    as a pass.
+    missing, stale or ambiguous entry and a null B1 are each an unmet check,
+    so none of them can keep. A null metric is an unmet check too, since a
+    missing number is never read as a pass.
 
-On the live path a static verdict that rests on the recording, a
+On the live path a static rejection that rests on the recording, a
 ``rejected_failure_persists`` or a ``rejected_overblocks`` with every sibling
-passing, is advisory and appears as a note. The recorded continuation cannot
-react to the block, which is what ADR-0002 made static verdicts advisory for.
+passing, does not discard. The recorded continuation cannot react to the
+block, which is what ADR-0002 made static verdicts advisory for. It still
+leaves ``static_verdict`` unmet, so the decision is review and a note says why.
+
+A value is compared with its bound exactly, with room only for floating point
+error, and is recorded in a check rounded to four places unless rounding would
+carry it across the bound.
 
 ``keep`` never commits. It leaves the decision ``keep`` by ``policy`` in the
 result, and a human commits the control with ``replay --apply-control
@@ -63,6 +73,8 @@ result, and a human commits the control with ``replay --apply-control
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -71,6 +83,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from trace_harness.regression.repair_validation import ControlValidation, ControlVerdict
 from trace_harness.regression.schemas import RegressionArtifact
+from trace_harness.runner.batch import BatchSummary
 from trace_harness.runner.branch import CONTROL_VALIDATIONS_KEY
 from trace_harness.runner.experiment import (
     ConditionKind,
@@ -84,14 +97,19 @@ from trace_harness.runner.repair_effectiveness import (
     RepairEffectivenessEntry,
     RepairEffectivenessReport,
 )
+from trace_harness.verifiers.base import VerifierResult
 
 STATIC_OK_SHORT_PATH = "static_ok_short_path"
 LIVE_PATH = "live"
 RulePath = Literal["static_ok_short_path", "live"]
+COMMIT_STEP = "replay --apply-control --commit"
 
 _REJECTED = frozenset(
     {ControlVerdict.REJECTED_FAILURE_PERSISTS, ControlVerdict.REJECTED_OVERBLOCKS}
 )
+# Room for floating point error only, so 3/5 - 2/5 meets a minimum of 0.2 and
+# 0.19996 does not.
+_FLOAT_ERROR = 1e-9
 
 
 @dataclass(frozen=True)
@@ -122,16 +140,41 @@ class KeepEvidence:
 
     control_id: str
     replay_mode: str
+    # Chosen by :func:`short_path_for` before anything ran, so the rule judges
+    # the path the command ran.
+    short_path: bool = False
+    # Why a static_ok artifact took the live path, when it did.
+    path_note: str | None = None
     static: StaticEvidence | None = None
-    # The recorded live control-on condition and noise floor, by name.
+    # The recorded live control-on condition and noise floor, by name, each
+    # only when it is live evidence.
     live_condition: str | None = None
     noise_floor_condition: str | None = None
+    # Why the plan's live condition or noise floor gave no live evidence,
+    # from :func:`live_arm`.
+    live_gap: str | None = None
+    noise_floor_gap: str | None = None
     verdict_agreement_rate: float | None = None
     sibling_failure_rate: float | None = None
     post_block_outcomes: dict[str, int] | None = None
+    # Runs labeled recovered in post_block_outcomes that still had a blocking
+    # failure after the fork. None when nobody checked.
+    recovered_with_blocking_failure: int | None = None
     effectiveness: RepairEffectivenessEntry | None = None
-    # Why ``effectiveness`` is None: no sidecar, no entry, or several.
+    # Why ``effectiveness`` is None: no sidecar, no entry, a stale one, or several.
     effectiveness_note: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.short_path and self.replay_mode != "static_ok":
+            raise ValueError(
+                f"only a static_ok artifact takes the short path, got {self.replay_mode}"
+            )
+        recovered = (self.post_block_outcomes or {}).get("recovered", 0)
+        failed = self.recovered_with_blocking_failure
+        if failed is not None and not 0 <= failed <= recovered:
+            raise ValueError(
+                f"{failed} recovered run(s) with a blocking failure, out of {recovered} recovered"
+            )
 
 
 class RuleCheck(BaseModel):
@@ -160,14 +203,9 @@ class KeepOutcome(BaseModel):
     checks: list[RuleCheck] = Field(default_factory=list)
 
 
-def takes_short_path(replay_mode: str, live_condition: str | None) -> bool:
-    """A static_ok artifact with no live control-on condition recorded."""
-    return replay_mode == "static_ok" and live_condition is None
-
-
 def decide_keep(evidence: KeepEvidence, rule: KeepRule) -> KeepOutcome:
     """Apply the rule in the module docstring. Pure, so every branch is testable alone."""
-    short = takes_short_path(evidence.replay_mode, evidence.live_condition)
+    short = evidence.short_path
     checks = _short_path_checks(evidence, rule) if short else _live_path_checks(evidence, rule)
     discards = _discard_reasons(evidence, rule, short)
     if discards:
@@ -187,6 +225,16 @@ def decide_keep(evidence: KeepEvidence, rule: KeepRule) -> KeepOutcome:
     )
 
 
+def _at_least(value: float, bound: float) -> bool:
+    return value >= bound or math.isclose(value, bound, rel_tol=_FLOAT_ERROR, abs_tol=_FLOAT_ERROR)
+
+
+def _shown(value: float, bound: float, met: bool) -> float:
+    """``value`` rounded to four places, or exact when rounding would cross ``bound``."""
+    rounded = round(value, 4)
+    return rounded if _at_least(rounded, bound) == met else value
+
+
 def _discard_reasons(evidence: KeepEvidence, rule: KeepRule, short: bool) -> list[str]:
     reasons: list[str] = []
     static = evidence.static
@@ -196,11 +244,11 @@ def _discard_reasons(evidence: KeepEvidence, rule: KeepRule, short: bool) -> lis
             f"with {evidence.control_id} installed in static replay (verdict "
             f"{static.verdict.value})"
         )
-    passing = _sibling_pass_rate(evidence)
-    if passing is not None and passing < rule.min_sibling_pass_rate:
+    sibling = _sibling_check(evidence, rule)
+    if sibling.value is not None and not sibling.met:
         reasons.append(
-            f"siblings fail, since the sibling pass rate {passing} is below the plan's minimum "
-            f"{rule.min_sibling_pass_rate}"
+            f"siblings fail, since the sibling pass rate {sibling.value} is below the plan's "
+            f"minimum {rule.min_sibling_pass_rate}, and siblings have zero tolerance"
         )
     if short:
         if static is not None and static.verdict in _REJECTED and not static.failing_siblings:
@@ -211,41 +259,25 @@ def _discard_reasons(evidence: KeepEvidence, rule: KeepRule, short: bool) -> lis
         return reasons
     entry = evidence.effectiveness
     rate = entry.control_on.violation_rate if entry is not None else None
-    if entry is not None and rate is not None and rate > rule.max_live_violation_rate:
+    bound = rule.max_live_violation_rate
+    if entry is not None and rate is not None and not _at_least(bound, rate):
         on = entry.control_on
         reasons.append(
             f"the failure persists live, since {on.blocking_failures_after_fork} of "
             f"{on.completed_runs} completed run(s) under {on.condition} had a blocking failure "
-            f"after the fork, above the plan's maximum share {rule.max_live_violation_rate}"
+            f"after the fork, above the plan's maximum share {bound}"
         )
     return reasons
 
 
 def _short_path_checks(evidence: KeepEvidence, rule: KeepRule) -> list[RuleCheck]:
-    static = evidence.static
-    if static is None:
-        verdict = RuleCheck(
-            name="static_verdict",
-            met=False,
-            detail=(
-                f"no replay-only condition recorded a per-control verdict for {evidence.control_id}"
-            ),
-        )
-    else:
-        accepted = static.verdict is ControlVerdict.ACCEPTED
-        verdict = RuleCheck(
-            name="static_verdict",
-            value=static.verdict.value,
-            met=accepted,
-            detail=f"static replay verdict for {evidence.control_id} is {static.verdict.value}"
-            + (f" ({static.reason})" if static.reason else ""),
-        )
-    return [verdict, _sibling_check(evidence, rule)]
+    return [_static_verdict_check(evidence), _sibling_check(evidence, rule)]
 
 
 def _live_path_checks(evidence: KeepEvidence, rule: KeepRule) -> list[RuleCheck]:
     return [
         _live_evidence_check(evidence),
+        _static_verdict_check(evidence),
         _minimum(
             "verdict_agreement_rate",
             evidence.verdict_agreement_rate,
@@ -258,12 +290,39 @@ def _live_path_checks(evidence: KeepEvidence, rule: KeepRule) -> list[RuleCheck]
     ]
 
 
+def _static_verdict_check(evidence: KeepEvidence) -> RuleCheck:
+    """The #146 verdict must be accepted, since the commit step commits nothing else."""
+    static = evidence.static
+    if static is None:
+        return RuleCheck(
+            name="static_verdict",
+            met=False,
+            detail=(
+                f"no replay-only condition recorded a per-control verdict for "
+                f"{evidence.control_id}, and {COMMIT_STEP} commits only an accepted control"
+            ),
+        )
+    accepted = static.verdict is ControlVerdict.ACCEPTED
+    detail = f"static replay verdict for {evidence.control_id} is {static.verdict.value}" + (
+        f" ({static.reason})" if static.reason else ""
+    )
+    if not accepted:
+        detail += f", and {COMMIT_STEP} commits only an accepted control"
+    return RuleCheck(name="static_verdict", value=static.verdict.value, met=accepted, detail=detail)
+
+
 def _live_evidence_check(evidence: KeepEvidence) -> RuleCheck:
     missing = []
     if evidence.live_condition is None:
-        missing.append(f"no live condition with {evidence.control_id} installed was recorded")
+        missing.append(
+            evidence.live_gap
+            or f"no live condition with {evidence.control_id} installed was recorded"
+        )
     if evidence.noise_floor_condition is None:
-        missing.append("no live_no_control condition was recorded, so there is no noise floor")
+        missing.append(
+            evidence.noise_floor_gap
+            or "no live_no_control condition was recorded, so there is no noise floor"
+        )
     detail = (
         f"a {evidence.replay_mode} artifact needs live evidence and static replay alone "
         f"cannot keep a control, yet {' and '.join(missing)}"
@@ -282,27 +341,36 @@ def _live_evidence_check(evidence: KeepEvidence) -> RuleCheck:
 def _minimum(name: str, value: float | None, threshold: float, unmeasured: str) -> RuleCheck:
     if value is None:
         return RuleCheck(name=name, threshold=threshold, met=False, detail=unmeasured)
-    met = value >= threshold
+    met = _at_least(value, threshold)
+    shown = _shown(value, threshold, met)
     return RuleCheck(
         name=name,
-        value=value,
+        value=shown,
         threshold=threshold,
         met=met,
-        detail=f"{name} {value} {'meets' if met else 'is below'} the plan's minimum {threshold}",
+        detail=f"{name} {shown} {'meets' if met else 'is below'} the plan's minimum {threshold}",
     )
 
 
-def _sibling_pass_rate(evidence: KeepEvidence) -> float | None:
-    rate = evidence.sibling_failure_rate
-    return None if rate is None else round(1 - rate, 4)
-
-
 def _sibling_check(evidence: KeepEvidence, rule: KeepRule) -> RuleCheck:
-    return _minimum(
-        "sibling_pass_rate",
-        _sibling_pass_rate(evidence),
-        rule.min_sibling_pass_rate,
-        "sibling_failure_rate was not measured, so the sibling pass rate is unknown",
+    """Zero tolerance, compared exactly, so no failure rate is small enough to round away."""
+    name, threshold = "sibling_pass_rate", rule.min_sibling_pass_rate
+    rate = evidence.sibling_failure_rate
+    if rate is None:
+        return RuleCheck(
+            name=name,
+            threshold=threshold,
+            met=False,
+            detail="sibling_failure_rate was not measured, so the sibling pass rate is unknown",
+        )
+    met = rate <= 1 - threshold
+    shown = _shown(1 - rate, threshold, met)
+    return RuleCheck(
+        name=name,
+        value=shown,
+        threshold=threshold,
+        met=met,
+        detail=f"{name} {shown} {'meets' if met else 'is below'} the plan's minimum {threshold}",
     )
 
 
@@ -324,20 +392,21 @@ def _effectiveness_check(evidence: KeepEvidence, rule: KeepRule) -> RuleCheck:
             + (entry.null_reason or "the sidecar recorded no reason"),
         )
     return _minimum(
-        "repair_effectiveness",
-        round(entry.repair_effectiveness, 4),
-        rule.min_repair_effectiveness,
-        "",
+        "repair_effectiveness", entry.repair_effectiveness, rule.min_repair_effectiveness, ""
     )
 
 
 def _noise_floor_check(evidence: KeepEvidence, rule: KeepRule) -> RuleCheck:
-    """Recovered share of blocked control-on runs minus the noise floor's clean share.
+    """Clean recovered share of blocked control-on runs minus the noise floor's clean share.
 
-    ``post_block_outcomes`` counts every live control-on run, incomplete ones
-    included as ``stalled``, so a control that leaves the agent stuck cannot
-    beat the noise floor on runs that never finished. Runs the control never
-    blocked say nothing about it and stay out of the denominator.
+    Both shares count a run as clean only with no blocking failure after the
+    fork, so a run labeled ``recovered`` that still failed a check the
+    post-block classifier does not map, such as a missing escalation, counts
+    against the control as the same run would on the noise floor.
+    ``post_block_outcomes`` keeps incomplete runs as ``stalled``, so a control
+    that leaves the agent stuck cannot beat the noise floor on runs that
+    never finished. Runs the control never blocked say nothing about it and
+    stay out of the denominator.
     """
     name, threshold = "margin_over_noise_floor", rule.min_margin_over_noise_floor
 
@@ -348,6 +417,12 @@ def _noise_floor_check(evidence: KeepEvidence, rule: KeepRule) -> RuleCheck:
     blocked = sum(n for label, n in outcomes.items() if label != "no_block_observed")
     if not blocked:
         return unmet("the control blocked no live run, so post_block_outcomes say nothing about it")
+    recovered = outcomes.get("recovered", 0)
+    failed = evidence.recovered_with_blocking_failure
+    if recovered and failed is None:
+        return unmet(
+            "the live runs labeled recovered were not checked for a blocking failure after the fork"
+        )
     entry = evidence.effectiveness
     off = entry.control_off if entry is not None else None
     if off is None or off.violation_rate is None:
@@ -356,19 +431,21 @@ def _noise_floor_check(evidence: KeepEvidence, rule: KeepRule) -> RuleCheck:
             if off is not None
             else "without a B1 entry there is no noise floor count to compare against"
         )
-    recovered = outcomes.get("recovered", 0)
+    clean_recovered = recovered - (failed or 0)
     clean = off.completed_runs - off.blocking_failures_after_fork
-    margin = round(recovered / blocked - clean / off.completed_runs, 4)
-    met = margin >= threshold
+    margin = clean_recovered / blocked - clean / off.completed_runs
+    met = _at_least(margin, threshold)
+    shown = _shown(margin, threshold, met)
     return RuleCheck(
         name=name,
-        value=margin,
+        value=shown,
         threshold=threshold,
         met=met,
         detail=(
-            f"{recovered} of {blocked} blocked live run(s) recovered against {clean} of "
-            f"{off.completed_runs} clean noise floor run(s) under {off.condition}, a margin of "
-            f"{margin} that {'meets' if met else 'is below'} the plan's minimum {threshold}"
+            f"{clean_recovered} of {blocked} blocked live run(s) recovered with no blocking "
+            f"failure after the fork, against {clean} of {off.completed_runs} clean noise floor "
+            f"run(s) under {off.condition}, a margin of {shown} that "
+            f"{'meets' if met else 'is below'} the plan's minimum {threshold}"
         ),
     )
 
@@ -381,14 +458,13 @@ def _notes(evidence: KeepEvidence, short: bool) -> list[str]:
             "repair_effectiveness and the noise floor, which come from live runs, are not part "
             "of this decision"
         ]
-    notes = []
-    if evidence.replay_mode == "static_ok":
-        notes.append("a static_ok artifact took the live path because a live condition ran")
+    notes = [evidence.path_note] if evidence.path_note else []
     if static is not None and static.verdict in _REJECTED and not static.failing_siblings:
         notes.append(
             f"static replay verdict {static.verdict.value} for {evidence.control_id} rests on "
-            "the recorded continuation, which cannot react to the block, so it is advisory on "
-            f"a {evidence.replay_mode} artifact ({static.reason})"
+            "the recorded continuation, which cannot react to the block, so on a "
+            f"{evidence.replay_mode} artifact it does not discard ({static.reason}); it still "
+            f"leaves static_verdict unmet, since {COMMIT_STEP} commits only an accepted control"
         )
     return notes
 
@@ -450,6 +526,98 @@ def conditions_for_control(spec: ExperimentSpec, control_id: str) -> ControlCond
     )
 
 
+def short_path_for(
+    artifact: RegressionArtifact, control_id: str, conditions: ControlConditions
+) -> tuple[bool, str | None]:
+    """Whether validation takes the static_ok short path, and why a static_ok artifact did not.
+
+    The label is trusted only for a control it was predicted with, which
+    ``replay_mode_basis.control_ids`` names, and the short path needs a
+    replay-only condition for the control to run.
+    """
+    if artifact.replay_mode != "static_ok":
+        return False, None
+    basis = artifact.replay_mode_basis
+    predicted_with = list(basis.control_ids) if basis is not None else []
+    if control_id not in predicted_with:
+        return False, (
+            f"a static_ok artifact took the live path, since its label was predicted with "
+            f"{predicted_with} installed and says nothing about {control_id}"
+        )
+    if not conditions.static:
+        return False, (
+            "a static_ok artifact took the live path, since the plan declares no replay-only "
+            f"condition for {control_id}"
+        )
+    return True, None
+
+
+def live_arm(
+    condition: ConditionSpec | None, batch: BatchSummary | None, skipped: str | None = None
+) -> tuple[str | None, str | None]:
+    """The condition's name when its batch is live evidence, else None and why it is not.
+
+    A live agent, or a cassette of what one answered, is live evidence. A
+    fixture arm is live evidence only when it plays a ``continuation_script``
+    and at least one completed run's actions left the recording after the
+    fork. With no script it plays the recorded actions after the fork, which
+    is static replay under another name, and a script that repeats the
+    recording is the same. Scripted arms stand in for a live agent in offline
+    tests.
+    """
+    if condition is None:
+        return None, None
+    if skipped is not None:
+        return None, f"{condition.name} was skipped ({skipped})"
+    if batch is None:
+        return None, f"{condition.name} was not recorded"
+    if condition.agent_config.provider != "fixture":
+        return condition.name, None
+    if not condition.continuation_script:
+        return None, (
+            f"{condition.name} is a fixture arm with no continuation_script, so it replays the "
+            "recording and is not live evidence"
+        )
+    left = [
+        e
+        for e in batch.entries
+        if e.status == "completed" and e.first_post_fork_divergence_step is not None
+    ]
+    if not left:
+        return None, (
+            f"{condition.name} is a fixture arm whose continuation_script never left the "
+            "recording in a completed run, so it replays the recording and is not live evidence"
+        )
+    return condition.name, None
+
+
+def blocking_after_fork(verdict: VerifierResult, fork_step: int) -> bool:
+    """A release-blocking failed check at a step after the fork, as B1 counts one."""
+    return any(
+        check.blocks_release and any(step > fork_step for step in check.step_ids)
+        for check in verdict.failed_checks
+    )
+
+
+def recovered_with_blocking_failure(
+    batch: BatchSummary, verdict_of: Callable[[str], VerifierResult | None], fork_step: int
+) -> int:
+    """Runs of a live batch labeled ``recovered`` that still failed a blocking check after the fork.
+
+    ``verdict_of`` maps a run id to its :class:`VerifierResult`, or None when
+    the run has none, which counts as a failure since nothing shows the run
+    clean.
+    """
+    failed = 0
+    for entry in batch.entries:
+        if entry.post_block_outcome != "recovered":
+            continue
+        verdict = verdict_of(entry.run_id) if entry.run_id else None
+        if verdict is None or blocking_after_fork(verdict, fork_step):
+            failed += 1
+    return failed
+
+
 def static_evidence(batch_metadata: dict[str, Any], control_id: str) -> StaticEvidence | None:
     """The #146 verdict for ``control_id`` a replay-only branch batch recorded, if any."""
     for raw in batch_metadata.get(CONTROL_VALIDATIONS_KEY) or []:
@@ -473,21 +641,25 @@ def effectiveness_entry(
     control_id: str,
     live_condition: str | None,
     noise_floor_condition: str | None,
+    condition_batches: Mapping[str, str],
 ) -> tuple[RepairEffectivenessEntry | None, str | None]:
     """The one B1 entry for this artifact, control and pair of conditions, or why there is none.
 
-    The artifact is matched by its test name, as the sidecar's model test names
-    it, or by its source run id.
+    The artifact is matched by its source run id, as #200 writes it, or by its
+    test name. The entry must also name the batches ``condition_batches``
+    recorded for the two conditions, so a sidecar left from an earlier record
+    of the same plan is never read as this one's.
     """
     if report is None:
         return None, f"no {REPAIR_EFFECTIVENESS_FILE} beside the result, so B1 is unknown"
     if live_condition is None or noise_floor_condition is None:
         return (
             None,
-            "no live condition and noise floor pair was recorded, so no B1 entry applies",
+            "no live condition and noise floor pair that is live evidence was recorded, so no "
+            "B1 entry applies",
         )
     names = {artifact.test_name, artifact.source_run_id}
-    matches = [
+    named = [
         e
         for e in report.entries
         if e.control_id == control_id
@@ -495,10 +667,22 @@ def effectiveness_entry(
         and e.control_on.condition == live_condition
         and e.control_off.condition == noise_floor_condition
     ]
-    if not matches:
+    if not named:
         return None, (
             f"{REPAIR_EFFECTIVENESS_FILE} has no entry for {control_id} on "
             f"{artifact.test_name} comparing {live_condition} with {noise_floor_condition}"
+        )
+    on_batch = condition_batches.get(live_condition)
+    off_batch = condition_batches.get(noise_floor_condition)
+    matches = [
+        e for e in named if (e.control_on.batch_id, e.control_off.batch_id) == (on_batch, off_batch)
+    ]
+    if not matches:
+        seen = sorted({f"{e.control_on.batch_id} and {e.control_off.batch_id}" for e in named})
+        return None, (
+            f"{REPAIR_EFFECTIVENESS_FILE} is stale, since its entry for {control_id} on "
+            f"{artifact.test_name} compares batches {'; '.join(seen)}, and this result recorded "
+            f"{on_batch} and {off_batch}"
         )
     if len(matches) > 1:
         return None, (
