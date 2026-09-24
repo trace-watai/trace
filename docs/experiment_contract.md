@@ -72,13 +72,11 @@ nothing was checked.
 
 ## The frozen evaluator
 
-`experiment record` refuses an experiment whose evaluator changed after its
-plan was frozen. The plan's `frozen_manifest.frozen_set` holds a sha256 for
-every file of the evaluator, written once by `experiment freeze` before any
-condition runs. `record` recomputes them from the working tree and refuses,
-listing each file that changed, was added or was removed. What this does and
-does not guarantee is spelled out under [Limits](#limits). The module is
-`trace_harness/runner/frozen_set.py`.
+A change to the evaluator after its plan is frozen is refused. The plan's
+`frozen_manifest.frozen_set` holds a sha256 for every file of the evaluator,
+written once by `experiment freeze` before any condition runs. `experiment
+record` recomputes them and refuses, listing each file that changed, was added
+or was removed. The module is `trace_harness/runner/frozen_set.py`.
 
 | component | what is hashed |
 |---|---|
