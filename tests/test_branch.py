@@ -881,6 +881,15 @@ def test_an_incomplete_run_is_replaced_by_the_next_unused_seed(
     assert len(completed) == min(5, 10 - len(incomplete))
 
 
+def test_a_replacement_never_reuses_a_declared_seed(tmp_path, monkeypatch):
+    path, artifact = _artifact(tmp_path)
+    _, spec = _spec(tmp_path, _condition("live", "live", artifact, 2, seeds=[0, 1, 2]))
+    spec = spec.model_copy(update={"metadata": {"replacement_seeds": [2, 3]}})
+    _fake_seeds(monkeypatch, {0})
+    summary = run_branch(path, spec, spec.conditions[0], ArtifactStore(tmp_path / "runs")).summary
+    assert [e.seed for e in summary.entries] == [0, 1, 2, 3]
+
+
 def test_a_plan_without_replacement_seeds_never_replaces(tmp_path, monkeypatch):
     path, artifact = _artifact(tmp_path)
     _, spec = _spec(tmp_path, _condition("live", "live", artifact, 2, seeds=[0, 1, 2]))

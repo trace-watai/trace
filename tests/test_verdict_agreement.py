@@ -67,6 +67,10 @@ def _runs(batch: str, task: str, provider: str, model: str, runs: list) -> list[
         status = run if isinstance(run, str) else "completed"
         if run_id and status == "completed":
             VERDICTS[run_id] = _verdict(run_id, *run)
+        elif run_id:
+            # A verdict file from before 0.4.0 says fail on a run that never
+            # finished. Run status alone keeps it out of every denominator.
+            VERDICTS[run_id] = _verdict(run_id, _check([99]))
         entries.append(
             BatchRunEntry(
                 run_id=run_id,
@@ -135,6 +139,17 @@ def _experiment():
         ),
         _static("sB", "run_B", "task_b", 1, {"sib3": _verdict("sib3")}),
         _static("sD", "run_D", "task_d", 1, {"sib4": _verdict("sib4", incomplete=True)}),
+        # A plain replay installs no control, so its failing sibling is not A4's.
+        _batch(
+            "sE",
+            "static_replay",
+            "run_A",
+            1,
+            [],
+            control=None,
+            replay_exit_code=1,
+            siblings=[{"test_name": "sib5", "run_id": "sib5"}],
+        ),
         # A live, fork 5: a pass, a block at the fork step itself, a non-blocking
         # check after it, a blocking check without steps, one blocking at steps
         # 3 and 6, and an incomplete run. 4 clear of 5 completed.
@@ -213,6 +228,7 @@ def _experiment():
             _runs("wA", "task_a", "anthropic", CLAUDE, [after_a] * 5),
         ),
     ]
+    VERDICTS["sib5"] = _verdict("sib5", _check([2]))
     summaries = [s for s, _ in batches]
     conditions = {s.batch_id: c for s, c in batches}
     return summaries, conditions

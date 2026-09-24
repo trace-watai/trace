@@ -235,10 +235,12 @@ def test_the_dry_run_sidecar(dry_run):
         )
         for e in sidecar.entries
     }
-    # refund_policy_failure keeps failing after step 5 either way (ticket and
-    # escalation checks), so B1 is 0. The purchase_age recordings do nothing
-    # blocking after the fork without the control, so their baseline is 0 and
-    # B1 is null with that reason.
+    # Both arms replay the recorded refund at the fork step, and B1 counts only
+    # checks after it, so the control-off refund at the fork step never counts
+    # (runbook_001.md, "B1 at the registered fork points"). refund_policy_failure
+    # also fails at steps 6 and 7 either way, so its B1 is 0. The purchase_age
+    # recordings fail only at the fork step without the control, so their
+    # baseline is 0 and B1 is null with that reason.
     for arm in ("live", "live_swapped"):
         assert rows[(f"{arm}__refund_policy_failure", 5)] == (5, 5, 5, 5, 0.0)
         for task, step in (
@@ -294,6 +296,48 @@ def test_regenerate_ignores_only_the_timestamp_and_the_report_path(dry_run, tmp_
         env=_env(),
     )
     assert ran.returncode == 0, ran.stdout + ran.stderr
+
+
+def _dry_run_module():
+    spec = importlib.util.spec_from_file_location(
+        "dry_run_exp_001", REPO_ROOT / "scripts" / "dry_run_exp_001.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_harness_check_fails_a_disagreement_a_divergence_or_a_null(dry_run):
+    _, retained = dry_run
+    check = _dry_run_module().harness_check
+    result = _load(retained, "result.json")
+    assert check(result) == []
+
+    disagreeing = json.loads(json.dumps(result))
+    disagreeing["metadata"]["verdict_agreement_pairs"][0]["agrees"] = False
+    assert len(check(disagreeing)) == 1
+    diverging = json.loads(json.dumps(result))
+    diverging["metrics"]["first_post_fork_divergence_rate"] = 0.0667
+    assert "the fixture model must not diverge" in check(diverging)[0]
+    missing = json.loads(json.dumps(result))
+    missing["metrics"]["sibling_failure_rate"] = None
+    assert check(missing) == ["sibling_failure_rate is null"]
+    excluded = json.loads(json.dumps(result))
+    excluded["metadata"]["verdict_agreement_pairs"][0]["excluded"] = "4 completed seed(s)"
+    assert len(check(excluded)) == 1
+
+
+def test_the_stand_in_replaces_every_live_model_and_nothing_else():
+    stand_in = _dry_run_module().stand_in(PLAN.model_dump(mode="json"))
+    assert stand_in["experiment_id"] == "exp_001_replay_validity_dry_run"
+    for before, after in zip(PLAN.conditions, stand_in["conditions"], strict=True):
+        assert after["agent_config"]["provider"] == "fixture"
+        assert "cassette" not in after["agent_config"] or after["agent_config"]["cassette"] is None
+        assert (after["seeds"], after["control_ids"], after["start"]) == (
+            before.seeds,
+            before.control_ids,
+            before.start.model_dump(),
+        )
 
 
 def test_regenerate_says_when_nothing_is_retained(tmp_path):
