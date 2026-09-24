@@ -25,17 +25,31 @@ seed on each entry, so no batch schema changed. The summary goes to
 `runs/sweeps/{sweep_id}/sweep_summary.json`.
 
 Cells run seed by seed, and within a seed provider by provider over every task.
-One `BudgetGuard` spans the whole sweep, so a cap reached early leaves every
-provider with the same number of complete seeds. Before any cell runs, each
-provider's adapter is built once, which fails on a missing key without a call,
-and the guard is asked once per provider, which refuses an unpriced model or a
-zero cap. After that the guard works as it does for a batch. It admits each
-cell before it starts and is charged the cell's recorded cost after, so the
+One `BudgetGuard` spans the whole sweep, so a cap reached early stops the sweep
+inside one seed. Every earlier seed is complete for every provider. In the seed
+where it stopped, the providers whose turn came before the stop have it
+complete, the one running at the stop has it partly run, and the rest never
+started it. So providers' complete seeds differ by at most one, and comparing
+providers is fair only over the seeds complete for all of them. The summary's
+`budget.not_run` lists every cell that never started with its agent label, task
+path and seed.
+
+The spec refuses a cap of zero or less when it loads. Before any cell runs,
+each provider's adapter is built once, which fails on a missing key without a
+call, and the guard is asked once per provider, which refuses an unpriced
+model. After that the guard works as it does for a batch. It admits each cell
+before it starts and is charged the cell's recorded cost after, so the
 overshoot is at most one run, and a live run that finishes without a cost stops
-the sweep as `budget_unenforceable`. The command exits 2 when the cap cannot be
-enforced or a key is missing, and 0 otherwise, including after an exhausted
-cap. The summary's `budget` block and each batch's own say when and why the
-sweep stopped, and list every cell it never ran.
+the sweep as `budget_unenforceable`. The summary's `budget` block and each
+batch's own say when and why the sweep stopped, and list every cell it never
+ran.
+
+`run-sweep` exits 2 when the spec is malformed, a key is missing, the cap
+cannot be enforced, or `--retain` refuses to retain, and 0 otherwise, including
+after an exhausted cap. A refused retention comes after the sweep's batches and
+summary are written, so `retain-sweep` can retain the same sweep once the cause
+is fixed. `retain-sweep` exits 2 when it refuses or finds no such sweep, and 0
+otherwise, including when nothing failed.
 
 ### The committed spec
 
@@ -45,14 +59,16 @@ models for seeds 1 to 5, which is 320 cells.
 | Label | Provider | Model | Why |
 |---|---|---|---|
 | `gemini-3.6-flash` | gemini | `gemini-3.6-flash` | The one live model the repository already has evidence for, in the eight retained runs of 13 September and the retained cassette, on a key the team holds. It accepts a seed and has a price. |
-| `gpt-5-mini` | openai | `gpt-5-mini` | #160 chose OpenAI as the vendor that has native tool calling, a seed and a published price. Anthropic has no seed, so five seeds against it would be five unseeded samples, and #217 needs two seeded providers. The mini model sits in the same price tier as Gemini Flash, so the comparison is between vendors rather than model sizes, and it costs a fifth of `gpt-5`. |
+| `gpt-5-mini` | openai | `gpt-5-mini` | #160 chose OpenAI as the vendor that has native tool calling, a seed and a published price. Anthropic has no seed, so five seeds against it would be five unseeded samples, and #217 needs two seeded providers. The mini model sits in the same price tier as Gemini Flash, so the two models differ in vendor and match in size, and it costs a fifth of `gpt-5`. |
 
-Temperature is left at each provider's default, so seeds sample the model
-rather than repeat one answer, and the GPT-5 models accept only their default.
-`timeout_seconds` is 300 because Gemini is paced to ten requests a minute by
-default, which alone takes 90 seconds across a 16 step run. At that pace the
-sweep takes about three hours. A paid Gemini tier can raise the pace with a
-`call_policy` on the provider.
+Temperature is left at each provider's default, so each seed samples the model
+afresh, and the GPT-5 models accept only their default. `timeout_seconds` is
+300 because Gemini is paced to ten requests a minute by default, which alone
+takes 90 seconds across a 16 step run. The pace is shared by every Gemini call
+in the process, so the 160 Gemini runs of three to five calls each, the range
+the retained runs show, take at least 48 to 80 minutes. The OpenAI cells add
+however long their calls take, which nothing retained measures. A paid Gemini
+tier can raise the pace with a `call_policy` on the provider.
 
 ### Cost
 
@@ -112,8 +128,12 @@ A verified failure is a failing cell with at least one check whose
 `unnecessary_escalation`, `duplicate_escalation` or
 `deprecated_policy_treated_as_authoritative` is still a failing cell, listed and
 labeled, and it is not a verified failure. Cost per verified failure is null
-when nothing failed, and null when any run finished without a recorded cost,
-because an unknown cost is never counted as zero.
+when nothing failed, and null when any cell that started has no recorded cost,
+because an unknown cost is never counted as zero. That includes a
+`setup_error` cell. A sweep loads every task and builds every adapter before
+its first cell, so a cell that still ends in `setup_error` most likely failed
+during or after its run, perhaps after a billed call, and its entry keeps no
+run id and no cost.
 
 ## Labels
 

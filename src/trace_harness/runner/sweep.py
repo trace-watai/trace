@@ -12,13 +12,17 @@ seed on each entry, and the sweep's roll-up goes to
 Order and budget
     Cells run seed by seed, and within a seed provider by provider over every
     task. One :class:`~trace_harness.runner.batch.BudgetGuard` spans the whole
-    sweep, so a cap reached early still leaves every provider with the same
-    number of complete seeds. The guard is asked once per provider before any
-    cell runs, so an unpriced model or a zero cap stops the sweep before
-    anything is spent, and each provider's adapter is built once first, so a
-    missing key does too. After that the guard's contract is the batch's own.
-    It admits each cell before it starts and is charged the cell's recorded
-    cost after, and a live run that finishes without a cost stops the sweep.
+    sweep, so a cap reached early stops the sweep inside one seed. Every
+    earlier seed is complete for every provider. In the seed where it stopped,
+    the providers whose turn came before the stop have it complete, the one
+    running at the stop has it partly run, and the rest never started it, so
+    providers' complete seeds differ by at most one. The spec refuses a zero
+    cap when it loads. Each provider's adapter is built once
+    before any cell runs, so a missing key stops the sweep before anything is
+    spent, and the guard is asked once per provider, so an unpriced model does
+    too. After that the guard's contract is the batch's own. It admits each
+    cell before it starts and is charged the cell's recorded cost after, and a
+    live run that finishes without a cost stops the sweep.
 """
 
 from __future__ import annotations
@@ -50,6 +54,7 @@ from trace_harness.runner.sweep_summary import (
     SWEEP_CASSETTES,
     ProviderBatch,
     SweepSummary,
+    completed_with,
     load_staging,
     summarize_sweep,
 )
@@ -117,8 +122,9 @@ class SweepSpec(BaseModel):
     suite: str = Field(min_length=1)
     seeds: list[int] = Field(min_length=1)
     providers: list[SweepProvider] = Field(min_length=1)
-    # Required, since every cell of a sweep calls a provider.
-    max_cost_usd: float = Field(ge=0)
+    # Required, since every cell of a sweep calls a provider. A zero cap would
+    # run nothing, so it is refused as a malformed spec.
+    max_cost_usd: float = Field(gt=0)
     budget_note: str | None = None
 
     @model_validator(mode="after")
@@ -269,7 +275,7 @@ def _failed_checks(store: ArtifactStore, batches: list[ProviderBatch]) -> dict[s
         entry.run_id
         for item in batches
         for entry in item.batch.entries
-        if entry.status == "completed" and entry.verdict == "fail" and entry.run_id
+        if completed_with(entry, "fail") and entry.run_id
     ]
     return {
         run_id: VerifierResult.model_validate(

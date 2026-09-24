@@ -108,7 +108,7 @@ PLAN = {
 
 
 def planned_cost(provider: str, seeds: list[int] = SEEDS, tasks: list[str] = TASKS) -> float:
-    """What the plan's cells cost, counted from the plan rather than the run."""
+    """What the plan's cells cost, counted from the plan alone, before any run."""
     behaviors = _behaviors()
     calls = sum(len(behaviors[PLAN[provider][t][s - 1]]) for s in seeds for t in tasks)
     return calls * CALL_COST[provider]

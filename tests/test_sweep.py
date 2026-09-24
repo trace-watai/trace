@@ -163,6 +163,31 @@ def test_one_budget_stops_the_sweep_across_providers(tmp_path, fake_providers) -
     assert sum(r.not_run for r in summary.tasks) == 15
 
 
+def test_a_cap_reached_mid_seed_leaves_complete_seeds_differing_by_one(
+    tmp_path, fake_providers
+) -> None:
+    """The cap is crossed by OpenAI's first cell of seed 2, after Gemini's seed 2."""
+    spent = planned_cost("gemini", seeds=[1, 2]) + planned_cost("openai", seeds=[1])
+    summary, _ = _run(tmp_path, max_cost_usd=spent + 1e-6)
+
+    assert summary.budget.stop_reason == BUDGET_EXHAUSTED
+    ran = {(name, seed) for name, _, seed in fake_providers}
+    assert ran == {("gemini", 1), ("openai", 1), ("gemini", 2), ("openai", 2)}
+    complete = {
+        p.label: sorted(
+            seed
+            for seed in SEEDS
+            if all(
+                c.seed != seed for c in summary.budget.not_run if c.agent_label.startswith(p.label)
+            )
+        )
+        for p in summary.providers
+    }
+    assert complete == {"flash": [1, 2], "mini": [1]}
+    flash, mini = summary.providers
+    assert (flash.runs, mini.runs) == (6, 4)
+
+
 def test_an_unpriced_model_stops_the_sweep_before_any_call(tmp_path, fake_providers) -> None:
     spec = write_suite_and_spec(tmp_path)
     data = json.loads(spec.read_text())
@@ -171,6 +196,14 @@ def test_an_unpriced_model_stops_the_sweep_before_any_call(tmp_path, fake_provid
     code = main(["run-sweep", str(spec), "--runs-dir", str(tmp_path / "runs")])
     assert code == 2
     assert fake_providers == []
+
+
+def test_a_zero_cap_exits_2_before_any_call(tmp_path, fake_providers, capsys) -> None:
+    spec = write_suite_and_spec(tmp_path, max_cost_usd=0)
+    assert main(["run-sweep", str(spec), "--runs-dir", str(tmp_path / "runs")]) == 2
+    assert "greater than 0" in capsys.readouterr().err
+    assert fake_providers == []
+    assert not (tmp_path / "runs").exists()
 
 
 def test_a_missing_key_stops_the_sweep_before_any_call(
@@ -202,6 +235,7 @@ def test_the_cli_prints_the_summary(tmp_path, fake_providers, capsys) -> None:
     [
         ("seeds", [1, 1], "seeds must be distinct"),
         ("max_cost_usd", None, "max_cost_usd"),
+        ("max_cost_usd", 0, "greater than 0"),
         ("providers", [{"label": "f", "provider": "fixture", "model": "m"}], "live providers"),
         (
             "providers",

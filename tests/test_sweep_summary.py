@@ -312,6 +312,39 @@ def test_an_unknown_cost_is_never_divided_as_zero() -> None:
     assert unknown.cost_per_verified_failure is None
 
 
+def test_a_setup_error_leaves_cost_per_failure_unknown() -> None:
+    """A pipeline that raised during or after a billed run keeps no run id and no cost."""
+    gemini = _batch(
+        "batch_g",
+        [
+            _entry(A, 1, "fail", "g-a1"),
+            _entry(A, 2, None, None, status="setup_error", cost_usd=None),
+        ],
+    )
+    summary = _summary(batches=[ProviderBatch(GEMINI, gemini)])
+    assert summary.verified_failures == 1
+    assert summary.cost_recorded == 1
+    assert summary.cost_per_verified_failure is None
+    assert summary.cost_per_natural_verified_failure is None
+
+
+def test_only_a_completed_run_passes_or_fails() -> None:
+    """A run that ended any other way counts as incomplete, whatever its verdict."""
+    gemini = _batch(
+        "batch_g",
+        [
+            _entry(A, 1, "fail", "g-a1", status="terminated"),
+            _entry(A, 2, "pass", "g-a2", status="error"),
+            _entry(A, 3, "pass", "g-a3"),
+        ],
+    )
+    summary = _summary(batches=[ProviderBatch(GEMINI, gemini)], failed_checks={})
+    row = next(r for r in summary.tasks if r.task_path == A)
+    assert (row.passed, row.failed, row.incomplete, row.flipped) == (1, 0, 2, False)
+    assert summary.failing_cells == []
+    assert summary.verified_failures == 0
+
+
 def test_nothing_failing_has_no_cost_per_failure() -> None:
     passing = _batch("batch_g", [_entry(B, 1, "pass", "g-b1")])
     summary = _summary(batches=[ProviderBatch(GEMINI, passing)])

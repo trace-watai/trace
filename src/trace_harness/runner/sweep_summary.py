@@ -17,7 +17,8 @@ Counting
     ``blocks_release`` is true, as ``verified_failure_count`` is defined in
     ``docs/methodology_metrics.md``. Cost per verified failure divides the
     sweep's recorded cost by that count. It is null when nothing failed, and
-    null when any run is missing its cost, since an unknown cost is never zero.
+    null when any cell that started is missing its cost, a ``setup_error``
+    cell included, since an unknown cost is never zero.
 
 Labels
     Every failing cell is ``staged_trap`` or ``natural``. A cell is a staged
@@ -263,9 +264,9 @@ def summarize_sweep(
         }
         for entry in entries:
             row = by_task[entry.task_path]
-            if _completed_with(entry, "pass"):
+            if completed_with(entry, "pass"):
                 row.passed += 1
-            elif _completed_with(entry, "fail"):
+            elif completed_with(entry, "fail"):
                 row.failed += 1
             else:
                 row.incomplete += 1
@@ -276,7 +277,7 @@ def summarize_sweep(
         failing = [
             _failing_cell(config, batch.batch_id, entry, staging, failed_checks[entry.run_id])
             for entry in entries
-            if _completed_with(entry, "fail") and entry.run_id is not None
+            if completed_with(entry, "fail") and entry.run_id is not None
         ]
         costs = [entry.cost_usd for entry in entries if entry.cost_usd is not None]
         providers.append(
@@ -301,8 +302,11 @@ def summarize_sweep(
 
     costs = [entry.cost_usd for entry in all_entries if entry.cost_usd is not None]
     cost_usd = round(sum(costs), 6)
-    # A cell whose setup failed never called a provider, so only runs need a cost.
-    priced = all(e.cost_usd is not None for e in all_entries if e.run_id is not None)
+    # A setup_error cell has no run id and no cost, and in a sweep, which loads
+    # every task and builds every adapter first, its exception most likely came
+    # during or after the run, perhaps after a billed call. So every cell that
+    # started needs a cost.
+    priced = all(e.cost_usd is not None for e in all_entries)
     verified = [cell for cell in cells if cell.blocking]
     natural = [cell for cell in verified if cell.label == NATURAL]
     return SweepSummary(
@@ -352,7 +356,8 @@ def cell_cassette_path(config: AgentConfig, task_id: str, seed: int) -> str:
     return cassette_path(SWEEP_CASSETTES, request).as_posix()
 
 
-def _completed_with(entry: BatchRunEntry, verdict: str) -> bool:
+def completed_with(entry: BatchRunEntry, verdict: str) -> bool:
+    """Whether the run completed with ``verdict``, the only way a cell passes or fails."""
     return entry.status == "completed" and entry.verdict == verdict
 
 

@@ -270,6 +270,21 @@ def test_run_sweep_retains_and_retain_sweep_refuses_a_second_copy(
     assert main(["retain-sweep", sweep.name, "--runs-dir", str(runs), "--to", str(root)]) == 2
 
 
+def test_a_refused_retention_exits_2_after_the_sweep_is_written(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    install_fakes(monkeypatch)
+    # A "key" every retained run config holds, so the scan refuses.
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-3.6-flash")
+    runs, root = tmp_path / "runs", tmp_path / "acceptance"
+    spec = str(write_suite_and_spec(tmp_path))
+    assert main(["run-sweep", spec, "--runs-dir", str(runs), "--retain", str(root)]) == 2
+    assert "value of GEMINI_API_KEY" in capsys.readouterr().err
+    assert not root.exists()
+    [summary] = (runs / "sweeps").glob("*/sweep_summary.json")
+    assert len(SweepSummary.model_validate_json(summary.read_text()).failing_cells) == 7
+
+
 def test_a_sweep_without_failures_retains_nothing(tmp_path, monkeypatch) -> None:
     install_fakes(monkeypatch)
     spec = write_suite_and_spec(tmp_path, seeds=[2])
