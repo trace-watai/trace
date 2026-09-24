@@ -26,6 +26,7 @@ from trace_harness.public_results.upload import (
     request_chunks,
     upload,
 )
+from trace_harness.secret_scan import SHAPES, files_under, readings, scan_paths, scan_text
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ACCEPTANCE = REPO_ROOT / "docs" / "acceptance"
@@ -342,20 +343,23 @@ def test_offline_builds_and_dumps_without_a_request(
 
 # --- the key scan -------------------------------------------------------------
 
-# Built at run time so no key-shaped literal sits in the repository.
+# One planted sample per kind the shared scanner (trace_harness.secret_scan)
+# knows, built at run time so no key-shaped literal sits in the repository.
 PLANTED = {
-    "google api key": "AIza" + "B" * 35,
-    "google AQ key": "AQ." + "Ab8RN6" * 5,
-    "anthropic key": "sk-ant-" + "api03-" + "x" * 30,
-    "openai key": "sk-" + "proj-" + "Y" * 40,
-    "supabase secret key": "sb_" + "secret_" + "Z" * 32,
-    "supabase access token": "sbp_" + "a1" * 20,
-    "jwt": ".".join(["eyJ" + "h" * 20, "eyJ" + "p" * 30, "s" * 43]),
-    "github token": "ghp_" + "G" * 36,
-    "aws access key id": "AKIA" + "Q" * 16,
+    "Google API key": "AIza" + "B" * 35,
+    "Google AQ. key": "AQ." + "Ab8RN6" * 5,
+    "Anthropic key": "sk-ant-" + "api03-" + "x" * 30,
+    "OpenAI key": "sk-" + "proj-" + "Y" * 40,
+    "Supabase secret key": "sb_" + "secret_" + "Z" * 32,
+    "Supabase access token": "sbp_" + "a1" * 20,
+    "JWT": ".".join(["eyJ" + "h" * 20, "eyJ" + "p" * 30, "s" * 43]),
+    "GitHub token": "ghp_" + "G" * 36,
+    "AWS access key id": "AKIA" + "Q" * 16,
     "private key": "-----BEGIN " + "RSA PRIVATE KEY-----",
+    "bearer token": "Bearer " + "b" * 24,
     "authorization header": '"Authorization": "Bearer ' + "t" * 24 + '"',
-    "api key header": '"x-goog-api-key": "' + "k" * 39 + '"',
+    "API key header": '"x-goog-api-key": "' + "k" * 39 + '"',
+    "auth header field": '"x-api-key": "' + "redacted" + '"',
 }
 
 
@@ -376,8 +380,8 @@ ENCODED = {
 }
 
 
-def test_every_pattern_has_a_planted_sample() -> None:
-    assert set(PLANTED) == {name for name, _ in secret_scan.PATTERNS}
+def test_every_kind_the_shared_scanner_knows_has_a_planted_sample() -> None:
+    assert set(PLANTED) == {kind for kind, _ in SHAPES}
 
 
 @pytest.mark.parametrize("name", sorted(PLANTED))
@@ -406,27 +410,27 @@ def test_a_key_behind_an_escape_is_caught_and_never_printed(
     trace.parent.mkdir()
     trace.write_text('{"step": 0}\n' + line + "\n", "utf-8")
 
-    hits = secret_scan.scan_text(trace.read_text("utf-8"), "trace.jsonl")
-    assert [(h.line, h.pattern) for h in hits if h.pattern == name] == [(2, name)], hits
+    hits = scan_text(trace.read_text("utf-8"), "trace.jsonl")
+    assert [(h.line, h.kind) for h in hits if h.kind == name] == [(2, name)], hits
     assert secret_scan.main([str(tmp_path)]) == 1
     err = capsys.readouterr().err
     assert f"trace.jsonl:2: {name}" in err
     assert secret not in err and line not in err
 
 
-def test_unescape_decodes_json_and_percent_escapes() -> None:
-    assert secret_scan.unescape(r"a\nb\tc\u00e9\"d\"\/") == 'a\nb\tc\u00e9"d"/'
-    assert secret_scan.unescape(r"x\\\\ny") == "x\ny"  # Three levels of JSON.
-    assert secret_scan.unescape("q=a%20b%2Fc%0A") == "q=a b/c\n"
-    assert secret_scan.unescape("%5Cn") == "\n"  # A JSON escape inside a URL.
-    assert secret_scan.unescape(r"lone \ and 100% sure") == r"lone \ and 100% sure"
+def test_readings_decode_json_and_percent_escapes() -> None:
+    assert readings(r"a\nb\tc\u00e9\"d\"\/")[-1] == 'a\nb\tc\u00e9"d"/'
+    assert readings(r"x\\\\ny")[-1] == "x\ny"  # Three levels of JSON.
+    assert readings("q=a%20b%2Fc%0A")[-1] == "q=a b/c\n"
+    assert readings("%5Cn")[-1] == "\n"  # A JSON escape inside a URL.
+    assert readings(r"lone \ and 100% sure") == [r"lone \ and 100% sure"]
 
 
-def test_each_occurrence_is_reported_once_across_both_views() -> None:
-    for name in ("google api key", "google AQ key"):
+def test_a_key_seen_in_both_readings_is_reported_once_per_line() -> None:
+    for name in ("Google API key", "Google AQ. key"):
         secret = PLANTED[name]
         line = json.dumps({"a": secret, "b": "x\n" + secret})
-        assert [h.pattern for h in secret_scan.scan_text(line, "f")] == [name, name]
+        assert [h.kind for h in scan_text(line, "f")] == [name]
 
 
 def test_a_clean_tree_passes_and_a_missing_path_fails(
@@ -438,12 +442,24 @@ def test_a_clean_tree_passes_and_a_missing_path_fails(
     assert "not found" in capsys.readouterr().err
 
 
+def test_a_provider_key_value_set_in_the_environment_is_caught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A key of no known shape is still found by its value, as retention finds it."""
+    value = "plain-value-of-no-known-shape-123"
+    monkeypatch.setenv("OPENAI_API_KEY", value)
+    (tmp_path / "trace.jsonl").write_text(json.dumps({"text": "x\n" + value}) + "\n")
+    assert secret_scan.main([str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert "trace.jsonl:1: value of OPENAI_API_KEY" in err and value not in err
+
+
 def test_the_retained_tree_and_every_cassette_folder_hold_no_key() -> None:
     targets = secret_scan.default_targets(REPO_ROOT)
     assert ACCEPTANCE in targets
     assert REPO_ROOT / "fixtures" / "cassettes" in targets
-    scanned, hits = secret_scan.scan(targets)
-    assert scanned > 100
+    assert len(files_under(targets)) > 100
+    hits = scan_paths(targets)
     assert hits == [], "\n".join(str(h) for h in hits)
 
 

@@ -329,7 +329,8 @@ from `supabase/migrations/` and versions them, `postgrest.py` is a standard
 library PostgREST client, `retained.py` stages the retained tree as one runs
 directory, `rows.py` builds rows from `RunReader` answers, `upload.py` is the
 idempotent uploader the `publish-results` CI job runs, and `secret_scan.py`
-refuses to publish a key. `run_reader_supabase.py` is the read side, and
+refuses to publish a key, running the shared `trace_harness/secret_scan.py`
+over the retained tree and every cassette folder. `run_reader_supabase.py` is the read side, and
 `run_readers.py` picks a backend from `TRACE_RUN_READER`.
 
 **Rules:** the hosted set is what `RunReader` serves, and rows are built only

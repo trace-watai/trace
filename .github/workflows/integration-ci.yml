@@ -143,8 +143,9 @@ jobs:
         if: env.PUBLISH == 'true' && steps.current.outputs.stale == 'false'
         run: python -m pip install -e .
 
-      # Fails on any key pattern under docs/acceptance/ or in a cassettes
-      # folder, and prints hits redacted because this log is public.
+      # Fails on any secret under docs/acceptance/ or in a cassettes folder,
+      # and names only the file, line and kind of a hit because this log is
+      # public.
       - name: Scan the retained tree and cassettes for keys
         if: env.PUBLISH == 'true' && steps.current.outputs.stale == 'false'
         run: python -m trace_harness.public_results.secret_scan

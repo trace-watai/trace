@@ -189,16 +189,19 @@ the rows and reports their size with no network.
   newer one retained. A newer commit that only appends metrics history does not
   count as a change.
 - Before the upload, `python -m trace_harness.public_results.secret_scan`
-  greps `docs/acceptance/` and every `cassettes` folder for key patterns and
-  fails on a hit. It covers Google `AIza` and `AQ.` keys, Anthropic, OpenAI,
-  Supabase secret keys and access tokens, JWTs such as the legacy
-  `service_role` key, GitHub and AWS credentials, private keys, and
-  authorization or api key headers. A trace or cassette keeps a model's text
-  as a JSON string, sometimes JSON inside JSON, and a URL keeps it
-  percent-encoded, so each line is matched as written and again with its JSON
-  and `%XX` escapes decoded. A key right after a `\n` or a `%20` is caught.
-  Hits are printed redacted to four characters and a length, because the log
-  of a public repository is public.
+  scans `docs/acceptance/` and every `cassettes` folder and fails on a hit. It
+  runs `trace_harness/secret_scan.py`, the one secret scanner for evidence,
+  which sweep retention (#198) runs too. It covers Google `AIza` and `AQ.`
+  keys, Anthropic, OpenAI, Supabase secret keys and access tokens, JWTs such
+  as the legacy `service_role` key, GitHub and AWS credentials, private keys,
+  bearer tokens, authorization or api key headers, and JSON auth header fields
+  that hold a string, plus the values of the provider key variables when they
+  are set. A trace or cassette keeps a model's text as a JSON string,
+  sometimes JSON inside JSON, and a URL keeps it percent-encoded, so each line
+  is matched as written and again with its JSON and `%XX` escapes decoded. A
+  key right after a `\n` or a `%20` is caught. A hit names the file, the line
+  and the kind of secret and never the matched text, because the log of a
+  public repository is public.
   The same scan runs as a test in the backend gate, so a committed key fails
   the pull request before it reaches `main`.
 - It fails loudly on `main` when the secrets are present and something is
