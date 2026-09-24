@@ -205,7 +205,8 @@ per-batch `SuiteReport` (`report.py`).
 **Exposes:** `AgentRunner(adapter, environment, artifact_store).run(task,
 config) -> RunResult`; `build_initial_transcript` (prompt version `v0` —
 bump `RunConfig.prompt_version` when it changes); `BatchRunner(store).run(suite)
--> BatchSummary`; `build_suite_report(summary, store) -> SuiteReport` +
+-> BatchSummary`, and `.run_cell(config, task_path) -> BatchRunEntry` for one
+cell with the batch's failure isolation; `build_suite_report(summary, store) -> SuiteReport` +
 `render_suite_report_markdown` (read-only roll-up of a finished batch's
 on-disk artifacts — checks fired, failure categories, claimed-vs-observed
 coverage; see [suite_report.md](suite_report.md)).
@@ -233,7 +234,10 @@ run's id and the cost its trace records, so the guard still counts it. Every
 path prices a run through `run_cost_usd` in `batch.py`. `branch` drives one
 guard per invocation from the experiment plan's `max_cost_usd`, shared by every
 condition and seed ([branch_stage.md](branch_stage.md#budget)). `run-sweep`
-does not exist yet and is meant to drive the same `BudgetGuard`.
+drives one guard per sweep, shared by every provider and seed
+([live_sweep.md](live_sweep.md)). Retaining a sweep's failing cells scans every
+file with `trace_harness/secret_scan.py`, the one secret scanner for evidence,
+whose pure `scan_text` and `scan_paths` any package can import.
 
 `branch.py` exposes `run_branch(artifact_path, experiment, condition, store)`
 and `replay_batch(...)`, behind `trace-harness branch`. It continues a
@@ -346,7 +350,9 @@ raises on passed ones); `FailureCategory` (extend, never repurpose values);
 `classify_post_block_outcome(trace, verifier_result, run_result)`
 (`post_block.py`), which returns the first control block step and a
 `PostBlockOutcome` label for any run, passed or failed (see
-[failure_taxonomy.md](failure_taxonomy.md#post-block-outcome-labels)).
+[failure_taxonomy.md](failure_taxonomy.md#post-block-outcome-labels));
+`check_category(check_id)`, the category the attributor files
+a check under, or None, which the sweep's failure labels read.
 
 **Rules:** `root_cause_step`, `missed_recovery_step`,
 `first_unrecoverable_step`, and `first_irreversible_action_step` are
