@@ -48,7 +48,7 @@ COLUMNS: dict[str, tuple[str, ...]] = {
         "failure_card",
         "repair_package",
         "regression_artifact",
-        "canonical_run_id",
+        "bundle_ref",
         CONTENT_SHA256,
     ),
     BATCHES: ("batch_id", "summary", "suite_report", CONTENT_SHA256),

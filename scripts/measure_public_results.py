@@ -58,7 +58,7 @@ def _sweep_rows(rows: dict[str, list[dict]]) -> dict[str, list[dict]]:
         run_id = f"run_20260930T000000Z_{n:08x}"
         batch_id = batch_ids[n // per_batch]
         row = copy.deepcopy(source)
-        row.update(run_id=run_id, batch_id=batch_id, canonical_run_id=None)
+        row.update(run_id=run_id, batch_id=batch_id, bundle_ref=None)
         row["summary"].update(run_id=run_id, batch_id=batch_id)
         row["run_result"]["run_id"] = run_id
         row["content_sha256"] = content_sha256(schema.RUNS, row)
@@ -130,7 +130,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="trace-measure-") as tmp:
         staged = stage_retained(ACCEPTANCE, Path(tmp) / "staged")
         reader = RunReader.from_runs_dir(staged.runs_dir)
-        rows = build_rows(reader, sorted(staged.batches), staged.bundle_refs)
+        rows = build_rows(reader, sorted(staged.batches))
         run_dirs = [_tree_bytes(ACCEPTANCE / source)[1] for source in staged.runs.values()]
     files, tree = _tree_bytes(ACCEPTANCE)
     run_json = {row["run_id"]: _json_bytes(row) for row in rows[schema.RUNS]}

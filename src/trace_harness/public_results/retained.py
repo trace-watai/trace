@@ -26,13 +26,14 @@ RunReader would otherwise do for the retained ``index.json`` that predates
 index schema 0.5.0.
 
 A run that reproduced an earlier failure card holds ``bundle_ref.json`` in
-place of its own card, repair package and regression artifact (#211). The
-pointer is read here, and :attr:`StagedSet.bundle_refs` records the run it
-names, whose row then carries the card alone. A pointer to a run that is not
-retained, or to one that holds no card, is refused with both run ids named,
-because the hosted row would otherwise show a bundled failure as unbundled. A
-run that holds a card of its own is its own bundle home, whatever pointer sits
-beside it, as ``ArtifactStore.bundle_home`` reads it.
+place of its own card, repair package and regression artifact (#211), and
+``ArtifactStore.bundle_homes`` names the run that holds the card. Once
+everything is staged, a run whose home was not staged, or whose home holds no
+card, is refused with both run ids named, because its hosted row would point
+at a card the hosted results do not hold. A pointer that names no usable run is
+refused the same way. A run that holds a card of its own is its own home,
+whatever pointer sits beside it. This module reads no pointer itself. The
+rows take each one from ``RunReader.get_bundle_ref``.
 
 Two sources claiming the same id is an error. Nothing is ever overwritten.
 """
@@ -46,12 +47,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from trace_harness.tracing import artifact_store as names
+from trace_harness.tracing.artifact_store import ArtifactStore
 
 BATCH_SUMMARY_SUFFIX = "_" + names.BATCH_SUMMARY
-# Written by the bundle stage since #211 when a run's failure matched an
-# earlier card. The constant is repeated here because this module reads the
-# file as plain JSON and must work on trees written before and after #211.
-BUNDLE_REF = "bundle_ref.json"
 
 
 @dataclass
@@ -62,9 +60,6 @@ class StagedSet:
     runs: dict[str, str] = field(default_factory=dict)
     batches: dict[str, str] = field(default_factory=dict)
     experiments: dict[str, str] = field(default_factory=dict)
-    # Run id of a reproduction -> the run whose directory holds the failure
-    # card covering it, read from the reproduction's bundle_ref.json (#211).
-    bundle_refs: dict[str, str] = field(default_factory=dict)
 
     @property
     def empty(self) -> bool:
@@ -88,38 +83,28 @@ def _batch_id(path: Path) -> str:
     return batch_id
 
 
-def _canonical_run_id(path: Path, run_id: str) -> str:
-    """The ``canonical_run_id`` a run's ``bundle_ref.json`` names, checked."""
+def _check_bundle_homes(staged: StagedSet) -> None:
+    """Refuse a staged run whose failure card was not staged with it."""
+    store = ArtifactStore(staged.runs_dir)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"unreadable {BUNDLE_REF} for run '{run_id}': {exc}") from None
-    canonical = data.get("canonical_run_id") if isinstance(data, dict) else None
-    if (
-        not isinstance(canonical, str)
-        or canonical in {"", ".", "..", run_id}
-        or any(sep in canonical for sep in ("/", "\\", ":"))
-    ):
-        raise ValueError(
-            f"{BUNDLE_REF} for run '{run_id}' names no usable canonical_run_id (got {canonical!r})"
-        )
-    return canonical
-
-
-def _check_bundle_refs(staged: StagedSet) -> None:
-    for run_id, canonical in sorted(staged.bundle_refs.items()):
+        homes = store.bundle_homes(sorted(staged.runs))
+    except ValueError as exc:
+        raise ValueError(f"a retained {names.BUNDLE_REF} names no usable run: {exc}") from None
+    for run_id, home in sorted(homes.items()):
+        if home == run_id and store.exists(run_id, names.FAILURE_CARD):
+            continue
         where = f"run '{run_id}' ({staged.runs[run_id]})"
-        if canonical not in staged.runs:
+        if home not in staged.runs:
             raise ValueError(
-                f"{where} holds a {BUNDLE_REF} naming run '{canonical}' as the home of its "
-                f"failure card, and '{canonical}' is not retained. Retain that run directory "
+                f"{where} holds a {names.BUNDLE_REF} naming run '{home}' as the home of its "
+                f"failure card, and '{home}' is not retained. Retain that run directory "
                 f"as well, or re-bundle '{run_id}' so it holds its own card."
             )
-        if not (staged.runs_dir / canonical / names.FAILURE_CARD).is_file():
+        if not store.exists(home, names.FAILURE_CARD):
             raise ValueError(
-                f"{where} holds a {BUNDLE_REF} naming run '{canonical}' "
-                f"({staged.runs[canonical]}) as the home of its failure card, and "
-                f"'{canonical}' holds no {names.FAILURE_CARD}."
+                f"{where} holds a {names.BUNDLE_REF} naming run '{home}' "
+                f"({staged.runs[home]}) as the home of its failure card, and "
+                f"'{home}' holds no {names.FAILURE_CARD}."
             )
 
 
@@ -144,8 +129,6 @@ def stage_retained(root: Path | str, dest: Path | str) -> StagedSet:
         if names.RUN_RESULT in files:
             _claim(staged.runs, "run", here.name, source)
             shutil.copytree(here, dest / here.name)
-            if BUNDLE_REF in files and names.FAILURE_CARD not in files:
-                staged.bundle_refs[here.name] = _canonical_run_id(here / BUNDLE_REF, here.name)
             children[:] = []
             continue
         if names.EXPERIMENT_SPEC in files:
@@ -168,5 +151,5 @@ def stage_retained(root: Path | str, dest: Path | str) -> StagedSet:
             report = here / names.SUITE_REPORT
             if name == names.BATCH_SUMMARY and report.is_file():
                 shutil.copyfile(report, target / names.SUITE_REPORT)
-    _check_bundle_refs(staged)
+    _check_bundle_homes(staged)
     return staged

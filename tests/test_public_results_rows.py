@@ -116,18 +116,21 @@ def test_staging_walks_into_an_experiment_for_the_runs_retained_there(tmp_path: 
 # --- reproductions of an earlier card (#211) -------------------------------------
 
 
-def test_a_reproduction_row_names_the_card_run_and_holds_no_copy(tmp_path: Path) -> None:
+def test_a_reproduction_row_holds_its_pointer_and_no_copy_of_the_card(tmp_path: Path) -> None:
     root = fake.retained_with_reproduction(tmp_path / "retained")
-    reader, staged, built = fake.reproduction_rows(root, tmp_path / "staged")
+    reader, _, built = fake.reproduction_rows(root, tmp_path / "staged")
 
-    assert staged.bundle_refs == {fake.REPRODUCTION_RUN: fake.CARD_RUN}
     # The reader follows the pointer, as RunReader does since #211.
     assert reader.get_bundle(fake.REPRODUCTION_RUN) == reader.get_bundle(fake.CARD_RUN)
     by_id = {row["run_id"]: row for row in built[schema.RUNS]}
     reproduction, card = by_id[fake.REPRODUCTION_RUN], by_id[fake.CARD_RUN]
-    assert reproduction["canonical_run_id"] == fake.CARD_RUN
+    # The row holds the pointer exactly as get_bundle_ref returns it.
+    assert reproduction["bundle_ref"] == fake.bundle_ref(fake.REPRODUCTION_RUN, fake.CARD_RUN)
+    assert reproduction["bundle_ref"] == reader.get_bundle_ref(fake.REPRODUCTION_RUN).model_dump(
+        mode="json"
+    )
     assert all(reproduction[column] is None for column in fake.BUNDLE_COLUMNS)
-    assert card["canonical_run_id"] is None
+    assert card["bundle_ref"] is None
     assert card["failure_card"] == reader.get_bundle(fake.CARD_RUN).failure_card.model_dump(
         mode="json"
     )
@@ -141,7 +144,10 @@ def test_a_card_of_its_own_wins_over_a_pointer_beside_it(tmp_path: Path) -> None
     ref = fake.bundle_ref(fake.CARD_RUN, fake.REPRODUCTION_RUN)
     (root / fake.CARD_RUN / "bundle_ref.json").write_text(json.dumps(ref), encoding="utf-8")
     staged = stage_retained(root, tmp_path / "staged")
-    assert staged.bundle_refs == {}
+    reader = RunReader.from_runs_dir(staged.runs_dir)
+    assert reader.get_bundle_ref(fake.CARD_RUN) is None
+    [row] = build_rows(reader, [])[schema.RUNS]
+    assert row["bundle_ref"] is None and row["failure_card"] is not None
 
 
 def test_staging_refuses_a_pointer_to_a_run_that_is_not_retained(tmp_path: Path) -> None:
@@ -160,14 +166,41 @@ def test_staging_refuses_a_pointer_to_a_run_without_a_card(tmp_path: Path) -> No
         stage_retained(root, tmp_path / "staged")
 
 
+def test_staging_refuses_a_pointer_to_its_own_run(tmp_path: Path) -> None:
+    root = fake.retained_with_reproduction(
+        tmp_path / "retained", canonical_run_id=fake.REPRODUCTION_RUN
+    )
+    message = f"'{fake.REPRODUCTION_RUN}' holds no failure_card.json"
+    with pytest.raises(ValueError, match=message):
+        stage_retained(root, tmp_path / "staged")
+
+
 @pytest.mark.parametrize(
-    "canonical", [None, "", "..", "../elsewhere", "a/b", fake.REPRODUCTION_RUN, 7]
+    ("canonical", "reason"),
+    [
+        (None, "names no canonical_run_id"),
+        (7, "names no canonical_run_id"),
+        ("", "names no usable run"),
+        ("..", "names no usable run"),
+        ("../elsewhere", "names no usable run"),
+        ("a/b", "names no usable run"),
+    ],
 )
 def test_staging_refuses_a_pointer_that_names_no_usable_run(
-    canonical: object, tmp_path: Path
+    canonical: object, reason: str, tmp_path: Path
 ) -> None:
     root = fake.retained_with_reproduction(tmp_path / "retained", canonical_run_id=canonical)
-    with pytest.raises(ValueError, match="names no usable canonical_run_id"):
+    with pytest.raises(ValueError) as refused:
+        stage_retained(root, tmp_path / "staged")
+    message = str(refused.value)
+    assert message.startswith("a retained bundle_ref.json names no usable run")
+    assert f"bundle_ref.json for run '{fake.REPRODUCTION_RUN}' {reason}" in message
+
+
+def test_staging_refuses_a_pointer_that_does_not_load(tmp_path: Path) -> None:
+    root = fake.retained_with_reproduction(tmp_path / "retained")
+    (root / "live" / fake.REPRODUCTION_RUN / "bundle_ref.json").write_text("{", encoding="utf-8")
+    with pytest.raises(ValueError, match=f"for run '{fake.REPRODUCTION_RUN}' does not load"):
         stage_retained(root, tmp_path / "staged")
 
 

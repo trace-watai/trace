@@ -127,6 +127,16 @@ def sample_rows() -> dict[str, list[dict]]:
     }
 
 
+# bundle_ref.json of run_a, a reproduction of run_b's card (#211).
+POINTER = {
+    "schema_version": "0.1.0",
+    "run_id": "run_a",
+    "task_id": "task_a",
+    "bundle_key": "v1:unknown:none:0000000000000000",
+    "canonical_run_id": "run_b",
+}
+
+
 def load_sample(cluster: PgCluster, db: str) -> None:
     for table, rows in sample_rows().items():
         done = cluster.psql(f"set role service_role;\n{upsert_sql(table, rows)}", database=db)
@@ -269,13 +279,17 @@ def test_service_role_upserts_on_the_natural_key_and_deletes(cluster: PgCluster,
         {"trace": {"step": 0}},
         {"failure_card": {"card": 1}},
         {"content_sha256": "not-a-hash"},
-        {"canonical_run_id": "run_a"},
+        {"bundle_ref": POINTER | {"canonical_run_id": "run_a"}},
         {
-            "canonical_run_id": "run_b",
+            "bundle_ref": POINTER,
             "failure_card": {"card": 1},
             "repair_package": {"package": 1},
             "regression_artifact": {"artifact": 1},
         },
+        {"bundle_ref": POINTER | {"run_id": "other"}},
+        {"bundle_ref": POINTER | {"task_id": "other"}},
+        {"bundle_ref": {k: v for k, v in POINTER.items() if k != "run_id"}},
+        {"bundle_ref": {k: v for k, v in POINTER.items() if k != "canonical_run_id"}},
     ],
     ids=[
         "summary-key",
@@ -286,6 +300,10 @@ def test_service_role_upserts_on_the_natural_key_and_deletes(cluster: PgCluster,
         "hash",
         "points-at-itself",
         "reproduction-with-a-card",
+        "pointer-of-another-run",
+        "pointer-of-another-task",
+        "pointer-without-run_id",
+        "pointer-naming-no-run",
     ],
 )
 def test_inconsistent_run_rows_are_rejected(cluster: PgCluster, db: str, change: dict) -> None:
@@ -438,12 +456,12 @@ def test_a_reproduction_round_trips_through_postgres_as_anon(
     upload(PostgrestClient(fake.BASE_URL, fake.SERVICE_KEY, transport=server), rows)
 
     hosted = SupabaseRunReader(PostgrestClient(fake.BASE_URL, fake.ANON_KEY, transport=server))
-    fake.assert_same_reads(fs, hosted, [], staged.bundle_refs)
+    fake.assert_same_reads(fs, hosted, [])
     stored = scalar(
         cluster,
         db,
-        "select canonical_run_id || ':' || (failure_card is null)::text from public.runs "
-        f"where run_id = '{fake.REPRODUCTION_RUN}'",
+        "select (bundle_ref ->> 'canonical_run_id') || ':' || (failure_card is null)::text "
+        f"from public.runs where run_id = '{fake.REPRODUCTION_RUN}'",
         "anon",
     )
     assert stored == f"{fake.CARD_RUN}:true"

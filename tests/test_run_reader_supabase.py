@@ -96,13 +96,18 @@ def test_a_reproduction_reads_the_bundle_of_the_run_holding_its_card(tmp_path: P
     server = fake.MemoryPostgrest().load(rows)
     hosted = supabase_reader(server)
 
-    fake.assert_same_reads(fs, hosted, [], staged.bundle_refs)
+    fake.assert_same_reads(fs, hosted, [])
     assert hosted.get_bundle(fake.REPRODUCTION_RUN) == fs.get_bundle(fake.CARD_RUN) is not None
+    ref = hosted.get_bundle_ref(fake.REPRODUCTION_RUN)
+    assert ref == fs.get_bundle_ref(fake.REPRODUCTION_RUN)
+    assert (ref.canonical_run_id, ref.bundle_key) == (fake.CARD_RUN, "synthesized-bundle-key")
+    assert hosted.get_occurrences(fake.REPRODUCTION_RUN) == fs.get_occurrences(fake.CARD_RUN)
 
     # A pointer whose card row is gone reads like a card file that is gone.
     del server.tables[schema.RUNS][fake.CARD_RUN]
-    with pytest.raises(FileNotFoundError, match=f"failure card of run '{fake.CARD_RUN}'"):
-        hosted.get_bundle(fake.REPRODUCTION_RUN)
+    for read in (hosted.get_bundle, hosted.get_occurrences):
+        with pytest.raises(FileNotFoundError, match=f"failure card of run '{fake.CARD_RUN}'"):
+            read(fake.REPRODUCTION_RUN)
 
 
 def test_committed_fixture_replays_to_the_filesystem_answers(retained) -> None:
@@ -121,19 +126,20 @@ def test_committed_fixture_replays_to_the_filesystem_answers(retained) -> None:
         fake.MEMBER_BATCH
     )
     assert hosted.list_runs_for_batch("batch_not_retained") == []
-    for method in ("get_run", "get_task", "get_trace", "get_verifier", "get_attribution"):
+    for method in fake.RUN_READS:
         assert getattr(hosted, method)(fake.FULL_CHAIN_RUN) == getattr(fs, method)(
             fake.FULL_CHAIN_RUN
         )
-    assert hosted.get_bundle(fake.FULL_CHAIN_RUN) == fs.get_bundle(fake.FULL_CHAIN_RUN)
     assert hosted.get_verifier(fake.PASSING_RUN) == fs.get_verifier(fake.PASSING_RUN)
     assert hosted.get_attribution(fake.PASSING_RUN) is None
     assert hosted.get_bundle(fake.PASSING_RUN) is None
+    assert hosted.get_bundle_ref(fake.PASSING_RUN) is None
     assert hosted.get_batch_summary(fake.FIXTURE_BATCH) == fs.get_batch_summary(fake.FIXTURE_BATCH)
     assert fake.without_generated_at(hosted.get_suite_report(fake.FIXTURE_BATCH)) == (
         fake.without_generated_at(fs.get_suite_report(fake.FIXTURE_BATCH))
     )
     assert hosted.list_experiments() == fs.list_experiments()
+    assert hosted.unreadable_experiments() == {}
     assert hosted.get_experiment(fake.FIXTURE_EXPERIMENT) == fs.get_experiment(
         fake.FIXTURE_EXPERIMENT
     )

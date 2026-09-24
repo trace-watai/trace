@@ -25,7 +25,7 @@ pipeline writes, `schema_version` included. Nothing is reshaped.
 | | | `verifier_result` | `get_verifier(id)`, null until verified |
 | | | `attribution_result` | `get_attribution(id)`, null until attributed |
 | | | `failure_card`, `repair_package`, `regression_artifact` | `get_bundle(id)`, all three or none |
-| | | `canonical_run_id` | `get_bundle(id)` for a reproduction (#211), the run whose row holds its card |
+| | | `bundle_ref` | `get_bundle_ref(id)`, a reproduction's pointer to the run holding its card (#211), null for any other run. `get_bundle(id)` and `get_occurrences(id)` follow it |
 | `batches` | `batch_id` | `summary` | `get_batch_summary(id)` |
 | | | `suite_report` | `get_suite_report(id)` |
 | `experiments` | `experiment_id` | `spec`, `result` | `list_experiments()`, `unreadable_experiments()`, `get_experiment(id)`, `result` null until recorded |
@@ -134,15 +134,18 @@ things in order.
    `--prune`, hosted rows that are no longer retained are deleted.
 
 A run that reproduced an earlier failure card holds `bundle_ref.json` in place
-of its own card, repair package and regression artifact (#211). Staging reads
-the pointer, and the run's row keeps the three bundle columns null and names
-the run holding the card in `canonical_run_id`. `SupabaseRunReader.get_bundle`
-follows it the way the filesystem reader follows the pointer. The card is
-hosted once, so a card that gains an occurrence re-uploads one row. Staging
-refuses a pointer to a run that is not retained or holds no card, and names
-both runs, because the hosted row would otherwise show a bundled failure as
-unbundled. A run that holds a card of its own is its own bundle home, whatever
-pointer sits beside it.
+of its own card, repair package and regression artifact (#211). Its row holds
+that pointer in `bundle_ref`, as `RunReader.get_bundle_ref` returns it, and
+keeps the three bundle columns null. `SupabaseRunReader.get_bundle` and
+`get_occurrences` follow the pointer's `canonical_run_id` to the row holding
+the card, the way the filesystem reader follows the file. The card is hosted
+once, so a card that gains an occurrence re-uploads one row. After staging,
+`ArtifactStore.bundle_homes` names each staged run's home, and staging refuses
+a run whose home was not staged or holds no card, naming both runs, because the
+hosted row would point at a card the hosted results do not hold. A pointer that
+does not load or names no usable run is refused too. A run that holds a card
+of its own is its own bundle home, and `get_bundle_ref` ignores a pointer left
+beside that card.
 
 It is idempotent. A rerun over the same tree finds every hash equal and sends
 no write at all. Even a forced rewrite of every row would replace each row with

@@ -12,7 +12,9 @@ backends method by method over every retained run, batch and experiment.
     get_run / get_task / get_trace / get_verifier / get_attribution
                                -> the matching runs column
     get_bundle(id)             -> runs.failure_card, repair_package, regression_artifact,
-                                  from the row canonical_run_id names when it is set
+                                  from the row runs.bundle_ref names when it is set
+    get_bundle_ref(id)         -> runs.bundle_ref
+    get_occurrences(id)        -> the occurrences on the failure_card get_bundle reads
     get_batch_summary(id)      -> batches.summary
     get_suite_report(id)       -> batches.suite_report
     list_experiments()         -> experiments.spec, ordered by experiment_id, the ones that load
@@ -41,7 +43,12 @@ from pydantic import BaseModel
 
 from trace_harness.attribution.schemas import AttributionResult
 from trace_harness.failure_bundles.generator import FailureBundle
-from trace_harness.failure_bundles.schemas import FailureCard, RepairPackage
+from trace_harness.failure_bundles.schemas import (
+    BundleOccurrence,
+    BundleRef,
+    FailureCard,
+    RepairPackage,
+)
 from trace_harness.public_results import schema
 from trace_harness.public_results.postgrest import (
     DEFAULT_PAGE_SIZE,
@@ -176,20 +183,11 @@ class SupabaseRunReader:
     def get_bundle(self, run_id: str) -> FailureBundle | None:
         """The three bundle artifacts covering this run, or None if it hasn't been bundled.
 
-        A run that reproduced an earlier card (#211) has its row's
-        ``canonical_run_id`` set, and gets the bundle from that run's row, the
-        way the filesystem reader follows ``bundle_ref.json``.
+        A run that reproduced an earlier card (#211) holds its pointer in its
+        row's ``bundle_ref``, and gets the bundle from the row the pointer
+        names, the way the filesystem reader follows ``bundle_ref.json``.
         """
-        row = self._run_columns(run_id, f"{_BUNDLE_COLUMNS},canonical_run_id")
-        canonical = row.get("canonical_run_id")
-        if canonical is not None:
-            home = self.client.select_one(schema.RUNS, _BUNDLE_COLUMNS, "run_id", canonical)
-            if home is None or home["failure_card"] is None:
-                raise FileNotFoundError(
-                    f"run '{run_id}' is covered by the failure card of run '{canonical}', "
-                    f"which {self._table_url(schema.RUNS)} does not hold"
-                )
-            row = home
+        row = self._bundle_row(run_id, _BUNDLE_COLUMNS)
         parts = (row["failure_card"], row["repair_package"], row["regression_artifact"])
         if all(part is None for part in parts):
             return None
@@ -201,7 +199,46 @@ class SupabaseRunReader:
             regression_artifact=RegressionArtifact.model_validate(parts[2]),
         )
 
+    def get_bundle_ref(self, run_id: str) -> BundleRef | None:
+        """The pointer a reproduction holds in place of its own bundle (#211).
+
+        None when the run holds its own bundle or was never bundled.
+        """
+        return self._optional(run_id, "bundle_ref", BundleRef)
+
+    def get_occurrences(self, run_id: str) -> list[BundleOccurrence] | None:
+        """Every run the card covering this run lists, the first occurrence first.
+
+        Reads the card :meth:`get_bundle` reads. None when the run was never
+        bundled, and an empty list for a card written before failure card
+        0.5.0.
+        """
+        row = self._bundle_row(run_id, "failure_card")
+        if row["failure_card"] is None:
+            return None
+        return FailureCard.model_validate(row["failure_card"]).occurrences
+
     # --- internals ---
+
+    def _bundle_row(self, run_id: str, columns: str) -> dict[str, Any]:
+        """``columns`` of the row holding the bundle that covers ``run_id``.
+
+        That is the run's own row, or for a reproduction the row its
+        ``bundle_ref`` names, which must hold a card. ``columns`` must include
+        ``failure_card``.
+        """
+        row = self._run_columns(run_id, f"{columns},bundle_ref")
+        ref = row.get("bundle_ref")
+        if ref is None:
+            return row
+        canonical = BundleRef.model_validate(ref).canonical_run_id
+        home = self.client.select_one(schema.RUNS, columns, "run_id", canonical)
+        if home is None or home["failure_card"] is None:
+            raise FileNotFoundError(
+                f"run '{run_id}' is covered by the failure card of run '{canonical}', "
+                f"which {self._table_url(schema.RUNS)} does not hold"
+            )
+        return home
 
     def _experiments(self) -> tuple[list[ExperimentSpec], dict[str, str]]:
         rows = self.client.select(

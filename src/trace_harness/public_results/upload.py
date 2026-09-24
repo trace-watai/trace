@@ -5,8 +5,8 @@
 
 The retained tree is staged into a temp dir (``retained.stage_retained``) and
 read through RunReader. Rows are built from what RunReader returns
-(``rows.build_rows``). Apart from the batch ids and bundle pointers staging
-needs, no artifact file and no run index is read directly.
+(``rows.build_rows``). Apart from the batch ids staging needs, no artifact file
+and no run index is read directly.
 
 Idempotence. The uploader first reads each table's natural keys and content
 hashes, then upserts only the rows that are missing or whose hash differs, on
@@ -83,7 +83,7 @@ def prepare_rows(retained_root: Path | str, staging_dir: Path | str) -> dict[str
     """Stage the retained tree and build every row through RunReader."""
     staged = stage_retained(retained_root, staging_dir)
     reader = RunReader.from_runs_dir(staged.runs_dir)
-    return build_rows(reader, sorted(staged.batches), staged.bundle_refs)
+    return build_rows(reader, sorted(staged.batches))
 
 
 def check_schema(client: PostgrestClient) -> None:

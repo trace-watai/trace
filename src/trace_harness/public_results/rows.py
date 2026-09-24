@@ -6,14 +6,12 @@ uses, so a hosted artifact is the JSON the pipeline writes, ``schema_version``
 included. Rows are built only from RunReader calls. Nothing here opens an
 artifact file or the run index.
 
-The one input from outside RunReader is ``bundle_refs``, which runs are
-reproductions of an earlier failure card (#211) and which run holds that card,
-as the stager read it from each ``bundle_ref.json``. A reproduction's row keeps
-the three bundle columns null and names the card's run in
-``canonical_run_id``. Copying the card into every reproduction's row would
-repeat it once per occurrence and change all of those rows whenever the card
-gains an occurrence. ``get_bundle`` is never called for such a run, because
-since #211 it returns the card of the run the pointer names.
+A run that reproduced an earlier failure card (#211) is hosted as the pointer
+it holds. Its row's ``bundle_ref`` is ``get_bundle_ref`` and its three bundle
+columns stay null. Copying the card into every reproduction's row would repeat
+it once per occurrence and change all of those rows whenever the card gains an
+occurrence. ``get_bundle`` is never called for such a run, because since #211
+it returns the card of the run the pointer names.
 
 ``content_sha256`` is a digest of the row, used by the uploader to skip rows
 the project already holds. It covers every column except itself and the fields
@@ -25,7 +23,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
 from typing import Any, Protocol
 
 from pydantic import BaseModel
@@ -45,6 +42,7 @@ class RetainedReader(Protocol):
     def get_verifier(self, run_id: str) -> Any: ...
     def get_attribution(self, run_id: str) -> Any: ...
     def get_bundle(self, run_id: str) -> Any: ...
+    def get_bundle_ref(self, run_id: str) -> Any: ...
     def get_batch_summary(self, batch_id: str) -> Any: ...
     def get_suite_report(self, batch_id: str) -> Any: ...
     def list_experiments(self) -> list[Any]: ...
@@ -79,17 +77,13 @@ def _finish(table: str, row: Row) -> Row:
     return row
 
 
-def run_rows(reader: RetainedReader, bundle_refs: Mapping[str, str] | None = None) -> list[Row]:
-    """One row per run RunReader lists, oldest first.
-
-    ``bundle_refs`` maps a reproduction's run id to the run holding its card.
-    """
-    bundle_refs = bundle_refs or {}
+def run_rows(reader: RetainedReader) -> list[Row]:
+    """One row per run RunReader lists, oldest first."""
     rows = []
     for summary in reader.list_runs():
         run_id = summary.run_id
-        canonical_run_id = bundle_refs.get(run_id)
-        bundle = None if canonical_run_id is not None else reader.get_bundle(run_id)
+        bundle_ref = reader.get_bundle_ref(run_id)
+        bundle = None if bundle_ref is not None else reader.get_bundle(run_id)
         row: Row = {
             "run_id": run_id,
             "task_id": summary.task_id,
@@ -103,7 +97,7 @@ def run_rows(reader: RetainedReader, bundle_refs: Mapping[str, str] | None = Non
             "failure_card": _dump(bundle.failure_card) if bundle else None,
             "repair_package": _dump(bundle.repair_package) if bundle else None,
             "regression_artifact": _dump(bundle.regression_artifact) if bundle else None,
-            "canonical_run_id": canonical_run_id,
+            "bundle_ref": _dump(bundle_ref),
         }
         rows.append(_finish(schema.RUNS, row))
     return rows
@@ -149,14 +143,10 @@ def experiment_rows(reader: RetainedReader) -> list[Row]:
     return rows
 
 
-def build_rows(
-    reader: RetainedReader,
-    batch_ids: list[str],
-    bundle_refs: Mapping[str, str] | None = None,
-) -> dict[str, list[Row]]:
+def build_rows(reader: RetainedReader, batch_ids: list[str]) -> dict[str, list[Row]]:
     """Every row for every table, keyed by table name in write order."""
     return {
-        schema.RUNS: run_rows(reader, bundle_refs),
+        schema.RUNS: run_rows(reader),
         schema.BATCHES: batch_rows(reader, batch_ids),
         schema.EXPERIMENTS: experiment_rows(reader),
     }

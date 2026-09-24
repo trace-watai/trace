@@ -427,24 +427,31 @@ def without_generated_at(report: Any) -> dict:
     return report.model_dump(mode="json") | {"generated_at": None}
 
 
-def assert_same_reads(
-    fs: Any, hosted: Any, batch_ids: list[str], bundle_refs: dict[str, str] | None = None
-) -> None:
+RUN_READS = (
+    "get_run",
+    "get_task",
+    "get_trace",
+    "get_verifier",
+    "get_attribution",
+    "get_bundle",
+    "get_bundle_ref",
+    "get_occurrences",
+)
+
+
+def assert_same_reads(fs: Any, hosted: Any, batch_ids: list[str]) -> None:
     """Every RunReader method on every retained id, plus an unknown id of each kind.
 
-    A reproduction in ``bundle_refs`` gets the bundle of the run it names, as
-    RunReader.get_bundle has it since #211.
+    A reproduction (#211) reads the bundle and occurrences of the run its
+    pointer names on both backends.
     """
-    bundle_refs = bundle_refs or {}
     summaries = fs.list_runs()
     assert hosted.list_runs() == summaries
     for summary in summaries:
         run_id = summary.run_id
-        for method in ("get_run", "get_task", "get_trace", "get_verifier", "get_attribution"):
+        for method in RUN_READS:
             assert getattr(hosted, method)(run_id) == getattr(fs, method)(run_id), (method, run_id)
-        bundle_home = bundle_refs.get(run_id, run_id)
-        assert hosted.get_bundle(run_id) == fs.get_bundle(bundle_home), ("get_bundle", run_id)
-    for method in ("get_run", "get_task", "get_trace", "get_verifier", "get_bundle"):
+    for method in RUN_READS:
         with pytest.raises(RunNotFound):
             getattr(fs, method)("run_not_retained")
         with pytest.raises(RunNotFound):
@@ -464,6 +471,7 @@ def assert_same_reads(
             getattr(hosted, method)("batch_not_retained")
 
     assert hosted.list_experiments() == fs.list_experiments()
+    assert hosted.unreadable_experiments() == fs.unreadable_experiments()
     for spec in fs.list_experiments():
         assert hosted.get_experiment(spec.experiment_id) == fs.get_experiment(spec.experiment_id)
     for reader in (fs, hosted):
@@ -540,28 +548,14 @@ def retained_with_reproduction(
     return root
 
 
-class BundleRefReader(RunReader):
-    """RunReader whose get_bundle follows bundle_ref.json, as it does since #211.
-
-    This branch predates #211, so its RunReader returns None for a
-    reproduction. Rows must come out the same with either reader.
-    """
-
-    def get_bundle(self, run_id: str) -> Any:
-        ref = self.store.run_dir(run_id) / "bundle_ref.json"
-        if ref.is_file() and not self.store.exists(run_id, "failure_card.json"):
-            return super().get_bundle(json.loads(ref.read_text("utf-8"))["canonical_run_id"])
-        return super().get_bundle(run_id)
-
-
 def reproduction_rows(root: Path, staging: Path) -> tuple[Any, Any, dict[str, list[dict]]]:
-    """Stage ``root`` and build rows with a reader that follows pointers."""
+    """Stage ``root`` and build its rows through RunReader, which follows pointers (#211)."""
     from trace_harness.public_results.retained import stage_retained
     from trace_harness.public_results.rows import build_rows
 
     staged = stage_retained(root, staging)
-    reader = BundleRefReader.from_runs_dir(staged.runs_dir)
-    return reader, staged, build_rows(reader, sorted(staged.batches), staged.bundle_refs)
+    reader = RunReader.from_runs_dir(staged.runs_dir)
+    return reader, staged, build_rows(reader, sorted(staged.batches))
 
 
 def retained_rows(staging: Path) -> tuple[Any, dict[str, list[dict[str, Any]]]]:
@@ -572,7 +566,7 @@ def retained_rows(staging: Path) -> tuple[Any, dict[str, list[dict[str, Any]]]]:
 
     staged = stage_retained(REPO_ROOT / "docs" / "acceptance", staging)
     reader = RunReader.from_runs_dir(staged.runs_dir)
-    return reader, build_rows(reader, sorted(staged.batches), staged.bundle_refs)
+    return reader, build_rows(reader, sorted(staged.batches))
 
 
 def exercise_fixture_reads(reader: Any) -> None:
@@ -587,13 +581,16 @@ def exercise_fixture_reads(reader: Any) -> None:
         "get_verifier",
         "get_attribution",
         "get_bundle",
+        "get_bundle_ref",
+        "get_occurrences",
     ):
         getattr(reader, get)(FULL_CHAIN_RUN)
-    for get in ("get_verifier", "get_attribution", "get_bundle"):
+    for get in ("get_verifier", "get_attribution", "get_bundle", "get_bundle_ref"):
         getattr(reader, get)(PASSING_RUN)
     reader.get_batch_summary(FIXTURE_BATCH)
     reader.get_suite_report(FIXTURE_BATCH)
     reader.list_experiments()
+    reader.unreadable_experiments()
     reader.get_experiment(FIXTURE_EXPERIMENT)
     for call, arg in (
         ("get_run", "run_not_retained"),

@@ -49,9 +49,9 @@ comment on table public.schema_versions is
 --
 -- A run that reproduced an earlier failure card (#211) holds bundle_ref.json
 -- in place of its own bundle. Its row keeps the three bundle columns null and
--- names the run whose row holds the card in canonical_run_id, and get_bundle()
--- reads the card from there. The card is stored once, so a card that gains an
--- occurrence changes one row.
+-- holds that pointer in bundle_ref, which is get_bundle_ref(), and get_bundle()
+-- reads the card from the row the pointer's canonical_run_id names. The card is
+-- stored once, so a card that gains an occurrence changes one row.
 create table public.runs (
     run_id text collate "C" primary key,
     task_id text not null,
@@ -65,7 +65,7 @@ create table public.runs (
     failure_card jsonb,
     repair_package jsonb,
     regression_artifact jsonb,
-    canonical_run_id text,
+    bundle_ref jsonb,
     content_sha256 text not null,
     constraint runs_summary_matches_keys check (
         (summary ->> 'run_id') is not distinct from run_id
@@ -82,10 +82,20 @@ create table public.runs (
         (failure_card is null) = (repair_package is null)
         and (failure_card is null) = (regression_artifact is null)
     ),
-    -- A reproduction holds no bundle of its own and never points at itself.
+    constraint runs_bundle_ref_matches_keys check (
+        bundle_ref is null or (
+            (bundle_ref ->> 'run_id') is not distinct from run_id
+            and (bundle_ref ->> 'task_id') is not distinct from task_id
+        )
+    ),
+    -- A reproduction holds no bundle of its own and names another run.
     constraint runs_reproduction_holds_no_bundle check (
-        canonical_run_id is null
-        or (failure_card is null and canonical_run_id is distinct from run_id)
+        bundle_ref is null
+        or (
+            failure_card is null
+            and (bundle_ref ->> 'canonical_run_id') is not null
+            and (bundle_ref ->> 'canonical_run_id') is distinct from run_id
+        )
     ),
     constraint runs_content_sha256_is_hex check (content_sha256 ~ '^[0-9a-f]{64}$')
 );
