@@ -41,7 +41,7 @@ from trace_harness.failure_bundles.generator import FailureBundle
 from trace_harness.failure_bundles.schemas import FailureCard, RepairPackage
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.runner.batch import BatchSummary
-from trace_harness.runner.experiment import ExperimentResult, ExperimentSpec
+from trace_harness.runner.experiment import ExperimentResult, ExperimentSpec, load_plan
 from trace_harness.runner.report import SuiteReport, build_suite_report
 from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import TaskSpec
@@ -177,13 +177,12 @@ class RunReader:
     def list_experiments(self) -> list[ExperimentSpec]:
         """Every experiment plan on disk, oldest first by id."""
         return [
-            ExperimentSpec.model_validate(self.store.read_experiment_spec(eid))
-            for eid in self.store.list_experiments()
+            load_plan(self.store.read_experiment_spec(eid)) for eid in self.store.list_experiments()
         ]
 
     def get_experiment(self, experiment_id: str) -> tuple[ExperimentSpec, ExperimentResult | None]:
         """The plan and, when a result has been recorded, what came back."""
-        spec = ExperimentSpec.model_validate(self.store.read_experiment_spec(experiment_id))
+        spec = load_plan(self.store.read_experiment_spec(experiment_id))
         try:
             result = ExperimentResult.model_validate(
                 self.store.read_experiment_result(experiment_id)

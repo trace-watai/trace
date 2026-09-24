@@ -993,18 +993,25 @@ def _validate_fixtures(args: argparse.Namespace) -> int:
 def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     """Record which batch answered which condition, and what was decided.
 
-    The plan is read, never written here. Recording cannot invent a condition:
-    a ``--condition`` naming something the spec does not declare is a usage
-    error, because a result that describes different arms than the plan is not
-    a result for that experiment.
+    The first record of an experiment stores a copy of its plan beside the
+    result, and no later record rewrites it. Recording again with a plan that
+    differs from the stored one is refused, because changing the plan after the
+    numbers came in is exactly what writing it first is meant to prevent.
+
+    Recording cannot invent a condition: a ``--condition`` naming something the
+    spec does not declare is a usage error, because a result that describes
+    different arms than the plan is not a result for that experiment. A batch
+    that ran another suite than the plan froze is refused for the same reason.
+    Every refusal happens before anything is written.
     """
+    from trace_harness.runner.batch import BatchSummary
     from trace_harness.runner.experiment import (
         DecidedBy,
         Decision,
         ExperimentResult,
-        ExperimentSpec,
-        UnknownConditionError,
+        check_frozen_suite,
         derive_metrics,
+        load_plan,
         render_experiment_markdown,
         validate_condition_batches,
     )
@@ -1012,25 +1019,51 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     spec_path = Path(args.experiment_path)
     if not spec_path.is_file():
         raise CliInputError(f"experiment plan not found: {spec_path}")
-    spec = ExperimentSpec.model_validate(json.loads(spec_path.read_text(encoding="utf-8")))
+    try:
+        spec = load_plan(json.loads(spec_path.read_text(encoding="utf-8")))
+    except ValueError as exc:
+        raise CliInputError(f"{spec_path}: {exc}") from None
+
+    stored_path = store.experiment_spec_path(spec.experiment_id)
+    stored = None
+    if stored_path.is_file():
+        try:
+            stored = load_plan(store.read_experiment_spec(spec.experiment_id))
+        except ValueError as exc:
+            raise CliInputError(f"{stored_path}: {exc}") from None
+        if stored.model_dump(mode="json") != spec.model_dump(mode="json"):
+            raise CliInputError(
+                f"{stored_path} already holds a different plan for {spec.experiment_id}. "
+                "A stored plan is never rewritten: record against that plan, or give "
+                "the changed plan a new experiment_id."
+            )
 
     condition_batches: dict[str, str] = {}
     for pair in args.condition or []:
         name, _, batch_id = pair.partition("=")
         if not name or not batch_id:
             raise CliInputError(f"--condition expects name=batch_id, got {pair!r}")
+        if name in condition_batches:
+            raise CliInputError(f"--condition names {name!r} twice; each condition has one batch")
         condition_batches[name] = batch_id
     try:
         validate_condition_batches(spec, condition_batches)
-    except UnknownConditionError as exc:
+    except ValueError as exc:
         raise CliInputError(str(exc)) from None
 
     summaries = []
     for batch_id in condition_batches.values():
         try:
-            summaries.append(store.read_batch_summary(batch_id))
+            summaries.append(BatchSummary.model_validate(store.read_batch_summary(batch_id)))
         except FileNotFoundError as exc:
             raise CliInputError(str(exc)) from None
+    try:
+        check_frozen_suite(
+            spec,
+            {name: s.suite_id for name, s in zip(condition_batches, summaries, strict=True)},
+        )
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from None
 
     result = ExperimentResult(
         experiment_id=spec.experiment_id,
@@ -1040,7 +1073,8 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         decided_by=DecidedBy(args.decided_by),
         report_path=str(store.experiment_report_path(spec.experiment_id)),
     )
-    store.write_experiment_spec(spec.experiment_id, spec)
+    if stored is None:
+        store.write_experiment_spec(spec.experiment_id, spec)
     store.write_experiment_result(
         spec.experiment_id, result, markdown=render_experiment_markdown(spec, result)
     )

@@ -120,9 +120,12 @@ class ConditionSpec(BaseModel):
 class FrozenManifest(BaseModel):
     """What must not change while the conditions run.
 
-    ``fixtures_hash`` is what makes the freeze checkable rather than asserted.
-    If the fixtures move between two conditions, the conditions answered
-    different questions and the comparison is void.
+    ``suite_id`` is enforced: ``experiment record`` refuses a batch whose
+    summary names any other suite. ``fixtures_hash`` is stored exactly as the
+    plan states it. Nothing here computes it from the fixture files or compares
+    it with them, so it records what the author froze and proves nothing about
+    the files. Computing it, and refusing a record when the files moved, is
+    #195's ``experiment freeze``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -145,6 +148,8 @@ class ExperimentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str = EXPERIMENT_SCHEMA_VERSION
+    # Both defaults serve plans built in code. A plan read from a file must
+    # state them, see ``load_plan``.
     experiment_id: str = Field(default_factory=new_experiment_id, pattern=EXPERIMENT_ID_PATTERN)
     brief_path: str | None = None
     hypothesis: str
@@ -211,6 +216,46 @@ class ExperimentResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+#: Fields a plan read from a file must state instead of taking a default.
+PLAN_FILE_REQUIRED = ("experiment_id", "created_at")
+
+
+def load_plan(data: Any) -> ExperimentSpec:
+    """A plan read from a file, which must state its own id and creation time.
+
+    The model defaults both so a plan can be built in code. Read from a file,
+    a default would mint a fresh id on every read, so recording the same file
+    twice would file two experiments, and the creation time would be the time
+    of reading.
+    """
+    if isinstance(data, dict):
+        missing = [name for name in PLAN_FILE_REQUIRED if name not in data]
+        if missing:
+            raise ValueError(f"an experiment plan file must state {', '.join(missing)}")
+    return ExperimentSpec.model_validate(data)
+
+
+class FrozenSuiteError(ValueError):
+    """A recorded batch ran a different suite than the plan froze."""
+
+
+def check_frozen_suite(spec: ExperimentSpec, suites: dict[str, str]) -> None:
+    """Every recorded batch must have run the suite the plan froze.
+
+    ``suites`` maps condition name to the ``suite_id`` in that condition's
+    batch summary. A batch from another suite answered another question, so
+    recording it would compare arms that never shared a task set.
+    """
+    frozen = spec.frozen_manifest.suite_id
+    wrong = {name: suite for name, suite in sorted(suites.items()) if suite != frozen}
+    if wrong:
+        found = ", ".join(f"{name} ran {suite!r}" for name, suite in wrong.items())
+        raise FrozenSuiteError(
+            f"{spec.experiment_id} freezes suite {frozen!r}, but {found}; "
+            "a batch from another suite cannot answer this plan"
+        )
+
+
 class UnknownConditionError(ValueError):
     """A recorded batch names a condition the spec never declared."""
 
@@ -238,8 +283,9 @@ def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -
         "",
         f"**Hypothesis.** {spec.hypothesis}",
         "",
-        f"Suite `{spec.frozen_manifest.suite_id}` frozen at "
-        f"`{spec.frozen_manifest.fixtures_hash}`. "
+        f"Suite `{spec.frozen_manifest.suite_id}`. Fixtures hash "
+        f"`{spec.frozen_manifest.fixtures_hash}` as the plan states it; nothing "
+        "recomputed it from the files. "
         f"Decision **{result.decision.value}** by {result.decided_by.value}.",
         "",
         "## Conditions",

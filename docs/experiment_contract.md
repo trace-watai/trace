@@ -36,9 +36,17 @@ result.
 | `conditions` | one per arm, names unique within the experiment |
 | `budget` | `max_runs`, `max_cost_usd` |
 
-`fixtures_hash` is what makes the freeze checkable rather than asserted. If the
-fixtures move between two conditions then the conditions answered different
-questions, and comparing them is void.
+`experiment_id` and `created_at` default when a plan is built in code, but a
+plan file must state both. A defaulted id would file every record of the same
+file as a new experiment.
+
+`suite_id` is enforced: `experiment record` refuses a batch whose summary names
+another suite. `fixtures_hash` is stored exactly as the plan states it, and
+nothing on this branch computes it from the fixture files or compares it with
+them. It records what the author froze and proves nothing about the files. The
+retained baseline's `sha256:01e4172931eda28c` was entered by hand. Computing
+the hash, and refusing a record when the files moved, arrives with
+`experiment freeze` (#195).
 
 A condition declares its `kind`, the `agent_config` to run under, the
 `control_ids` to install, the `seeds`, and where in a recorded run to `start`
@@ -92,9 +100,17 @@ trace-harness experiment record <experiment.json> --condition <name>=<batch_id> 
 trace-harness list-experiments
 ```
 
-`record` reads the plan, never writes it, computes what it can, and writes the
-result and report beside it. `list-experiments` prints one line per experiment
-and replaces any hand-kept spreadsheet of them.
+`record` reads the plan, computes what it can, and writes the result and
+report under `runs/experiments/{experiment_id}/`. The first record also stores a
+copy of the plan there, and no later record rewrites it. Recording again with a
+plan that differs from the stored copy exits 2 and writes nothing, since
+changing a plan after its numbers came in is what writing it first prevents; a
+changed plan needs a new `experiment_id`. Recording the same plan again replaces
+the result, which is how a decision is revised. Naming one condition twice, or
+passing a batch from another suite, also exits 2 before anything is written.
+
+`list-experiments` prints one line per experiment and replaces any hand-kept
+spreadsheet of them.
 
 ## The retained baseline
 

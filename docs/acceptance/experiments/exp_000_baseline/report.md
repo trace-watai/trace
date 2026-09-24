@@ -2,7 +2,7 @@
 
 **Hypothesis.** the refund_bundles_v0 suite under the fixture agent reproduces five verified failures, which is the baseline every later condition is compared against
 
-Suite `refund_bundles_v0` frozen at `sha256:01e4172931eda28c`. Decision **baseline** by human.
+Suite `refund_bundles_v0`. Fixtures hash `sha256:01e4172931eda28c` as the plan states it; nothing recomputed it from the files. Decision **baseline** by human.
 
 ## Conditions
 
