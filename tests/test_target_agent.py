@@ -252,6 +252,21 @@ def test_responses_attach_to_the_next_move_and_are_made_json_safe(tmp_path):
     assert actions[1].payload["reasoning"] is None
 
 
+def test_a_response_that_is_not_a_dict_is_stored_wrapped(tmp_path):
+    """docs/bring_your_own_agent.md says a non-dict raw is stored as {"response": raw}."""
+
+    class TextResponse:
+        name = "text-response"
+
+        def run(self, prompt, tools, call_tool, on_model_response=None):
+            on_model_response("plain text from the model")
+            return "done"
+
+    _, trace, _ = _run(TextResponse(), VALID_TASK_PATH, tmp_path)
+    (response,) = _events(trace, TraceEventType.MODEL_RESPONSE)
+    assert response.payload["raw"] == {"response": "plain text from the model"}
+
+
 # --- controls and the final-answer seam ---
 
 
