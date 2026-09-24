@@ -252,7 +252,7 @@ def test_a_live_run_the_provider_refused_on_every_attempt_costs_nothing(
     tmp_path: Path, adapters: list[str], monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
     """No answer ever came back, and every attempt got an HTTP status, so the
-    provider billed nothing. One outage cell no longer ends a capped batch."""
+    run is taken as unbilled. One outage cell does not end a capped batch."""
     config = _priced_stub_model(monkeypatch, "claude-outage")
     _FAILURES["claude-outage"] = failure
     summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(_suite(1.0, config))
@@ -504,8 +504,8 @@ def test_cli_finishes_a_capped_suite_through_an_outage(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Every cell's call was refused with a status. That cost nothing, so the
-    cap still holds and the suite is not a configuration error."""
+    """Every cell's call was refused with a status, which is taken as costing
+    nothing, so the cap still holds and the suite is not a configuration error."""
     monkeypatch.setitem(ANTHROPIC_PRICING, "claude-outage", PRICE)
     _FAILURES["claude-outage"] = _failed_call(529, 529, 529, 529, 529)
     suite = _write_suite(tmp_path, 1.0, model="claude-outage")

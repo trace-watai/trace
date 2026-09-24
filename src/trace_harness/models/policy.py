@@ -145,8 +145,9 @@ CONNECTION_ERROR_NAMES = frozenset(
 #: connection error ``from`` the httpx one.
 PERMANENT_TRANSPORT_ERROR_NAMES = frozenset({"LocalProtocolError", "UnsupportedProtocol"})
 
-# "abandoned": the runner's timeout ended the call before the policy did, with
-# the last attempt still in flight. Only a model_timeout error event carries it.
+# "abandoned": the runner's timeout ended the call before the policy did,
+# normally with the last attempt still in flight. Only a model_timeout error
+# event carries it.
 Outcome = Literal["ok", "permanent_error", "retries_exhausted", "deadline", "abandoned"]
 
 
@@ -322,7 +323,7 @@ class CallProgress:
     The runner hands one down with the call budget and reads it when it
     abandons the call at its timeout. :class:`LiveCaller` replaces ``record``
     with a new dict at every step, so a reader always sees one whole record:
-    the attempts sent so far, counting one still in flight, and outcome
+    the attempts sent so far, including one still in flight, and outcome
     ``abandoned``. None until the first request is about to go out.
     """
 
