@@ -144,7 +144,7 @@ def test_committed_fixture_replays_to_the_filesystem_answers(retained) -> None:
     with pytest.raises(FileNotFoundError):
         hosted.get_experiment("exp_not_retained")
     unused = set(replay.exchanges) - replay.used
-    assert len(unused) == 2  # the two refusals, exercised below
+    assert len(unused) == 2  # The two refusals, exercised below.
 
 
 def test_committed_fixture_is_shaped_like_postgrest_output() -> None:

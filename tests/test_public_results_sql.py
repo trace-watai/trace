@@ -244,7 +244,7 @@ def test_row_level_security_refuses_anon_writes_even_with_write_privileges(
 
 def test_service_role_upserts_on_the_natural_key_and_deletes(cluster: PgCluster, db: str) -> None:
     load_sample(cluster, db)
-    load_sample(cluster, db)  # a second identical upsert is a no-op on content
+    load_sample(cluster, db)  # A second identical upsert changes no content.
     assert scalar(cluster, db, "select count(*) from public.runs") == "1"
     changed = sample_rows()[schema.RUNS][0] | {"content_sha256": "f" * 64}
     done = cluster.psql(

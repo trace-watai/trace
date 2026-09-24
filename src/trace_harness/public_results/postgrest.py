@@ -174,7 +174,7 @@ class PostgrestClient:
         self.transport = transport
         self.page_size = page_size
 
-    def __repr__(self) -> str:  # never show the key
+    def __repr__(self) -> str:  # The key stays out of the repr.
         return f"PostgrestClient({self.base_url!r})"
 
     @property

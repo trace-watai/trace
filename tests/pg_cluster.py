@@ -13,8 +13,9 @@ finds the binaries under /usr/lib/postgresql/<major>/bin and runs these tests.
 migration runs, taken from the initial schema in supabase/postgres. It creates
 the three API roles and, importantly, the default privileges that give them
 every privilege on new tables in ``public``. Without those grants the
-migration's revokes would be tested against nothing. It is an approximation,
-not Supabase itself. PostgREST's role switch is modelled with ``set role``.
+migration's revokes would be tested against nothing. It approximates
+Supabase and leaves out everything else a hosted project provisions.
+PostgREST's role switch is modelled with ``set role``.
 """
 
 from __future__ import annotations

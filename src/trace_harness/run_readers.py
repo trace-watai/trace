@@ -9,8 +9,8 @@
 
 Both backends have the same read methods, so a caller that only reads, such as
 ``list-runs``, does not care which one it got. Commands that write artifacts
-keep using the filesystem store directly. An unknown value is an error, never a
-silent fallback to the filesystem.
+keep using the filesystem store directly. An unknown value is an error, so a
+typo cannot fall back to the filesystem without a word.
 """
 
 from __future__ import annotations

@@ -298,7 +298,7 @@ from `RunReader` calls. `SupabaseRunReader` keeps every `RunReader` signature,
 which a test enforces. The filesystem reader stays the default. A table change
 is a new migration and a `RESULTS_SCHEMA_VERSION` bump, and an applied
 migration is never edited. Tests use synthesized PostgREST responses and a
-throwaway Postgres, never a live project. See
+throwaway Postgres, and no test reaches a live project. See
 [public_results.md](public_results.md).
 
 ## verifiers/ — deterministic pass/fail *(Karan Gupta)*

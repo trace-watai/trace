@@ -250,25 +250,30 @@ A change upstream reaches the tables in one of three ways.
 
 ## Free tier sizing
 
-Measured on 23 September 2026 from the tree at this commit. The sweep is two
-providers by five seeds by the 32 tasks of `refund_v0`, or 320 runs, all
-hosted, although #198 plans to retain only the failing cells.
+Measured on 24 September 2026 with `scripts/measure_public_results.py`, which
+prints every figure below. The sweep is two providers by five seeds by the 32
+tasks of `refund_v0`, or 320 runs, all hosted, although #198 plans to retain
+only the failing cells.
 
 | Quantity | Measured |
 |---|---|
 | `docs/acceptance/`, 139 files | 1,144,146 bytes |
 | One retained run directory on disk, min / mean / max over 15 | 43,990 / 71,470 / 104,462 bytes |
-| One hosted run row as JSON, min / mean / max | 34,941 / 60,504 / 88,002 bytes |
-| Hosted rows as JSON, 15 runs + 2 batches + 1 experiment | 907,569 + 50,625 + 1,701 bytes |
-| Postgres size of the retained set, tables with TOAST and indexes | 819,200 bytes |
-| One sweep as JSON, 320 run rows cloned from the largest retained rows, plus two 160-entry batches | 19,478,521 + 372,792 bytes |
-| Postgres size of the retained set plus that sweep | 11,902,976 bytes (11.4 MiB) |
-| `list_runs()` response for all 335 runs | 153,832 bytes |
+| One hosted run row as JSON, min / mean / max | 34,965 / 60,529 / 88,026 bytes |
+| Hosted rows as JSON, 15 runs + 2 batches + 1 experiment | 907,929 + 50,625 + 1,701 bytes |
+| Postgres size of the retained set, tables with TOAST and indexes | 884,736 bytes |
+| A stored run row as a share of its JSON, min / mean / max | 41.5 / 51.9 / 70.2 percent |
+| One sweep as JSON, 320 run rows copied from the retained rows largest first, plus two 160-entry batches | 19,497,081 + 372,894 bytes |
+| Postgres size of the retained set plus that sweep | 11,968,512 bytes (11.4 MiB) |
+| `list_runs()` response for all 335 runs | 149,225 bytes |
 
-The Postgres figures come from loading the rows into PostgreSQL 16.14 through
-the same statement PostgREST runs for an upsert, then reading
-`pg_total_relation_size` after `vacuum analyze`. TOAST compression keeps a run
-row under 60 percent of its JSON size.
+The script builds the rows the way the uploader does, loads them into a
+throwaway PostgreSQL 16.14 cluster through the same statement PostgREST runs
+for an upsert, and reads `pg_total_relation_size` after `vacuum analyze`. A
+stored row's share is the sum of `pg_column_size` over its columns, which
+counts a TOASTed value at its compressed size, over the row's JSON. TOAST
+compression stores a run row in 42 to 70 percent of its JSON size, 52 percent
+on average.
 
 Supabase's Free plan allows a 500 MB database and 5 GB of egress a month, with
 a limit of two active projects. A Free project goes read-only above 500
@@ -277,7 +282,7 @@ databases, excluding WAL. The retained set plus one sweep is about 12 MB, under
 3 percent of that. The empty project's own system schemas also count, and
 their size was not measured here, because no project exists yet. At about 11
 MB per fully hosted sweep, dozens of sweeps fit. For egress, 5 GB is about
-80,000 full run reads at the mean row size, or about 32,000 loads of the whole
+80,000 full run reads at the mean row size, or about 33,000 loads of the whole
 run list, before any compression.
 
 Free projects are paused after a week without enough database activity. Each
@@ -308,6 +313,9 @@ pytest tests/test_run_reader_supabase.py tests/test_public_results_sql.py \
 
 # The key scan the publish job runs.
 python -m trace_harness.public_results.secret_scan
+
+# The free tier sizing table, on a throwaway Postgres.
+PYTHONPATH=src:tests python scripts/measure_public_results.py
 ```
 
 To try the migration by hand, apply it to any Postgres that has the `anon`,

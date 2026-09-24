@@ -145,7 +145,7 @@ def test_prune_refuses_to_empty_any_one_table(rows, table: str, dry_run: bool) -
         upload(writer(server), partial, prune=True, dry_run=dry_run)
     assert server.snapshot() == before and len(server.writes()) == writes
 
-    upload(writer(server), partial)  # without --prune the rows stay
+    upload(writer(server), partial)  # Without --prune the rows stay.
     assert server.snapshot() == before
 
 
@@ -205,7 +205,7 @@ def test_request_bodies_stay_under_the_limit(rows) -> None:
         rows,
         max_request_bytes=200_000,
     )
-    assert len(bodies) > len(rows)  # the runs table needed several requests
+    assert len(bodies) > len(rows)  # The runs table needed several requests.
     for body in bodies:
         assert len(body) <= 200_000 or len(json.loads(body)) == 1
     assert hosted_equals(server, rows)
@@ -398,9 +398,9 @@ def test_a_key_behind_an_escape_is_caught_and_never_printed(
 
 def test_unescape_decodes_json_and_percent_escapes() -> None:
     assert secret_scan.unescape(r"a\nb\tc\u00e9\"d\"\/") == 'a\nb\tc\u00e9"d"/'
-    assert secret_scan.unescape(r"x\\\\ny") == "x\ny"  # three levels of JSON
+    assert secret_scan.unescape(r"x\\\\ny") == "x\ny"  # Three levels of JSON.
     assert secret_scan.unescape("q=a%20b%2Fc%0A") == "q=a b/c\n"
-    assert secret_scan.unescape("%5Cn") == "\n"  # a JSON escape inside a URL
+    assert secret_scan.unescape("%5Cn") == "\n"  # A JSON escape inside a URL.
     assert secret_scan.unescape(r"lone \ and 100% sure") == r"lone \ and 100% sure"
 
 
