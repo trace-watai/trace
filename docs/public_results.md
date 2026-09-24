@@ -167,12 +167,16 @@ the rows and reports their size with no network.
 `publish-results` in `.github/workflows/integration-ci.yml` runs on a push to
 `main`, after both the backend and the dashboard gates.
 
-- It skips itself when a secret is missing. `TRACE_SUPABASE_URL` and
-  `TRACE_SUPABASE_SERVICE_KEY` are lifted into job-level env with a `PUBLISH`
-  flag, and every step checks the flag, because a step-level `if` cannot read
-  secrets. Without both secrets the job logs why it skipped and stays green,
-  the same pattern `metrics-history` uses for its token. It never runs on a
-  pull request.
+- It skips itself when a secret is missing. Whether `TRACE_SUPABASE_URL` and
+  `TRACE_SUPABASE_SERVICE_KEY` are both set is lifted into a job-level
+  `PUBLISH` flag, and every step checks the flag, because a step-level `if`
+  cannot read secrets. Without both secrets the job logs why it skipped and
+  stays green, the same pattern `metrics-history` uses for its token. It never
+  runs on a pull request.
+- The two secrets are set in the env of the upload step alone. Checkout,
+  `pip install` and the key scan run without the service key in their
+  environment, and the job-level env holds only the `true` or `false` of
+  `PUBLISH`. A structural test pins both.
 - Uploads run one at a time (`concurrency: publish-results`). A run also steps
   aside when `main` has moved on to a different retained tree, so gates that
   finish out of order cannot let an older commit overwrite or prune what a

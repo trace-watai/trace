@@ -444,17 +444,31 @@ def test_publish_job_runs_on_main_after_both_gates_and_skips_without_secrets() -
     job = _publish_job()
     assert "    needs: [backend, dashboard]\n" in job
     assert "    if: github.ref == 'refs/heads/main' && github.event_name == 'push'\n" in job
-    assert (
+    job_env = job.split("\n    env:\n", 1)[1].split("\n    steps:\n", 1)[0]
+    assert job_env.strip() == (
         "PUBLISH: ${{ secrets.TRACE_SUPABASE_URL != '' && "
-        "secrets.TRACE_SUPABASE_SERVICE_KEY != '' }}" in job
-    )
+        "secrets.TRACE_SUPABASE_SERVICE_KEY != '' }}"
+    ), "the job env may hold only the PUBLISH flag, never a secret's value"
     steps = job.split("\n      - ")[1:]
     assert "if: env.PUBLISH != 'true'" in steps[0], "the first step reports the skip"
     for step in steps[1:]:
         assert "if: env.PUBLISH == 'true'" in step, step
-        assert "secrets." not in step, "a secret read outside the job env"
     scan = next(i for i, step in enumerate(steps) if "public_results.secret_scan" in step)
     push = next(i for i, step in enumerate(steps) if "public_results.upload" in step)
     assert scan < push, "the key scan must run before the upload"
     assert "public_results.upload docs/acceptance --prune" in steps[push]
+    assert "--allow-empty-prune" not in job
     assert "stale == 'false'" in steps[push] and "stale == 'false'" in steps[scan]
+
+
+def test_only_the_upload_step_sees_the_supabase_secrets() -> None:
+    """Checkout, pip install and the key scan run without the service key in their env."""
+    steps = _publish_job().split("\n      - ")[1:]
+    reading = [i for i, step in enumerate(steps) if "${{ secrets." in step]
+    push = next(i for i, step in enumerate(steps) if "public_results.upload" in step)
+    assert reading == [push]
+    step_env = steps[push].split("\n        env:\n", 1)[1].split("\n        run:", 1)[0]
+    assert sorted(line.strip() for line in step_env.splitlines()) == [
+        "TRACE_SUPABASE_SERVICE_KEY: ${{ secrets.TRACE_SUPABASE_SERVICE_KEY }}",
+        "TRACE_SUPABASE_URL: ${{ secrets.TRACE_SUPABASE_URL }}",
+    ]
