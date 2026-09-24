@@ -23,11 +23,13 @@ Where Anthropic differs from Gemini, and what that costs
     scripted prefix replayed before a live continuation, gets a stable id made
     from its position, so its result still pairs.
 
-    Sonnet 5 and the later Opus and Fable models think by default, and a
-    tool-use turn has to be sent back with its ``thinking`` and
-    ``redacted_thinking`` blocks unmodified, in front of the ``tool_use``, or
-    the API rejects the next request. Those blocks ride in ``provider_state``
-    as well (see https://platform.claude.com/docs/en/build-with-claude/thinking).
+    Sonnet 5 and the later Opus and Fable models think by default, and
+    Anthropic's thinking docs require a tool-use turn to go back with its
+    ``thinking`` and ``redacted_thinking`` blocks, unmodified and in front of
+    the ``tool_use``. An edited or partial set is rejected with a 400, and
+    dropping them all loses the reasoning that led to the call. Those blocks
+    ride in ``provider_state`` as well
+    (https://platform.claude.com/docs/en/build-with-claude/thinking).
 
     Those models, and Opus 4.7 and 4.8 as well, return 400 for a non-default
     ``temperature``, ``top_p`` or ``top_k``. A temperature configured for one

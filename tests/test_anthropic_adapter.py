@@ -372,8 +372,9 @@ def test_normalize_a_tool_call() -> None:
 
 
 def test_thinking_blocks_are_kept_in_order_and_field_for_field() -> None:
-    """Sonnet 5 thinks by default, and a tool-use turn sent back without its
-    thinking, or with it edited or reordered, is rejected."""
+    """Sonnet 5 thinks by default. A tool-use turn sent back with its thinking
+    edited, reordered or partly dropped is rejected, and one sent back without
+    it loses the reasoning behind the call."""
     response = FakeResponse(
         content=[
             FakeThinking(signature="sig-1"),
