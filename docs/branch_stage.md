@@ -219,10 +219,12 @@ zero.
   runs, so the overshoot is at most one run.
 - A live seed that finishes with no recorded cost stops the guard as
   `budget_unenforceable`.
-- A seed whose run finished but could not be verified, attributed or labelled
-  is recorded as `setup_error` with its run id and the error, and is priced
-  from its trace like any other run, so the guard charges what it spent. When
-  even the price cannot be read, its cost stays null and the guard stops as
+- A seed that failed after its run started, in the runner itself or while
+  it was verified, attributed or labelled, is recorded as `setup_error` with
+  its run id and the error. It is priced from its trace by `run_cost_usd`,
+  the same function and the same `PipelineProgress` hand-off `run-suite` uses
+  for a cell that failed that way, so the guard charges what it spent. When
+  the trace cannot be read, its cost stays null and the guard stops as
   `budget_unenforceable`. Only a seed that failed before its run existed has
   no run id, and such a seed called no provider.
 - A seed that calls no provider, meaning the fixture provider or a cassette

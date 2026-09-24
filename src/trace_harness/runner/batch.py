@@ -359,16 +359,9 @@ class BatchRunner:
             logger.warning(
                 "batch cell failed (agent=%s, task=%s): %s", config.label, task_path, exc
             )
-            entry = _setup_error_entry(config, task_path, exc)
-            if progress.run_id is not None and progress.run_config is not None:
-                # The run started before the failure and may have been billed,
-                # so the entry points at it and carries what its trace records.
-                entry.run_id = progress.run_id
-                entry.model = progress.run_config.model
-                entry.cost_usd = run_cost_usd(
-                    progress.run_config, self.store.runs_dir, progress.run_id
-                )
-            return entry
+            return attach_started_run(
+                _setup_error_entry(config, task_path, exc), progress, self.store.runs_dir
+            )
 
     def _write_summary(self, summary: BatchSummary) -> Path:
         return self.store.write_batch_summary(summary.batch_id, summary)
@@ -465,6 +458,28 @@ def run_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None
         return 0.0
     raws = [raw for e in responses if isinstance(raw := e.payload.get("raw"), dict)]
     return estimate_cost_usd(config.provider, config.model, raws)
+
+
+def attach_started_run(
+    entry: BatchRunEntry, progress: PipelineProgress, runs_dir: Path
+) -> BatchRunEntry:
+    """Point a failed cell's ``setup_error`` entry at its run, if the run had started.
+
+    The run may have been billed before the failure, so the entry keeps the
+    run's id, the model it ran and the cost its trace records, priced by
+    :func:`run_cost_usd` like a finished cell. A failure before the run leaves
+    the entry as it is, since nothing called a provider. ``run-suite`` cells
+    and ``branch`` seeds both come through here.
+    """
+    if progress.run_id is None or progress.run_config is None:
+        return entry
+    return entry.model_copy(
+        update={
+            "run_id": progress.run_id,
+            "model": progress.run_config.model,
+            "cost_usd": run_cost_usd(progress.run_config, runs_dir, progress.run_id),
+        }
+    )
 
 
 def entry_from_pipeline(

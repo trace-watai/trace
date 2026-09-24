@@ -64,12 +64,18 @@ from trace_harness.runner.batch import (
     BudgetGuard,
     NotRunCell,
     aggregate_entries,
+    attach_started_run,
     entry_from_pipeline,
     new_batch_id,
 )
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
 from trace_harness.runner.experiment import ConditionKind, ConditionSpec, ExperimentSpec
-from trace_harness.runner.pipeline import PipelineResult, attribute_and_bundle, verify_run
+from trace_harness.runner.pipeline import (
+    PipelineProgress,
+    PipelineResult,
+    attribute_and_bundle,
+    verify_run,
+)
 from trace_harness.runner.result import RunResult
 from trace_harness.tasks.loader import load_task
 from trace_harness.tasks.schemas import TaskSpec
@@ -317,11 +323,18 @@ def run_branch(
                 NotRunCell(agent_label=agent.label, task_path=artifact.task_fixture, seed=seed)
             )
             continue
+        progress = PipelineProgress()
         try:
-            entry = _run_seed(artifact, task, experiment, condition, fork_step, seed, store)
+            entry = _run_seed(
+                artifact, task, experiment, condition, fork_step, seed, store, progress
+            )
         except Exception as exc:  # noqa: BLE001 (isolate the seed so the batch goes on)
             logger.warning("branch seed %s of %s failed: %s", seed, condition.name, exc)
-            entry = _setup_error(artifact, condition, seed, exc)
+            # A seed that failed after its run started is priced from its
+            # trace, as a run-suite cell is, so the guard still charges it.
+            entry = attach_started_run(
+                _setup_error(artifact, condition, seed, exc), progress, store.runs_dir
+            )
         entries.append(entry)
         guard.charge(entry.cost_usd, agent.provider, agent.cassette, run_id=entry.run_id)
 
@@ -379,7 +392,14 @@ def _run_seed(
     fork_step: int,
     seed: int | None,
     store: ArtifactStore,
+    progress: PipelineProgress,
 ) -> BatchRunEntry:
+    """Run one seed and score it.
+
+    ``progress`` gets the run's configuration before the run and its id as
+    soon as the runner made one, so a failure anywhere after that, in the
+    runner or in scoring, still names the run for pricing.
+    """
     environment = SupportEnvironment.from_task(task, docs=None)
     # Controls enter only as installed controls, so every block carries blocked_by.
     for control in select_controls(condition.control_ids):
@@ -425,12 +445,13 @@ def _run_seed(
         call_policy=call_policy,
         metadata=metadata,
     )
-    run = AgentRunner(adapter, environment, store).run(task, config)
+    runner = AgentRunner(adapter, environment, store)
+    progress.run_config = config
     try:
-        return _scored_entry(artifact, task, condition, config, fork_step, seed, run, store)
-    except Exception as exc:  # noqa: BLE001 (the run exists and may have spent)
-        logger.warning("branch seed %s of %s could not be scored: %s", seed, condition.name, exc)
-        return _unscored_entry(artifact, task, condition, config, seed, run, store, exc)
+        run = runner.run(task, config)
+    finally:
+        progress.run_id = runner.run_id
+    return _scored_entry(artifact, task, condition, config, fork_step, seed, run, store)
 
 
 def _scored_entry(
@@ -466,49 +487,6 @@ def _scored_entry(
             "post_block_outcome": block.outcome if block else None,
         }
     )
-
-
-def _unscored_entry(
-    artifact: RegressionArtifact,
-    task: TaskSpec,
-    condition: ConditionSpec,
-    config: RunConfig,
-    seed: int | None,
-    run: RunResult,
-    store: ArtifactStore,
-    exc: Exception,
-) -> BatchRunEntry:
-    """The entry of a run that finished but could not be verified, attributed or labelled.
-
-    The run may have called a provider, so it keeps its run id and is priced
-    from its own trace like any other, and the budget guard charges it. When
-    even that fails its cost stays null, which stops the guard as
-    ``budget_unenforceable``.
-    """
-    fields = {
-        "status": "setup_error",
-        "error": f"post-run processing failed: {type(exc).__name__}: {exc}",
-        "condition": condition.name,
-        "seed": seed,
-    }
-    agent = condition.agent_config
-    try:
-        entry = entry_from_pipeline(
-            PipelineResult(task, config, run, None), agent, artifact.task_fixture, store.runs_dir
-        )
-    except Exception:  # noqa: BLE001 (an unknown cost is recorded as unknown)
-        logger.warning("branch run %s could not be priced", run.run_id)
-        return BatchRunEntry(
-            run_id=run.run_id,
-            task_id=run.task_id,
-            task_path=artifact.task_fixture,
-            agent_label=agent.label,
-            provider=config.provider,
-            model=config.model,
-            prompt_version=config.prompt_version,
-            **fields,
-        )
-    return entry.model_copy(update=fields)
 
 
 def _continuation(

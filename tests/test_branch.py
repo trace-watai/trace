@@ -1017,11 +1017,40 @@ def test_a_seed_that_fails_after_its_run_is_still_charged(tmp_path, live_models,
     (entry,) = live.entries
     assert (entry.status, entry.seed, entry.condition) == ("setup_error", 0, "live")
     assert entry.run_id is not None and (tmp_path / "runs" / entry.run_id).is_dir()
-    assert entry.error == (
-        "post-run processing failed: RuntimeError: classify_post_block_outcome broke"
-    )
-    assert entry.cost_usd == pytest.approx(RUN_COST)
+    assert entry.error == "RuntimeError: classify_post_block_outcome broke"
+    assert (entry.model, entry.cost_usd) == ("claude-sonnet-5", pytest.approx(RUN_COST))
     assert live.budget.spent_usd == pytest.approx(RUN_COST)
+    assert live.budget.stop_reason == "budget_exhausted"
+    assert [c.seed for c in live.budget.not_run] == [1, 2]
+
+
+def test_a_seed_whose_runner_raises_after_the_call_is_priced_from_its_trace(
+    tmp_path, live_models, monkeypatch
+):
+    """run_result.json could not be written, so the runner raised after the call.
+
+    The seed is priced the way a run-suite cell is (#196): the trace it left
+    carries the billed response, and the guard charges it.
+    """
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(tmp_path, _claude("live", "live", artifact), max_cost_usd=0.01)
+    real_write = ArtifactStore.write_json
+
+    def write_json(self, run_id, name, payload):
+        if name == names.RUN_RESULT:
+            raise OSError("disk full")
+        return real_write(self, run_id, name, payload)
+
+    monkeypatch.setattr(ArtifactStore, "write_json", write_json)
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 0
+    live = batches["live"]
+    (entry,) = live.entries
+    assert (entry.status, entry.error) == ("setup_error", "OSError: disk full")
+    assert entry.run_id is not None
+    assert entry.cost_usd == pytest.approx(RUN_COST)
     assert live.budget.stop_reason == "budget_exhausted"
     assert [c.seed for c in live.budget.not_run] == [1, 2]
 
@@ -1032,7 +1061,13 @@ def test_a_seed_whose_cost_cannot_be_read_after_its_run_stops_the_guard(
     """Unknown spend is never counted as zero, even on the error path."""
     path, artifact = _artifact(tmp_path)
     spec_path, _ = _spec(tmp_path, _claude("live", "live", artifact), max_cost_usd=5.0)
-    _break(monkeypatch, "entry_from_pipeline")
+    store = ArtifactStore(tmp_path / "runs")
+
+    def lose_the_trace(_store, run, _task):
+        store.trace_path(run.run_id).unlink()
+        raise RuntimeError("the trace is gone")
+
+    monkeypatch.setattr("trace_harness.runner.branch.verify_run", lose_the_trace)
 
     code, batches = _branch(tmp_path, path, spec_path)
 
