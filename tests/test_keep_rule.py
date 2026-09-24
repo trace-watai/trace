@@ -686,9 +686,20 @@ def _selected(*conditions: ConditionSpec):
     return conditions_for_control(_plan(*conditions), CONTROL)
 
 
-def _labeled(mode: str, control_ids: list[str]) -> RegressionArtifact:
+def _labeled(mode: str, control_ids: list[str], **basis) -> RegressionArtifact:
+    """An artifact whose basis supports static_ok unless ``basis`` changes a fact."""
+    facts = {
+        "control_ids": control_ids,
+        "control_step": 2,
+        "first_irreversible_action_step": 2,
+        "rule_kind": "prohibition",
+        "gated_tool": "issue_refund",
+        "checks_reachable_via_gated_tool": ["unauthorized_cash_refund"],
+        "checks_covered_by_control": ["unauthorized_cash_refund"],
+        **basis,
+    }
     return _artifact().model_copy(
-        update={"replay_mode": mode, "replay_mode_basis": ReplayModeBasis(control_ids=control_ids)}
+        update={"replay_mode": mode, "replay_mode_basis": ReplayModeBasis(**facts)}
     )
 
 
@@ -719,10 +730,25 @@ LIVE_ARM = _condition("live", "live", [CONTROL])
             _artifact().model_copy(update={"replay_mode": "static_ok"}),
             (REPLAY,),
             False,
-            "predicted with [] installed",
+            "its replay_mode_basis does not support the label",
+        ),
+        (
+            # Set by hand, since the control step comes after the first irreversible action.
+            _labeled("static_ok", [CONTROL], first_irreversible_action_step=1),
+            (REPLAY,),
+            False,
+            "its replay_mode_basis does not support the label",
         ),
     ],
-    ids=["static_ok", "live_required", "unlabeled", "no_replay", "other_control", "no_basis"],
+    ids=[
+        "static_ok",
+        "live_required",
+        "unlabeled",
+        "no_replay",
+        "other_control",
+        "no_basis",
+        "hand_set",
+    ],
 )
 def test_one_function_chooses_the_path_before_anything_runs(artifact, conditions, short, note):
     """The command runs the path this returns and hands it to the rule, so the two never differ."""

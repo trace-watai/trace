@@ -86,10 +86,11 @@ The sibling pass rate is `1 - sibling_failure_rate`.
 
 **Which path.** The path is chosen once, before any condition runs, and the
 rule judges the path the command ran. A `static_ok` artifact takes the short
-path, replay only, when its label was predicted with the control installed
-(`replay_mode_basis.control_ids` names it) and the plan declares a replay-only
-condition for the control. Every other artifact takes the live path, and a
-`static_ok` artifact that does says why in a note.
+path, replay only, when its `replay_mode_basis` still classifies as
+`static_ok`, its label was predicted with the control installed
+(`replay_mode_basis.control_ids` names it), and the plan declares a
+replay-only condition for the control. Every other artifact takes the live
+path, and a `static_ok` artifact that does says why in a note.
 
 **Live evidence.** A live agent reacting to the block, or a cassette of what
 one answered, is live evidence. A fixture arm is live evidence only when it
@@ -187,9 +188,10 @@ the replay-only conditions for it, calls no provider and spends nothing. The
 result says so in three places. `metadata.validate_control.path` is
 `static_ok_short_path`, `not_run_on_short_path` lists the live conditions left
 out, and the notes and `report.md` state that the live quantities are not part
-of the decision. When the label was predicted with other controls, or the plan
-has no replay-only condition for the control, a `static_ok` artifact takes the
-live path with the conditions it has, and a note says which.
+of the decision. When the basis no longer supports the label, as with a label
+set by hand, when the label was predicted with other controls, or when the
+plan has no replay-only condition for the control, a `static_ok` artifact
+takes the live path with the conditions it has, and a note says which.
 
 ## What validate-control writes
 

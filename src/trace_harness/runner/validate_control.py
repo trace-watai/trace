@@ -13,9 +13,10 @@ The rule
 
     The path is chosen once, by :func:`short_path_for`, before anything runs,
     and the command and the rule both read that answer. A static_ok artifact
-    takes the short path, replay only, when its label was predicted with the
-    control installed and the plan declares a replay-only condition for the
-    control. Every other artifact takes the live path.
+    takes the short path, replay only, when its basis still supports the
+    label, the label was predicted with the control installed, and the plan
+    declares a replay-only condition for the control. Every other artifact
+    takes the live path.
 
     ``discard`` when any of these holds, on either path.
 
@@ -531,14 +532,22 @@ def short_path_for(
 ) -> tuple[bool, str | None]:
     """Whether validation takes the static_ok short path, and why a static_ok artifact did not.
 
-    The label is trusted only for a control it was predicted with, which
-    ``replay_mode_basis.control_ids`` names, and the short path needs a
-    replay-only condition for the control to run.
+    The label is trusted only when its own ``replay_mode_basis`` still
+    classifies as static_ok, so a label set by hand is never enough, and only
+    for a control it was predicted with, which the basis names. The short
+    path also needs a replay-only condition for the control to run.
     """
+    from trace_harness.regression.materializer import classify_replay_mode
+
     if artifact.replay_mode != "static_ok":
         return False, None
     basis = artifact.replay_mode_basis
-    predicted_with = list(basis.control_ids) if basis is not None else []
+    if basis is None or classify_replay_mode(basis) != "static_ok":
+        return False, (
+            "a static_ok artifact took the live path, since its replay_mode_basis does not "
+            "support the label"
+        )
+    predicted_with = list(basis.control_ids)
     if control_id not in predicted_with:
         return False, (
             f"a static_ok artifact took the live path, since its label was predicted with "
