@@ -6,8 +6,8 @@ advisory. This reader accepts #156's labels without generating or changing them.
 
 Given an experiments directory, the collector also recomputes every retained
 experiment's frozen set (#195). Drift there is reported and recorded in the
-summary without failing the gate; a retained experiment that no longer loads
-fails it.
+summary without failing the gate. A retained experiment that no longer loads,
+or whose frozen set cannot be hashed, fails it.
 """
 
 from __future__ import annotations
@@ -299,6 +299,9 @@ def _check_experiments(directory: Path, summary: CollectorSummary) -> None:
     the gate on that would turn CI red on every verifier change until each
     retained baseline was re-run. The cost is that CI never forces a
     re-baseline, so the warning and ``experiments_drifted`` are the record.
+
+    An experiment that does not load or cannot be hashed is malformed and
+    fails the gate.
     """
     if not directory.is_dir():
         summary.malformed.append(str(directory))
@@ -306,31 +309,36 @@ def _check_experiments(directory: Path, summary: CollectorSummary) -> None:
         return
     for plan in sorted(directory.glob(f"*/{EXPERIMENT_SPEC}")):
         try:
-            spec = ExperimentSpec.model_validate_json(plan.read_text(encoding="utf-8"))
-            result_path = plan.parent / EXPERIMENT_RESULT
-            result = (
-                ExperimentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
-                if result_path.is_file()
-                else None
-            )
+            entry = _check_experiment(plan)
         except (OSError, ValueError) as exc:
             summary.malformed.append(str(plan.parent))
             summary.errors.append(f"{plan.parent}: {exc}")
             continue
-        manifest = spec.frozen_manifest
-        entry = ExperimentFreezeEntry(
-            experiment_id=spec.experiment_id,
-            status="not_recorded",
-            recorded_drifted=result is not None and result.frozen_set_drifted,
-        )
-        if manifest.frozen_set is not None:
-            entry.changes = check_frozen_set(
-                manifest.frozen_set,
-                Path.cwd(),
-                suite_id=manifest.suite_id,
-                labels_path=manifest.labels_path,
-            )
-            entry.status = "drifted" if entry.changes else "matches"
         if entry.changes:
-            summary.experiments_drifted.append(spec.experiment_id)
+            summary.experiments_drifted.append(entry.experiment_id)
         summary.experiments.append(entry)
+
+
+def _check_experiment(plan: Path) -> ExperimentFreezeEntry:
+    spec = ExperimentSpec.model_validate_json(plan.read_text(encoding="utf-8"))
+    result_path = plan.parent / EXPERIMENT_RESULT
+    result = (
+        ExperimentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        if result_path.is_file()
+        else None
+    )
+    manifest = spec.frozen_manifest
+    entry = ExperimentFreezeEntry(
+        experiment_id=spec.experiment_id,
+        status="not_recorded",
+        recorded_drifted=result is not None and result.frozen_set_drifted,
+    )
+    if manifest.frozen_set is not None:
+        entry.changes = check_frozen_set(
+            manifest.frozen_set,
+            Path.cwd(),
+            suite_id=manifest.suite_id,
+            labels_path=manifest.labels_path,
+        )
+        entry.status = "drifted" if entry.changes else "matches"
+    return entry

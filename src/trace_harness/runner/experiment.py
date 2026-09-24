@@ -27,9 +27,9 @@ import uuid
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from trace_harness.runner.frozen_set import FrozenComponent, FrozenFileChange
+from trace_harness.runner.frozen_set import FrozenComponent, FrozenFileChange, check_labels_path
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.events import utc_now
 
@@ -116,6 +116,11 @@ class FrozenManifest(BaseModel):
     fixtures_hash: str
     labels_path: str | None = None
     frozen_set: dict[str, FrozenComponent] | None = None
+
+    @field_validator("labels_path")
+    @classmethod
+    def _labels_path_stays_in_the_repository(cls, value: str | None) -> str | None:
+        return None if value is None else check_labels_path(value)
 
     @model_validator(mode="after")
     def _fixtures_hash_is_the_frozen_digest(self) -> FrozenManifest:

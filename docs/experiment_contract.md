@@ -85,7 +85,7 @@ or was removed. The module is `trace_harness/runner/frozen_set.py`.
 | `attribution` | `src/trace_harness/attribution/` |
 | `suite` | `fixtures/suites/{suite_id}.json` |
 | `fixtures` | `fixtures/` except the generated `fixtures/controls/evidence/*/*/index.json` |
-| `labels` | the plan's `labels_path`, when it names one |
+| `labels` | the plan's `labels_path`, one file under the repository root, when it names one |
 
 The attribution scorer is `src/trace_harness/attribution/`: `HeuristicAttributor`,
 the `AttributionResult` schema it emits, and `validate_attribution_result`, which
@@ -106,15 +106,24 @@ carries the same pattern, and the library's sha256 pins do not cover it. The
 pattern matches one path segment at a time, so an `index.json` at any other
 depth counts.
 
+`labels_path` has to be a relative POSIX path with no empty, `.` or `..`
+segment, or the plan fails to load. `freeze` also refuses labels that name a
+directory or resolve outside the repository root through a symlink.
+
 **Hashing.** A file's hash is sha256 over its bytes with CRLF folded to LF,
 keyed by its POSIX path relative to the repository root. A component's digest is
 sha256 over its sorted `path, hash` lines, so neither an autocrlf checkout nor
 the order a filesystem lists a directory changes it. `__pycache__`, `.pyc`,
 `.pyo`, tool caches and `.DS_Store` are skipped; every other byte counts,
-comments and docstrings included. Paths resolve against the working directory
-like every other CLI path, so `freeze` and `record` run from the repository
-root. `freeze` sets `fixtures_hash` to the fixtures digest, and a plan whose two
-values disagree fails to load.
+comments, docstrings and editor swap files included. A symlink anywhere in a
+component is refused, because `os.walk` does not descend a linked directory and
+its files would drop out of the hash. Paths resolve against the working
+directory like every other CLI path, so `freeze` and `record` run from the
+repository root, and a working directory that holds none of the three code
+directories is refused, since hashing it would list every frozen file as
+removed. `freeze` sets `fixtures_hash` to the fixtures digest, and a plan whose
+two values disagree fails to load, as does a component whose digest does not
+match its per-file hashes.
 
 **A plan is frozen once.** `freeze` refuses a plan that already carries a frozen
 set. Freezing it again after the evaluator moved would turn drift into a clean
@@ -142,9 +151,10 @@ is refused with a pointer to `experiment freeze`.
 
 **Retained experiments in CI.** `check_repo.sh` passes `--experiments
 docs/acceptance/experiments` to `collect-regressions`, which recomputes every
-retained experiment's frozen set. One that fails to load fails the gate with
-exit 2. Drift prints a warning and lands in the gate summary's `experiments`
-and `experiments_drifted`, and never changes the exit code. A retained
+retained experiment's frozen set. One that fails to load, or whose frozen set
+cannot be hashed, is malformed and fails the gate with exit 2. Drift prints a
+warning and lands in the gate summary's `experiments` and
+`experiments_drifted`, and never changes the exit code. A retained
 experiment was checked when it was recorded; a later reviewed edit to the
 verifier makes it stale without making its recorded numbers wrong. Blocking
 would turn CI red on every verifier change until each retained baseline was

@@ -1011,7 +1011,7 @@ def _experiment_freeze(args: argparse.Namespace) -> int:
     """
     from trace_harness.runner.experiment import EXPERIMENT_SCHEMA_VERSION, ExperimentSpec
     from trace_harness.runner.frozen_set import FrozenSetError, freeze
-    from trace_harness.tracing.artifact_store import _atomic_write_text
+    from trace_harness.tracing.artifact_store import atomic_write_text
 
     spec_path, spec = _load_experiment_plan(args.experiment_path)
     manifest = spec.frozen_manifest
@@ -1029,7 +1029,7 @@ def _experiment_freeze(args: argparse.Namespace) -> int:
     data["frozen_manifest"]["frozen_set"] = {n: c.model_dump() for n, c in frozen.items()}
     data["frozen_manifest"]["fixtures_hash"] = frozen["fixtures"].digest
     spec = ExperimentSpec.model_validate(data)
-    _atomic_write_text(spec_path, json.dumps(spec.model_dump(mode="json"), indent=2) + "\n")
+    atomic_write_text(spec_path, json.dumps(spec.model_dump(mode="json"), indent=2) + "\n")
 
     print(f"\nExperiment frozen: {spec.experiment_id}")
     for name, component in frozen.items():

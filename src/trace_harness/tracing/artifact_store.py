@@ -120,6 +120,14 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """The same all-or-nothing write, for a file the store does not own.
+
+    ``experiment freeze`` rewrites a plan in place with it (#195).
+    """
+    _atomic_write_text(path, text)
+
+
 def _with_verdict(entry: RunIndexEntry, fields: tuple[bool, int, str | None]) -> RunIndexEntry:
     """Apply verifier fields to an index entry, deriving the three-state verdict.
 
