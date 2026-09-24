@@ -9,9 +9,9 @@ test_validate_control.py pins.
 
 The conditions are the offline ones from tests/test_validate_control.py. The
 control demo with the valid-cash sibling forks at step 1. The live arm's
-script tries the recorded cash refund, which the refund window control blocks
-on all five seeds, and answers in its own words, and the noise floor's script
-lets the refund through on all five.
+script looks the order up again, tries the recorded cash refund, which the
+refund window control blocks on all five seeds, and answers in its own words,
+and the noise floor's script lets the refund through on all five.
 """
 
 from __future__ import annotations

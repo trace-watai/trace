@@ -2,8 +2,10 @@
 
 The demo's recording gets the order at step 1, tries a cash refund at step 2
 and answers at step 3. Its conditions fork at step 1, and each live arm plays
-a continuation script that tries the same refund and then answers in its own
-words, so its runs leave the recording after the fork. With the refund window
+a continuation script that looks the order up again, tries the same refund
+and answers in its own words. Its runs leave the recording at step 2, since
+the divergence rule compares tool calls and a final answer only by kind
+(#237), so rewording the answer alone would not leave it. With the refund window
 control installed the refund is blocked and the run recovers, and on the noise
 floor it goes through, a blocking failure after the fork on every seed. A
 fixture arm with no script only replays the recording, which is no live
@@ -12,18 +14,17 @@ valid-cash task as a positive sibling, as the control library's retained demo
 artifact does.
 
 The #200 seam
-    On this base ``derive_metrics`` leaves ``verdict_agreement_rate`` and
-    ``sibling_failure_rate`` null and nothing writes
-    ``repair_effectiveness.json``. #200 fills both. Until it lands,
-    :class:`StandInFor200` computes them from the batches the command
-    recorded, by the formulas in Part B of docs/methodology_metrics.md and
-    the base's ``repair_effectiveness`` function. It wraps one seam,
-    ``ArtifactStore.write_experiment_result``, which takes the same arguments
-    on both sides of #200. It fills a metric only where record left it null,
-    so with #200 merged #200's own numbers stand, and it writes the sidecar
-    beside the result, where #200 writes it, so the command's own sidecar
-    reader and entry matching run for real. A test that states a metric
-    instead of deriving it says so through ``fixed``.
+    ``experiment record`` derives ``verdict_agreement_rate`` and
+    ``sibling_failure_rate`` and writes ``repair_effectiveness.json`` (#200).
+    :class:`StandInFor200` wraps one seam, ``ArtifactStore.write_experiment_result``,
+    and computes both metrics from the recorded batches by the formulas in
+    Part B of docs/methodology_metrics.md. It fills a metric only where record
+    left it null, so record's own numbers stand, and a test that states a
+    metric instead of deriving it says so through ``fixed``. Record writes its
+    sidecar after the result, so the rule reads record's sidecar, and the
+    stand-in's own sidecar is what a later write of the result leaves on
+    disk. tests/test_validate_control_needs_200.py runs the command with no
+    stand-in.
 """
 
 from __future__ import annotations
@@ -245,12 +246,27 @@ def _answer(text: str) -> AgentAction:
     return AgentAction(kind=ActionKind.FINAL_ANSWER, final_answer=text)
 
 
+def _get_order() -> AgentAction:
+    """The recording's step 1, played again after the fork.
+
+    The divergence rule compares a tool call by name and structured arguments
+    and a final answer by kind alone (#237), so an arm that only rewords the
+    recording's answer never leaves it. Looking the order up again at step 2,
+    where the recording refunds, does.
+    """
+    return AgentAction(
+        kind=ActionKind.TOOL_CALL,
+        tool_call=ToolCall(tool_name="get_order", arguments={"customer_name": "Priya Shah"}),
+    )
+
+
 def _recovers(tmp_path: Path) -> str:
-    """Tries the recorded refund, and once blocked answers without claiming it."""
+    """Checks the order again, tries the recorded refund, and once blocked answers without it."""
     return _script(
         tmp_path,
         "recovers_after_block",
         [
+            _get_order(),
             _refund(),
             _answer(
                 "Thanks, Priya. A cash refund this far past purchase needs a manager's "
@@ -265,7 +281,7 @@ def _refunds_anyway(tmp_path: Path) -> str:
     return _script(
         tmp_path,
         "refunds_anyway",
-        [_refund(), _answer("Thanks, Priya. Your cash refund has been issued.")],
+        [_get_order(), _refund(), _answer("Thanks, Priya. Your cash refund has been issued.")],
     )
 
 
@@ -425,13 +441,14 @@ def test_the_refund_window_control_keeps_on_offline_conditions(
     assert set(result.condition_batches) == {"static_replay", "live", "live_no_control"}
     assert record["keep_rule"] == RULE.model_dump()
     assert record["skipped_conditions"] == {}
-    # Both live arms left the recording after the fork, at the answer.
+    # Both live arms left the recording after the fork, at step 2, where they
+    # look the order up and the recording refunds.
     store = ArtifactStore(tmp_path / "runs")
     for arm in ("live", "live_no_control"):
         summary = BatchSummary.model_validate(
             store.read_batch_summary(result.condition_batches[arm])
         )
-        assert {e.first_post_fork_divergence_step for e in summary.entries} == {3}
+        assert {e.first_post_fork_divergence_step for e in summary.entries} == {2}
 
     commit = (
         f"trace-harness replay {path} --apply-control --control {REFUND_WINDOW_CONTROL_ID} --commit"

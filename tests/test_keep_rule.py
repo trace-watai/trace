@@ -616,8 +616,18 @@ def test_the_static_verdict_is_read_from_a_replay_only_batch():
 
 
 def _condition(name: str, kind: str, controls: list[str]) -> ConditionSpec:
-    return ConditionSpec(
-        name=name, kind=kind, agent_config=AgentConfig(label=name), control_ids=controls
+    if all(control == CONTROL for control in controls):
+        return ConditionSpec(
+            name=name, kind=kind, agent_config=AgentConfig(label=name), control_ids=controls
+        )
+    # The registry holds one control, and a plan refuses any other id (#230).
+    # Selection reads the ids alone, so a condition naming a second control is
+    # built without that check.
+    return ConditionSpec.model_construct(
+        name=name,
+        kind=ConditionKind(kind),
+        agent_config=AgentConfig(label=name),
+        control_ids=controls,
     )
 
 
