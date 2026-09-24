@@ -271,7 +271,12 @@ def _live_evidence_check(evidence: KeepEvidence) -> RuleCheck:
         else f"live condition {evidence.live_condition} and noise floor "
         f"{evidence.noise_floor_condition} were recorded"
     )
-    return RuleCheck(name="live_evidence", met=not missing, detail=detail)
+    return RuleCheck(
+        name="live_evidence",
+        value="missing" if missing else "recorded",
+        met=not missing,
+        detail=detail,
+    )
 
 
 def _minimum(name: str, value: float | None, threshold: float, unmeasured: str) -> RuleCheck:
@@ -476,6 +481,11 @@ def effectiveness_entry(
     """
     if report is None:
         return None, f"no {REPAIR_EFFECTIVENESS_FILE} beside the result, so B1 is unknown"
+    if live_condition is None or noise_floor_condition is None:
+        return (
+            None,
+            "no live condition and noise floor pair was recorded, so no B1 entry applies",
+        )
     names = {artifact.test_name, artifact.source_run_id}
     matches = [
         e

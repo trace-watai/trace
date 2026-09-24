@@ -413,9 +413,24 @@ def test_the_b1_entry_is_found_by_test_name_or_source_run():
         (None, "live", "no repair_effectiveness.json beside the result"),
         ([], "live", "has no entry for ctl_refund_window_v1"),
         ([_entry()], "live_other", "has no entry for ctl_refund_window_v1"),
+        ([_entry()], None, "no live condition and noise floor pair was recorded"),
+        ([_entry().model_copy(update={"control_id": "ctl_other"})], "live", "has no entry"),
+        (
+            [_entry().model_copy(update={"artifact_id": "regression_other_task"})],
+            "live",
+            "has no entry",
+        ),
         ([_entry(), _entry(on=(1, 5))], "live", "has 2 entries for ctl_refund_window_v1"),
     ],
-    ids=["no_sidecar", "empty", "other_condition", "ambiguous"],
+    ids=[
+        "no_sidecar",
+        "empty",
+        "other_condition",
+        "no_live_condition",
+        "other_control",
+        "other_artifact",
+        "ambiguous",
+    ],
 )
 def test_no_single_b1_entry_is_a_note(entries, live, note):
     report = (
