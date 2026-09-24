@@ -910,6 +910,29 @@ def test_an_uncapped_suite_runs_an_outside_agent_with_an_unknown_cost(tmp_path):
     assert entry.cost_usd is None
 
 
+def test_an_outside_agent_cell_that_fails_after_its_run_keeps_the_run(tmp_path, monkeypatch):
+    """A run-suite cell whose pipeline raised after the run is named like a live one (#196).
+
+    run_target_agent hands the runner's id to the pipeline's progress, so the
+    setup_error entry points at the run the agent made, and its cost stays
+    unknown, since the harness never saw the agent's spend.
+    """
+
+    def crash(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("verifier crashed")
+
+    monkeypatch.setattr(pipeline, "verify_run", crash)
+    suite = SuiteSpec(
+        suite_id="byoa_failed_after", tasks=[str(VALID_TASK_PATH)], agent_configs=[_external()]
+    )
+    runs = tmp_path / "runs"
+    (entry,) = BatchRunner(ArtifactStore(runs)).run(suite).entries
+    assert (entry.status, entry.error) == ("setup_error", "RuntimeError: verifier crashed")
+    assert entry.run_id is not None and (runs / entry.run_id / "trace.jsonl").is_file()
+    assert entry.model == "script-agent"
+    assert entry.cost_usd is None
+
+
 def test_both_schema_bumps_sit_above_the_196_versions():
     """#196 took RunConfig and Suite 0.3.0 for call_policy and max_cost_usd."""
     assert RUN_CONFIG_SCHEMA_VERSION == "0.4.0"
