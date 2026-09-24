@@ -7,8 +7,8 @@ a guardrail on and again with it off and you get two batch ids in the batches
 folder, with the comparison living in somebody's notes.
 
 Owner: Evaluation Systems. Schema: `trace_harness/runner/experiment.py`
-(`EXPERIMENT_SCHEMA_VERSION = 0.3.0`; 0.2.0 added the frozen set and 0.3.0
-added `continuation_script`). Metric names come from
+(`EXPERIMENT_SCHEMA_VERSION = 0.4.0`; 0.2.0 added the frozen set, 0.3.0
+added `continuation_script` and 0.4.0 added `keep_rule`). Metric names come from
 [methodology_metrics.md](methodology_metrics.md) and are asserted against its
 appendix by `tests/test_experiment.py`.
 
@@ -36,6 +36,7 @@ result.
 | `frozen_manifest` | `suite_id`, `verifier_ids`, `fixtures_hash`, `labels_path`, `frozen_set` |
 | `conditions` | one per arm, names unique within the experiment |
 | `budget` | `max_runs`, `max_cost_usd`; `branch` enforces `max_cost_usd` per invocation ([branch_stage.md](branch_stage.md#budget)), and `max_runs` is not enforced |
+| `keep_rule` | the thresholds `validate-control` holds a control to (#203), optional |
 
 `fixtures_hash` is what makes the freeze checkable rather than asserted. If the
 fixtures move between two conditions then the conditions answered different
@@ -58,6 +59,19 @@ provider only; without one the fixture provider plays the recording.
 `static_replay` not being able to react to a block is the limitation the whole
 replay-validity question exists to measure, which is why it is a named kind
 rather than an implementation detail.
+
+`keep_rule` names five thresholds, all required when the field is present and
+none with a default, so the rule never applies a number the plan did not state.
+Plans written before 0.4.0 load with it absent, and `validate-control` refuses
+a plan without one.
+
+| threshold | what it bounds |
+|---|---|
+| `min_verdict_agreement_rate` | `verdict_agreement_rate`, at least this to keep |
+| `min_sibling_pass_rate` | `1 - sibling_failure_rate`, at least this to keep, and below it the control is discarded |
+| `min_repair_effectiveness` | B1 from `repair_effectiveness.json`, at least this to keep; it may be negative |
+| `min_margin_over_noise_floor` | how far the recovered share of blocked live runs must exceed the noise floor's clean share; above zero |
+| `max_live_violation_rate` | the share of completed control-on runs still failing after the fork; above it the control is discarded |
 
 ### `result.json`
 

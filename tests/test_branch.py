@@ -423,7 +423,7 @@ def test_a_frozen_plan_records_after_branch_and_refuses_an_evaluator_edit(
     )
     assert main(["experiment", "freeze", str(spec_path)]) == 0
     plan = ExperimentSpec.model_validate_json(spec_path.read_text())
-    assert plan.schema_version == EXPERIMENT_SCHEMA_VERSION == "0.3.0"
+    assert plan.schema_version == EXPERIMENT_SCHEMA_VERSION == "0.4.0"
     frozen = plan.frozen_manifest
     assert frozen.fixtures_hash == frozen.frozen_set["fixtures"].digest != "sha256:test"
 

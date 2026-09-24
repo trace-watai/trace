@@ -34,9 +34,10 @@ from trace_harness.runner.frozen_set import FrozenComponent, FrozenFileChange
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.events import utc_now
 
-# 0.3.0: ConditionSpec.continuation_script (#159); 0.2.0: the frozen set on the
-# plan and the frozen_set_* fields on the result (#195)
-EXPERIMENT_SCHEMA_VERSION = "0.3.0"
+# 0.4.0: ExperimentSpec.keep_rule (#203); 0.3.0: ConditionSpec.continuation_script
+# (#159); 0.2.0: the frozen set on the plan and the frozen_set_* fields on the
+# result (#195)
+EXPERIMENT_SCHEMA_VERSION = "0.4.0"
 # Plans at this version predate the frozen set and may record without one.
 PRE_FROZEN_SET_SCHEMA_VERSION = "0.1.0"
 
@@ -150,6 +151,35 @@ class Budget(BaseModel):
     max_cost_usd: float = Field(ge=0)
 
 
+class KeepRule(BaseModel):
+    """The thresholds ``validate-control`` holds a control to (#203).
+
+    Every threshold is required and none has a default, so the rule never
+    falls back on a number the plan did not state. The rule itself lives in
+    ``runner/validate_control.py``, and ``docs/control_lifecycle.md`` states
+    it in full.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Share of (artifact, control) pairs whose static verdict equals the
+    # majority live verdict. Keep needs at least this.
+    min_verdict_agreement_rate: float = Field(ge=0, le=1)
+    # 1 - sibling_failure_rate. Keep needs at least this, and below it the
+    # siblings have failed and the control is discarded.
+    min_sibling_pass_rate: float = Field(ge=0, le=1)
+    # B1 from the repair_effectiveness.json sidecar. It can be negative, when
+    # the control makes the live agent violate more often.
+    min_repair_effectiveness: float = Field(le=1)
+    # How far the recovered share of blocked live runs must exceed the share
+    # of noise floor runs that stayed clean anyway. Above zero, so a tie never
+    # counts as beating the noise floor.
+    min_margin_over_noise_floor: float = Field(gt=0, le=1)
+    # Above this share of completed control-on runs with a blocking failure
+    # after the fork, the failure persists live and the control is discarded.
+    max_live_violation_rate: float = Field(ge=0, le=1)
+
+
 class ExperimentSpec(BaseModel):
     """The plan, written before anything runs."""
 
@@ -162,6 +192,8 @@ class ExperimentSpec(BaseModel):
     frozen_manifest: FrozenManifest
     conditions: list[ConditionSpec] = Field(min_length=1)
     budget: Budget
+    # Absent on plans before 0.4.0, and on any plan that validates no control.
+    keep_rule: KeepRule | None = None
     created_at: Any = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

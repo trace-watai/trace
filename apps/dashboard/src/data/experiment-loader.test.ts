@@ -69,6 +69,33 @@ describe("experiment loader", () => {
     });
   });
 
+  it("reads a keep rule when the plan has one and none on older plans", () => {
+    process.env.TRACE_RUNS_DIR = ACCEPTANCE;
+    const raw = JSON.parse(
+      readFileSync(
+        path.join(ACCEPTANCE, "experiments/exp_000_baseline/experiment.json"),
+        "utf8",
+      ),
+    ) as RawExperimentSpec;
+    expect(raw.keep_rule).toBeUndefined();
+    expect(parseExperimentSpec(raw).keepRule).toBeUndefined();
+
+    raw.keep_rule = {
+      min_verdict_agreement_rate: 0.9,
+      min_sibling_pass_rate: 1,
+      min_repair_effectiveness: -0.5,
+      min_margin_over_noise_floor: 0.2,
+      max_live_violation_rate: 0.5,
+    };
+    expect(parseExperimentSpec(raw).keepRule).toEqual({
+      minVerdictAgreementRate: 0.9,
+      minSiblingPassRate: 1,
+      minRepairEffectiveness: -0.5,
+      minMarginOverNoiseFloor: 0.2,
+      maxLiveViolationRate: 0.5,
+    });
+  });
+
   it("maps every declared condition to a batch", () => {
     process.env.TRACE_RUNS_DIR = ACCEPTANCE;
     const { spec, result } = getExperiment(listExperiments()[0].experimentId);
