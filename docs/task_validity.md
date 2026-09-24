@@ -39,8 +39,9 @@ Errors block a seed task; warnings should be reviewed.
 | `vague_language` | warning | `goal`/`description` should state a concrete outcome, not "do right by the customer". |
 | `not_multi_step` | warning | Tasks should require multi-step behavior (≥2 tools); single-tool tasks produce thin trajectories. |
 | `missing_required_evidence` | warning | `required_evidence` documents what proves pass/fail. |
-| `requires_escalation_without_tool` | error | A task with `requires_escalation: true` must offer the `escalate_case` tool in `available_tools`, or a correct run could not escalate. (Plain string check — independent of whether the tool has landed in the environment yet.) |
+| `requires_escalation_without_tool` | error | A task whose correct run may need to escalate must offer the `escalate_case` tool in `available_tools`, or a correct run could not escalate. That covers `requires_escalation: true`, a `required` posture, and a `conditional` posture with `claim_made: true`, since a posture decides the verdict without reading `requires_escalation`. A plain string check, so it holds whether or not the tool has landed in the environment yet. |
 | `conditional_escalation_claim_undeclared` | error | A `conditional` escalation posture must declare `claim_made`, which records whether the customer makes the claim its `condition` names. Left undeclared, the verifier infers the claim by matching `metadata.user_message`, and that matching misreads requests, questions and negations (TRA-79). Tasks and run artifacts from before task schema 0.6.0 still load and take that fallback. |
+| `requires_escalation_disagrees_with_posture` | warning | Once `expected_action.escalation` settles whether a correct run escalates, the verifier never reads `requires_escalation`, so the flag should agree with the posture. The rubric applies the verifier's own rule to the order the task starts with: `required` means true, `forbidden` or `claim_made: false` means false, and `claim_made: true` means true unless the order record confirms the claim. An undeclared claim is left to `conditional_escalation_claim_undeclared`. |
 
 ## Examples
 - **Good seed:** `fixtures/tasks/refund_policy_valid_cash.json`,
@@ -67,4 +68,6 @@ If escalating is correct only because the customer makes a claim the order
 record cannot confirm, set `expected_action.escalation` to a `conditional`
 posture with its `condition` and `claim_made: true`, or `claim_made: false`
 when the customer makes no such claim.
+Keep `requires_escalation` in agreement with what the posture decides, and
+offer `escalate_case` whenever the posture may call for it.
 Run `trace-harness validate-fixtures` before committing.

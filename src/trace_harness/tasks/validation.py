@@ -28,9 +28,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from trace_harness.attribution.schemas import FailureCategory
+from trace_harness.environment.state import Order
 from trace_harness.tasks.loader import TaskLoadError, load_task
 from trace_harness.tasks.schemas import EscalationPosture, TaskSpec
+from trace_harness.verifiers.refund_policy import escalation_warranted
 from trace_harness.verifiers.registry import available_verifier_ids
 
 Severity = Literal["error", "warning"]
@@ -51,8 +55,10 @@ _VAGUE_TERMS = re.compile(
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _CLOCK_KEYS = {"current_date", "now", "today", "timestamp", "datetime"}
 
-# The environment tool a task must offer when it declares requires_escalation.
-# A bare string on purpose: see the requires_escalation check in validate_task.
+# The environment tool a task must offer when a correct run may need to
+# escalate: requires_escalation is true, the posture is required, or a
+# conditional posture declares the claim was made. A bare string on purpose:
+# see the requires_escalation_without_tool check in validate_task.
 _ESCALATION_TOOL = "escalate_case"
 
 
@@ -175,16 +181,23 @@ def validate_task(task: TaskSpec) -> list[ValidationIssue]:
             )
         )
 
-    # A task that requires escalation must actually offer the escalate_case tool,
-    # or a correct run is impossible. Deliberately a plain string-membership check
-    # (not a tool-registry lookup) so the rubric stays independent of whether the
-    # escalate_case tool has landed in the environment yet.
-    # A declared or required escalation posture decides the verdict without
-    # reading requires_escalation, so it has to be checked here too.
-    posture = task.expected_action.escalation if task.expected_action else None
-    posture_may_escalate = posture is not None and (
-        posture.posture is EscalationPosture.REQUIRED
-        or (posture.posture is EscalationPosture.CONDITIONAL and posture.claim_made is True)
+    escalation = task.expected_action.escalation if task.expected_action else None
+    claim_undeclared = (
+        escalation is not None
+        and escalation.posture is EscalationPosture.CONDITIONAL
+        and escalation.claim_made is None
+    )
+
+    # A task whose correct run may need to escalate must actually offer the
+    # escalate_case tool, or a correct run is impossible. requires_escalation
+    # says so, and so does a posture that decides the verdict without reading
+    # that flag: a required posture, or a conditional one with a declared claim.
+    # Deliberately a plain string-membership check with no tool-registry
+    # lookup, so the rubric stays independent of whether the escalate_case tool
+    # has landed in the environment yet.
+    posture_may_escalate = escalation is not None and (
+        escalation.posture is EscalationPosture.REQUIRED
+        or (escalation.posture is EscalationPosture.CONDITIONAL and escalation.claim_made is True)
     )
     if (
         task.requires_escalation or posture_may_escalate
@@ -202,12 +215,7 @@ def validate_task(task: TaskSpec) -> list[ValidationIssue]:
     # requests, questions and negated clauses wrongly (TRA-79). It is an error
     # because every committed conditional fixture declares it, and a new one
     # that did not would decide release-blocking checks by regex.
-    escalation = task.expected_action.escalation if task.expected_action else None
-    if (
-        escalation is not None
-        and escalation.posture is EscalationPosture.CONDITIONAL
-        and escalation.claim_made is None
-    ):
+    if escalation is not None and claim_undeclared:
         issues.append(
             ValidationIssue(
                 "conditional_escalation_claim_undeclared",
@@ -217,7 +225,42 @@ def validate_task(task: TaskSpec) -> list[ValidationIssue]:
             )
         )
 
+    # Once a posture settles whether a correct run escalates, the verifier never
+    # reads requires_escalation, so a flag that says otherwise misleads whoever
+    # reads the task. The verdict does not change, which is why this is a
+    # warning. The answer comes from the verifier's own rule applied to the
+    # order the task starts with, which no tool modifies. An undeclared claim is
+    # left to the error above, so the matcher is never consulted here.
+    if escalation is not None and not claim_undeclared:
+        warranted, why = escalation_warranted(escalation, task, _starting_order(task))
+        if warranted is not None and warranted is not task.requires_escalation:
+            decided = "escalates" if warranted else "does not escalate"
+            issues.append(
+                ValidationIssue(
+                    "requires_escalation_disagrees_with_posture",
+                    f"requires_escalation is {str(task.requires_escalation).lower()}, but "
+                    f"expected_action.escalation decides that a correct run {decided} "
+                    f"({why}); the verifier reads the posture and never this flag",
+                    severity="warning",
+                )
+            )
+
     return issues
+
+
+def _starting_order(task: TaskSpec) -> Order | None:
+    """The first order in ``initial_state``, read as the verifier reads final state.
+
+    A malformed or missing order is ``None``, which the rule treats as a claim
+    the record does not confirm, matching the verifier's own fallback.
+    """
+    orders = task.initial_state.get("orders")
+    if not isinstance(orders, list) or not orders:
+        return None
+    try:
+        return Order.model_validate(orders[0])
+    except ValidationError:
+        return None
 
 
 def errors(issues: list[ValidationIssue]) -> list[ValidationIssue]:

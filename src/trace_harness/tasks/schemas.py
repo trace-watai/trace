@@ -352,12 +352,15 @@ class TaskSpec(BaseModel):
     requires_escalation: bool = Field(
         default=False,
         description=(
-            "Whether a correct run must escalate to a human (via the escalate_case tool) rather "
-            "than resolve the case itself. When true, the verifier treats a run that issues no "
-            "refund AND records no escalation as a failure — this is what distinguishes a "
-            "missing-info / must-escalate task from a plain no-refund decline. Consumed by the "
-            "RefundPolicyVerifier's escalation check (owned with Karan); a task that sets this "
-            "must offer escalate_case in available_tools (enforced by the task-validity rubric)."
+            "Whether a correct run must hand the case to a human through the escalate_case "
+            "tool. The RefundPolicyVerifier's escalation check (owned with Karan) reads it only "
+            "when expected_action.escalation declares no posture, or when a conditional posture "
+            "leaves the claim undeclared and the message settles nothing. Otherwise the posture "
+            "decides. validate-fixtures requires a conditional posture to declare its claim and "
+            "warns when this flag disagrees with the posture. "
+            "When the flag decides and is true, a run that records no escalation fails "
+            "required_escalation_missing. A task that sets it must offer escalate_case in "
+            "available_tools (enforced by the task-validity rubric)."
         ),
     )
     metadata: dict[str, Any] = Field(
