@@ -15,12 +15,12 @@ Repair controls
 
 One card per root cause (#211)
     Every card carries a ``bundle_key`` formed by :func:`bundle_key`.
-    :func:`record_bundle` writes a run's bundle only when no card with that
-    key exists in the runs directory. Otherwise it appends the run to that
-    card's ``occurrences`` and leaves a ``bundle_ref.json`` pointer in the
-    run's directory, so a sweep that hits one failure a hundred times yields
-    one card, one repair package and one regression artifact, pinned to the
-    first occurrence.
+    :func:`record_bundle` writes a run's bundle only when no finished bundle
+    with that key exists in the runs directory. Otherwise it appends the run
+    to that card's ``occurrences`` and leaves a ``bundle_ref.json`` pointer in
+    the run's directory, so a sweep that hits one failure a hundred times
+    yields one card, one repair package and one regression artifact, pinned to
+    the first occurrence.
 
 # TODO(Samir/failure_bundles): markdown rendering of the failure card for
 # humans (the JSON is the contract; a .md view is a nice-to-have for PRs).
@@ -712,56 +712,61 @@ def _read_card(store: ArtifactStore, run_id: str) -> FailureCard:
     return FailureCard.model_validate(store.read_json(run_id, names.FAILURE_CARD))
 
 
-def _release_previous_bundle(store: ArtifactStore, run_id: str, key: str) -> None:
-    """Undo what an earlier bundle of this run recorded under a different key.
+def _refuse_moving_a_shared_card(store: ArtifactStore, run_id: str, key: str) -> None:
+    """Refuse a new key for a run whose card other runs point to.
 
-    A run that pointed to another card leaves that card's occurrences. A run
-    that holds a card is only refused when other runs point to the card; a
-    card covering this run alone, including one written before 0.5.0, is
+    A card covering this run alone, including one written before 0.5.0, is
     simply replaced by the new bundle or pointer.
     """
-    if store.exists(run_id, names.BUNDLE_REF):
-        ref = BundleRef.model_validate(store.read_json(run_id, names.BUNDLE_REF))
-        if ref.bundle_key == key or not store.exists(ref.canonical_run_id, names.FAILURE_CARD):
-            return
-        home = _read_card(store, ref.canonical_run_id)
-        kept = [o for o in home.occurrences if o.run_id != run_id]
-        if len(kept) != len(home.occurrences):
-            store.write_json(
-                ref.canonical_run_id,
-                names.FAILURE_CARD,
-                home.model_copy(update={"occurrences": kept}),
-            )
-    elif store.exists(run_id, names.FAILURE_CARD):
-        prior = _read_card(store, run_id)
-        others = [o.run_id for o in prior.occurrences if o.run_id != run_id]
-        if prior.bundle_key != key and others:
-            raise BundleKeyConflictError(
-                f"run '{run_id}' holds the card for {prior.bundle_key} with "
-                f"{len(others)} reproduction(s), and now bundles as {key}"
-            )
+    if store.exists(run_id, names.BUNDLE_REF) or not store.exists(run_id, names.FAILURE_CARD):
+        return
+    prior = _read_card(store, run_id)
+    others = [o.run_id for o in prior.occurrences if o.run_id != run_id]
+    if prior.bundle_key != key and others:
+        raise BundleKeyConflictError(
+            f"run '{run_id}' holds the card for {prior.bundle_key} with "
+            f"{len(others)} reproduction(s), and now bundles as {key}"
+        )
+
+
+def _leave_previous_card(store: ArtifactStore, run_id: str, home: str) -> None:
+    """Take a run that pointed to another card off it, when its bundle now lives elsewhere."""
+    if not store.exists(run_id, names.BUNDLE_REF):
+        return
+    ref = BundleRef.model_validate(store.read_json(run_id, names.BUNDLE_REF))
+    previous = ref.canonical_run_id
+    if previous == home or not store.exists(previous, names.FAILURE_CARD):
+        return
+    card = _read_card(store, previous)
+    kept = [o for o in card.occurrences if o.run_id != run_id]
+    if len(kept) != len(card.occurrences):
+        store.write_json(
+            previous, names.FAILURE_CARD, card.model_copy(update={"occurrences": kept})
+        )
 
 
 def record_bundle(store: ArtifactStore, bundle: FailureBundle) -> RecordedBundle:
     """Write a run's bundle, or add the run to the card that already has its key.
 
-    The key is looked up in the run index (:meth:`ArtifactStore.find_bundle_card`)
-    under the runs directory's bundle lock, so concurrent bundle stages see
-    each other's cards.
+    The key is looked up with :meth:`ArtifactStore.find_bundle_card` under the
+    runs directory's bundle lock, so concurrent bundle stages see each other's
+    cards. Only a finished bundle is joined, a card with its repair package and
+    regression artifact beside it.
 
-    With no card for the key, the three artifacts are written to the run's own
-    directory with the run as the first occurrence, exactly as before 0.5.0
-    apart from the two new card fields.
+    With no finished bundle for the key, the three artifacts are written to the
+    run's own directory with the run as the first occurrence, exactly as before
+    0.5.0 apart from the two new card fields. The card is written last, so a
+    crash part way leaves a directory holding no card, which no lookup joins
+    and ``RunReader.get_bundle`` reports as not bundled.
 
-    With a card for the key in another run's directory, the run is appended to that
-    card's ``occurrences``, and the run's directory gets ``bundle_ref.json``
-    naming the card's run in place of its own card, repair package and
-    regression artifact.
+    With a finished bundle for the key in another run's directory, the run is
+    appended to that card's ``occurrences``, and the run's directory gets
+    ``bundle_ref.json`` naming the card's run in place of its own card, repair
+    package and regression artifact.
 
     Bundling a run again never adds it twice. The run's own occurrence is
-    refreshed in place, a card it already holds keeps its occurrences, and the
-    index entry is written before any file, so an interrupted bundle leaves an
-    entry that resolves to no card rather than a card the index cannot find.
+    refreshed in place, a card it already holds keeps its occurrences, and a
+    run whose bundle moves to another card leaves the card it pointed to.
     """
     card = bundle.failure_card
     run_id, key = card.run_id, card.bundle_key
@@ -769,18 +774,24 @@ def record_bundle(store: ArtifactStore, bundle: FailureBundle) -> RecordedBundle
         raise ValueError("a failure card needs its bundle key and first occurrence to be recorded")
     occurrence = card.occurrences[0]
     with store.bundle_lock():
-        _release_previous_bundle(store, run_id, key)
+        _refuse_moving_a_shared_card(store, run_id, key)
         store.set_index_bundle_key(run_id, key)
         canonical = store.find_bundle_card(key)
+        _leave_previous_card(store, run_id, canonical or run_id)
         if canonical is None or canonical == run_id:
-            prior = _read_card(store, run_id).occurrences if canonical == run_id else []
+            # A card this run already holds keeps the runs listed on it, even
+            # when an older writer left it without the rest of its bundle.
+            held = store.exists(run_id, names.FAILURE_CARD) and not store.exists(
+                run_id, names.BUNDLE_REF
+            )
+            prior = _read_card(store, run_id).occurrences if held else []
             occurrences = [occurrence, *(o for o in prior if o.run_id != run_id)]
             store.artifact_path(run_id, names.BUNDLE_REF).unlink(missing_ok=True)
+            store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)
+            store.write_json(run_id, names.REGRESSION_ARTIFACT, bundle.regression_artifact)
             store.write_json(
                 run_id, names.FAILURE_CARD, card.model_copy(update={"occurrences": occurrences})
             )
-            store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)
-            store.write_json(run_id, names.REGRESSION_ARTIFACT, bundle.regression_artifact)
             return RecordedBundle(run_id, key, run_id, len(occurrences))
 
         if store.exists(run_id, names.FAILURE_CARD):
@@ -801,7 +812,8 @@ def record_bundle(store: ArtifactStore, bundle: FailureBundle) -> RecordedBundle
                 canonical, names.FAILURE_CARD, home.model_copy(update={"occurrences": occurrences})
             )
         # A run that held its own bundle before it matched this key (a card
-        # written before 0.5.0, or under a key it no longer has) gives it up.
+        # written before 0.5.0, or under a key it no longer has) gives it up,
+        # card first so the directory stops reading as a finished bundle.
         for name in (names.FAILURE_CARD, names.REPAIR_PACKAGE, names.REGRESSION_ARTIFACT):
             store.artifact_path(run_id, name).unlink(missing_ok=True)
         store.write_json(

@@ -8,10 +8,12 @@ and regression artifact. The key itself is pinned in test_bundle_key.py.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -41,7 +43,11 @@ from trace_harness.runner.result import RunResult
 from trace_harness.runner.suite import AgentConfig, load_suite
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
-from trace_harness.tracing.artifact_store import ArtifactStore
+from trace_harness.tracing.artifact_store import (
+    LOCK_CONTENDED_ERRNO,
+    ArtifactStore,
+    retry_while_contended,
+)
 from trace_harness.verifiers.base import VerifierResult
 
 MISSING_INFO_FAILURE = FIXTURES_DIR / "tasks" / "refund_policy_missing_info_failure.json"
@@ -227,6 +233,180 @@ def test_an_index_entry_without_its_card_never_resolves(tmp_path):
 
     assert store.find_bundle_card(key) == second
     assert _cards(store) == [second]
+
+
+class _Crash(Exception):
+    """Stands in for the process dying part way through a bundle."""
+
+
+BUNDLE_FILES = (names.FAILURE_CARD, names.REPAIR_PACKAGE, names.REGRESSION_ARTIFACT)
+
+
+@pytest.mark.parametrize("written_before_crash", [0, 1, 2])
+def test_a_bundle_cut_short_leaves_no_card_to_join(tmp_path, monkeypatch, written_before_crash):
+    """The card is written last, so a crash at any write leaves no card behind.
+
+    Later runs with the key start their own card, the reader reports the
+    interrupted run as not bundled, and bundling it again makes it a
+    reproduction with none of its partial files left over.
+    """
+    store = ArtifactStore(tmp_path / "runs")
+    first = _unbundled(FAILURE_TASK_PATH, store)
+    real_write = store.write_json
+    written: list[str] = []
+
+    def crashing_write(run_id, name, payload):
+        if name in BUNDLE_FILES:
+            if len(written) == written_before_crash:
+                raise _Crash(name)
+            written.append(name)
+        return real_write(run_id, name, payload)
+
+    monkeypatch.setattr(store, "write_json", crashing_write)
+    with pytest.raises(_Crash):
+        record_bundle(store, _bundle_for(store, first))
+    monkeypatch.setattr(store, "write_json", real_write)
+
+    assert not store.exists(first, names.FAILURE_CARD)
+    assert RunReader(store).get_bundle(first) is None
+
+    second = _pipeline(FAILURE_TASK_PATH, store)
+    assert _cards(store) == [second]
+    assert not store.exists(second, names.BUNDLE_REF)
+
+    assert main(["bundle", str(store.run_dir(first))]) == 0
+    assert [o.run_id for o in _card(store, second).occurrences] == [second, first]
+    assert not any(store.exists(first, name) for name in BUNDLE_FILES)
+
+
+def test_a_card_without_the_rest_of_its_bundle_is_never_joined(tmp_path):
+    """A card an older writer or a crash left without its regression is passed over."""
+    store = ArtifactStore(tmp_path / "runs")
+    first = _pipeline(FAILURE_TASK_PATH, store)
+    store.artifact_path(first, names.REGRESSION_ARTIFACT).unlink()
+    key = _card(store, first).bundle_key
+
+    assert store.find_bundle_card(key) is None
+    second = _pipeline(FAILURE_TASK_PATH, store)
+    assert not store.exists(second, names.BUNDLE_REF)
+    assert store.exists(second, names.REGRESSION_ARTIFACT)
+
+    assert main(["bundle", str(store.run_dir(first))]) == 0
+    assert _cards(store) == [second]
+    assert [o.run_id for o in _card(store, second).occurrences] == [second, first]
+
+
+def test_a_key_the_index_lost_is_found_on_the_cards(tmp_path):
+    """An index written back without a card's key still leads to that card.
+
+    This is the interleaving a writer that took no lock could cause. It read
+    the index before the bundle stage recorded the first run's key and wrote it
+    back afterwards with its own run added, so the run ids still match and the
+    index is not rebuilt. The bundle stage then scans the cards for the key
+    and repairs the entry.
+    """
+    store = ArtifactStore(tmp_path / "runs")
+    first = _unbundled(FAILURE_TASK_PATH, store)
+    read_before_bundle = store.read_index()
+    assert main(["bundle", str(store.run_dir(first))]) == 0
+    key = _card(store, first).bundle_key
+    second = _unbundled(FAILURE_TASK_PATH, store)
+    (late,) = [e for e in store.read_index().entries if e.run_id == second]
+    stale = read_before_bundle.model_copy(update={"entries": [*read_before_bundle.entries, late]})
+    store.index_path().write_text(stale.model_dump_json(indent=2))
+    assert {e.run_id: e.bundle_key for e in store.read_index().entries} == {
+        first: None,
+        second: None,
+    }
+
+    assert main(["bundle", str(store.run_dir(second))]) == 0
+
+    assert _cards(store) == [first]
+    assert [o.run_id for o in _card(store, first).occurrences] == [first, second]
+    assert {e.run_id: e.bundle_key for e in store.read_index().entries} == {
+        first: key,
+        second: key,
+    }
+
+
+def test_an_index_write_and_a_bundle_never_overwrite_each_other(tmp_path):
+    """An index write holds the bundle lock from its read to its write.
+
+    One thread upserts the second run's entry and pauses between reading the
+    index and writing it. Meanwhile another thread bundles the first run. The
+    bundle waits for the lock, so the key it records lands after the upsert
+    instead of under it.
+    """
+    store = ArtifactStore(tmp_path / "runs")
+    first = _unbundled(FAILURE_TASK_PATH, store)
+    second = _unbundled(FAILURE_TASK_PATH, store)
+    bundle = _bundle_for(store, first)
+    (entry,) = [e for e in store.read_index().entries if e.run_id == second]
+
+    read, go = threading.Event(), threading.Event()
+    upserting = ArtifactStore(store.runs_dir)
+    real_read = upserting.read_index
+
+    def read_then_pause():
+        index = real_read()
+        read.set()
+        go.wait(timeout=30)
+        return index
+
+    upserting.read_index = read_then_pause
+    errors: list[BaseException] = []
+
+    def run(target):
+        try:
+            target()
+        except BaseException as exc:  # noqa: BLE001 (reported on the main thread)
+            errors.append(exc)
+
+    upsert = threading.Thread(
+        target=run,
+        args=(lambda: upserting.upsert_index_entry(entry.model_copy(update={"batch_id": "b1"})),),
+    )
+    bundling = threading.Thread(target=run, args=(lambda: record_bundle(store, bundle),))
+    upsert.start()
+    assert read.wait(timeout=30)
+    bundling.start()
+    bundling.join(timeout=1.0)
+    waited_for_the_upsert = bundling.is_alive()
+    go.set()
+    upsert.join(timeout=30)
+    bundling.join(timeout=30)
+
+    assert errors == []
+    assert waited_for_the_upsert
+    entries = {e.run_id: e for e in store.read_index().entries}
+    assert entries[first].bundle_key == bundle.failure_card.bundle_key
+    assert entries[second].batch_id == "b1"
+
+
+def test_the_windows_lock_retries_only_while_another_process_holds_it():
+    """msvcrt.locking gives up with EDEADLOCK after ten seconds; nothing else is retried."""
+    calls: list[int] = []
+
+    def contended_twice():
+        calls.append(1)
+        if len(calls) < 3:
+            raise OSError(LOCK_CONTENDED_ERRNO, "still locked")
+
+    retry_while_contended(contended_twice)
+    assert len(calls) == 3
+
+    calls.clear()
+
+    def bad_handle():
+        calls.append(1)
+        if len(calls) > 1:
+            raise AssertionError("a bad handle was retried")
+        raise OSError(errno.EBADF, "bad file descriptor")
+
+    with pytest.raises(OSError) as raised:
+        retry_while_contended(bad_handle)
+    assert raised.value.errno == errno.EBADF
+    assert len(calls) == 1
 
 
 def test_concurrent_bundles_of_one_key_share_one_card(tmp_path):

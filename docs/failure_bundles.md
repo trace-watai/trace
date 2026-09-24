@@ -108,17 +108,27 @@ edit to that table.
 
 ### Where the card lives
 
-`bundle` looks the key up in the run index (`RunIndexEntry.bundle_key`, run
-index 0.6.0) while holding a lock on `.bundle.lock` in the runs directory, so
-two bundle stages writing into one directory see each other's cards.
+`bundle` looks the key up while holding a lock on `.bundle.lock` in the runs
+directory, so two bundle stages writing into one directory see each other's
+cards. The run index (`RunIndexEntry.bundle_key`, run index 0.6.0) nominates
+candidates. The index is a derived file that can lack a key a card has, so on
+a miss the stage scans every `failure_card.json` in the directory for the key
+before it writes a new card, and writes a key found that way back to the
+index. Every index write, from the runner, the verify stage, batch enrichment
+and rebuilds, holds the same lock from its read to its write, so no stage
+writes back an index it read before another stage recorded a key.
 
-- **No card has the key.** The bundle is written to the run's own directory
-  as it always was, and the card lists the run as its first and only
-  occurrence.
-- **A card in another run's directory has the key.** The run is appended to
-  that card's `occurrences`, and its own directory gets `bundle_ref.json` in
-  place of a card, repair package and regression artifact. The pointer
-  records the key and the `canonical_run_id` whose directory holds the card.
+- **No finished bundle has the key.** The bundle is written to the run's own
+  directory as it always was, and the card lists the run as its first and
+  only occurrence.
+- **A finished bundle in another run's directory has the key.** The run is
+  appended to that card's `occurrences`, and its own directory gets
+  `bundle_ref.json` in place of a card, repair package and regression
+  artifact. The pointer records the key and the `canonical_run_id` whose
+  directory holds the card.
+
+A finished bundle is a card carrying the key with the repair package and the
+regression artifact beside it.
 
 The card, the repair package and the regression artifact stay pinned to the
 first occurrence. The card's text, evidence and blast radius describe that
@@ -142,10 +152,13 @@ occurrences. A run holding a card that other runs point to refuses a new key
 with `BundleKeyConflictError`, because moving that card would leave their
 pointers naming the wrong failure.
 
-The index entry is written before any file, and the lookup only accepts a run
-whose card file carries the key. An interrupted bundle therefore leaves an
-entry that resolves to nothing, the next run with that key starts a card, and
-bundling the interrupted run again makes it a reproduction of that card.
+The card is written last, after the repair package and the regression
+artifact, so a card marks a finished bundle. A bundle cut short therefore
+leaves no card. `RunReader.get_bundle` reports the run as not bundled, the
+next run with that key starts its own card, and bundling the interrupted run
+again makes it a reproduction of that card and removes the files it had
+written. A card found without the other two files, left by hand or by an
+older writer, is passed over the same way.
 
 ### Cards written before 0.5.0
 

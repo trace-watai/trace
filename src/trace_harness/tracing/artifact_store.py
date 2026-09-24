@@ -29,7 +29,9 @@ A runs-dir-level ``index.json`` sits alongside the run directories: one
 summary entry per run for cheap listing without scanning every directory. It
 is a *derived, rebuildable* convenience (see :meth:`ArtifactStore.rebuild_index`),
 not a per-run artifact — so it is deliberately absent from ``ALL_ARTIFACTS``
-and exempt from the per-run partial-artifacts promise.
+and exempt from the per-run partial-artifacts promise. Every index write and
+the bundle stage hold one advisory lock, ``.bundle.lock`` beside the index
+(see :meth:`ArtifactStore.bundle_lock`).
 
 This local-JSON layout *is* the data contract the future API server and
 dashboard read (see docs/future_api.md and docs/future_dashboard.md).
@@ -39,10 +41,12 @@ change for them — coordinate.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePath
 from typing import IO, Any
@@ -124,17 +128,34 @@ def safe_run_dir_name(run_id: str) -> str:
     return run_id
 
 
+# The errno msvcrt.locking raises when LK_LOCK has tried for about ten seconds
+# and another process still holds the lock (EDEADLOCK in the CRT _locking
+# reference). Every other errno is a real failure, such as a bad handle.
+LOCK_CONTENDED_ERRNO = getattr(errno, "EDEADLOCK", errno.EDEADLK)
+
+
+def retry_while_contended(attempt: Callable[[], None]) -> None:
+    """Call ``attempt`` until it returns, retrying only while the lock is contended.
+
+    An ``OSError`` with :data:`LOCK_CONTENDED_ERRNO` means another process
+    still holds the lock, so waiting longer is right. Any other ``OSError`` is
+    raised at once, where retrying it would spin forever.
+    """
+    while True:
+        try:
+            attempt()
+            return
+        except OSError as exc:
+            if exc.errno != LOCK_CONTENDED_ERRNO:
+                raise
+
+
 if os.name == "nt":  # pragma: no cover - exercised on Windows only
     import msvcrt
 
     def _lock(handle: IO[bytes]) -> None:
         handle.seek(0)
-        while True:
-            try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-                return
-            except OSError:  # LK_LOCK gives up after ten one-second attempts
-                continue
+        retry_while_contended(lambda: msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1))
 
     def _unlock(handle: IO[bytes]) -> None:
         handle.seek(0)
@@ -148,6 +169,20 @@ else:
 
     def _unlock(handle: IO[bytes]) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+# How deep each thread is in each runs directory's bundle lock, keyed by the
+# lock file's resolved path. The file lock itself is not reentrant (a second
+# open of the same file in one process waits for the first), so a thread that
+# already holds it only counts the nesting.
+_held_locks = threading.local()
+
+
+def _lock_depths() -> dict[str, int]:
+    depths = getattr(_held_locks, "depths", None)
+    if depths is None:
+        depths = _held_locks.depths = {}
+    return depths
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -410,15 +445,20 @@ class ArtifactStore:
         directories, so a bad index can't silently drop run history. Entries
         stay sorted by ``run_id`` (chronological, like :meth:`list_runs`), and
         the write is atomic (see :func:`_atomic_write_text`).
+
+        The read and the write happen under :meth:`bundle_lock`, as every index
+        write does, so a run finishing in one process cannot write back an
+        index read before another process recorded a bundle key or a verdict.
         """
-        try:
-            index = self.read_index()
-        except ValueError:
-            index = self.rebuild_index()
-        kept = [e for e in index.entries if e.run_id != entry.run_id]
-        kept.append(entry)
-        index.entries = sorted(kept, key=lambda e: e.run_id)
-        self._write_index(index)
+        with self.bundle_lock():
+            try:
+                index = self.read_index()
+            except ValueError:
+                index = self.rebuild_index()
+            kept = [e for e in index.entries if e.run_id != entry.run_id]
+            kept.append(entry)
+            index.entries = sorted(kept, key=lambda e: e.run_id)
+            self._write_index(index)
 
     def enrich_index_entry_with_verifier(self, run_id: str) -> None:
         """Update the index entry for ``run_id`` with the verifier verdict.
@@ -434,57 +474,107 @@ class ArtifactStore:
         """
         if not self.exists(run_id, VERIFIER_RESULT):
             return
-        index = self.read_index()
-        existing = next((e for e in index.entries if e.run_id == run_id), None)
-        if existing is None:
-            if not self.exists(run_id, RUN_RESULT):
+        with self.bundle_lock():
+            index = self.read_index()
+            existing = next((e for e in index.entries if e.run_id == run_id), None)
+            if existing is None:
+                if not self.exists(run_id, RUN_RESULT):
+                    return
+                try:
+                    existing = RunIndexEntry.model_validate(self.read_json(run_id, RUN_RESULT))
+                except (FileNotFoundError, ValueError):
+                    return
+            verifier_fields = self._read_verifier_index_fields(run_id)
+            if verifier_fields is None:
                 return
-            try:
-                existing = RunIndexEntry.model_validate(self.read_json(run_id, RUN_RESULT))
-            except (FileNotFoundError, ValueError):
-                return
-        verifier_fields = self._read_verifier_index_fields(run_id)
-        if verifier_fields is None:
-            return
-        self.upsert_index_entry(_with_verdict(existing, verifier_fields))
+            self.upsert_index_entry(_with_verdict(existing, verifier_fields))
 
     # --- failure bundles (#211) ---
 
     @contextmanager
     def bundle_lock(self) -> Iterator[None]:
-        """Hold the runs directory's bundle lock across a key lookup and its writes.
+        """Hold the runs directory's lock across a key lookup and its writes.
 
         Two processes bundling into one runs directory would otherwise both miss
         a card and both write one, or both rewrite a card and lose a run from
-        its occurrences. The lock is an advisory lock on ``.bundle.lock`` beside
-        ``index.json``. The operating system releases it when the holder exits,
-        so a crash never leaves the directory locked. It is not reentrant.
+        its occurrences. Every index write takes the same lock, so an index
+        read by one process is never written back over a bundle key, verdict
+        or batch id that another process recorded in between.
+
+        The lock is an advisory lock on ``.bundle.lock`` beside ``index.json``.
+        The operating system releases it when the holder exits, so a crash
+        never leaves the directory locked. It is reentrant within a thread,
+        which lets the bundle stage write the index while it holds the lock.
+        There is only the one lock, so no two locks can be taken in opposite
+        orders.
         """
         self.runs_dir.mkdir(parents=True, exist_ok=True)
-        with (self.runs_dir / BUNDLE_LOCK).open("a+b") as handle:
-            _lock(handle)
+        path = self.runs_dir / BUNDLE_LOCK
+        key = str(path.resolve())
+        depths = _lock_depths()
+        if depths.get(key):
+            depths[key] += 1
             try:
                 yield
             finally:
+                depths[key] -= 1
+            return
+        with path.open("a+b") as handle:
+            _lock(handle)
+            depths[key] = 1
+            try:
+                yield
+            finally:
+                del depths[key]
                 _unlock(handle)
 
-    def find_bundle_card(self, bundle_key: str) -> str | None:
-        """The run whose directory holds the failure card for ``bundle_key``, or None.
+    def holds_finished_bundle(self, run_id: str, bundle_key: str) -> bool:
+        """Whether ``run_id`` holds a card for ``bundle_key`` with the rest of its bundle.
 
-        The index nominates candidates and the card file has to carry the same
-        key, so an entry left by an interrupted bundle never resolves to a
-        run without a card. Candidates are tried in run id order, so a
-        duplicate left by an older writer resolves the same way every time. An
+        The bundle stage writes the repair package and the regression artifact
+        before the card, so a card marks a finished bundle. A card found
+        without the other two was left by a crash or an older writer and is
+        never joined.
+        """
+        return (
+            self._card_bundle_key(run_id) == bundle_key
+            and self.exists(run_id, REPAIR_PACKAGE)
+            and self.exists(run_id, REGRESSION_ARTIFACT)
+        )
+
+    def find_bundle_card(self, bundle_key: str) -> str | None:
+        """The run whose directory holds the finished bundle for ``bundle_key``, or None.
+
+        The index nominates candidates, tried in run id order so a duplicate
+        left by an older writer resolves the same way every time, and a
+        candidate counts only when :meth:`holds_finished_bundle` agrees. An
         index that has fallen behind the run directories is rebuilt first, the
         same reconciliation ``RunReader.list_runs`` does.
+
+        The index is a derived convenience and can lack a key the card has,
+        for instance when a writer that took no lock replaced it. So a miss
+        falls back to scanning every ``failure_card.json`` for the key before
+        it answers None, and a card found that way has its key written back to
+        its index entry. Call this under :meth:`bundle_lock`, as the bundle
+        stage does, so that no card can appear between the scan and the
+        caller's write.
         """
         index = self.read_index()
         listable = {run_id for run_id in self.list_runs() if self.exists(run_id, RUN_RESULT)}
         if {entry.run_id for entry in index.entries} != listable:
             index = self.rebuild_index()
+        tried = set()
         for entry in index.entries:
-            if entry.bundle_key == bundle_key and self._card_bundle_key(entry.run_id) == bundle_key:
+            if entry.bundle_key != bundle_key:
+                continue
+            tried.add(entry.run_id)
+            if self.holds_finished_bundle(entry.run_id, bundle_key):
                 return entry.run_id
+        for path in sorted(self.runs_dir.glob(f"*/{FAILURE_CARD}")):
+            run_id = path.parent.name
+            if run_id not in tried and self.holds_finished_bundle(run_id, bundle_key):
+                self.set_index_bundle_key(run_id, bundle_key)
+                return run_id
         return None
 
     def bundle_home(self, run_id: str) -> str | None:
@@ -512,14 +602,15 @@ class ArtifactStore:
         directories first. A run with no ``run_result.json`` has no entry to
         carry the key, and stays out of the index as it would anyway.
         """
-        index = self.read_index()
-        existing = next((e for e in index.entries if e.run_id == run_id), None)
-        if existing is None:
-            index = self.rebuild_index()
+        with self.bundle_lock():
+            index = self.read_index()
             existing = next((e for e in index.entries if e.run_id == run_id), None)
             if existing is None:
-                return
-        self.upsert_index_entry(existing.model_copy(update={"bundle_key": bundle_key}))
+                index = self.rebuild_index()
+                existing = next((e for e in index.entries if e.run_id == run_id), None)
+                if existing is None:
+                    return
+            self.upsert_index_entry(existing.model_copy(update={"bundle_key": bundle_key}))
 
     def enrich_index_entry_with_batch(self, run_id: str, batch_id: str) -> None:
         """Set ``batch_id`` on the run's index entry.
@@ -528,11 +619,12 @@ class ArtifactStore:
         entry is a safe no-op — the batch summary is the authoritative source
         for batch membership; this field is a convenience for cheap filtering.
         """
-        index = self.read_index()
-        existing = next((e for e in index.entries if e.run_id == run_id), None)
-        if existing is None:
-            return
-        self.upsert_index_entry(existing.model_copy(update={"batch_id": batch_id}))
+        with self.bundle_lock():
+            index = self.read_index()
+            existing = next((e for e in index.entries if e.run_id == run_id), None)
+            if existing is None:
+                return
+            self.upsert_index_entry(existing.model_copy(update={"batch_id": batch_id}))
 
     def rebuild_index(self) -> RunIndex:
         """Reconstruct the index from run artifacts and batch summaries.
@@ -540,8 +632,14 @@ class ArtifactStore:
         Runs without a result (crashed before finalize) are skipped. Each entry
         is enriched with the verifier verdict when ``verifier_result.json``
         exists and with batch membership when a batch summary references it.
-        The result is written back atomically and returned.
+        The result is written back atomically and returned, under
+        :meth:`bundle_lock` so no index write lands between the scan and the
+        write.
         """
+        with self.bundle_lock():
+            return self._rebuild_index()
+
+    def _rebuild_index(self) -> RunIndex:
         batch_memberships = self._read_batch_memberships()
         entries: list[RunIndexEntry] = []
         for run_id in self.list_runs():
