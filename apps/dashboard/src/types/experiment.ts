@@ -107,13 +107,15 @@ export interface RawBudget {
 
 /**
  * The thresholds `validate-control` holds a control to (0.4.0, #203). Every
- * one is required when the rule is present, so no threshold is ever implied.
- * `min_repair_effectiveness` may be negative, since B1 is. The rule itself is
- * stated in `docs/control_lifecycle.md`.
+ * one is required when the rule is present, so no threshold is ever implied,
+ * and none is infinite. `min_repair_effectiveness` may be negative, since B1
+ * is. `min_sibling_pass_rate` is always 1, since siblings have zero tolerance
+ * and any failing sibling discards the control. The rule itself is stated in
+ * `docs/control_lifecycle.md`.
  */
 export interface RawKeepRule {
   min_verdict_agreement_rate: number;
-  min_sibling_pass_rate: number;
+  min_sibling_pass_rate: 1;
   min_repair_effectiveness: number;
   min_margin_over_noise_floor: number;
   max_live_violation_rate: number;

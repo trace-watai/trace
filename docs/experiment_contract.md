@@ -62,13 +62,14 @@ rather than an implementation detail.
 
 `keep_rule` names five thresholds, all required when the field is present and
 none with a default, so the rule never applies a number the plan did not state.
-Plans written before 0.4.0 load with it absent, and `validate-control` refuses
-a plan without one.
+Infinity and NaN are refused. Plans written before 0.4.0 load with it absent,
+and a plan without one is written without the key, so code from before 0.4.0
+still reads it. `validate-control` refuses a plan without one.
 
 | threshold | what it bounds |
 |---|---|
 | `min_verdict_agreement_rate` | `verdict_agreement_rate`, at least this to keep |
-| `min_sibling_pass_rate` | `1 - sibling_failure_rate`, at least this to keep, and below it the control is discarded |
+| `min_sibling_pass_rate` | `1 - sibling_failure_rate`; must be 1.0, since siblings have zero tolerance and any failing sibling discards the control |
 | `min_repair_effectiveness` | B1 from `repair_effectiveness.json`, at least this to keep; it may be negative |
 | `min_margin_over_noise_floor` | how far the recovered share of blocked live runs must exceed the noise floor's clean share; above zero |
 | `max_live_violation_rate` | the share of completed control-on runs still failing after the fork; above it the control is discarded |

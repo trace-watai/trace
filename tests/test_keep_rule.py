@@ -349,28 +349,29 @@ def test_the_short_path_needs_the_sibling_pass_rate():
     ("field", "value", "decision"),
     [
         ("min_verdict_agreement_rate", 0.81, Decision.REVIEW),
-        ("min_sibling_pass_rate", 0.91, Decision.DISCARD),
         ("min_repair_effectiveness", 0.61, Decision.REVIEW),
         ("min_margin_over_noise_floor", 0.31, Decision.REVIEW),
         ("max_live_violation_rate", 0.19, Decision.DISCARD),
     ],
 )
-def test_each_threshold_moves_the_decision(field, value, decision):
+def test_each_threshold_that_can_move_moves_the_decision(field, value, decision):
     """Evidence that sits exactly on every bound keeps, and moving one bound past it does not.
 
-    Agreement 0.8, sibling pass rate 0.9, B1 0.6, a margin of 0.3 and a live
-    violation share of 0.2, against a rule with those same five numbers.
+    Agreement 0.8, every sibling passing, B1 0.6, a margin of 0.3 and a live
+    violation share of 0.2, against a rule with those same numbers.
+    min_sibling_pass_rate is fixed at 1.0, and the sibling tests above cover
+    it.
     """
     evidence = replace(
         LIVE,
         verdict_agreement_rate=0.8,
-        sibling_failure_rate=0.1,
+        sibling_failure_rate=0.0,
         post_block_outcomes={"recovered": 4, "substitute_violation": 1},
         effectiveness=_entry(on=(1, 5), off=(3, 6)),
     )
     on_the_bounds = KeepRule(
         min_verdict_agreement_rate=0.8,
-        min_sibling_pass_rate=0.9,
+        min_sibling_pass_rate=1.0,
         min_repair_effectiveness=0.6,
         min_margin_over_noise_floor=0.3,
         max_live_violation_rate=0.2,

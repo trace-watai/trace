@@ -28,7 +28,15 @@ from collections import Counter
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from trace_harness.runner.frozen_set import FrozenComponent, FrozenFileChange
 from trace_harness.runner.suite import AgentConfig
@@ -155,19 +163,22 @@ class KeepRule(BaseModel):
     """The thresholds ``validate-control`` holds a control to (#203).
 
     Every threshold is required and none has a default, so the rule never
-    falls back on a number the plan did not state. The rule itself lives in
-    ``runner/validate_control.py``, and ``docs/control_lifecycle.md`` states
-    it in full.
+    falls back on a number the plan did not state. Infinity and NaN are
+    refused, since neither is a threshold a plan can mean. The rule itself
+    lives in ``runner/validate_control.py``, and ``docs/control_lifecycle.md``
+    states it in full.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     # Share of (artifact, control) pairs whose static verdict equals the
     # majority live verdict. Keep needs at least this.
     min_verdict_agreement_rate: float = Field(ge=0, le=1)
-    # 1 - sibling_failure_rate. Keep needs at least this, and below it the
-    # siblings have failed and the control is discarded.
-    min_sibling_pass_rate: float = Field(ge=0, le=1)
+    # 1 - sibling_failure_rate, and fixed at 1.0. Siblings have zero
+    # tolerance: any failing positive sibling discards the control, so a
+    # lower minimum could never change a decision and is refused. The plan
+    # still states it, so the rule a result records is the whole rule.
+    min_sibling_pass_rate: float
     # B1 from the repair_effectiveness.json sidecar. It can be negative, when
     # the control makes the live agent violate more often.
     min_repair_effectiveness: float = Field(le=1)
@@ -178,6 +189,16 @@ class KeepRule(BaseModel):
     # Above this share of completed control-on runs with a blocking failure
     # after the fork, the failure persists live and the control is discarded.
     max_live_violation_rate: float = Field(ge=0, le=1)
+
+    @field_validator("min_sibling_pass_rate")
+    @classmethod
+    def _siblings_have_zero_tolerance(cls, value: float) -> float:
+        if value != 1:
+            raise ValueError(
+                f"min_sibling_pass_rate must be 1.0, got {value}; any failing positive sibling "
+                "discards the control, so no lower minimum can apply"
+            )
+        return value
 
 
 class ExperimentSpec(BaseModel):
@@ -193,6 +214,8 @@ class ExperimentSpec(BaseModel):
     conditions: list[ConditionSpec] = Field(min_length=1)
     budget: Budget
     # Absent on plans before 0.4.0, and on any plan that validates no control.
+    # Left out of the dump when absent, so a plan without a rule reads the
+    # same to code from before 0.4.0, which forbids the key.
     keep_rule: KeepRule | None = None
     created_at: Any = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -204,6 +227,13 @@ class ExperimentSpec(BaseModel):
             dupes = sorted({n for n in names if names.count(n) > 1})
             raise ValueError(f"conditions have duplicate name(s): {dupes}")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_an_absent_keep_rule(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if self.keep_rule is None:
+            data.pop("keep_rule", None)
+        return data
 
 
 class ExperimentMetrics(BaseModel):

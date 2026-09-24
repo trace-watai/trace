@@ -153,9 +153,21 @@ def test_a_keep_rule_round_trips_on_the_plan() -> None:
 def test_plans_before_the_keep_rule_still_load() -> None:
     """A 0.3.0 plan has no keep_rule and reads as having none."""
     raw = json.loads(_spec().model_dump_json())
-    del raw["keep_rule"]
     raw["schema_version"] = "0.3.0"
     assert ExperimentSpec.model_validate(raw).keep_rule is None
+
+
+def test_a_plan_without_a_keep_rule_is_written_without_the_key() -> None:
+    """Code before 0.4.0 forbids the key, and a retained plan that predates it compares equal.
+
+    #200's retain script compares the plan it keeps with the one record wrote,
+    key for key, so a null keep_rule in every dump would fail it.
+    """
+    for dump in (_spec().model_dump(), _spec().model_dump(mode="json")):
+        assert "keep_rule" not in dump
+    assert "keep_rule" not in json.loads(_spec().model_dump_json())
+    ruled = _spec(keep_rule=KeepRule(**KEEP_RULE))
+    assert json.loads(ruled.model_dump_json())["keep_rule"] == KEEP_RULE
 
 
 @pytest.mark.parametrize("missing", sorted(KEEP_RULE))
@@ -180,6 +192,30 @@ def test_a_keep_rule_refuses_thresholds_outside_their_range(field, value) -> Non
     """A zero margin would let a tie count as beating the noise floor."""
     with pytest.raises(ValidationError):
         KeepRule.model_validate({**KEEP_RULE, field: value})
+
+
+@pytest.mark.parametrize("value", [0.0, 0.5, 0.9, 0.9999, 1.1])
+def test_siblings_have_zero_tolerance(value) -> None:
+    """Any failing sibling discards, so a minimum pass rate below 1.0 could never apply."""
+    with pytest.raises(ValidationError, match="min_sibling_pass_rate must be 1.0"):
+        KeepRule.model_validate({**KEEP_RULE, "min_sibling_pass_rate": value})
+
+
+@pytest.mark.parametrize("value", [1, 1.0])
+def test_a_plan_stating_full_sibling_passes_still_loads(value) -> None:
+    raw = json.loads(_spec().model_dump_json())
+    raw["keep_rule"] = {**KEEP_RULE, "min_sibling_pass_rate": value}
+    loaded = ExperimentSpec.model_validate_json(json.dumps(raw))
+    assert loaded.keep_rule.min_sibling_pass_rate == 1.0
+
+
+@pytest.mark.parametrize("field", sorted(KEEP_RULE))
+@pytest.mark.parametrize("value", ["-Infinity", "Infinity", "NaN"])
+def test_a_keep_rule_refuses_infinite_and_undefined_thresholds(field, value) -> None:
+    """-Infinity passed the old bound on min_repair_effectiveness, and would keep on any B1."""
+    raw = json.dumps({**KEEP_RULE, field: 0}).replace(f'"{field}": 0', f'"{field}": {value}')
+    with pytest.raises(ValidationError):
+        KeepRule.model_validate_json(raw)
 
 
 def test_unknown_field_on_the_plan_is_rejected() -> None:
