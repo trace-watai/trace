@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BlastRadiusSummary } from "@/components/failure/blast-radius-summary";
@@ -30,6 +30,7 @@ interface FailureCardProps {
  */
 export const FailureCard = ({ card, currentRunId }: FailureCardProps) => {
   const [primaryCategory, ...otherCategories] = card.contributingFailures;
+  const occurrencesLabelId = useId();
 
   return (
     <Card
@@ -96,10 +97,13 @@ export const FailureCard = ({ card, currentRunId }: FailureCardProps) => {
 
         {card.occurrences.length > 0 && (
           <div className="space-y-2 border-t border-border/60 pt-4">
-            <FieldLabel>Occurrences ({card.occurrences.length})</FieldLabel>
+            <FieldLabel id={occurrencesLabelId}>
+              Occurrences ({card.occurrences.length})
+            </FieldLabel>
             <OccurrenceList
               occurrences={card.occurrences}
               currentRunId={currentRunId}
+              labelledBy={occurrencesLabelId}
             />
           </div>
         )}
@@ -111,8 +115,11 @@ export const FailureCard = ({ card, currentRunId }: FailureCardProps) => {
 /**
  * Section label for a supporting field
  */
-const FieldLabel = ({ children }: { children: ReactNode }) => (
-  <h4 className="flex items-center gap-2 text-[0.7rem] font-bold uppercase tracking-[0.14em] text-white">
+const FieldLabel = ({ children, id }: { children: ReactNode; id?: string }) => (
+  <h4
+    id={id}
+    className="flex items-center gap-2 text-[0.7rem] font-bold uppercase tracking-[0.14em] text-white"
+  >
     <span aria-hidden className="h-3 w-0.5 rounded-full bg-primary/60" />
     {children}
   </h4>

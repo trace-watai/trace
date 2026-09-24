@@ -17,6 +17,7 @@ import {
   readArtifactLines,
   readRunIndexEntries,
   requireRun,
+  runExists,
   type RawRunIndexEntry,
 } from "@/data/run-store";
 import {
@@ -161,16 +162,18 @@ export interface FailureBundle {
  * The run whose directory holds the bundle covering `runId`: the run itself
  * when it has a card, the run its `bundle_ref.json` names when it reproduced
  * an earlier card (#211), and null when it was never bundled. Mirrors
- * `ArtifactStore.bundle_home`.
+ * `ArtifactStore.bundle_home`. A pointer that is not a JSON object, names
+ * anything but a sibling run, or names a run missing from the runs dir (a
+ * copy that left the first occurrence behind) is a MalformedArtifactError.
  */
 const bundleHome = (runId: string): string | null => {
   if (artifactExists(runId, ARTIFACT_NAMES.failureCard)) return runId;
   if (!artifactExists(runId, ARTIFACT_NAMES.bundleRef)) return null;
-  const ref = readArtifactJson<Partial<RawBundleRef>>(
-    runId,
-    ARTIFACT_NAMES.bundleRef,
-  );
-  const canonical = ref.canonical_run_id;
+  const ref = readArtifactJson<unknown>(runId, ARTIFACT_NAMES.bundleRef);
+  const canonical =
+    ref !== null && typeof ref === "object"
+      ? (ref as Partial<RawBundleRef>).canonical_run_id
+      : undefined;
   if (typeof canonical !== "string" || !isSiblingRunId(canonical)) {
     throw new MalformedArtifactError(
       runId,
@@ -178,14 +181,22 @@ const bundleHome = (runId: string): string | null => {
       `canonical_run_id is not a sibling run: ${JSON.stringify(canonical)}`,
     );
   }
+  if (!runExists(canonical)) {
+    throw new MalformedArtifactError(
+      runId,
+      ARTIFACT_NAMES.bundleRef,
+      `reproduces the card in run ${canonical}, which is not in the runs dir`,
+    );
+  }
   return canonical;
 };
 
 /**
  * The three bundle artifacts, or null if the run hasn't been bundled yet.
- * The `bundle` stage writes all three together, so a partially-written
- * bundle (crash mid-stage) surfaces as a MalformedArtifactError /
- * ENOENT-style read failure rather than a silently half-built bundle.
+ * The `bundle` stage writes the card after the other two, so a bundle cut
+ * short leaves no card and reads as not bundled. A card whose other two
+ * files are missing all the same surfaces as an ENOENT-style read failure
+ * rather than a silently half-built bundle.
  *
  * A reproduction gets the card it joined, whose `runId` is the first
  * occurrence and whose `occurrences` include this run.

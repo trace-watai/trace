@@ -242,6 +242,29 @@ describe("run-loader", () => {
       },
     );
 
+    it.each(["null", "[]", '"run_1"', "7"])(
+      "refuses a pointer file holding %s",
+      (content) => {
+        writeRun("run_1", { "run_result.json": rawRunResult() });
+        writeRun("run_2", {
+          "run_result.json": rawRunResult({ run_id: "run_2" }),
+          "bundle_ref.json": content,
+        });
+
+        expect(() => getBundle("run_2")).toThrow(MalformedArtifactError);
+      },
+    );
+
+    it("refuses a pointer to a run missing from the runs dir", () => {
+      writeRun("run_2", {
+        "run_result.json": rawRunResult({ run_id: "run_2" }),
+        "bundle_ref.json": pointer("run_1"),
+      });
+
+      expect(() => getBundle("run_2")).toThrow(MalformedArtifactError);
+      expect(() => getBundle("run_2")).toThrow(/run_1, which is not in/);
+    });
+
     it("lists each run's bundle key from an index at 0.6.0", () => {
       writeFileSync(
         path.join(runsDir, "index.json"),
