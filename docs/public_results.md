@@ -187,8 +187,12 @@ the rows and reports their size with no network.
   fails on a hit. It covers Google `AIza` and `AQ.` keys, Anthropic, OpenAI,
   Supabase secret keys and access tokens, JWTs such as the legacy
   `service_role` key, GitHub and AWS credentials, private keys, and
-  authorization or api key headers. Hits are printed redacted to four
-  characters and a length, because the log of a public repository is public.
+  authorization or api key headers. A trace or cassette keeps a model's text
+  as a JSON string, sometimes JSON inside JSON, and a URL keeps it
+  percent-encoded, so each line is matched as written and again with its JSON
+  and `%XX` escapes decoded. A key right after a `\n` or a `%20` is caught.
+  Hits are printed redacted to four characters and a length, because the log
+  of a public repository is public.
   The same scan runs as a test in the backend gate, so a committed key fails
   the pull request before it reaches `main`.
 - It fails loudly on `main` when the secrets are present and something is
