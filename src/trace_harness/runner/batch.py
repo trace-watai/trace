@@ -118,9 +118,8 @@ class BatchRunner:
         self.store = store
         # Freeze one validated set for the entire batch. Invalid libraries fail
         # before any cell runs instead of becoming a series of setup errors.
-        self.controls = (
-            load_library(control_library).active_controls() if control_library is not None else None
-        )
+        self.library = load_library(control_library) if control_library is not None else None
+        self.controls = self.library.active_controls() if self.library is not None else None
 
     def run(self, suite: SuiteSpec) -> BatchSummary:
         started_at = utc_now()

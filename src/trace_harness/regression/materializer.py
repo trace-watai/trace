@@ -50,9 +50,9 @@ from trace_harness.environment.tools import ToolSideEffect
 from trace_harness.models.base import ToolCall
 from trace_harness.regression.schemas import (
     RegressionArtifact,
-    ReplayMode,
     ReplayModeBasis,
     SiblingTest,
+    classify_replay_mode,
 )
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing.events import TraceEvent, TraceEventType
@@ -79,22 +79,6 @@ def _recorded_agent_actions(trace: list[TraceEvent]) -> list[dict[str, Any]]:
         for event in trace
         if event.event_type is TraceEventType.MODEL_ACTION and event.payload
     ]
-
-
-def classify_replay_mode(basis: ReplayModeBasis) -> ReplayMode:
-    """All four conditions need affirmative evidence; missing facts fail closed."""
-    if (
-        basis.control_ids
-        and basis.control_step is not None
-        and basis.control_step == basis.first_irreversible_action_step
-        and basis.rule_kind == "prohibition"
-        and basis.gated_tool
-        and basis.checks_reachable_via_gated_tool
-        and set(basis.checks_reachable_via_gated_tool) <= set(basis.checks_covered_by_control)
-        and not basis.other_irreversible_tools
-    ):
-        return "static_ok"
-    return "live_required"
 
 
 def _replay_mode_basis(

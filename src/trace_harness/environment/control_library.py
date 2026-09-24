@@ -1,4 +1,14 @@
-"""Versioned controls with retained evidence and append-only status history (#147)."""
+"""Versioned controls with retained evidence and append-only status history (#147).
+
+Each entry records the basis its acceptance rests on. A control accepted
+against a ``static_ok`` artifact whose recorded basis still classifies as
+``static_ok`` is gating, following the collector's reading of ADR-0002; that
+label is predicted by the materializer until #159 measures it. Any other
+accepted control may still enter the library, and is installed wherever the
+library is loaded, but it is recorded as advisory. Its evidence is a replay
+ADR-0002 keeps advisory, so a suite run with it installed is a measurement of
+the control, and nothing may report an advisory entry as proven.
+"""
 
 from __future__ import annotations
 
@@ -16,13 +26,23 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trace_harness.environment.controls import ControlInstance, resolve_control
 from trace_harness.failure_bundles.schemas import RepairPackage
-from trace_harness.regression.repair_validation import ControlVerdict, RepairValidation
-from trace_harness.regression.schemas import RegressionArtifact
+from trace_harness.regression.repair_validation import (
+    ControlValidation,
+    ControlVerdict,
+    RepairValidation,
+    VerdictStanding,
+    basis_supports_label,
+    gating_refusal,
+    predictor_of,
+)
+from trace_harness.regression.schemas import RegressionArtifact, ReplayMode, ReplayModePredictor
 from trace_harness.runner.result import RunResult
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.events import utc_now
 
-CONTROL_LIBRARY_SCHEMA_VERSION = "0.1.0"
+# 0.2.0: entries record their acceptance basis. A 0.1.0 entry has none; it
+# reads as advisory with its replay_mode not recorded.
+CONTROL_LIBRARY_SCHEMA_VERSION = "0.2.0"
 DEFAULT_CONTROL_LIBRARY = Path("fixtures/controls/library.json")
 
 
@@ -88,6 +108,35 @@ class StatusChange(BaseModel):
     at: datetime = Field(default_factory=utc_now)
 
 
+class AcceptanceBasis(BaseModel):
+    """The replay label an entry's accepted verdict was reached under.
+
+    An entry written before 0.2.0 has no basis. Nothing at acceptance time
+    recorded which label the verdict relied on, so it reads as not recorded
+    (``replay_mode`` None) and advisory, whatever label its retained artifact
+    carries now. ``check_acceptance`` holds a recorded basis to the artifact
+    and refuses a gating basis that records no label.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    replay_mode: ReplayMode | None = None
+    # Who produced the label, from the artifact's replay_mode_basis. Every
+    # gating basis today names the materializer's fixed rule, so its label is
+    # predicted until #159 measures one.
+    predicted_by: ReplayModePredictor | None = None
+    standing: VerdictStanding = "advisory"
+
+    @classmethod
+    def for_artifact(cls, artifact: RegressionArtifact) -> AcceptanceBasis:
+        """The basis an artifact supports: gating only past ``gating_refusal``."""
+        return cls(
+            replay_mode=artifact.replay_mode,
+            predicted_by=predictor_of(artifact),
+            standing="gating" if gating_refusal(artifact) is None else "advisory",
+        )
+
+
 class LibraryEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -95,6 +144,7 @@ class LibraryEntry(BaseModel):
     provenance: LibraryProvenance
     status: Literal["active", "rolled_back"] = "active"
     history: list[StatusChange] = Field(min_length=1)
+    acceptance: AcceptanceBasis = Field(default_factory=AcceptanceBasis)
 
     @model_validator(mode="after")
     def consistent_history(self) -> LibraryEntry:
@@ -107,7 +157,7 @@ class LibraryEntry(BaseModel):
 class ControlLibrary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["0.1.0"] = CONTROL_LIBRARY_SCHEMA_VERSION
+    schema_version: Literal["0.1.0", "0.2.0"] = CONTROL_LIBRARY_SCHEMA_VERSION
     entries: list[LibraryEntry] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -150,8 +200,20 @@ def check_acceptance(
     package: RepairPackage,
     artifact: RegressionArtifact,
     validation: RepairValidation,
+    basis: AcceptanceBasis,
 ) -> None:
-    """Bind an accepted verdict to this exact control and originating failure."""
+    """Bind an accepted verdict to this exact control and originating failure.
+
+    A recorded basis must name the artifact's own ``replay_mode`` and
+    ``predicted_by`` and the standing the artifact supports. A gating
+    acceptance therefore needs a ``static_ok`` label whose recorded basis
+    classifies as ``static_ok`` (``gating_refusal``), and an advisory one
+    cannot be recorded as gating. A verdict's recorded label must be the
+    artifact's, down to whether its basis supports it. A label that was never
+    recorded, on the verdict or on the basis, is not compared with the
+    artifact, and a verdict or basis without one can only be advisory and
+    cannot name a predictor.
+    """
     run_id = source.run_id
     if {package.run_id, artifact.source_run_id, validation.run_id, control.provenance.run_id} != {
         run_id
@@ -181,6 +243,73 @@ def check_acceptance(
         or any(r.verdict != "PASS" for r in verdict.sibling_reruns)
     ):
         raise ValueError(f"control {control.control_id!r} lacks complete accepted validation")
+    _check_replay_label(control.control_id, verdict, artifact)
+    _check_basis(control.control_id, basis, artifact)
+
+
+def _check_replay_label(
+    control_id: str, verdict: ControlValidation, artifact: RegressionArtifact
+) -> None:
+    """A verdict's recorded label must be the artifact's; an unrecorded one is not compared."""
+    replay_mode, predicted_by = verdict.replay_mode, verdict.predicted_by
+    if replay_mode is None:
+        if predicted_by is not None or verdict.label_supported:
+            raise ValueError(
+                f"control {control_id!r} records a predictor or a supported label "
+                "without the replay_mode it was validated under"
+            )
+        return
+    if replay_mode != artifact.replay_mode:
+        raise ValueError(
+            f"control {control_id!r} was validated as {replay_mode} "
+            f"but the artifact is {artifact.replay_mode}"
+        )
+    if predicted_by != predictor_of(artifact):
+        raise ValueError(
+            f"control {control_id!r} was validated on a label from {predicted_by} "
+            f"but the artifact's label is from {predictor_of(artifact)}"
+        )
+    if verdict.label_supported != basis_supports_label(artifact):
+        recorded = "supported" if verdict.label_supported else "did not support"
+        now = "does not" if verdict.label_supported else "does"
+        raise ValueError(
+            f"control {control_id!r} was validated on a label its basis {recorded}, "
+            f"but the artifact's recorded basis {now} support it"
+        )
+
+
+def _check_basis(control_id: str, basis: AcceptanceBasis, artifact: RegressionArtifact) -> None:
+    """A recorded basis must match the artifact and claim exactly the standing it supports."""
+    if basis.replay_mode is None:
+        if basis.standing != "advisory":
+            raise ValueError(
+                f"control {control_id!r} records a {basis.standing} acceptance "
+                "without the replay_mode it relied on"
+            )
+        if basis.predicted_by is not None:
+            raise ValueError(
+                f"control {control_id!r} records a label from {basis.predicted_by} "
+                "without the replay_mode it relied on"
+            )
+        return
+    if basis.replay_mode != artifact.replay_mode:
+        raise ValueError(
+            f"control {control_id!r} records replay_mode {basis.replay_mode} "
+            f"but the artifact is {artifact.replay_mode}"
+        )
+    refusal = gating_refusal(artifact)
+    if basis.standing == "gating" and refusal is not None:
+        raise ValueError(f"control {control_id!r} records a gating acceptance but {refusal}")
+    if basis.standing == "advisory" and refusal is None:
+        raise ValueError(
+            f"control {control_id!r} records an advisory acceptance "
+            "but the artifact supports gating"
+        )
+    if basis.predicted_by != predictor_of(artifact):
+        raise ValueError(
+            f"control {control_id!r} records a label from {basis.predicted_by} "
+            f"but the artifact's label is from {predictor_of(artifact)}"
+        )
 
 
 def load_library(path: Path | str, *, resolve_active: bool = True) -> ControlLibrary:
@@ -201,6 +330,7 @@ def load_library(path: Path | str, *, resolve_active: bool = True) -> ControlLib
             RepairPackage.model_validate_json(refs.repair_package.read(path.parent)),
             RegressionArtifact.model_validate_json(refs.regression_artifact.read(path.parent)),
             validation,
+            entry.acceptance,
         )
         _require_retained_runs(path.parent, entry, validation)
         if resolve_active and entry.status == "active":
@@ -261,7 +391,12 @@ def library_lock(path: Path) -> Iterator[None]:
 
 
 def write_library(path: Path, library: ControlLibrary) -> None:
-    """Atomically publish a complete revision; callers must hold library_lock."""
+    """Atomically publish a complete revision; callers must hold library_lock.
+
+    A revision is written at the current schema. An older library gains its
+    entries' default acceptance basis explicitly the first time it is written.
+    """
+    library = library.model_copy(update={"schema_version": CONTROL_LIBRARY_SCHEMA_VERSION})
     ControlLibrary.model_validate(library.model_dump())
     payload = json.dumps(library.model_dump(mode="json"), indent=2) + "\n"
     fd, name = tempfile.mkstemp(dir=path.parent)

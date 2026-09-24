@@ -1,7 +1,8 @@
 """Per-control validation verdicts (issue #146).
 
 Covers real accepted, ineffective, overblocking, and interrupted replays,
-control selection, prescription provenance, inspection, and CI exit behavior.
+control selection, prescription provenance, inspection, CI exit behavior, the
+replay_mode standing each verdict carries, and over-blocking by task family.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import json
 
 import pytest
 
-from conftest import FIXTURES_DIR
+from conftest import FIXTURES_DIR, regression_artifact, static_ok_basis
 from trace_harness import cli
 from trace_harness.cli import main
 from trace_harness.environment import controls as controls_module
@@ -21,18 +22,35 @@ from trace_harness.environment.controls import (
     reference_controls,
 )
 from trace_harness.environment.tools import ToolResult
+from trace_harness.metrics.bounds import clopper_pearson_upper
 from trace_harness.regression.repair_validation import (
     REPAIR_VALIDATION_SCHEMA_VERSION,
     ControlValidation,
     ControlVerdict,
     RepairValidation,
+    ReRun,
+    basis_supports_label,
     decide_verdict,
+    gating_refusal,
+    over_blocking_summary,
+    predictor_of,
+    sibling_family,
     skipped_control,
+    standing_for,
+    verdict_gates,
 )
+from trace_harness.tasks.loader import load_task
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 
 CONTROL_DEMO_TASK_PATH = FIXTURES_DIR / "tasks" / "refund_policy_control_demo.json"
+PINNED_VALIDATION = (
+    FIXTURES_DIR
+    / "controls"
+    / "evidence"
+    / "4f23ca45a8a047758b3dd1f6adf9b732"
+    / names.REPAIR_VALIDATION
+)
 
 
 def _bundle_artifact(tmp_path):
@@ -305,7 +323,11 @@ def test_inspect_validation_in_separate_output_directory(tmp_path, capsys):
     captured = capsys.readouterr()
     assert code == 0
     assert "accepted" in captured.out
-    assert "deterministic_pre_call_refund_guardrail" in captured.out
+    assert (
+        "deterministic_pre_call_refund_guardrail [advisory, replay_mode live_required, "
+        "predicted until #159 measures it]"
+    ) in captured.out
+    assert "1 accepted (0 gating, 1 advisory)" in captured.out
     assert not captured.err
 
 
@@ -389,6 +411,18 @@ def test_refund_guardrail_is_accepted_with_rerun_evidence(tmp_path, with_sibling
     assert control.originating_rerun is not None
     assert control.originating_rerun.cleared_checks == ["unauthorized_cash_refund"]
     assert len(control.sibling_reruns) == int(with_sibling)
+    assert (
+        control.originating_rerun.task_fixture == json.loads(artifact.read_text())["task_fixture"]
+    )
+    blocking = validation.rollup.over_blocking
+    if with_sibling:
+        assert control.sibling_reruns[0].task_fixture == str(
+            FIXTURES_DIR / "tasks" / "refund_policy_valid_cash.json"
+        )
+        assert (blocking.independent_families, blocking.families_failed) == (1, 0)
+        assert blocking.upper_bound_95 == 0.95
+    else:
+        assert (blocking.independent_families, blocking.upper_bound_95) == (0, None)
     store = ArtifactStore(tmp_path / "runs_replay")
     for rerun in [control.originating_rerun, *control.sibling_reruns]:
         evidence = store.read_json(rerun.run_id, names.VERIFIER_RESULT)
@@ -538,3 +572,340 @@ def test_fail_on_rejected_passes_when_nothing_is_rejected(tmp_path) -> None:
     code, validation = _validation_for(tmp_path, extra_args=("--fail-on-rejected",))
     assert validation.rollup.rejected == 0
     assert code == 0
+
+
+# --- replay_mode standing (ADR-0002, decision 2) ---
+
+
+@pytest.mark.parametrize("replay_mode", ["static_ok", "live_required", None])
+def test_every_verdict_records_the_artifact_replay_mode(tmp_path, capsys, replay_mode):
+    """The demo's basis classifies as live_required, so no label on it can gate.
+
+    A static_ok label set by hand is recorded as stated, flagged, and advisory
+    in the written file itself, before the library or the metrics look at it.
+    """
+    artifact = _bundle_artifact(tmp_path)
+    if replay_mode is None:
+        _edit_json(artifact, lambda a: a.pop("replay_mode"))
+    else:
+        _edit_json(artifact, lambda a: a.update(replay_mode=replay_mode))
+    capsys.readouterr()
+
+    code, validation = _replay_validation(tmp_path, artifact)
+
+    assert code == 0
+    expected_mode = replay_mode or "unlabeled"
+    assert {c.replay_mode for c in validation.controls} == {expected_mode}
+    assert {c.predicted_by for c in validation.controls} == {"heuristic_v1"}
+    assert {c.label_supported for c in validation.controls} == {replay_mode == "live_required"}
+    out = capsys.readouterr().out
+    warned = "static_ok is not supported by the artifact's own basis" in out
+    assert warned == (replay_mode == "static_ok")
+    assert "gating labels are predicted until #159 measures them" not in out
+    assert {c.standing for c in validation.controls} == {"advisory"}
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (0, 1)
+    source_run_id = json.loads(artifact.read_text())["source_run_id"]
+    written = json.loads(
+        (tmp_path / "runs_replay" / source_run_id / names.REPAIR_VALIDATION).read_text()
+    )
+    assert {c["standing"] for c in written["controls"]} == {"advisory"}
+    assert written["rollup"]["accepted_gating"] == 0
+
+
+def test_a_classified_static_ok_label_validates_as_gating(tmp_path, capsys, classified_static_ok):
+    artifact = _bundle_artifact(tmp_path)
+    assert json.loads(artifact.read_text())["replay_mode"] == "static_ok"
+    capsys.readouterr()
+
+    code, validation = _replay_validation(tmp_path, artifact)
+
+    assert code == 0
+    (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
+    assert (accepted.replay_mode, accepted.predicted_by) == ("static_ok", "heuristic_v1")
+    assert accepted.label_supported
+    assert accepted.standing == "gating"
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (1, 0)
+    out = capsys.readouterr().out
+    assert "static_ok is not supported" not in out
+    assert "gating labels are predicted until #159 measures them" in out
+
+
+def test_rollup_splits_accepted_verdicts_by_standing() -> None:
+    validation = RepairValidation(
+        run_id="run_x",
+        test_name="t",
+        controls=[
+            ControlValidation(
+                control="a",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="static_ok",
+                predicted_by="heuristic_v1",
+                label_supported=True,
+            ),
+            # A static_ok label its own basis does not support cannot gate.
+            ControlValidation(
+                control="f",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="static_ok",
+                predicted_by="heuristic_v1",
+            ),
+            ControlValidation(control="b", verdict=ControlVerdict.ACCEPTED),
+            ControlValidation(
+                control="c",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="live_required",
+                predicted_by="heuristic_v1",
+            ),
+            # A static_ok label with no basis behind it cannot gate.
+            ControlValidation(
+                control="e",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="static_ok",
+                label_supported=True,
+            ),
+            ControlValidation(
+                control="d",
+                verdict=ControlVerdict.REJECTED_OVERBLOCKS,
+                replay_mode="static_ok",
+                predicted_by="heuristic_v1",
+            ),
+        ],
+    )
+    rollup = validation.rollup
+    assert (rollup.accepted, rollup.accepted_gating, rollup.accepted_advisory) == (5, 1, 4)
+
+
+def test_a_written_standing_is_derived_again_on_read() -> None:
+    """An edited file must not promote an advisory verdict to gating."""
+    control = ControlValidation.model_validate(
+        {
+            "control": "a",
+            "verdict": "accepted",
+            "replay_mode": "live_required",
+            "standing": "gating",
+        }
+    )
+    assert control.standing == "advisory"
+    assert control.model_dump(mode="json")["standing"] == "advisory"
+
+
+def test_pinned_validation_evidence_reads_as_advisory_and_unchanged() -> None:
+    """The evidence behind ctl_refund_window_v1 predates the label and stays pinned."""
+    raw = PINNED_VALIDATION.read_bytes()
+    validation = RepairValidation.model_validate_json(raw)
+    assert validation.schema_version == "0.1.0"
+    # Not recorded: 0.1.0 carries no label, so none is inferred.
+    assert {c.replay_mode for c in validation.controls} == {None}
+    (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
+    assert accepted.control_id == REFUND_WINDOW_CONTROL_ID
+    assert accepted.standing == "advisory"
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (0, 1)
+    assert PINNED_VALIDATION.read_bytes() == raw
+
+
+# --- over-blocking by task family ---
+
+FAMILIES = "fixtures/tasks/refund_task_families"
+
+
+def _sibling(verdict: str, fixture: str | None, task_id: str = "t", run_id: str = "r") -> ReRun:
+    return ReRun(run_id=run_id, task_id=task_id, task_fixture=fixture, verdict=verdict)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "task_id", "family"),
+    [
+        (f"{FAMILIES}/purchase_age/day_30/a.json", "a", "refund_task_families/purchase_age"),
+        (
+            f"/abs/checkout/{FAMILIES}/purchase_age/day_61_violation/b.json",
+            "b",
+            "refund_task_families/purchase_age",
+        ),
+        (
+            "fixtures\\tasks\\refund_task_families\\escalation\\escalation_missing\\c.json",
+            "c",
+            "refund_task_families/escalation",
+        ),
+        ("fixtures/tasks/refund_policy_valid_cash.json", "valid", "valid"),
+        (f"{FAMILIES}/stray.json", "stray", "stray"),
+        (None, "recorded_before_0_3_0", "recorded_before_0_3_0"),
+    ],
+)
+def test_a_sibling_family_is_its_directory_or_the_task_itself(fixture, task_id, family) -> None:
+    assert sibling_family(_sibling("PASS", fixture, task_id)) == family
+
+
+def test_every_task_fixture_maps_to_a_family() -> None:
+    """The 29 family tasks fall in their 9 directories; the 9 others stand alone."""
+    tasks_dir = FIXTURES_DIR / "tasks"
+    fixtures = sorted(tasks_dir.rglob("*.json"))
+    assert len(fixtures) == 38
+    families = {}
+    for path in fixtures:
+        relative = path.relative_to(FIXTURES_DIR.parent).as_posix()
+        task_id = load_task(path).task_id
+        family = sibling_family(_sibling("PASS", relative, task_id))
+        if "refund_task_families" in path.parts:
+            directory = path.relative_to(tasks_dir / "refund_task_families").parts[0]
+            assert family == f"refund_task_families/{directory}"
+        else:
+            assert family == task_id
+        families.setdefault(family, []).append(task_id)
+    assert len(families) == 18
+    assert len(families["refund_task_families/purchase_age"]) == 8
+
+
+def test_over_blocking_counts_each_family_once() -> None:
+    """Siblings of one family are one trial, which fails if any of them failed.
+
+    The failing sibling comes first in purchase_age and last in escalation, so
+    the family verdict cannot depend on which sibling was read last or first.
+    """
+    controls = [
+        ControlValidation(
+            control="a",
+            verdict=ControlVerdict.REJECTED_OVERBLOCKS,
+            sibling_reruns=[
+                _sibling("FAIL", f"{FAMILIES}/purchase_age/day_30/x.json", "x"),
+                _sibling("PASS", f"{FAMILIES}/purchase_age/day_60_approved/y.json", "y"),
+                _sibling("PASS", f"{FAMILIES}/escalation/escalation_missing/z.json", "z"),
+                _sibling("INCOMPLETE", f"{FAMILIES}/customer_wording/eligible_neutral/w.json"),
+            ],
+        ),
+        ControlValidation(
+            control="b",
+            verdict=ControlVerdict.REJECTED_OVERBLOCKS,
+            sibling_reruns=[
+                _sibling("PASS", "fixtures/tasks/refund_policy_valid_cash.json", "valid"),
+                _sibling("FAIL", f"{FAMILIES}/escalation/escalation_duplicate/v.json", "v"),
+            ],
+        ),
+    ]
+    summary = over_blocking_summary(controls)
+    assert (summary.siblings_run, summary.siblings_failed) == (6, 2)
+    # purchase_age, escalation, valid; the incomplete customer_wording sibling
+    # shows nothing and is left out.
+    assert (summary.independent_families, summary.families_failed) == (3, 2)
+    assert summary.upper_bound_95 == 0.9831  # 0.98305, rounded up
+    validation = RepairValidation(run_id="r", test_name="t", controls=controls)
+    assert validation.rollup.over_blocking == summary
+
+
+@pytest.mark.parametrize(
+    ("trials", "stored", "printed"), [(59, 0.0496, "4.96%"), (58, 0.0504, "5.04%")]
+)
+def test_a_clean_family_bound_is_stored_rounded_up_and_printed_apart(
+    trials, stored, printed
+) -> None:
+    """0 of 59 sits just under 5% and 0 of 58 just over; both used to print 5.0%."""
+    summary = over_blocking_summary(
+        [
+            ControlValidation(
+                control="a",
+                verdict=ControlVerdict.ACCEPTED,
+                sibling_reruns=[_sibling("PASS", None, f"t{i}", f"r{i}") for i in range(trials)],
+            )
+        ]
+    )
+    assert (summary.independent_families, summary.families_failed) == (trials, 0)
+    assert summary.upper_bound_95 == stored
+    assert summary.upper_bound_95 >= clopper_pearson_upper(0, trials)
+    text = cli._over_blocking_text(0, trials, summary.upper_bound_95)
+    assert text == f"0 of {trials} families failed, true rate could be up to {printed}"
+
+
+def test_over_blocking_with_no_completed_sibling_is_not_measured() -> None:
+    summary = over_blocking_summary(
+        [
+            ControlValidation(
+                control="a",
+                verdict=ControlVerdict.SKIPPED,
+                sibling_reruns=[_sibling("INCOMPLETE", None)],
+            )
+        ]
+    )
+    assert (summary.siblings_run, summary.independent_families) == (1, 0)
+    assert summary.upper_bound_95 is None
+
+
+def test_pinned_validation_evidence_bounds_one_family_at_95_percent() -> None:
+    """One clean sibling is one family, and one clean family allows a 95% true rate."""
+    blocking = RepairValidation.model_validate_json(PINNED_VALIDATION.read_bytes()).rollup
+    blocking = blocking.over_blocking
+    assert (blocking.siblings_run, blocking.siblings_failed) == (1, 0)
+    assert (blocking.independent_families, blocking.families_failed) == (1, 0)
+    assert blocking.upper_bound_95 == 0.95
+    text = cli._over_blocking_text(0, 1, blocking.upper_bound_95)
+    assert text == "0 of 1 families failed, true rate could be up to 95.00%"
+
+
+# --- whether a label can back a gating verdict ---
+
+
+@pytest.mark.parametrize(
+    ("replay_mode", "basis", "refusal"),
+    [
+        ("static_ok", "supported", None),
+        ("static_ok", None, "has no recorded basis"),
+        ("static_ok", "unsupported", "classifies as live_required"),
+        ("live_required", "supported", "the artifact is live_required"),
+        ("unlabeled", None, "the artifact is unlabeled"),
+    ],
+)
+def test_only_a_static_ok_label_its_basis_supports_can_gate(replay_mode, basis, refusal) -> None:
+    recorded = {
+        "supported": static_ok_basis(),
+        "unsupported": static_ok_basis().model_copy(update={"rule_kind": "requirement"}),
+        None: None,
+    }[basis]
+    artifact = regression_artifact(replay_mode=replay_mode, basis=recorded)
+    reason = gating_refusal(artifact)
+    if refusal is None:
+        assert reason is None
+    else:
+        assert refusal in reason
+    # What a verdict records about the artifact gives it the same standing.
+    standing = standing_for(
+        artifact.replay_mode, predictor_of(artifact), basis_supports_label(artifact)
+    )
+    assert standing == ("gating" if refusal is None else "advisory")
+
+
+@pytest.mark.parametrize(
+    ("replay_mode", "basis", "supported"),
+    [
+        ("static_ok", static_ok_basis(), True),
+        ("live_required", static_ok_basis(), False),
+        ("live_required", static_ok_basis().model_copy(update={"rule_kind": "requirement"}), True),
+        ("static_ok", None, False),
+        ("unlabeled", None, False),
+    ],
+)
+def test_a_label_is_supported_when_its_basis_classifies_as_it(replay_mode, basis, supported):
+    artifact = regression_artifact(replay_mode=replay_mode, basis=basis)
+    assert basis_supports_label(artifact) is supported
+
+
+def test_a_verdict_gates_only_against_an_artifact_that_backs_it() -> None:
+    verdict = ControlValidation(
+        control="a",
+        verdict=ControlVerdict.ACCEPTED,
+        replay_mode="static_ok",
+        predicted_by="heuristic_v1",
+        label_supported=True,
+    )
+    backing = regression_artifact(replay_mode="static_ok", basis=static_ok_basis())
+    assert verdict.standing == "gating"
+    assert verdict_gates(verdict, backing)
+    # Recorded without its basis supporting the label, it is advisory as written.
+    unsupported_verdict = verdict.model_copy(update={"label_supported": False})
+    assert unsupported_verdict.standing == "advisory"
+    assert not verdict_gates(unsupported_verdict, backing)
+    assert not verdict_gates(verdict, None)
+    assert not verdict_gates(verdict, regression_artifact(replay_mode="unlabeled"))
+    unsupported = static_ok_basis().model_copy(update={"rule_kind": "requirement"})
+    assert not verdict_gates(
+        verdict, regression_artifact(replay_mode="static_ok", basis=unsupported)
+    )
+    measured = static_ok_basis().model_copy(update={"predicted_by": "measured"})
+    assert not verdict_gates(verdict, regression_artifact(replay_mode="static_ok", basis=measured))

@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { loadMetricsHistory } from "@/data/metrics-history";
 import { MetricSeries } from "@/components/metric-series";
+import { describeOverBlocking } from "@/lib/over-blocking";
 import { ratioValue, type MetricsSnapshot } from "@/types/metrics-snapshot";
 
 export const dynamic = "force-dynamic";
@@ -13,10 +14,10 @@ const SERIES = [
     key: "coverage",
     title: "Control coverage",
     blurb:
-      "Accepted controls over the controls repair packages asked for. A5 in docs/methodology_metrics.md.",
+      "Accepted controls over the controls repair packages asked for. ADR-0002 keeps a replay verdict advisory until its artifact carries a measured replay-mode label; like the collector, an acceptance on a static_ok artifact whose basis supports it counts as gating, and every static_ok label is predicted until #159 measures one. A5 in docs/methodology_metrics.md.",
     point: (snapshot: MetricsSnapshot) => ({
       value: ratioValue(snapshot.coverage.acceptedOverPrescribed),
-      label: `${snapshot.coverage.accepted}/${snapshot.coverage.prescribed} accepted`,
+      label: `${snapshot.coverage.accepted}/${snapshot.coverage.prescribed} accepted, ${snapshot.coverage.acceptedGating} gating on predicted labels and ${snapshot.coverage.acceptedAdvisory} advisory`,
       detail: `${snapshot.coverage.materializable} materializable, ${snapshot.coverage.validated} validated`,
     }),
     format: percent,
@@ -25,11 +26,11 @@ const SERIES = [
     key: "over-blocking",
     title: "Over-blocking",
     blurb:
-      "Positive siblings that failed while a control was installed, from the latest validation. A6.",
+      "Positive siblings that failed while a control was installed, from the latest validation. Siblings in one task family share a template, so the upper bound counts families. A4 and A6.",
     point: (snapshot: MetricsSnapshot) => ({
       value: ratioValue(snapshot.overBlocking.rate),
-      label: `${snapshot.overBlocking.siblingsFailed}/${snapshot.overBlocking.siblingsRun} siblings failed`,
-      detail: snapshot.overBlocking.sources.join(", "),
+      label: describeOverBlocking(snapshot.overBlocking),
+      detail: `${snapshot.overBlocking.siblingsFailed}/${snapshot.overBlocking.siblingsRun} siblings failed; ${snapshot.overBlocking.sources.join(", ")}`,
     }),
     format: percent,
   },

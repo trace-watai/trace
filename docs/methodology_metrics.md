@@ -101,19 +101,58 @@ trusted is the question #156 labels and #158 measures.
 ### A4. Overblocking rate
 
 *Meaning.* Share of positive siblings that fail when a control is
-installed. The anti-overblocking check.
+installed. The anti-overblocking check. Reported with an upper bound,
+because the denominators are small enough that a rate alone overstates
+what was learned.
 
 *Formula.* `siblings_failed / siblings_run` across
 `replay --apply-control` invocations, counting a sibling as failed when
 its run's `verifier_result.json.verdict == "fail"`.
 
-*Source.* Sibling runs get their own run directories during replay; read
-their `verifier_result.json`. Until #146 lands there is no artifact that
-aggregates this, only the printed `[2/2]` section and the exit code.
+Alongside it, the same count over task families. A sibling's family is
+the directory directly under `fixtures/tasks/refund_task_families/`, or
+the task itself for any other task. Each family counts once, and fails
+when any of its completed siblings failed:
+
+```
+k = families_failed        n = independent_families
+upper_bound_95 = the p solving P(X <= k; n, p) = 0.05,  X ~ Binomial(n, p)
+               = 1 - 0.05^(1/n)  when k = 0
+```
+
+This is the one-sided 95% Clopper-Pearson upper limit, found by bisection
+on the binomial CDF in `metrics/bounds.py`. `0` of `1` gives 95%, `0` of
+`40` gives 7.2%, `1` of `40` gives 11.3%, and a clean record needs `59`
+families before the bound falls under 5%. It is null when `n = 0`. It is
+stored rounded up to four decimal places, so a stored bound never sits
+below the exact one, and printed as a percentage with two: `0` of `59` is
+4.96% and `0` of `58` is 5.04%.
+
+The bound counts families because siblings in one family share a
+template and the mechanism under test, so a control that blocks one
+legitimate member tends to block its neighbors for the same reason.
+Treating them as separate trials would shrink the bound with no new
+evidence behind it.
+
+*Source.* `repair_validation.json.rollup.over_blocking` (schema `0.3.0`)
+carries `siblings_run`, `siblings_failed`, `independent_families`,
+`families_failed` and `upper_bound_95`, recounted on every read from
+`controls[].sibling_reruns[].verdict` and `.task_fixture`. Sibling runs
+also keep their own run directories and `verifier_result.json`.
 
 *Blind spot.* Siblings are named by fixture path and run from their live
 fixtures, not pinned state. And a sibling "passing" means no violation was
 recorded, which until #143 does not prove the sibling did the right thing.
+The family model assumes full dependence inside a family and none across
+families, and the second half is optimistic: every refund sibling reaches
+the same `issue_refund` tool, so families still share a mechanism and the
+real upper limit can sit above the reported one. Siblings are hand-picked
+neighbors of a failure, so the bound covers the behavior they represent
+and says nothing about legitimate requests nobody wrote a sibling for.
+Incomplete sibling re-runs are left out of the family count. A re-run
+recorded before `0.3.0` has no fixture path and counts as a family of
+one, which is exact for the one retained validation, whose sibling is the
+top-level `refund_policy_valid_cash` task.
 
 ### A5. Control coverage
 
@@ -122,14 +161,28 @@ A prescribed control is a name. It becomes *materializable* when some
 registered guardrail can install it, *validated* when a validation run
 produced a verdict for it, and *accepted* when that verdict was
 `accepted`. Reporting only the last of the four hides which wall the
-work is stuck behind.
+work is stuck behind. An accepted name is further split into *gating*
+and *advisory*. ADR-0002 keeps a static replay verdict advisory "until the
+artifact carries a measured replay-mode label" and has the collector gate
+on `static_ok`. This follows the collector, and every `static_ok` label
+counted as gating is predicted until #159 measures one.
 
 *Formula.* `accepted / prescribed`, with `materializable / prescribed`
 alongside it. `prescribed` counts distinct control names across every
 retained `repair_package.json`. `materializable` counts those with a
 non-null entry in `MATERIALIZABLE_REPAIR_CONTROLS`. `validated` and
 `accepted` count those appearing in a `repair_validation.json`, the
-latter restricted to `verdict == "accepted"`.
+latter restricted to `verdict == "accepted"`. `accepted_gating` counts
+accepted names with at least one accepted verdict that was recorded as
+gating and still gates when checked against the regression artifact it was
+validated against: that artifact is retained beside the validation (in the
+same run directory, or under `source/<run_id>/` in a control library's
+evidence), carries the verdict's `replay_mode` and `predicted_by`, is
+`static_ok`, and has a recorded basis that classifies as `static_ok`. A verdict whose artifact was not retained
+is advisory. `accepted_advisory` counts the rest, so the two always sum to
+`accepted`. A snapshot recorded at `0.1.0` has no split and reads as all
+advisory, because the validations it was computed from carried no
+`replay_mode`, and an unrecorded label reads as advisory.
 
 *Source.* `repair_package.json.controls[].name`,
 `environment/controls.py`, and `repair_validation.json.controls[]`.
@@ -140,7 +193,9 @@ of the failure surface those names cover. Nine prescribed controls that
 all guard one refund check would read as broad coverage. A name that was
 accepted once is counted as accepted forever, so a control rolled back
 through `rollback_control` still appears here until its validation
-artifact is removed.
+artifact is removed. Gating is a property of the label, and the label is
+itself a prediction until #159 measures it, so a gating count is only as
+good as the `static_ok` rule in `docs/regression_contract.md`.
 
 ### A6. Over-blocking over time
 
@@ -151,6 +206,16 @@ has an answer.
 *Formula.* The A4 rate, read from the latest `repair_validation.json`
 rather than recomputed. `siblings_failed / siblings_run` over that one
 artifact's `controls[].sibling_reruns`, counting `verdict == "FAIL"`.
+Snapshots from schema `0.3.0` also record `independent_families` and
+`families_failed` for that artifact, and `upper_bound_95` is the A4 family
+bound over them, derived again on every read. The `/metrics` page shows
+it as "k of n families failed, true rate could be up to b". The retained
+validation today is `0` of `1` family, a bound of 95%, but the page shows
+that only once a `0.3.0` snapshot is appended. The committed history holds
+one `0.1.0` line, which has no family counts, so until then the page reads
+"0/1 siblings failed, families not recorded". The history job on main
+skips its append while the `METRICS_HISTORY_TOKEN` secret is unset (see
+`docs/team_ownership.md`).
 
 *Source.* `repair_validation.json`, chosen by the highest `batch_id`,
 whose timestamp prefix orders chronologically. File mtime is not used
@@ -161,7 +226,12 @@ control is plotted next to a commit that validated ten with no
 indication of the difference beyond the denominator. Inherits every
 blind spot A4 has. An empty denominator is reported as null and drawn as
 a gap, because zero siblings run and zero siblings failed are not the
-same fact.
+same fact. Records written before `0.3.0` have no family counts and show
+no bound; the counts cannot be recovered from sibling totals, so they are
+left null. Over-blocking is not split by standing. ADR-0002 keeps
+positive siblings gating whatever the artifact's label, so a sibling
+failure under an advisory verdict counts the same as one under a gating
+verdict.
 
 ### A7. Cost of learning
 
