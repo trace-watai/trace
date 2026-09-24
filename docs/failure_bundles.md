@@ -61,6 +61,118 @@ fixture says *today*), while `trace-harness replay <artifact>` rebuilds the
 world from the pinned state and asserts the gate conditions. Prefer the
 latter in CI — see [regression_contract.md](regression_contract.md).
 
+## One card per root cause
+
+A sweep over two providers and many seeds repeats one failure many times.
+Since failure card 0.5.0 the bundle stage writes one card per root cause and
+records every later run that repeated it as an occurrence of that card (#211).
+
+### How a key is formed
+
+Three facts about the failed run form the key, and nothing else does.
+
+1. The failed verifier check ids, deduplicated and sorted.
+2. The primary failure category from attribution.
+3. The tool the run called at its first irreversible step, or no tool when
+   the run took no irreversible action.
+
+The first irreversible step is `AttributionResult.first_irreversible_action_step`,
+the field the regression artifact's replay basis also pins. The attributor sets
+it from the first `tool_call_executed` event whose `side_effect` is
+`external_irreversible` and whose status is `ok`, and the key reads the tool
+name off that same event.
+
+The key is a hash behind a readable prefix.
+
+```text
+v1:<primary category>:<tool or none>:<digest>
+v1:unsafe_irreversible_action:issue_refund:e621a26e69c17400
+```
+
+The digest is the first 16 hex characters of SHA-256 over this JSON, written
+with sorted keys and no whitespace.
+
+```json
+{"category":"unsafe_irreversible_action","checks":["unauthorized_cash_refund"],"tool":"issue_refund","version":"v1"}
+```
+
+The prefix makes an index or a card readable at a glance. Keys are compared
+whole, and the digest is what separates two failures that share a category
+and a tool but fired different checks. With no irreversible step the JSON
+records `"tool":null` and the prefix reads `none`. Run ids, task ids, step
+numbers, messages and evidence stay out of the key, so one failure keys the
+same way across tasks, providers, seeds and days. Changing any of the three
+facts, or how they are written, means bumping `v1`. `tests/test_bundle_dedup.py`
+pins the key of every failing task fixture so such a change shows up as an
+edit to that table.
+
+### Where the card lives
+
+`bundle` looks the key up in the run index (`RunIndexEntry.bundle_key`, run
+index 0.6.0) while holding a lock on `.bundle.lock` in the runs directory, so
+two bundle stages writing into one directory see each other's cards.
+
+- **No card has the key.** The bundle is written to the run's own directory
+  as it always was, and the card lists the run as its first and only
+  occurrence.
+- **A card in another run's directory has the key.** The run is appended to
+  that card's `occurrences`, and its own directory gets `bundle_ref.json` in
+  place of a card, repair package and regression artifact. The pointer
+  records the key and the `canonical_run_id` whose directory holds the card.
+
+The card, the repair package and the regression artifact stay pinned to the
+first occurrence. The card's text, evidence and blast radius describe that
+run, and `occurrences` lists every run that repeated it along with the
+provider, model and seed from each run's `run_config.json`.
+`RunReader.get_bundle` and the dashboard serve a reproduction the card it
+joined, whose `run_id` names the first occurrence.
+
+The lookup is scoped to one runs directory, and two different tasks that fail
+the same way share a card when their runs land in the same one. Of the
+nineteen failing task fixtures, nine fall into four groups that share a key.
+Neither `refund_v0` nor `refund_bundles_v0` runs two tasks from one group, so
+every pinned suite expectation still has one card per failing task.
+
+### Bundling a run again
+
+Bundling a run again never counts it twice. A reproduction already on the
+card keeps its place, and the card's own run keeps its occurrences. A run
+whose key changed since it was last bundled leaves its old card's
+occurrences. A run holding a card that other runs point to refuses a new key
+with `BundleKeyConflictError`, because moving that card would leave their
+pointers naming the wrong failure.
+
+The index entry is written before any file, and the lookup only accepts a run
+whose card file carries the key. An interrupted bundle therefore leaves an
+entry that resolves to nothing, the next run with that key starts a card, and
+bundling the interrupted run again makes it a reproduction of that card.
+
+### Cards written before 0.5.0
+
+Older cards load with `bundle_key` null and an empty `occurrences` list,
+meaning the card describes its own run alone. They are never matched by key,
+so retained runs keep the identity they were written with. The two reference
+outside-agent runs under `docs/acceptance/runs/reference-agents-scripted-2026-09-23/`
+repeat one failure and keep their two cards for that reason. Bundling such a
+run again is the explicit step that brings it under a key. When a card with
+that key already exists elsewhere, the run becomes one of its reproductions
+and its own bundle files give way to the pointer. An index written before 0.6.0
+is rebuilt on first read, recovering keys from cards and pointers.
+
+### Replay and the regression gate
+
+A regression artifact is never rewritten once written, so `replay`, the
+control library's evidence hashes and the collector's `source_sha256` see the
+same bytes however many reproductions accrue. `collect-regressions` discovers
+`regression_artifact.json` files, which only first occurrences hold, so each
+key is replayed once and reproductions are not counted in `artifacts_found`.
+A failed run from the collector's optional suite passes the coverage check
+when its pointer names a run holding an artifact, and the suite report
+credits that row with the first occurrence's `regression_test_name`. The cost
+is that a reproduction from a different task is replayed only through the
+first task's pinned world. Similarity beyond the key and merging across
+domains are outside #211.
+
 ## Generation rules
 
 1. **No fake intelligence.** MVP output is template-assembled from
@@ -92,7 +204,7 @@ finding becomes a permanent test.
 
 | Field | Type | Required | Source | Description |
 |---|---|---|---|---|
-| `schema_version` | `str` | auto | hardcoded | Schema version; bump when fields are added or removed (currently `0.2.0`) |
+| `schema_version` | `str` | auto | hardcoded | Schema version; bump when fields are added or removed (currently `0.5.0`) |
 | `run_id` | `str` | yes | runner | Unique ID of the run that produced this failure |
 | `task_id` | `str` | yes | task spec | ID of the task that was attempted |
 | `title` | `str` | yes | generated | Short headline: task title + first failed check message |
@@ -107,6 +219,8 @@ finding becomes a permanent test.
 | `causal_explanation` | `str` | yes | attribution | Narrative explanation of why the failure happened, sourced directly from `AttributionResult.causal_explanation` |
 | `blast_radius` | `str` | yes | final state | Computed scope of external impact: dollars refunded, durable records created, customers affected. Always a measurable statement, never an adjective |
 | `metadata` | `dict` | no (defaults `{}`) | generated | Supplementary data: `primary_failure_category` and `attribution_confidence` |
+| `bundle_key` | `str \| null` | no (defaults `null`) | generator | Root-cause identity, formed as described in [How a key is formed](#how-a-key-is-formed). Null on cards written before `0.5.0` |
+| `occurrences` | `list[BundleOccurrence]` | no (defaults `[]`) | bundle stage | Every run the card covers in the order they were bundled, the card's own run first. Each entry has `run_id`, `task_id`, `provider`, `model` and `seed`. Empty on cards written before `0.5.0` |
 
 ### `RepairControl` fields
 
