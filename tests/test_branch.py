@@ -782,9 +782,11 @@ def test_batch_summaries_written_before_the_branch_stage_still_load(version):
 
 # --- the experiment budget (#196) ---
 
-# 10k input and 10k output tokens on claude-sonnet-5 is $0.18 a run.
+# 10k input and 10k output tokens on claude-sonnet-5, priced from the table the
+# guard reads, so a price correction in models/anthropic.py moves both sides.
 USAGE = {"input_tokens": 10_000, "output_tokens": 10_000}
-RUN_COST = (10_000 * 3.0 + 10_000 * 15.0) / 1_000_000
+_INPUT_PRICE, _OUTPUT_PRICE = ANTHROPIC_PRICING["claude-sonnet-5"]
+RUN_COST = (10_000 * _INPUT_PRICE + 10_000 * _OUTPUT_PRICE) / 1_000_000
 
 
 class _PricedClaude:
