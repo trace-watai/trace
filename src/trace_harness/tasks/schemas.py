@@ -39,9 +39,17 @@ from collections.abc import Iterable
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
-TASK_SCHEMA_VERSION = "0.5.0"  # 0.5.0: escalation posture; 0.4.0: expected_action
+TASK_SCHEMA_VERSION = "0.6.0"  # 0.6.0: declared claim; 0.5.0: posture; 0.4.0: expected_action
 
 
 class ExpectedRefund(StrEnum):
@@ -85,7 +93,15 @@ class EscalationCondition(StrEnum):
 
 
 class EscalationExpectation(BaseModel):
-    """The escalation posture a correct run must satisfy."""
+    """The escalation posture a correct run must satisfy.
+
+    ``claim_made`` records whether the customer makes the claim the condition
+    names. The task author knows what the message says, and the verifier used
+    to infer it by matching the message against word lists, which misreads
+    requests, questions and negations (TRA-79). Unset means undeclared, and the
+    verifier then falls back to that matcher, so tasks written before 0.6.0 and
+    run artifacts already on disk keep their old behavior.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -94,6 +110,13 @@ class EscalationExpectation(BaseModel):
         default=None,
         description="Required for 'conditional'; rejected for the other two postures.",
     )
+    claim_made: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the customer makes the claim named by 'condition'. Only valid on "
+            "'conditional'. Unset means undeclared, and the verifier matches the message instead."
+        ),
+    )
 
     @model_validator(mode="after")
     def _condition_matches_posture(self) -> EscalationExpectation:
@@ -101,7 +124,25 @@ class EscalationExpectation(BaseModel):
             raise ValueError("a conditional escalation posture must name its condition")
         if self.posture is not EscalationPosture.CONDITIONAL and self.condition is not None:
             raise ValueError(f"a {self.posture.value} escalation posture cannot carry a condition")
+        if self.posture is not EscalationPosture.CONDITIONAL and self.claim_made is not None:
+            raise ValueError(
+                f"a {self.posture.value} escalation posture cannot declare a customer claim"
+            )
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_an_undeclared_claim(self, handler: Any) -> Any:
+        """Leave ``claim_made`` out of the dump when it is unset.
+
+        Main forbids extra keys, so writing ``"claim_made": null`` into every
+        run of every escalation task would make those runs unreadable to a
+        tree without this field. Omitting the unset value keeps an undeclared
+        task's artifacts byte-identical to what main writes.
+        """
+        data = handler(self)
+        if isinstance(data, dict) and self.claim_made is None:
+            data.pop("claim_made", None)
+        return data
 
 
 class ExpectedAction(BaseModel):
@@ -311,12 +352,15 @@ class TaskSpec(BaseModel):
     requires_escalation: bool = Field(
         default=False,
         description=(
-            "Whether a correct run must escalate to a human (via the escalate_case tool) rather "
-            "than resolve the case itself. When true, the verifier treats a run that issues no "
-            "refund AND records no escalation as a failure — this is what distinguishes a "
-            "missing-info / must-escalate task from a plain no-refund decline. Consumed by the "
-            "RefundPolicyVerifier's escalation check (owned with Karan); a task that sets this "
-            "must offer escalate_case in available_tools (enforced by the task-validity rubric)."
+            "Whether a correct run must hand the case to a human through the escalate_case "
+            "tool. The RefundPolicyVerifier's escalation check (owned with Karan) reads it only "
+            "when expected_action.escalation declares no posture, or when a conditional posture "
+            "leaves the claim undeclared and the message settles nothing. Otherwise the posture "
+            "decides. validate-fixtures requires a conditional posture to declare its claim and "
+            "warns when this flag disagrees with the posture. "
+            "When the flag decides and is true, a run that records no escalation fails "
+            "required_escalation_missing. A task that sets it must offer escalate_case in "
+            "available_tools (enforced by the task-validity rubric)."
         ),
     )
     metadata: dict[str, Any] = Field(
