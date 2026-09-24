@@ -28,6 +28,8 @@ from trace_harness.tasks.schemas import (
     ExpectedAction,
     TaskSpec,
 )
+from trace_harness.tracing import artifact_store as names
+from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.verifiers import refund_policy
 from trace_harness.verifiers.base import VerifierInput
 from trace_harness.verifiers.refund_policy import (
@@ -624,3 +626,25 @@ def test_an_undeclared_expectation_dumps_exactly_what_main_writes() -> None:
     assert EscalationExpectation.model_validate_json(OUTAGE_DECLARED.model_dump_json()) == (
         OUTAGE_DECLARED
     )
+
+
+def test_a_declared_absence_survives_a_round_trip_through_a_run_artifact(tmp_path) -> None:
+    """``claim_made: false`` is a declaration and must be written as one.
+
+    Dropping every falsy value from the dump, instead of only the unset one,
+    would reread this task as undeclared, and the matcher would take this
+    request for a claim and warrant the escalation the author ruled out.
+    """
+    task = _conditional_task(REQUEST, claim_made=False)
+    expectation = task.expected_action.escalation
+    assert expectation.model_dump(mode="json")["claim_made"] is False
+    assert EscalationExpectation.model_validate_json(expectation.model_dump_json()) == expectation
+
+    store = ArtifactStore(tmp_path)
+    store.write_json("run_1", names.TASK_SPEC, task)
+    reread = TaskSpec.model_validate(store.read_json("run_1", names.TASK_SPEC))
+
+    assert reread.expected_action.escalation.claim_made is False
+    warranted, why = escalation_warranted(reread.expected_action.escalation, reread, UNCONFIRMED)
+    assert warranted is False
+    assert "declared by the task" in why
