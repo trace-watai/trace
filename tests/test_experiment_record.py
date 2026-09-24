@@ -195,3 +195,35 @@ def test_the_retained_report_is_what_record_renders() -> None:
     assert (RETAINED / "report.md").read_text(encoding="utf-8") == render_experiment_markdown(
         spec, result
     )
+
+
+# --- listing ---
+
+
+def test_one_unreadable_experiment_does_not_hide_the_rest(tmp_path, capsys) -> None:
+    store = _store_with_batch(tmp_path)
+    good = _write_plan(tmp_path / "plan.json", _plan_data())
+    assert _record(store, good, "--condition", f"replay_only={BATCH}") == 0
+    experiments = store.runs_dir / "experiments"
+    (experiments / "exp_broken_json").mkdir()
+    (experiments / "exp_broken_json" / "experiment.json").write_text("{", encoding="utf-8")
+    (experiments / "exp_no_id").mkdir()
+    no_id = {k: v for k, v in _plan_data().items() if k != "experiment_id"}
+    (experiments / "exp_no_id" / "experiment.json").write_text(json.dumps(no_id))
+    copied = experiments / "exp_copied"
+    shutil.copytree(experiments / _plan_data()["experiment_id"], copied)
+
+    reader = RunReader(store)
+    assert [s.experiment_id for s in reader.list_experiments()] == [_plan_data()["experiment_id"]]
+    unreadable = reader.unreadable_experiments()
+    assert sorted(unreadable) == ["exp_broken_json", "exp_copied", "exp_no_id"]
+    assert "must state experiment_id" in unreadable["exp_no_id"]
+    assert "not for 'exp_copied'" in unreadable["exp_copied"]
+
+    capsys.readouterr()
+    assert main(["--runs-dir", str(store.runs_dir), "list-experiments"]) == 1
+    out, err = capsys.readouterr()
+    assert _plan_data()["experiment_id"] in out
+    assert "exp_broken_json  unreadable" in out
+    assert "4 experiment(s)" in out and "3 unreadable" in out
+    assert "error: exp_no_id:" in err

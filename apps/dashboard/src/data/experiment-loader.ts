@@ -1,11 +1,17 @@
 /**
  * Loads experiments from the runs directory.
  *
- * Mirrors `RunReader.list_experiments` / `RunReader.get_experiment`, with the
- * same missing-artifact semantics as `run-loader.ts`:
- *   - unknown experiment id                 -> throws ExperimentNotFoundError
+ * Mirrors `RunReader.list_experiments`, `unreadable_experiments` and
+ * `get_experiment`, with the same missing-artifact semantics as
+ * `run-loader.ts`:
+ *   - unknown experiment id, or one that is
+ *     not a single path segment             -> throws ExperimentNotFoundError
  *   - a plan with no result recorded yet    -> result is null
- *   - malformed JSON on an existing file    -> throws MalformedArtifactError
+ *   - malformed JSON on an existing file, or
+ *     a file naming another experiment      -> throws MalformedArtifactError
+ *
+ * `listExperiments` leaves out an experiment whose files do not load and
+ * `listUnreadableExperiments` names it, so one bad file cannot hide the rest.
  *
  * An experiment lives beside the batches it compares rather than inside any
  * one of them, because it is the thing that relates several batches.
@@ -17,6 +23,7 @@ import path from "node:path";
 import { MalformedArtifactError } from "@/data/run-store";
 import { resolveRunsDir } from "@/data/runs-dir";
 import {
+  EXPERIMENT_ID_PATTERN,
   parseExperimentResult,
   parseExperimentSpec,
   type ExperimentResult,
@@ -58,8 +65,7 @@ const readJson = <T>(filePath: string, experimentId: string): T => {
   }
 };
 
-/** Every experiment plan on disk, oldest first by id. */
-export const listExperiments = (): ExperimentSpec[] => {
+const experimentIdsOnDisk = (): string[] => {
   const root = experimentsRoot();
   if (!existsSync(root)) return [];
 
@@ -70,16 +76,32 @@ export const listExperiments = (): ExperimentSpec[] => {
         existsSync(path.join(root, entry.name, EXPERIMENT_SPEC_FILE)),
     )
     .map((entry) => entry.name)
-    .sort()
-    .map((experimentId) =>
-      parseExperimentSpec(
-        readJson<RawExperimentSpec>(
-          path.join(experimentDir(experimentId), EXPERIMENT_SPEC_FILE),
-          experimentId,
-        ),
-      ),
-    );
+    .sort();
 };
+
+/** Every experiment whose files load, oldest first by id. */
+export const listExperiments = (): ExperimentSpec[] =>
+  experimentIdsOnDisk().flatMap((experimentId) => {
+    try {
+      return [getExperiment(experimentId).spec];
+    } catch {
+      return [];
+    }
+  });
+
+/** Experiments on disk whose plan or result does not load, and why. */
+export const listUnreadableExperiments = (): {
+  experimentId: string;
+  error: string;
+}[] =>
+  experimentIdsOnDisk().flatMap((experimentId) => {
+    try {
+      getExperiment(experimentId);
+      return [];
+    } catch (error) {
+      return [{ experimentId, error: String(error) }];
+    }
+  });
 
 /**
  * The plan and, when a result has been recorded, what came back. The result is
@@ -89,12 +111,18 @@ export const listExperiments = (): ExperimentSpec[] => {
 export const getExperiment = (
   experimentId: string,
 ): { spec: ExperimentSpec; result: ExperimentResult | null } => {
+  // An id that is not one path segment cannot name an experiment, and joining
+  // it onto the experiments directory could read outside it.
+  if (!EXPERIMENT_ID_PATTERN.test(experimentId)) {
+    throw new ExperimentNotFoundError(experimentId);
+  }
   const specPath = path.join(experimentDir(experimentId), EXPERIMENT_SPEC_FILE);
   if (!existsSync(specPath)) throw new ExperimentNotFoundError(experimentId);
 
   const spec = parseExperimentSpec(
     readJson<RawExperimentSpec>(specPath, experimentId),
   );
+  requireOwnId(spec.experimentId, experimentId, EXPERIMENT_SPEC_FILE);
 
   const resultPath = path.join(
     experimentDir(experimentId),
@@ -105,6 +133,24 @@ export const getExperiment = (
         readJson<RawExperimentResult>(resultPath, experimentId),
       )
     : null;
+  if (result) {
+    requireOwnId(result.experimentId, experimentId, EXPERIMENT_RESULT_FILE);
+  }
 
   return { spec, result };
+};
+
+/** A file copied into another experiment's directory is not that experiment. */
+const requireOwnId = (
+  named: string,
+  experimentId: string,
+  fileName: string,
+): void => {
+  if (named !== experimentId) {
+    throw new MalformedArtifactError(
+      experimentId,
+      fileName,
+      `names experiment '${named}'`,
+    );
+  }
 };

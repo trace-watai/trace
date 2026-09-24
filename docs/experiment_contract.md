@@ -128,7 +128,12 @@ the result, which is how a decision is revised. Naming one condition twice, or
 passing a batch from another suite, also exits 2 before anything is written.
 
 `list-experiments` prints one line per experiment and replaces any hand-kept
-spreadsheet of them.
+spreadsheet of them. An experiment whose files do not load, including one whose
+plan or result names a different experiment than its directory, gets an
+`unreadable` line with its error on stderr, the others are still listed, and the
+exit code is 1. `RunReader.list_experiments` and the dashboard's
+`listExperiments` likewise leave such an experiment out, and
+`RunReader.unreadable_experiments` and `listUnreadableExperiments` name it.
 
 ## The retained baseline
 

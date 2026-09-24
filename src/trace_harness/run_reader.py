@@ -175,13 +175,37 @@ class RunReader:
     # --- experiments (#155) ---
 
     def list_experiments(self) -> list[ExperimentSpec]:
-        """Every experiment plan on disk, oldest first by id."""
-        return [
-            load_plan(self.store.read_experiment_spec(eid)) for eid in self.store.list_experiments()
-        ]
+        """Every experiment whose files load, oldest first by id.
+
+        An experiment whose plan or result does not load is left out here and
+        named by :meth:`unreadable_experiments`, so one bad file cannot hide
+        every other experiment.
+        """
+        specs = []
+        for experiment_id in self.store.list_experiments():
+            try:
+                spec, _ = self.get_experiment(experiment_id)
+            except (OSError, ValueError):
+                continue
+            specs.append(spec)
+        return specs
+
+    def unreadable_experiments(self) -> dict[str, str]:
+        """Experiment id to the reason its plan or result does not load."""
+        unreadable = {}
+        for experiment_id in self.store.list_experiments():
+            try:
+                self.get_experiment(experiment_id)
+            except (OSError, ValueError) as exc:
+                unreadable[experiment_id] = str(exc)
+        return unreadable
 
     def get_experiment(self, experiment_id: str) -> tuple[ExperimentSpec, ExperimentResult | None]:
-        """The plan and, when a result has been recorded, what came back."""
+        """The plan and, when a result has been recorded, what came back.
+
+        Both files must name the experiment whose directory holds them, so a
+        copied directory cannot pass as a second experiment.
+        """
         spec = load_plan(self.store.read_experiment_spec(experiment_id))
         try:
             result = ExperimentResult.model_validate(
@@ -189,6 +213,12 @@ class RunReader:
             )
         except FileNotFoundError:
             result = None
+        named = {spec.experiment_id, experiment_id} | ({result.experiment_id} if result else set())
+        if len(named) != 1:
+            raise ValueError(
+                f"{self.store.experiment_dir(experiment_id)} holds files for "
+                f"{sorted(named - {experiment_id})}, not for {experiment_id!r}"
+            )
         return spec, result
 
     # --- single run ---

@@ -16,6 +16,13 @@ import { camelizeKeys, type Camelize } from "@/lib/casing";
 export const EXPERIMENT_SCHEMA_VERSION = "0.1.0";
 
 /**
+ * `EXPERIMENT_ID_PATTERN` in `runner/experiment.py`. An experiment id names a
+ * directory, so it is one path segment with no separator and no dot. A test
+ * reads the Python source and asserts the two patterns are the same.
+ */
+export const EXPERIMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
  * What a condition does to produce its runs. `static_replay` re-runs recorded
  * actions and cannot react to being blocked, which is the limitation the
  * replay-validity question exists to measure.
@@ -43,6 +50,12 @@ export interface RawStartPoint {
   step_id: number;
 }
 
+/** `CassetteConfig` in `models/cassette.py`: record or replay model calls. */
+export interface RawCassetteConfig {
+  mode: "record" | "replay";
+  directory: string;
+}
+
 export interface RawAgentConfig {
   label: string;
   provider: string;
@@ -52,6 +65,7 @@ export interface RawAgentConfig {
   seed?: number | null;
   max_steps: number;
   timeout_seconds: number;
+  cassette?: RawCassetteConfig | null;
 }
 
 export interface RawConditionSpec {
@@ -64,9 +78,10 @@ export interface RawConditionSpec {
 }
 
 /**
- * What must not change while the conditions run. If `fixtures_hash` differs
- * between two conditions they answered different questions, and comparing
- * them is void.
+ * What must not change while the conditions run. `experiment record` refuses
+ * a batch from any suite but `suite_id`. `fixtures_hash` is stored as the plan
+ * states it; nothing computes it from the fixture files or compares it with
+ * them until #195's `experiment freeze`.
  */
 export interface RawFrozenManifest {
   suite_id: string;
@@ -166,8 +181,8 @@ export const parseExperimentResult = (
 
 /**
  * Metric field names in the order the memo lists them, for table headers.
- * Kept in sync with the backend by `tests/test_experiment.py`, which asserts
- * the Python field set against the memo's appendix.
+ * `experiment-loader.test.ts` asserts them against the memo's appendix, the
+ * same list `tests/test_experiment.py` asserts the Python fields against.
  */
 export const EXPERIMENT_METRIC_NAMES = [
   "verdictAgreementRate",

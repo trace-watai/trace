@@ -1099,21 +1099,34 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
 
 
 def _list_experiments(store: ArtifactStore) -> int:
-    """One line per experiment, replacing any hand-kept spreadsheet of them."""
+    """One line per experiment, replacing any hand-kept spreadsheet of them.
+
+    An experiment whose files do not load gets an ``unreadable`` line and its
+    error on stderr, and the rest are still listed. The exit code is 1 when any
+    was unreadable, so a script reading the list can tell.
+    """
     reader = RunReader(store)
-    specs = reader.list_experiments()
-    if not specs:
+    experiment_ids = store.list_experiments()
+    if not experiment_ids:
         print(f"no experiments found in {store.runs_dir}")
         return 0
-    for spec in specs:
-        _, result = reader.get_experiment(spec.experiment_id)
+    unreadable = 0
+    for experiment_id in experiment_ids:
+        try:
+            spec, result = reader.get_experiment(experiment_id)
+        except (OSError, ValueError) as exc:
+            unreadable += 1
+            print(f"{experiment_id}  unreadable")
+            print(f"error: {experiment_id}: {exc}", file=sys.stderr)
+            continue
         decision = (
             f"{result.decision.value}/{result.decided_by.value}" if result else "not recorded"
         )
         conditions = ", ".join(c.name for c in spec.conditions)
         print(f"{spec.experiment_id}  {decision}  [{conditions}]  {spec.hypothesis[:60]}")
-    print(f"\n{len(specs)} experiment(s) in {store.runs_dir}")
-    return 0
+    summary = f"\n{len(experiment_ids)} experiment(s) in {store.runs_dir}"
+    print(summary + (f", {unreadable} unreadable" if unreadable else ""))
+    return 1 if unreadable else 0
 
 
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
