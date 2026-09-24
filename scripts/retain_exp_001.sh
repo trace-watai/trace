@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Retain exp_001 after `experiment record`: copy the runs dir the branch stage
-# wrote into, and move result.json, report.md and repair_effectiveness.json up
+# wrote into, and copy result.json, report.md and repair_effectiveness.json up
 # beside the plan, so scripts/regenerate_exp_001.sh can recompute them offline.
+# The recorded copies stay where record wrote them.
 #
 # Usage: scripts/retain_exp_001.sh <runs_dir> [retained_dir]
 #   runs_dir      the --runs-dir every branch and record command of exp_001 used
@@ -46,7 +47,7 @@ fi
 rm -rf "$RETAINED/runs"
 mkdir -p "$RETAINED/runs"
 for entry in "$RUNS"/*; do
-  # The experiments folder holds the three files moved up below, and a copy of the plan.
+  # The experiments folder holds the three files copied up below, and a copy of the plan.
   [ "$(basename "$entry")" = experiments ] && continue
   cp -R "$entry" "$RETAINED/runs/"
 done

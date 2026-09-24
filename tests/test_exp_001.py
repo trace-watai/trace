@@ -316,6 +316,15 @@ def test_the_dry_run_fills_all_eight_metrics(dry_run):
 def test_the_dry_run_sidecar(dry_run):
     retained = dry_run.retained
     sidecar = RepairEffectivenessReport.model_validate(_load(retained, "repair_effectiveness.json"))
+    assert {(e.arm, e.control_on.condition.split("__")[0]) for e in sidecar.entries} == {
+        ("live", "live"),
+        ("live_swapped", "live_swapped"),
+    }
+    # The fixture answers both arms, so only the arm tells their report rows apart.
+    report = (retained / "report.md").read_text()
+    assert "| artifact | arm | control | model | control on | control off | B1 |" in report
+    for arm in ("live", "live_swapped"):
+        assert report.count(f"| {arm} | {REFUND_WINDOW_CONTROL_ID} | fixture |") == 3
     rows = {
         (e.control_on.condition, e.fork_step): (
             e.control_on.blocking_failures_after_fork,

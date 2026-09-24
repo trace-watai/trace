@@ -262,6 +262,12 @@ class ArtifactStore:
             _atomic_write_text(self.experiment_report_path(experiment_id), markdown)
         return path
 
+    def write_experiment_file(
+        self, experiment_id: str, name: str, payload: BaseModel | dict
+    ) -> Path:
+        """Persist another JSON file beside the result, such as the B1 sidecar (#200)."""
+        return self._write_experiment_json(self.experiment_dir(experiment_id) / name, payload)
+
     def _write_experiment_json(self, path: Path, payload: BaseModel | dict) -> Path:
         data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -175,11 +175,12 @@ B1 repair effectiveness from Part B1 of the memo is not one of the eight.
 artifact, control and model. The control-on side is that arm's runs and the
 control-off side is the `live_no_control` runs of the same artifact, fork step
 and model, and both count blocking failures after the fork over completed
-runs. Static replay never enters it. When a side has no completed run, or the
-control-off side never violated, the value is null and `null_reason` says
-which. `artifact_id` is the artifact's source run id, the one identifier every
-batch and plan condition carries. `report.md` prints the entries in their own
-section.
+runs, never more failures than runs. Static replay never enters it. When a side
+has no completed run or fewer than five, which Part B1 of the memo names as the
+minimum, or the control-off side never violated, the value is null and
+`null_reason` says which. `artifact_id` is the artifact's source run id, the
+one identifier every batch and plan condition carries, and `arm` is the kind of
+the control-on condition. `report.md` prints the entries in their own section.
 
 ## Commands
 

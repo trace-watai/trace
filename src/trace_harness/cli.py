@@ -1212,7 +1212,7 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     store.write_experiment_result(
         spec.experiment_id, result, markdown=render_experiment_markdown(spec, result, repair)
     )
-    sidecar = write_repair_effectiveness(store.experiment_dir(spec.experiment_id), repair)
+    sidecar = write_repair_effectiveness(store, repair)
 
     print(f"\nExperiment recorded: {spec.experiment_id}")
     _print("hypothesis:", spec.hypothesis)

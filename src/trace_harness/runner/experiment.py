@@ -302,14 +302,14 @@ def render_experiment_markdown(
             "",
             "## Repair effectiveness (B1, outside the eight)",
             "",
-            "| artifact | control | model | control on | control off | B1 |",
-            "|---|---|---|---|---|---|",
+            "| artifact | arm | control | model | control on | control off | B1 |",
+            "|---|---|---|---|---|---|---|",
         ]
         for e in repair.entries:
             on, off = e.control_on, e.control_off
             value = e.repair_effectiveness if e.null_reason is None else f"null: {e.null_reason}"
             lines.append(
-                f"| {e.artifact_id} | {e.control_id} | {e.model} "
+                f"| {e.artifact_id} | {e.arm} | {e.control_id} | {e.model} "
                 f"| {on.blocking_failures_after_fork}/{on.completed_runs} "
                 f"| {off.blocking_failures_after_fork}/{off.completed_runs} | {value} |"
             )

@@ -43,8 +43,8 @@ confirms them.
 ### B1 at the registered fork points
 
 B1 as written cannot see the violation the control prevents at these fork
-points, and at two of the three it is null. This needs a decision from Sarp
-before freeze. The code follows the documents as written and does not choose
+points, and in the offline rehearsal it is null at two of the three. This
+needs a decision from Sarp before freeze. The code follows the documents as written and does not choose
 among the options below.
 
 Two passages fix the behavior together. The pre-registration's arms table says
@@ -172,9 +172,9 @@ trace-harness --runs-dir "$RUNS" experiment record "$PLAN" \
 It prints the eight metrics, any excluded pair with its reason, and where it
 wrote `repair_effectiveness.json`.
 
-**6. Retain** the runs dir and the three recorded files beside the plan. The
-script refuses if the recorded plan differs from the retained one, and stops
-before copying if a file looks like a provider credential.
+**6. Retain** a copy of the runs dir and of the three recorded files beside
+the plan. The script refuses if the recorded plan differs from the retained
+one, and stops before copying if a file looks like a provider credential.
 
 ```bash
 scripts/retain_exp_001.sh "$RUNS"
@@ -256,9 +256,10 @@ past it is at most one run.
 - **Harness check.** #200 does not name it. The pre-registration runs it
   first, and step 3 is it.
 - **B1.** #200 asks for B1 per artifact and control. The sidecar has one entry
-  per control-on arm, artifact, control and model, and the swapped model's
-  entries are null, since the pre-registration gives that model no
-  control-off arm.
+  per control-on arm, artifact, control and model, with the arm named in
+  `arm`, and the swapped model's entries are null, since the pre-registration
+  gives that model no control-off arm. An entry is also null when either side
+  has fewer than five completed runs, the memo's minimum for B1.
 
 ## What the rehearsal shows about the numbers
 

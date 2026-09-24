@@ -418,8 +418,10 @@ def test_experiment_record_fills_the_three_metrics_from_branch_batches(
         0,
         2,
     )
+    assert entry.arm == "live"
+    # Two seeds a side is below the five B1 needs, whatever the counts say.
     assert entry.repair_effectiveness is None
-    assert entry.null_reason == "the baseline live_no_control recorded no blocking failure"
+    assert entry.null_reason == "only 2 completed run(s) under live, fewer than 5"
 
     swapped = [
         pairs[0],
