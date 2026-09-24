@@ -168,10 +168,11 @@ records anything more.
 ## Retaining failing cells
 
 `--retain` copies every failing cell into
-`docs/acceptance/runs/live-sweep-<date>/` after the sweep, dated by the day the
-sweep started. `trace-harness retain-sweep <sweep_id>` does the same for a sweep
-that already finished, and `--to` on it, or a path after `--retain`, chooses
-another root.
+`docs/acceptance/runs/live-sweep-<date>-<suffix>/` after the sweep, dated by the
+day the sweep started, where the suffix is the random last part of the sweep id.
+Two sweeps started on one day therefore retain into two folders.
+`trace-harness retain-sweep <sweep_id>` does the same for a sweep that already
+finished, and `--to` on it, or a path after `--retain`, chooses another root.
 
 | Path | Contents |
 |---|---|
@@ -181,19 +182,37 @@ another root.
 | `index.json` | The run index of the retained runs |
 | `README.md` | One triage row per cell with the checks that fired, the label, why, and a note |
 
-Nothing lands unless every check passes. The copy is assembled in a hidden
-temporary folder beside the target and renamed into place only at the end.
+A run directory is copied byte for byte with one exception. The sweep recorded
+the cassette directory and cassette path in `run_config.json` as paths on the
+machine that ran it, which under an absolute `--runs-dir` include the user's
+home directory. The retained copy names them relative to the retained folder,
+as `cassettes` and `cassettes/<task_id>/<model>/<seed>.jsonl`.
+
+Nothing lands unless every check passes. The copy is assembled in a temporary
+folder under the sweep's own directory, `runs/sweeps/{sweep_id}/retaining-*`,
+where neither the regression gate nor any test looks, and it is renamed into
+place only at the end. When the runs directory sits on another filesystem the
+rename cannot cross, so the checked copy is first copied under a hidden name
+beside the target and renamed from there.
 
 1. Every cell is replayed from its copied cassette with the knobs its
    `run_config.json` recorded. Replay constructs no provider and needs no key.
    The verdict and the failed check ids have to match the live run.
-2. Every file is scanned the way the live Gemini runs of #179 were. The scan
+2. Every file is scanned with `trace_harness/secret_scan.py`, the one scanner
+   for evidence, the way the live Gemini runs of #179 were scanned. The scan
    searches for the values of `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` and
-   `OPENAI_API_KEY` as set when retention runs, for the shapes of Google `AIza`
-   and `AQ.` keys, of `sk-` keys and of bearer tokens, and for auth header
-   fields such as `"authorization"` and `"x-goog-api-key"`. A finding names the
-   file and the kind and never the value. The same patterns find nothing in any
-   artifact already under `docs/acceptance`, `fixtures/cassettes` or
+   `OPENAI_API_KEY` as set when retention runs, for the home, working and runs
+   directories of the machine running it, for the shapes of Google `AIza` and
+   `AQ.` keys, Anthropic and OpenAI `sk-` keys, Supabase keys and tokens, JWTs,
+   GitHub tokens, AWS access key ids, private keys and bearer tokens, for
+   authorization and API key headers, and for JSON auth header fields such as
+   `"authorization"` and `"x-goog-api-key"` that hold a string. Each line is
+   matched as written and again with the JSON escapes `\n \r \t \b \f \" \/ \\`,
+   `\uXXXX` and URL `%XX` escapes decoded, repeatedly, since a key recorded
+   inside an escaped string sits right after an escape whose last character
+   hides the word boundary several shapes start at. A finding names the file,
+   the line and the kind and never the value. The same shapes find nothing in
+   any artifact already under `docs/acceptance`, `fixtures/cassettes` or
    `fixtures/controls/evidence`, which a test holds.
 
 A folder that already exists is never overwritten, and a sweep with no failing

@@ -8,8 +8,10 @@ into a temporary root.
 
 from __future__ import annotations
 
+import errno
 import json
 import socket
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,7 @@ import pytest
 from conftest import REPO_ROOT
 from sweep_fakes import FAKE_KEY, FakeGemini, FakeOpenAI, install_fakes, write_suite_and_spec
 from trace_harness.cli import main
+from trace_harness.runner import sweep_retention
 from trace_harness.runner.collector import collect_regressions
 from trace_harness.runner.sweep import load_sweep, run_sweep, sweep_dir
 from trace_harness.runner.sweep_retention import (
@@ -25,14 +28,16 @@ from trace_harness.runner.sweep_retention import (
     replay_retained,
     retain_failing_cells,
     retained_cells,
-    scan_for_secrets,
 )
 from trace_harness.runner.sweep_summary import SweepSummary
+from trace_harness.secret_scan import files_under, scan_paths
 from trace_harness.tracing.artifact_store import ArtifactStore
+
+RETAINED = retained_cells(REPO_ROOT / RETAIN_ROOT)
 
 
 @pytest.mark.parametrize(
-    ("folder", "run_id"), retained_cells(REPO_ROOT / RETAIN_ROOT), ids=lambda value: str(value)
+    ("folder", "run_id"), RETAINED, ids=[f"{folder.name}/{run_id}" for folder, run_id in RETAINED]
 )
 def test_every_retained_sweep_cell_replays_from_its_cassette(
     folder: Path, run_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -68,7 +73,8 @@ def test_failing_cells_are_retained_and_replay_offline(swept, tmp_path, monkeypa
     root = tmp_path / "acceptance"
     folder = retain_failing_cells(store, summary.sweep_id, root)
 
-    assert folder == root / f"live-sweep-{summary.started_at:%Y-%m-%d}"
+    suffix = summary.sweep_id.rsplit("_", 1)[-1]
+    assert folder == root / f"live-sweep-{summary.started_at:%Y-%m-%d}-{suffix}"
     assert [p.name for p in root.iterdir()] == [folder.name]
     runs = sorted(p.name for p in folder.glob("run_*"))
     assert runs == sorted(cell.run_id for cell in summary.failing_cells)
@@ -119,11 +125,18 @@ def test_the_readme_has_a_triage_row_per_cell(swept, tmp_path) -> None:
         (FAKE_KEY, "value of OPENAI_API_KEY"),
         ("AIza" + "x" * 35, "Google API key"),
         ("AQ." + "x" * 24, "Google AQ. key"),
-        ("sk-ant-" + "x" * 24, "Anthropic or OpenAI key"),
+        ("sk-ant-" + "x" * 24, "Anthropic key"),
         ('{"Authorization": "redacted"}', "auth header field"),
         ('{"x-goog-api-key": "redacted"}', "auth header field"),
         ('{"api_key": "redacted"}', "auth header field"),
         ("Bearer abcdefghijklmnopqrstuvwxyz", "bearer token"),
+        # Behind the escapes a JSON string or a URL puts in front of a key.
+        (json.dumps("line\n" + "AQ." + "x" * 24), "Google AQ. key"),
+        (json.dumps("line\t" + "sk-ant-" + "x" * 24), "Anthropic key"),
+        ("q=hello%20" + "sk-proj-" + "x" * 24, "OpenAI key"),
+        (json.dumps("line\nBearer abcdefghijklmnopqrstuvwxyz"), "bearer token"),
+        (json.dumps(json.dumps({"x-goog-api-key": "redacted"})), "auth header field"),
+        (json.dumps("line\n" + FAKE_KEY), "value of OPENAI_API_KEY"),
     ],
 )
 def test_a_secret_stops_retention_and_is_never_echoed(swept, tmp_path, leak, kind) -> None:
@@ -131,10 +144,83 @@ def test_a_secret_stops_retention_and_is_never_echoed(swept, tmp_path, leak, kin
     leaked = store.run_dir(summary.failing_cells[0].run_id) / "final_state.json"
     leaked.write_text(leaked.read_text() + leak)
     root = tmp_path / "acceptance"
-    with pytest.raises(RetentionError, match=f"final_state.json \\({kind}\\)") as error:
+    with pytest.raises(RetentionError, match=f"final_state.json:\\d+: {kind}") as error:
         retain_failing_cells(store, summary.sweep_id, root)
     assert FAKE_KEY not in str(error.value)
-    assert list(root.iterdir()) == []
+    assert not root.exists()
+
+
+def test_a_local_path_stops_retention(swept, tmp_path) -> None:
+    store, summary = swept
+    leaked = store.run_dir(summary.failing_cells[0].run_id) / "final_state.json"
+    leaked.write_text(leaked.read_text() + str(store.runs_dir.resolve() / "elsewhere"))
+    with pytest.raises(RetentionError, match="final_state.json:\\d+: local path"):
+        retain_failing_cells(store, summary.sweep_id, tmp_path / "acceptance")
+
+
+def test_retained_run_configs_name_no_local_path(swept, tmp_path) -> None:
+    """The sweep recorded its cassette paths under an absolute runs directory."""
+    store, summary = swept
+    assert store.runs_dir.is_absolute()
+    folder = retain_failing_cells(store, summary.sweep_id, tmp_path / "acceptance")
+    for path in files_under([folder]):
+        assert str(tmp_path) not in path.read_text(encoding="utf-8"), path
+    for cell in summary.failing_cells:
+        config = json.loads((folder / cell.run_id / "run_config.json").read_text())
+        assert config["cassette"] == {"mode": "record", "directory": "cassettes"}
+        assert config["metadata"]["cassette_path"] == cell.cassette_path
+        assert (folder / cell.cassette_path).is_file()
+
+
+def test_the_copy_is_assembled_where_no_gate_looks(swept, tmp_path, monkeypatch) -> None:
+    """Nothing, hidden or not, appears under the retain root before the checks pass."""
+    store, summary = swept
+    root = tmp_path / "acceptance"
+    root.mkdir()
+    seen = []
+
+    def watching(targets, **kwargs):
+        seen.append(sorted(p.name for p in root.iterdir()))
+        assert targets[0].is_relative_to(store.runs_dir)
+        return scan_paths(targets, **kwargs)
+
+    monkeypatch.setattr(sweep_retention, "scan_paths", watching)
+    folder = retain_failing_cells(store, summary.sweep_id, root)
+    assert seen == [[]]
+    assert [p.name for p in root.iterdir()] == [folder.name]
+    assert not list(store.runs_dir.glob("sweeps/*/retaining-*"))
+
+
+def test_a_runs_dir_on_another_filesystem_still_lands_whole(swept, tmp_path, monkeypatch):
+    store, summary = swept
+    rename = Path.rename
+
+    def across_devices(self, target):
+        if self.is_relative_to(store.runs_dir):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", across_devices)
+    root = tmp_path / "acceptance"
+    folder = retain_failing_cells(store, summary.sweep_id, root)
+    assert [p.name for p in root.iterdir()] == [folder.name]
+    assert len(retained_cells(root)) == len(summary.failing_cells)
+    assert not list(store.runs_dir.glob("sweeps/*/retaining-*"))
+
+
+def test_two_sweeps_on_one_day_retain_into_two_folders(tmp_path, monkeypatch) -> None:
+    install_fakes(monkeypatch)
+    # Both start at one instant, so only the sweep id can tell them apart.
+    start = datetime(2026, 9, 24, 23, 59, 59, tzinfo=UTC)
+    monkeypatch.setattr("trace_harness.runner.sweep.utc_now", lambda: start)
+    store, root = ArtifactStore(tmp_path / "runs"), tmp_path / "acceptance"
+    spec = load_sweep(write_suite_and_spec(tmp_path))
+    first, second = run_sweep(spec, store), run_sweep(spec, store)
+    assert first.started_at == second.started_at
+    assert first.sweep_id != second.sweep_id
+    folders = {retain_failing_cells(store, s.sweep_id, root) for s in (first, second)}
+    assert len(folders) == 2
+    assert sorted(p.name for p in root.iterdir()) == sorted(f.name for f in folders)
 
 
 def test_a_cell_that_does_not_replay_is_refused(swept, tmp_path) -> None:
@@ -147,7 +233,7 @@ def test_a_cell_that_does_not_replay_is_refused(swept, tmp_path) -> None:
     root = tmp_path / "acceptance"
     with pytest.raises(RetentionError, match=f"{cell.run_id} does not replay"):
         retain_failing_cells(store, summary.sweep_id, root)
-    assert list(root.iterdir()) == []
+    assert not root.exists()
 
 
 def test_an_existing_folder_is_never_overwritten(swept, tmp_path) -> None:
@@ -160,9 +246,14 @@ def test_an_existing_folder_is_never_overwritten(swept, tmp_path) -> None:
 
 
 def test_the_committed_evidence_scans_clean() -> None:
-    """The patterns find nothing in any artifact already retained."""
-    for root in ("docs/acceptance", "fixtures/cassettes", "fixtures/controls/evidence"):
-        assert scan_for_secrets(REPO_ROOT / root, []) == []
+    """The shapes find nothing in any artifact already retained, escaped or not."""
+    targets = [
+        REPO_ROOT / root
+        for root in ("docs/acceptance", "fixtures/cassettes", "fixtures/controls/evidence")
+    ]
+    assert len(files_under(targets)) > 150
+    hits = scan_paths(targets, relative_to=REPO_ROOT)
+    assert hits == [], "\n".join(map(str, hits))
 
 
 def test_run_sweep_retains_and_retain_sweep_refuses_a_second_copy(

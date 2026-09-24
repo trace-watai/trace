@@ -212,7 +212,9 @@ runs cost exactly zero and are never refused on price. `branch` drives one
 guard per invocation from the experiment plan's `max_cost_usd`, shared by every
 condition and seed ([branch_stage.md](branch_stage.md#budget)). `run-sweep`
 drives one guard per sweep, shared by every provider and seed
-([live_sweep.md](live_sweep.md)).
+([live_sweep.md](live_sweep.md)). Retaining a sweep's failing cells scans every
+file with `trace_harness/secret_scan.py`, the one secret scanner for evidence,
+whose pure `scan_text` and `scan_paths` any package can import.
 
 `branch.py` exposes `run_branch(artifact_path, experiment, condition, store)`
 and `replay_batch(...)`, behind `trace-harness branch`. It continues a

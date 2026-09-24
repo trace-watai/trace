@@ -4,7 +4,8 @@
  * Mirrors `SweepSummary` in `src/trace_harness/runner/sweep_summary.py`
  * (SWEEP_SUMMARY_SCHEMA_VERSION 0.1.0), serialized by `trace-harness
  * run-sweep` as `runs/sweeps/{sweep_id}/sweep_summary.json` and retained
- * beside the failing cells under `docs/acceptance/runs/live-sweep-<date>/`
+ * beside the failing cells under
+ * `docs/acceptance/runs/live-sweep-<date>-<suffix>/`
  * (#198). `docs/live_sweep.md` defines every count and the two labels.
  */
 

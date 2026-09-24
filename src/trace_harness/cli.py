@@ -2047,8 +2047,8 @@ def main(argv: list[str] | None = None) -> int:
         const="docs/acceptance/runs",
         default=None,
         metavar="ROOT",
-        help="retain failing cells with their cassettes under ROOT/live-sweep-<date>/ "
-        "(default ROOT docs/acceptance/runs)",
+        help="retain failing cells with their cassettes under "
+        "ROOT/live-sweep-<date>-<suffix>/ (default ROOT docs/acceptance/runs)",
     )
     p_retain = sub.add_parser(
         "retain-sweep",
