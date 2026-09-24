@@ -11,6 +11,7 @@
 import {
   ARTIFACT_NAMES,
   artifactExists,
+  isSiblingRunId,
   MalformedArtifactError,
   readArtifactJson,
   readArtifactLines,
@@ -26,6 +27,7 @@ import {
 import {
   parseFailureCard,
   type FailureCard,
+  type RawBundleRef,
   type RawFailureCard,
 } from "@/types/failure-card";
 import {
@@ -78,6 +80,8 @@ export interface RunSummary {
   /** "pass" | "fail" | "incomplete"; null until verified. */
   verdict: string | null;
   batchId: string | null;
+  /** The failure card this run belongs to; null until bundled. */
+  bundleKey: string | null;
 }
 
 const toRunSummary = (entry: RawRunIndexEntry): RunSummary => ({
@@ -93,6 +97,7 @@ const toRunSummary = (entry: RawRunIndexEntry): RunSummary => ({
   failedCheckCount: entry.failed_check_count,
   verdict: entry.verdict ?? null,
   batchId: entry.batch_id ?? null,
+  bundleKey: entry.bundle_key ?? null,
 });
 
 /** Summaries of every listed run, oldest-first. Empty if no runs yet. */
@@ -153,24 +158,52 @@ export interface FailureBundle {
 }
 
 /**
+ * The run whose directory holds the bundle covering `runId`: the run itself
+ * when it has a card, the run its `bundle_ref.json` names when it reproduced
+ * an earlier card (#211), and null when it was never bundled. Mirrors
+ * `ArtifactStore.bundle_home`.
+ */
+const bundleHome = (runId: string): string | null => {
+  if (artifactExists(runId, ARTIFACT_NAMES.failureCard)) return runId;
+  if (!artifactExists(runId, ARTIFACT_NAMES.bundleRef)) return null;
+  const ref = readArtifactJson<Partial<RawBundleRef>>(
+    runId,
+    ARTIFACT_NAMES.bundleRef,
+  );
+  const canonical = ref.canonical_run_id;
+  if (typeof canonical !== "string" || !isSiblingRunId(canonical)) {
+    throw new MalformedArtifactError(
+      runId,
+      ARTIFACT_NAMES.bundleRef,
+      `canonical_run_id is not a sibling run: ${JSON.stringify(canonical)}`,
+    );
+  }
+  return canonical;
+};
+
+/**
  * The three bundle artifacts, or null if the run hasn't been bundled yet.
  * The `bundle` stage writes all three together, so a partially-written
  * bundle (crash mid-stage) surfaces as a MalformedArtifactError /
  * ENOENT-style read failure rather than a silently half-built bundle.
+ *
+ * A reproduction gets the card it joined, whose `runId` is the first
+ * occurrence and whose `occurrences` include this run.
  */
 export const getBundle = (runId: string): FailureBundle | null => {
   requireRun(runId);
-  if (!artifactExists(runId, ARTIFACT_NAMES.failureCard)) return null;
+  const home = bundleHome(runId);
+  if (home === null) return null;
   return {
     failureCard: parseFailureCard(
-      readArtifactJson<RawFailureCard>(runId, ARTIFACT_NAMES.failureCard),
+      readArtifactJson<RawFailureCard>(home, ARTIFACT_NAMES.failureCard),
     ),
     repairPackage: parseRepairPackage(
-      readArtifactJson<RawRepairPackage>(runId, ARTIFACT_NAMES.repairPackage),
+      readArtifactJson<RawRepairPackage>(home, ARTIFACT_NAMES.repairPackage),
     ),
     regressionArtifact: parseRegressionArtifact(
       readArtifactJson<RawRegressionArtifact>(
-        runId,
+        home,
         ARTIFACT_NAMES.regressionArtifact,
       ),
     ),

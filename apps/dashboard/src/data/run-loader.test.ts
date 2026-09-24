@@ -154,6 +154,116 @@ describe("run-loader", () => {
       verifierPassed: false,
       failedCheckCount: 2,
       batchId: null,
+      bundleKey: null,
+    });
+  });
+
+  describe("one card per root cause (#211)", () => {
+    const KEY = "v1:unsafe_irreversible_action:issue_refund:e621a26e69c17400";
+    const occurrence = (runId: string, seed: number) => ({
+      run_id: runId,
+      task_id: "task_1",
+      provider: "fixture",
+      model: "scripted:x",
+      seed,
+    });
+    const card = {
+      schema_version: "0.5.0",
+      run_id: "run_1",
+      task_id: "task_1",
+      title: "Something broke",
+      summary: "summary",
+      task_result: "failed",
+      severity: "high",
+      root_cause: "cause",
+      contributing_failures: ["unsafe_irreversible_action"],
+      step_ids: [3],
+      visible_symptoms: [],
+      evidence: [],
+      causal_explanation: "explanation",
+      blast_radius: {
+        refund_count: 1,
+        refund_total_usd: 10,
+        ticket_count: 0,
+        escalation_count: 0,
+        customers_affected: [],
+        summary: "$10 refunded",
+      },
+      metadata: {},
+      bundle_key: KEY,
+      occurrences: [occurrence("run_1", 1), occurrence("run_2", 2)],
+    };
+    const pointer = (canonical: string) => ({
+      schema_version: "0.1.0",
+      run_id: "run_2",
+      task_id: "task_1",
+      bundle_key: KEY,
+      canonical_run_id: canonical,
+    });
+
+    it("serves a reproduction the card it joined", () => {
+      writeRun("run_1", {
+        "run_result.json": rawRunResult(),
+        "failure_card.json": card,
+        "repair_package.json": { schema_version: "0.3.0", controls: [] },
+        "regression_artifact.json": {
+          schema_version: "0.3.0",
+          source_run_id: "run_1",
+        },
+      });
+      writeRun("run_2", {
+        "run_result.json": rawRunResult({ run_id: "run_2" }),
+        "bundle_ref.json": pointer("run_1"),
+      });
+
+      const bundle = getBundle("run_2");
+
+      expect(bundle?.failureCard.runId).toBe("run_1");
+      expect(bundle?.failureCard.bundleKey).toBe(KEY);
+      expect(
+        bundle?.failureCard.occurrences.map((o) => [o.runId, o.seed]),
+      ).toEqual([
+        ["run_1", 1],
+        ["run_2", 2],
+      ]);
+      expect(bundle?.regressionArtifact.sourceRunId).toBe("run_1");
+      expect(getBundle("run_1")).toEqual(bundle);
+    });
+
+    it.each(["../outside", "a/b", "..", "C:run", ""])(
+      "refuses a pointer naming %j",
+      (canonical) => {
+        writeRun("run_2", {
+          "run_result.json": rawRunResult({ run_id: "run_2" }),
+          "bundle_ref.json": pointer(canonical),
+        });
+
+        expect(() => getBundle("run_2")).toThrow(MalformedArtifactError);
+      },
+    );
+
+    it("lists each run's bundle key from an index at 0.6.0", () => {
+      writeFileSync(
+        path.join(runsDir, "index.json"),
+        JSON.stringify({
+          schema_version: "0.6.0",
+          entries: ["run_1", "run_2"].map((runId) => ({
+            run_id: runId,
+            task_id: "task_1",
+            status: "completed",
+            termination_reason: "final_answer",
+            steps_taken: 3,
+            started_at: "2026-01-01T00:00:00Z",
+            finished_at: "2026-01-01T00:00:01Z",
+            error: null,
+            verifier_passed: false,
+            failed_check_count: 1,
+            bundle_key: KEY,
+          })),
+        }),
+      );
+
+      expect(listRuns().map((run) => run.bundleKey)).toEqual([KEY, KEY]);
     });
   });
 });

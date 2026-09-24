@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BlastRadiusSummary } from "@/components/failure/blast-radius-summary";
 import { CategoryBadge } from "@/components/failure/category-badge";
+import { OccurrenceList } from "@/components/failure/occurrence-list";
 import { SeverityBadge } from "@/components/failure/severity-badge";
 import { LabeledBadge } from "@/components/ui/labeled-badge";
 import { failureCategoryLabel } from "@/lib/failure-category";
@@ -12,6 +13,8 @@ import type { FailureCard as FailureCardData } from "@/types/failure-card";
 
 interface FailureCardProps {
   card: FailureCardData;
+  /** The run whose page shows the card, marked among its occurrences. */
+  currentRunId?: string;
 }
 
 /**
@@ -21,10 +24,11 @@ interface FailureCardProps {
  *   2. summary: the one-line story
  *   3. impact: the single figure that quantifies the damage
  *   4. symptoms, then contributing categories / steps as quiet supporting data
+ *   5. occurrences: every run that repeated this failure (#211)
  *
  * Deeper drill-downs (root cause, evidence) belong to later views
  */
-export const FailureCard = ({ card }: FailureCardProps) => {
+export const FailureCard = ({ card, currentRunId }: FailureCardProps) => {
   const [primaryCategory, ...otherCategories] = card.contributingFailures;
 
   return (
@@ -87,6 +91,16 @@ export const FailureCard = ({ card }: FailureCardProps) => {
                 <CategoryBadge key={category} category={category} />
               ))}
             </div>
+          </div>
+        )}
+
+        {card.occurrences.length > 0 && (
+          <div className="space-y-2 border-t border-border/60 pt-4">
+            <FieldLabel>Occurrences ({card.occurrences.length})</FieldLabel>
+            <OccurrenceList
+              occurrences={card.occurrences}
+              currentRunId={currentRunId}
+            />
           </div>
         )}
       </CardContent>
