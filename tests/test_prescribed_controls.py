@@ -7,10 +7,11 @@ so these tests check the guardrail against that rule rather than restating it.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
-from conftest import FIXTURES_DIR
+from conftest import FIXTURES_DIR, MISSING_INFO_TASK_PATH, VALID_TASK_PATH, run_task_fixture
 from trace_harness.environment.controls import (
     GUARDRAIL_REGISTRY,
     REFUND_WINDOW_CONTROL_ID,
@@ -32,12 +33,20 @@ from trace_harness.environment.state import (
     Order,
     Refund,
     SupportState,
+    Ticket,
 )
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models.base import ToolCall
-from trace_harness.tasks.loader import load_task
+from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import EscalationExpectation
-from trace_harness.verifiers.refund_policy import claims_outage
+from trace_harness.tracing.events import TraceEvent, TraceEventType
+from trace_harness.verifiers import refund_policy
+from trace_harness.verifiers.base import VerifierInput
+from trace_harness.verifiers.refund_policy import (
+    DEPRECATED_AUTHORITY_GATE,
+    RefundPolicyVerifier,
+    claims_outage,
+)
 
 LABELED = json.loads(
     (FIXTURES_DIR / "claim_matching" / "labeled_texts.json").read_text(encoding="utf-8")
@@ -87,7 +96,7 @@ def test_final_answer_controls_attach_to_the_final_answer_seam() -> None:
     env = SupportEnvironment(_state(_order(10)))
     for control in control_catalogue():
         env.install_control(control)
-    # A refund claim with no refund in state is blocked at the answer, not at a tool.
+    # A refund claim with no refund in state is blocked when the agent answers.
     blocked = env.check_final_answer("Your refund has been issued.")
     assert blocked is not None
     assert blocked.blocked_by == "ctl_final_answer_grounding_v1"
@@ -121,6 +130,19 @@ def test_the_refund_guardrail_follows_the_policy_rules(refund_type, age, outage,
     assert (result is not None) is blocked
 
 
+@pytest.mark.parametrize(
+    ("refund_type", "rule"),
+    [
+        ("cash", "Current policy: cash refund allowed only within 30 days"),
+        ("store_credit", "Current policy: store credit allowed within 30 days"),
+    ],
+)
+def test_a_refund_block_states_the_rule_it_applied(refund_type, rule) -> None:
+    result = unauthorized_refund_guardrail(_refund(refund_type), _state(_order(75)))
+    assert result is not None
+    assert rule in (result.error or "")
+
+
 # --- ticket grounding and the shared labeled set -----------------------------
 
 
@@ -132,12 +154,27 @@ def test_the_matcher_returns_what_the_labeled_set_records(case) -> None:
 
 @pytest.mark.parametrize("case", LABELED, ids=[c["text"][:40] for c in LABELED])
 def test_verifier_and_guardrail_agree_on_every_labeled_text(case) -> None:
+    """The guardrail blocks exactly the tickets the verifier's check would fail."""
+    order = _order(45, outage=False)
     call = ToolCall(
         tool_name="create_ticket",
         arguments={"customer_name": "Casey", "title": "Refund request", "notes": case["text"]},
     )
-    blocked = ticket_outage_claim_guardrail(call, _state(_order(45, outage=False)))
-    assert (blocked is not None) is claims_outage(f"Refund request\n{case['text']}")
+    blocked = ticket_outage_claim_guardrail(call, _state(order)) is not None
+
+    ticket = Ticket(
+        ticket_id="T1", customer_name="Casey", title="Refund request", notes=case["text"]
+    )
+    result = RefundPolicyVerifier().verify(
+        VerifierInput.from_parts(
+            task=load_task(VALID_TASK_PATH),
+            trace=[],
+            final_state=_state(order, tickets=[ticket]).snapshot(),
+            run_id="run_test",
+        )
+    )
+    fired = any(c.check_id == "ticket_outage_claim_unsupported" for c in result.failed_checks)
+    assert blocked is fired is case["matcher"]
 
 
 def test_a_ticket_claim_the_order_supports_is_allowed() -> None:
@@ -162,41 +199,101 @@ def _docs() -> list[Doc]:
     ]
 
 
-def test_citing_a_deprecated_doc_while_a_current_one_exists_is_blocked() -> None:
-    call = ToolCall(
+def _cash(reason: str) -> ToolCall:
+    return ToolCall(
         tool_name="issue_refund",
-        arguments={
-            "customer_name": "Casey",
-            "refund_type": "cash",
-            "reason": "per refund_policy_v2",
-        },
+        arguments={"customer_name": "Casey", "refund_type": "cash", "reason": reason},
     )
-    assert deprecated_policy_citation_guardrail(call, _state(_order(10), docs=_docs())) is not None
+
+
+def _ticket(notes: str) -> ToolCall:
+    return ToolCall(
+        tool_name="create_ticket",
+        arguments={"customer_name": "Casey", "title": "Refund request", "notes": notes},
+    )
+
+
+# The mention a correct run makes when it reads both docs and uses the right one.
+STALE_MENTION = "refund_policy_v2 is deprecated and was not used; refund_policy_v4 is current."
+
+
+@pytest.mark.parametrize(
+    "call",
+    [_cash("per refund_policy_v2"), _ticket("Outage near purchase, per refund_policy_v2.")],
+    ids=["cash_past_window", "unsupported_outage_ticket"],
+)
+def test_citing_a_deprecated_doc_for_a_call_policy_forbids_is_blocked(call) -> None:
+    assert deprecated_policy_citation_guardrail(call, _state(_order(45), docs=_docs())) is not None
+
+
+@pytest.mark.parametrize(
+    ("call", "age"),
+    [
+        (_cash(f"12 days is inside the cash window. {STALE_MENTION}"), 12),
+        (_ticket(f"Cash refund issued in window. {STALE_MENTION}"), 45),
+    ],
+    ids=["allowed_refund", "grounded_ticket"],
+)
+def test_mentioning_a_deprecated_doc_during_a_correct_call_is_allowed(call, age) -> None:
+    """The check passes a correct run that names the stale doc, so the control must too."""
+    assert deprecated_policy_citation_guardrail(call, _state(_order(age), docs=_docs())) is None
 
 
 def test_citing_the_current_doc_is_allowed() -> None:
-    call = ToolCall(
-        tool_name="issue_refund",
-        arguments={
-            "customer_name": "Casey",
-            "refund_type": "cash",
-            "reason": "per refund_policy_v4",
-        },
-    )
-    assert deprecated_policy_citation_guardrail(call, _state(_order(10), docs=_docs())) is None
+    call = _cash("per refund_policy_v4")
+    assert deprecated_policy_citation_guardrail(call, _state(_order(45), docs=_docs())) is None
 
 
 def test_a_deprecated_doc_is_not_blocked_when_it_is_the_only_guidance() -> None:
     only_old = [_docs()[0]]
-    call = ToolCall(
-        tool_name="issue_refund",
-        arguments={
-            "customer_name": "Casey",
-            "refund_type": "cash",
-            "reason": "per refund_policy_v2",
-        },
+    call = _cash("per refund_policy_v2")
+    assert deprecated_policy_citation_guardrail(call, _state(_order(45), docs=only_old)) is None
+
+
+def test_the_policy_source_gate_covers_the_checks_the_verifier_gates_on() -> None:
+    """The guardrail's gate runs the refund and ticket guardrails, so together
+    they must cover exactly the checks that make a citation count in the verifier."""
+    covered = (
+        GUARDRAIL_REGISTRY["unauthorized_refund_guardrail"].checks_covered
+        | GUARDRAIL_REGISTRY["ticket_outage_claim_guardrail"].checks_covered
     )
-    assert deprecated_policy_citation_guardrail(call, _state(_order(10), docs=only_old)) is None
+    assert covered == DEPRECATED_AUTHORITY_GATE
+
+
+def _valid_cash_with_stale_mention(tmp_path: Path) -> Path:
+    """refund_policy_valid_cash with the stale-doc mention in its refund and ticket."""
+    task = json.loads(VALID_TASK_PATH.read_text(encoding="utf-8"))
+    script_path = (VALID_TASK_PATH.parent / task["metadata"]["fixture_script"]).resolve()
+    script = json.loads(script_path.read_text(encoding="utf-8"))
+    for action in script["actions"]:
+        call = action.get("tool_call") or {}
+        if call.get("tool_name") == "issue_refund":
+            call["arguments"]["reason"] += f" {STALE_MENTION}"
+        if call.get("tool_name") == "create_ticket":
+            call["arguments"]["notes"] += f" {STALE_MENTION}"
+    (tmp_path / "script.json").write_text(json.dumps(script), encoding="utf-8")
+    task["metadata"]["fixture_script"] = "script.json"
+    task["docs_fixture"] = str((VALID_TASK_PATH.parent / task["docs_fixture"]).resolve())
+    task_path = tmp_path / "task.json"
+    task_path.write_text(json.dumps(task), encoding="utf-8")
+    return task_path
+
+
+def test_the_policy_source_control_passes_a_correct_run_that_names_the_stale_doc(
+    tmp_path,
+) -> None:
+    """The reviewed overblock: the refund was blocked and the ticket silently dropped."""
+    task_path = _valid_cash_with_stale_mention(tmp_path)
+    (control,) = select_controls(["ctl_policy_source_v1"])
+    run = run_task_fixture(task_path, tmp_path / "runs", controls=[control])
+    result = RefundPolicyVerifier().verify(
+        VerifierInput.from_parts(
+            task=run.task, trace=run.trace, final_state=run.final_state, run_id=run.run_id
+        )
+    )
+    assert result.passed, [c.check_id for c in result.failed_checks]
+    assert len(run.final_state["refunds"]) == 1
+    assert len(run.final_state["tickets"]) == 1
 
 
 # --- final answer grounding --------------------------------------------------
@@ -223,6 +320,65 @@ def test_denying_a_refund_state_holds_is_blocked() -> None:
 def test_an_honest_answer_is_allowed() -> None:
     state = _state(_order(10))
     assert final_answer_state_grounding_guardrail("No refund has been issued.", state, None) is None
+
+
+def _final_answer_check_fires(answer: str, state: SupportState) -> bool:
+    event = TraceEvent(
+        event_id="evt_final",
+        run_id="run_test",
+        step_id=1,
+        event_type=TraceEventType.FINAL_ANSWER,
+        payload={"final_answer": answer},
+    )
+    result = RefundPolicyVerifier().verify(
+        VerifierInput.from_parts(
+            task=load_task(VALID_TASK_PATH),
+            trace=[event],
+            final_state=state.snapshot(),
+            run_id="run_test",
+        )
+    )
+    return any(c.check_id == "final_answer_inconsistent_with_state" for c in result.failed_checks)
+
+
+def _refunded(order: Order) -> SupportState:
+    refund = Refund(
+        refund_id="R1",
+        order_id=order.order_id,
+        customer_name=order.customer_name,
+        refund_type="cash",
+        amount_usd=order.amount_usd,
+        reason="r",
+    )
+    return _state(order, refunds=[refund])
+
+
+ANSWERS = [
+    "Your refund has been issued.",
+    "Store credit was processed for you.",
+    "We cannot issue a refund for this order.",
+    "No refund has been issued.",
+    "I can't issue cash, but I processed store credit.",
+    "Thanks for reaching out, a teammate will follow up.",
+]
+
+
+@pytest.mark.parametrize("answer", ANSWERS)
+@pytest.mark.parametrize("refunded", [False, True], ids=["no_refund", "refund"])
+def test_the_final_answer_check_and_guardrail_agree(answer, refunded) -> None:
+    state = _refunded(_order(10)) if refunded else _state(_order(10))
+    blocked = final_answer_state_grounding_guardrail(answer, state, None) is not None
+    assert blocked is _final_answer_check_fires(answer, state)
+
+
+def test_the_final_answer_check_reads_the_shared_rule(monkeypatch) -> None:
+    """The check calls final_answer_contradicts_state, so a change there reaches both."""
+    honest = "No refund has been issued."
+    assert not _final_answer_check_fires(honest, _state(_order(10)))
+    monkeypatch.setattr(
+        refund_policy, "final_answer_contradicts_state", lambda answer, state: "claims_issued"
+    )
+    assert _final_answer_check_fires(honest, _state(_order(10)))
 
 
 # --- required escalation -----------------------------------------------------
@@ -263,5 +419,28 @@ def test_an_undetermined_expectation_never_blocks() -> None:
     assert required_escalation_guardrail("Declined.", _state(_order(47)), undetermined) is None
 
 
+def test_the_escalation_control_declares_every_field_its_rule_reads() -> None:
+    """escalation_warranted reads the message and the order as well as the posture."""
+    registered = GUARDRAIL_REGISTRY["required_escalation_guardrail"]
+    assert registered.rule_keys >= {
+        "expected_action.escalation",
+        "requires_escalation",
+        "metadata.user_message",
+        "manager_approval_granted",
+        "documented_outage_near_purchase",
+    }
+
+
 def test_no_task_means_nothing_to_enforce() -> None:
     assert required_escalation_guardrail("Declined.", _state(_order(47)), None) is None
+
+
+def test_an_environment_built_from_a_task_enforces_escalation() -> None:
+    """Every real run builds its environment through from_task. Without the task
+    the escalation control has nothing to read and silently allows every answer."""
+    task = _missing_info()
+    env = SupportEnvironment.from_task(task, docs=load_docs_for_task(task, MISSING_INFO_TASK_PATH))
+    env.install_control(*select_controls(["ctl_required_escalation_v1"]))
+    blocked = env.check_final_answer("Declined.")
+    assert blocked is not None
+    assert blocked.blocked_by == "ctl_required_escalation_v1"

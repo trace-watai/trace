@@ -33,7 +33,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from trace_harness.environment.guardrails import (
+    DEPRECATED_POLICY_CITATION_RULE_KEYS,
     REFUND_POLICY_RULE_KEYS,
+    REQUIRED_ESCALATION_RULE_KEYS,
     UNAUTHORIZED_CASH_REFUND_RULE_KEYS,
     FinalAnswerGuardrailFn,
     deprecated_policy_citation_guardrail,
@@ -74,8 +76,8 @@ class RegisteredGuardrail:
     seam: Literal["pre_call", "final_answer"] = "pre_call"
 
 
-# guardrail_ref -> implementation. Seeded with the one guardrail the repository
-# ships. New guardrails register here; nothing else imports them by name.
+# guardrail_ref -> implementation. New guardrails register here; nothing else
+# imports them by name.
 GUARDRAIL_REGISTRY: dict[str, RegisteredGuardrail] = {
     "unauthorized_cash_refund_guardrail": RegisteredGuardrail(
         fn=unauthorized_cash_refund_guardrail,
@@ -98,7 +100,7 @@ GUARDRAIL_REGISTRY: dict[str, RegisteredGuardrail] = {
     "deprecated_policy_citation_guardrail": RegisteredGuardrail(
         fn=deprecated_policy_citation_guardrail,
         rule_source="doc_status",
-        rule_keys=frozenset(),
+        rule_keys=DEPRECATED_POLICY_CITATION_RULE_KEYS,
         checks_covered=frozenset({"deprecated_policy_treated_as_authoritative"}),
         rule_kind="prohibition",
     ),
@@ -120,7 +122,7 @@ GUARDRAIL_REGISTRY: dict[str, RegisteredGuardrail] = {
     "required_escalation_guardrail": RegisteredGuardrail(
         fn=required_escalation_guardrail,
         rule_source="task_expectation",
-        rule_keys=frozenset({"expected_action.escalation", "requires_escalation"}),
+        rule_keys=REQUIRED_ESCALATION_RULE_KEYS,
         checks_covered=frozenset({"required_escalation_missing"}),
         rule_kind="requirement",
         seam="final_answer",

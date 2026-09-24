@@ -1,14 +1,16 @@
-"""Reference guardrails: deterministic pre-execute hooks for SupportEnvironment.
+"""Reference guardrails: deterministic hooks for SupportEnvironment.
 
 These implement the repair controls the failure bundle generator prescribes
-(see ``failure_bundles/generator.py::_control_refund_guardrail``) so the
-control can actually be demonstrated, not just described. A caller installs
-one as a data-defined control: a ``ControlInstance`` whose ``guardrail_ref``
-names it in ``controls.GUARDRAIL_REGISTRY``, passed to
-``SupportEnvironment.install_control``. Each guardrail declares the
-``metadata.rules`` keys it reads so install can check the control's
-``rule_ref`` against them. Nothing here is installed by default (see the
-"Guardrail seam" note in tools.py).
+(see ``failure_bundles/generator.py::_CONTROL_BUILDERS``) so a control can
+actually be demonstrated as well as described. Most are pre-execute hooks that
+see a tool call before dispatch. The two final-answer guardrails run on the
+answer before the run accepts it (#193). A caller installs one as a
+data-defined control: a ``ControlInstance`` whose ``guardrail_ref`` names it
+in ``controls.GUARDRAIL_REGISTRY``, passed to
+``SupportEnvironment.install_control``. The registry records the rules each
+guardrail reads (``metadata.rules`` keys, order fields, task fields) so
+install can check the control's ``rule_ref`` against them. Nothing here is
+installed by default (see the "Guardrail seam" note in tools.py).
 
 Sharing rules with the verifier
     ``verifiers.refund_policy`` imports ``environment.state``, so importing it
@@ -150,29 +152,44 @@ def unauthorized_refund_guardrail(call: ToolCall, state: SupportState) -> ToolRe
     from trace_harness.verifiers.refund_policy import policy_rules_for
 
     rules = policy_rules_for(state)
-    allowed = (
-        rules.cash_allowed(order) if refund_type == "cash" else rules.store_credit_allowed(order)
-    )
+    if refund_type == "cash":
+        allowed, rule = rules.cash_allowed(order), rules.describe_cash_rule()
+    else:
+        allowed, rule = rules.store_credit_allowed(order), rules.describe_store_credit_rule()
     if allowed:
         return None
-    rule = rules.describe_cash_rule() if refund_type == "cash" else "store credit rules"
     return ToolResult(
         tool_name="issue_refund",
         status="error",
         error=(
             f"blocked by refund policy guardrail: a {refund_type.replace('_', ' ')} refund "
-            f"on order {order.order_id} at {order.purchase_age_days} days is not allowed "
-            f"under the current {rule}. Escalate for an exception instead of issuing it."
+            f"on order {order.order_id} at {order.purchase_age_days} days is not allowed. "
+            f"Current policy: {rule}. Escalate for an exception instead of issuing it."
         ),
     )
 
 
+# The policy source guardrail reads doc status, and its gate runs the refund
+# and ticket guardrails, so it reads their rules as well.
+DEPRECATED_POLICY_CITATION_RULE_KEYS = REFUND_POLICY_RULE_KEYS | {"documented_outage_near_purchase"}
+
+
 def deprecated_policy_citation_guardrail(call: ToolCall, state: SupportState) -> ToolResult | None:
-    """Block a side-effecting call whose arguments cite a deprecated doc as authority.
+    """Block a call that cites a deprecated doc and would itself break current policy.
+
+    Applies the gate of the verifier's ``deprecated_policy_treated_as_authoritative``
+    check at dispatch. A deprecated doc id in the call's arguments counts only
+    when the call would also fail a check in ``DEPRECATED_AUTHORITY_GATE``: a
+    refund the current rules do not allow, or a ticket asserting an outage the
+    order does not record. Those are decided by the refund and ticket
+    guardrails in this module, which cover exactly those checks. A correct action that
+    mentions a deprecated doc ("v2 is deprecated, using v4") goes through, as
+    the check passes it.
 
     Applies only when a current-status doc exists, since a deprecated doc may
-    be the only guidance on record. Reads the same doc statuses the verifier's
-    ``deprecated_policy_treated_as_authoritative`` check reads.
+    be the only guidance on record. The check reads citations across the whole
+    run and this sees one call, so a citation in one call and a violation in
+    another is left to the check.
     """
     if call.tool_name not in {"issue_refund", "create_ticket"}:
         return None
@@ -186,14 +203,19 @@ def deprecated_policy_citation_guardrail(call: ToolCall, state: SupportState) ->
     )
     if not cited:
         return None
+    violation = unauthorized_refund_guardrail(call, state) or ticket_outage_claim_guardrail(
+        call, state
+    )
+    if violation is None:
+        return None
     current = sorted(d.doc_id for d in state.docs if d.status is DocStatus.CURRENT)
     return ToolResult(
         tool_name=call.tool_name,
         status="error",
         error=(
             f"blocked by policy source guardrail: this call cites deprecated doc(s) {cited} "
-            f"as its basis while current policy {current} is on record. Re-read the current "
-            "policy and decide from it."
+            f"as its basis while current policy {current} is on record, and current policy "
+            "does not allow it. Re-read the current policy and decide from it."
         ),
     )
 
@@ -253,6 +275,20 @@ def final_answer_state_grounding_guardrail(
             "Describe what the tools actually did."
         ),
     )
+
+
+# What escalation_warranted reads: the task's declared expectation, or
+# requires_escalation when there is none, the customer's message, and the two
+# order fields that would confirm an approval or outage claim.
+REQUIRED_ESCALATION_RULE_KEYS = frozenset(
+    {
+        "expected_action.escalation",
+        "requires_escalation",
+        "metadata.user_message",
+        "manager_approval_granted",
+        "documented_outage_near_purchase",
+    }
+)
 
 
 def required_escalation_guardrail(
