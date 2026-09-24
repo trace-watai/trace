@@ -26,11 +26,42 @@ const BACKEND = readFileSync(
   "utf8",
 );
 
+const MIRROR = readFileSync(
+  path.join(process.cwd(), "src", "types", "sweep-summary.ts"),
+  "utf8",
+);
+
+/** The body of a pydantic class, up to the next unindented line. */
+const pythonClass = (className: string): string =>
+  BACKEND.split(`\nclass ${className}(BaseModel):\n`)[1].split(/\n(?=\S)/)[0];
+
 /** The field names a pydantic class declares, in order. */
-const pythonFields = (className: string): string[] => {
-  const body = BACKEND.split(`\nclass ${className}(BaseModel):\n`)[1];
-  const block = body.split(/\n(?=\S)/)[0];
-  return [...block.matchAll(/^ {4}([a-z_][a-z0-9_]*): /gm)].map((m) => m[1]);
+const pythonFields = (className: string): string[] =>
+  [...pythonClass(className).matchAll(/^ {4}([a-z_][a-z0-9_]*): /gm)].map(
+    (m) => m[1],
+  );
+
+/** Each field of a pydantic class, and whether its annotation admits None. */
+const pythonNullable = (className: string): Record<string, boolean> =>
+  Object.fromEntries(
+    [
+      ...pythonClass(className).matchAll(
+        /^ {4}([a-z_][a-z0-9_]*): ([^=\n]+)/gm,
+      ),
+    ].map((m) => [m[1], /\bNone\b/.test(m[2])]),
+  );
+
+/** Each field of a mirror interface, and whether its type admits null. */
+const mirrorNullable = (interfaceName: string): Record<string, boolean> => {
+  const body = MIRROR.split(`export interface ${interfaceName} {\n`)[1].split(
+    "\n}",
+  )[0];
+  return Object.fromEntries(
+    [...body.matchAll(/^ {2}([a-z_][a-z0-9_]*)(\?)?: ([^;]+);/gm)].map((m) => [
+      m[1],
+      m[2] === "?" || /\bnull\b/.test(m[3]),
+    ]),
+  );
 };
 
 const row: RawSweepTaskRow = {
@@ -127,6 +158,27 @@ describe("parseSweepSummary", () => {
     ["SweepFailingCell", cell],
   ] as const)("declares every field of %s", (className, sample) => {
     expect(Object.keys(sample)).toEqual(pythonFields(className));
+  });
+
+  it.each([
+    ["SweepSummary", "RawSweepSummary"],
+    ["SweepProviderResult", "RawSweepProviderResult"],
+    ["SweepTaskRow", "RawSweepTaskRow"],
+    ["SweepFailingCell", "RawSweepFailingCell"],
+  ] as const)(
+    "matches which fields of %s may be null",
+    (className, interfaceName) => {
+      const python = pythonNullable(className);
+      expect(Object.keys(python)).toEqual(pythonFields(className));
+      expect(mirrorNullable(interfaceName)).toEqual(python);
+    },
+  );
+
+  it("reads nullability from both sides", () => {
+    expect(pythonNullable("SweepFailingCell").cost_usd).toBe(true);
+    expect(pythonNullable("SweepFailingCell").seed).toBe(false);
+    expect(mirrorNullable("RawSweepSummary").budget).toBe(true);
+    expect(mirrorNullable("RawSweepSummary").cost_usd).toBe(false);
   });
 
   it("camelizes the fields a page would read", () => {
