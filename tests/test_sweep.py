@@ -260,6 +260,29 @@ def test_a_missing_key_stops_the_sweep_before_any_call(
     assert not (tmp_path / "sweeps").exists()
 
 
+def test_a_refused_temperature_stops_the_sweep_before_any_call(
+    tmp_path, fake_providers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-flight adapter carries the spec's temperature, as every cell's would."""
+    from trace_harness.models.openai import check_sampling
+
+    fake_init = FakeOpenAI.__init__
+
+    def checked(self, model=None, **knobs):
+        check_sampling(model, knobs.get("temperature"))
+        fake_init(self, model, **knobs)
+
+    monkeypatch.setattr(FakeOpenAI, "__init__", checked)
+    spec = write_suite_and_spec(tmp_path)
+    data = json.loads(spec.read_text())
+    data["providers"][1]["temperature"] = 0.5
+    spec.write_text(json.dumps(data))
+    code = main(["run-sweep", str(spec), "--runs-dir", str(tmp_path)])
+    assert code == 2
+    assert fake_providers == []
+    assert not (tmp_path / "sweeps").exists()
+
+
 def test_the_cli_prints_the_summary(tmp_path, fake_providers, capsys) -> None:
     spec = write_suite_and_spec(tmp_path)
     assert main(["run-sweep", str(spec), "--runs-dir", str(tmp_path / "runs")]) == 0

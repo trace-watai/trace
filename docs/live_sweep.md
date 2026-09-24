@@ -35,21 +35,22 @@ providers is fair only over the seeds complete for all of them. The summary's
 path and seed.
 
 The spec refuses a cap of zero or less when it loads. Before any cell runs,
-each provider's adapter is built once, which fails on a missing key without a
-call, and the guard is asked once per provider, which refuses an unpriced
-model. After that the guard works as it does for a batch. It admits each cell
-before it starts and is charged the cell's recorded cost after, so the
-overshoot is at most one run, and a live run that finishes without a cost stops
-the sweep as `budget_unenforceable`. The summary's `budget` block and each
-batch's own say when and why the sweep stopped, and list every cell it never
-ran.
+each provider's adapter is built once with the provider's temperature, which
+fails without a call on a missing key or on a temperature the model refuses,
+and the guard is asked once per provider, which refuses an unpriced model.
+After that the guard works as it does for a batch. It admits each cell before
+it starts and is charged the cell's recorded cost after, so the overshoot is at
+most one run, and a live run that finishes without a cost stops the sweep as
+`budget_unenforceable`. The summary's `budget` block and each batch's own say
+when and why the sweep stopped, and list every cell it never ran.
 
-`run-sweep` exits 2 when the spec is malformed, a key is missing, the cap
-cannot be enforced, or `--retain` refuses to retain, and 0 otherwise, including
-after an exhausted cap. A refused retention comes after the sweep's batches and
-summary are written, so `retain-sweep` can retain the same sweep once the cause
-is fixed. `retain-sweep` exits 2 when it refuses or finds no such sweep, and 0
-otherwise, including when nothing failed.
+`run-sweep` exits 2 when the spec is malformed, a key is missing, a model
+refuses the spec's temperature, the cap cannot be enforced, or `--retain`
+refuses to retain, and 0 otherwise, including after an exhausted cap. A refused
+retention comes after the sweep's batches and summary are written, so
+`retain-sweep` can retain the same sweep once the cause is fixed.
+`retain-sweep` exits 2 when it refuses or finds no such sweep, and 0 otherwise,
+including when nothing failed.
 
 ### The committed spec
 

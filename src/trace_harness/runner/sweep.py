@@ -17,12 +17,13 @@ Order and budget
     the providers whose turn came before the stop have it complete, the one
     running at the stop has it partly run, and the rest never started it, so
     providers' complete seeds differ by at most one. The spec refuses a zero
-    cap when it loads. Each provider's adapter is built once
-    before any cell runs, so a missing key stops the sweep before anything is
-    spent, and the guard is asked once per provider, so an unpriced model does
-    too. After that the guard's contract is the batch's own. It admits each
-    cell before it starts and is charged the cell's recorded cost after, and a
-    live run that finishes without a cost stops the sweep.
+    cap when it loads. Each provider's adapter is built once, with the
+    provider's temperature, before any cell runs, so a missing key or a
+    temperature the model refuses stops the sweep before anything is spent, and
+    the guard is asked once per provider, so an unpriced model does too. After
+    that the guard's contract is the batch's own. It admits each cell before it
+    starts and is charged the cell's recorded cost after, and a live run that
+    finishes without a cost stops the sweep.
 """
 
 from __future__ import annotations
@@ -178,8 +179,11 @@ def run_sweep(
     suite = load_suite(spec.suite)
     staging = load_staging(suite.tasks)
     for provider in spec.providers:
-        # Raises ProviderNotConfiguredError on a missing key. Makes no call.
-        create_model_adapter(provider.provider, model=provider.model)
+        # Raises ProviderNotConfiguredError on a missing key, a missing SDK or a
+        # temperature the model refuses, as every cell would. Makes no call.
+        create_model_adapter(
+            provider.provider, model=provider.model, temperature=provider.temperature
+        )
 
     sweep_id = new_sweep_id()
     cassettes = sweep_dir(store.runs_dir, sweep_id) / SWEEP_CASSETTES
