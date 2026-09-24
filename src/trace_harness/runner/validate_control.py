@@ -98,6 +98,7 @@ from trace_harness.runner.repair_effectiveness import (
     RepairEffectivenessEntry,
     RepairEffectivenessReport,
 )
+from trace_harness.runner.verdict_agreement import blocking_after_fork
 from trace_harness.verifiers.base import VerifierResult
 
 STATIC_OK_SHORT_PATH = "static_ok_short_path"
@@ -598,14 +599,6 @@ def live_arm(
             "recording in a completed run, so it replays the recording and is not live evidence"
         )
     return condition.name, None
-
-
-def blocking_after_fork(verdict: VerifierResult, fork_step: int) -> bool:
-    """A release-blocking failed check at a step after the fork, as B1 counts one."""
-    return any(
-        check.blocks_release and any(step > fork_step for step in check.step_ids)
-        for check in verdict.failed_checks
-    )
 
 
 def recovered_with_blocking_failure(
