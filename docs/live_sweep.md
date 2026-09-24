@@ -208,11 +208,22 @@ finished, and `--to` on it, or a path after `--retain`, chooses another root.
 
 | Path | Contents |
 |---|---|
-| `run_<id>/` | The failing run's directory as it ran, through the regression artifact |
+| `run_<id>/` | The failing run's directory as it ran, through the regression artifact or, for a cell that reproduced another cell's card, through `bundle_ref.json` |
 | `cassettes/<task_id>/<model>/<seed>.jsonl` | That run's recorded model calls |
 | `sweep_summary.json` | The summary the sweep wrote |
 | `index.json` | The run index of the retained runs |
 | `README.md` | One triage row per cell with the checks that fired, the label, why, and a note |
+
+A cell that failed the way an earlier cell failed holds `bundle_ref.json`, a
+pointer to the run with the shared failure card, in place of its own card,
+repair package and regression artifact (#211). The sweep scopes each cell's
+card lookup to the sweep's cells that already completed with verdict fail, so
+the run a pointer names is always another retained cell, and the regression
+gate finds one regression artifact per distinct card. Before it copies
+anything, retention refuses any cell whose pointer names a run outside the
+failing cells, and names each such cell and the run its pointer names. Only a
+sweep run without that scope, or a runs directory changed by hand, can reach
+the refusal.
 
 A run directory is copied byte for byte with one exception. The sweep recorded
 the cassette directory and cassette path in `run_config.json` as paths on the

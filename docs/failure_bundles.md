@@ -160,9 +160,12 @@ control-off run. Passing the runs of one condition keeps each condition's
 cards apart, while its seeds still share one card per key. A scope over the
 whole experiment would merge the conditions again, so one condition's runs
 is the scope to pass. The experiment's metrics count verdicts from batch
-entries and come out the same either way. A sweep whose failing cells are
-retained can pass its own cells, so that no cell points to a card outside
-the sweep.
+entries and come out the same either way. `run-sweep` scopes each cell to
+the sweep's cells that have already completed with verdict fail, the cells
+its retention keeps, so a failing cell never points to a card outside what is
+retained with it, even in a runs directory that holds earlier runs or an
+earlier sweep. Retention still refuses, naming them, any cell whose home lies
+outside the retained cells ([live_sweep.md](live_sweep.md#retaining-failing-cells)).
 
 Callers that copy runs somewhere else have to keep each reproduction with
 the run holding its card. `ArtifactStore.bundle_home` names that run for one

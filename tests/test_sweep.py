@@ -108,23 +108,37 @@ def test_cells_run_seed_by_seed_across_providers(tmp_path, fake_providers) -> No
 def test_sweep_and_suite_cells_take_one_public_cell_path(
     tmp_path, fake_providers, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A sweep cell runs through BatchRunner.run_cell, as a run-suite cell does."""
+    """A sweep cell runs through BatchRunner.run_cell, as a run-suite cell does.
+
+    A sweep cell's card lookup is scoped to the sweep's failing cells so far
+    (#211), and a suite cell's is not scoped.
+    """
     cells: list[tuple[str, str]] = []
+    scopes: list[tuple[str, ...] | None] = []
     run_cell = BatchRunner.run_cell
 
-    def counting(self, config, task_path):
+    def counting(self, config, task_path, *, bundle_scope=None):
         cells.append((config.label, task_path))
-        return run_cell(self, config, task_path)
+        scopes.append(None if bundle_scope is None else tuple(bundle_scope))
+        return run_cell(self, config, task_path, bundle_scope=bundle_scope)
 
     monkeypatch.setattr(BatchRunner, "run_cell", counting)
     summary, _ = _run(tmp_path)
     assert len(cells) == summary.runs == len(TASKS) * len(SEEDS) * 2
     assert cells[0] == ("flash-seed1", A)
+    assert scopes[0] == ()
+    # The last cell, OpenAI's C seed 3, fails too, so its scope is every other
+    # failing cell.
+    by_cell = {(c.provider_label, c.task_path, c.seed): c.run_id for c in summary.failing_cells}
+    last = by_cell[("mini", C, 3)]
+    assert set(scopes[-1]) == set(by_cell.values()) - {last}
 
     cells.clear()
+    scopes.clear()
     suite = SuiteSpec(suite_id="probe", tasks=[B], agent_configs=[AgentConfig(label="fx")])
     BatchRunner(ArtifactStore(tmp_path / "suite")).run(suite)
     assert cells == [("fx", B)]
+    assert scopes == [None]
 
 
 def test_a_cell_that_raises_after_its_run_is_charged(

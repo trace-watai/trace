@@ -24,6 +24,15 @@ Order and budget
     that the guard's contract is the batch's own. It admits each cell before it
     starts and is charged the cell's recorded cost after, and a live run that
     finishes without a cost stops the sweep.
+
+Failure cards
+    A failing run joins the failure card that already has its bundle key
+    (#211). A sweep cell may join only the card of an earlier cell of the same
+    sweep that completed with verdict fail, which is a cell retention keeps. So
+    a runs directory holding earlier runs, or an earlier sweep, never turns a
+    sweep's failing cells into pointers to cards outside the sweep, and every
+    retained pointer names a run retained beside it (see
+    ``runner/sweep_retention.py``).
 """
 
 from __future__ import annotations
@@ -191,6 +200,10 @@ def run_sweep(
     guard = BudgetGuard(spec.max_cost_usd)
     runner = BatchRunner(store)
     cells = {p.label: _ProviderCells(new_batch_id()) for p in spec.providers}
+    # The runs retention keeps, so far: every cell that completed with verdict
+    # fail. Each cell's failure card lookup is scoped to them (#211), so a
+    # failing cell joins only a card that retention copies with it.
+    failing: list[str] = []
     stopped_by: str | None = None
 
     def stop_seen(label: str) -> None:
@@ -213,8 +226,12 @@ def run_sweep(
                     continue
                 # The batch's own cell path, so a sweep cell and a suite cell
                 # are the same run with the same failure isolation.
-                entry = runner.run_cell(config, task_path).model_copy(update={"seed": seed})
+                entry = runner.run_cell(config, task_path, bundle_scope=tuple(failing)).model_copy(
+                    update={"seed": seed}
+                )
                 own.entries.append(entry)
+                if completed_with(entry, "fail") and entry.run_id is not None:
+                    failing.append(entry.run_id)
                 before = guard.spent_usd
                 guard.charge(entry.cost_usd, config.provider, config.cassette, run_id=entry.run_id)
                 own.spent_usd += guard.spent_usd - before
