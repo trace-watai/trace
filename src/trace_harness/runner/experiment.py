@@ -218,6 +218,12 @@ class ExperimentResult(BaseModel):
 
     @model_validator(mode="after")
     def _drift_forces_review(self) -> ExperimentResult:
+        """A result that says drifted carries its files and decision review.
+
+        This refuses an edit to the decision alone. An edit that also clears
+        the drift fields describes a clean record and loads; the file carries
+        no signature, so git history is the record against that.
+        """
         if self.frozen_set_verified and self.frozen_set_drifted:
             raise ValueError("a frozen set cannot be both verified and drifted")
         if self.frozen_set_drifted != bool(self.frozen_set_drift):

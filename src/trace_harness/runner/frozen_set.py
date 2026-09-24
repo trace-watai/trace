@@ -32,7 +32,11 @@ filesystem lists a directory changes a digest. ``__pycache__``, ``.pyc``,
 ``.pyo``, the mypy, pytest and ruff caches and ``.DS_Store`` are skipped.
 Every other file counts, an editor's swap or backup file included. A symlink
 inside a component is refused, because ``os.walk`` does not descend a linked
-directory and its files would drop out of the hash without a word.
+directory and its files would drop out of the hash unnoticed.
+
+The hashes catch a change to the tree between freeze and record. They do not
+make the plan or the result tamper-proof: both are plain JSON that nothing
+signs, and a consistent hand edit of both reads as a clean record.
 """
 
 from __future__ import annotations

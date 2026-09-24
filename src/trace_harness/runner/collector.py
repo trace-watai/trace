@@ -7,7 +7,8 @@ advisory. This reader accepts #156's labels without generating or changing them.
 Given an experiments directory, the collector also recomputes every retained
 experiment's frozen set (#195). Drift there is reported and recorded in the
 summary without failing the gate. A retained experiment that no longer loads,
-or whose frozen set cannot be hashed, fails it.
+whose frozen set cannot be hashed, or whose plan and result contradict each
+other about the frozen set fails it.
 """
 
 from __future__ import annotations
@@ -27,7 +28,11 @@ from trace_harness.regression.report import ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.runner.batch import BatchRunner
 from trace_harness.runner.batch import summary_path as batch_summary_path
-from trace_harness.runner.experiment import ExperimentResult, ExperimentSpec
+from trace_harness.runner.experiment import (
+    PRE_FROZEN_SET_SCHEMA_VERSION,
+    ExperimentResult,
+    ExperimentSpec,
+)
 from trace_harness.runner.frozen_set import FrozenFileChange, check_frozen_set
 from trace_harness.runner.suite import load_suite
 from trace_harness.tracing.artifact_store import (
@@ -300,8 +305,9 @@ def _check_experiments(directory: Path, summary: CollectorSummary) -> None:
     retained baseline was re-run. The cost is that CI never forces a
     re-baseline, so the warning and ``experiments_drifted`` are the record.
 
-    An experiment that does not load or cannot be hashed is malformed and
-    fails the gate.
+    An experiment that does not load, cannot be hashed, or pairs a plan and a
+    result that ``experiment record`` could not have written together is
+    malformed and fails the gate.
     """
     if not directory.is_dir():
         summary.malformed.append(str(directory))
@@ -327,6 +333,8 @@ def _check_experiment(plan: Path) -> ExperimentFreezeEntry:
         if result_path.is_file()
         else None
     )
+    if result is not None:
+        _check_pair(spec, result)
     manifest = spec.frozen_manifest
     entry = ExperimentFreezeEntry(
         experiment_id=spec.experiment_id,
@@ -342,3 +350,25 @@ def _check_experiment(plan: Path) -> ExperimentFreezeEntry:
         )
         entry.status = "drifted" if entry.changes else "matches"
     return entry
+
+
+def _check_pair(spec: ExperimentSpec, result: ExperimentResult) -> None:
+    """Refuse a plan and result that ``experiment record`` could not have written together.
+
+    Each file can load on its own after a hand edit of one of them. A plan
+    without a frozen set gets a result with both flags false, a frozen plan
+    gets one of them true, and a plan after 0.1.0 without a frozen set is never
+    recorded. A plan with no result yet is a registration awaiting its runs
+    and is not checked here.
+    """
+    frozen = spec.frozen_manifest.frozen_set is not None
+    checked = result.frozen_set_verified or result.frozen_set_drifted
+    if checked and not frozen:
+        raise ValueError("the result claims a frozen-set check, but the plan has no frozen set")
+    if frozen and not checked:
+        raise ValueError("the plan is frozen, but the result records no frozen-set check")
+    if not frozen and spec.schema_version != PRE_FROZEN_SET_SCHEMA_VERSION:
+        raise ValueError(
+            f"plan schema {spec.schema_version} has no frozen set, and experiment record "
+            "refuses such a plan, so record did not write this result"
+        )

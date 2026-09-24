@@ -151,8 +151,8 @@ trace-harness collect-regressions docs/acceptance/runs \
 
 `--experiments` also recomputes each retained experiment's frozen set. Drift
 there is a warning recorded in the summary and never changes the exit code. An
-experiment that fails to load, or whose frozen set cannot be hashed, is
-malformed. See
+experiment that fails to load, whose frozen set cannot be hashed, or whose plan
+and result contradict each other about the frozen set is malformed. See
 [the frozen evaluator](experiment_contract.md#the-frozen-evaluator).
 
 The command recursively finds `regression_artifact.json` files (or accepts one

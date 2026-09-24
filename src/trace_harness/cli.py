@@ -1007,7 +1007,9 @@ def _experiment_freeze(args: argparse.Namespace) -> int:
     Paths resolve against the working directory like every other CLI path, so
     this runs from the repository root. A plan that already carries a frozen
     set is refused: freezing it again after the evaluator moved would turn
-    drift into a clean record.
+    drift into a clean record. The check reads only the plan it is given, so
+    a plan whose frozen set was deleted by hand freezes again; git history of
+    the plan is the record against that.
     """
     from trace_harness.runner.experiment import EXPERIMENT_SCHEMA_VERSION, ExperimentSpec
     from trace_harness.runner.frozen_set import FrozenSetError, freeze

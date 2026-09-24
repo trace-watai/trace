@@ -72,11 +72,13 @@ nothing was checked.
 
 ## The frozen evaluator
 
-An experiment cannot change the evaluator that scores it. The plan's
-`frozen_manifest.frozen_set` holds a sha256 for every file of the evaluator,
-written once by `experiment freeze` before any condition runs. `experiment
-record` recomputes them and refuses, listing each file that changed, was added
-or was removed. The module is `trace_harness/runner/frozen_set.py`.
+`experiment record` refuses an experiment whose evaluator changed after its
+plan was frozen. The plan's `frozen_manifest.frozen_set` holds a sha256 for
+every file of the evaluator, written once by `experiment freeze` before any
+condition runs. `record` recomputes them from the working tree and refuses,
+listing each file that changed, was added or was removed. What this does and
+does not guarantee is spelled out under [Limits](#limits). The module is
+`trace_harness/runner/frozen_set.py`.
 
 | component | what is hashed |
 |---|---|
@@ -127,7 +129,8 @@ match its per-file hashes.
 
 **A plan is frozen once.** `freeze` refuses a plan that already carries a frozen
 set. Freezing it again after the evaluator moved would turn drift into a clean
-record, so a changed evaluator needs a new plan.
+record, so a changed evaluator needs a new plan. `freeze` reads only the plan it
+is given, so a plan whose `frozen_set` was deleted by hand freezes again.
 
 **Recording.** When nothing differs the result carries `frozen_set_verified:
 true`. When anything differs `record` exits 2 and writes nothing:
@@ -140,8 +143,8 @@ Restore those files, or pass --allow-drift to record the result as drifted with 
 
 With `--allow-drift` the result is written with `frozen_set_drifted: true`, the
 files in `frozen_set_drift`, and decision `review` whatever `--decision` said.
-`ExperimentResult` rejects a drifted result with any other decision, so editing
-`result.json` by hand cannot turn it back into a keep. With nothing drifted,
+`ExperimentResult` refuses to load a result marked drifted with any other
+decision, which stops an edit of the decision alone. With nothing drifted,
 `--allow-drift` changes nothing.
 
 **Plans from 0.1.0.** A plan written under schema 0.1.0 has no frozen set and
@@ -151,9 +154,14 @@ is refused with a pointer to `experiment freeze`.
 
 **Retained experiments in CI.** `check_repo.sh` passes `--experiments
 docs/acceptance/experiments` to `collect-regressions`, which recomputes every
-retained experiment's frozen set. One that fails to load, or whose frozen set
-cannot be hashed, is malformed and fails the gate with exit 2. Drift prints a
-warning and lands in the gate summary's `experiments` and
+retained experiment's frozen set. One that fails to load, whose frozen set
+cannot be hashed, or whose plan and result `record` could not have written
+together is malformed and fails the gate with exit 2. Those pairs are a result
+that claims a frozen-set check, verified or drifted, beside a plan with no
+frozen set; a frozen plan beside a result with both flags false; and a plan
+after schema 0.1.0 with no frozen set beside any result. A plan with no result
+yet is a registration waiting for its runs and is listed as `not_recorded`.
+Drift prints a warning and lands in the gate summary's `experiments` and
 `experiments_drifted`, and never changes the exit code. A retained
 experiment was checked when it was recorded; a later reviewed edit to the
 verifier makes it stale without making its recorded numbers wrong. Blocking
@@ -161,7 +169,27 @@ would turn CI red on every verifier change until each retained baseline was
 re-run, tying unrelated work to re-baselining. The cost is that CI never forces
 a stale baseline to be re-run, and the warning is the only prompt to do it.
 
-**Limits.** The check compares plan time with record time. A batch produced
+### Limits
+
+The frozen set guarantees that on the checkout where `record` runs, a change to
+any frozen file between `freeze` and `record` refuses the record, or with
+`--allow-drift` records it as drifted with decision `review`. In CI, a retained
+plan and result that contradict each other about the frozen set fail the gate.
+
+It does not protect the plan or the result from being edited. Both are plain
+JSON that nothing signs, so an edit that keeps the two files consistent loads
+and passes the gate. Three such edits are
+
+- clearing `frozen_set_drifted` and `frozen_set_drift` in `result.json`,
+  setting `frozen_set_verified` and changing the decision to `keep`;
+- deleting the plan's `frozen_set` and running `freeze` again against the
+  changed tree;
+- setting the plan back to schema 0.1.0 without a frozen set, so it records as
+  unchecked.
+
+Review of the plan's and the result's git history is what catches these.
+
+The check also compares plan time with record time only. A batch produced
 before the plan was frozen, or on another checkout, goes unnoticed, because a
 batch summary carries no frozen-set digest. Model weights and provider behavior
 are out of scope; cassettes cover them.

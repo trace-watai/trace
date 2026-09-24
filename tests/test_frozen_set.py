@@ -520,6 +520,70 @@ def _edit_retained(retained: Path, name: str, **fields) -> None:
     path.write_text(json.dumps(data))
 
 
+UNFROZEN = {"frozen_manifest": {"frozen_set": None}}
+DRIFTED = {
+    "decision": "review",
+    "frozen_set_verified": False,
+    "frozen_set_drifted": True,
+    "frozen_set_drift": [{"component": "verifiers", "path": VERIFIER, "change": "changed"}],
+}
+
+
+@pytest.mark.parametrize(
+    ("plan", "result", "message"),
+    [
+        (
+            {"schema_version": "0.1.0", **UNFROZEN},
+            {},
+            "the result claims a frozen-set check, but the plan has no frozen set",
+        ),
+        (
+            {"schema_version": "0.1.0", **UNFROZEN},
+            DRIFTED,
+            "the result claims a frozen-set check, but the plan has no frozen set",
+        ),
+        (
+            {},
+            {"frozen_set_verified": False},
+            "the plan is frozen, but the result records no frozen-set check",
+        ),
+        (
+            UNFROZEN,
+            {"frozen_set_verified": False},
+            "plan schema 0.2.0 has no frozen set",
+        ),
+    ],
+    ids=[
+        "verified-result-unfrozen-plan",
+        "drifted-result-unfrozen-plan",
+        "frozen-plan-unchecked-result",
+        "current-plan-without-frozen-set",
+    ],
+)
+def test_a_plan_and_result_record_could_not_have_written_fail_the_gate(
+    repo, plan, result, message
+) -> None:
+    """Each pair loads on its own; together they contradict what record writes."""
+    retained = _retain(repo)
+    _edit_retained(retained, "experiment.json", **json.loads(json.dumps(plan)))
+    _edit_retained(retained, "result.json", **json.loads(json.dumps(result)))
+    summary = _collect(repo, retained)
+    assert summary.exit_code == 2
+    assert summary.malformed == [str(retained / "exp_000_baseline")]
+    assert summary.experiments == []
+    assert any(message in error for error in summary.errors), summary.errors
+
+
+def test_a_plan_awaiting_freeze_without_a_result_passes(repo) -> None:
+    """A registered plan is committed before it is frozen, as brief 001's runbook does."""
+    retained = repo / "retained"
+    (retained / "exp_000_baseline").mkdir(parents=True)
+    _write_plan(retained / "exp_000_baseline")
+    summary = _collect(repo, retained)
+    assert summary.exit_code == 0
+    assert [e.status for e in summary.experiments] == ["not_recorded"]
+
+
 def test_an_absolute_labels_path_is_malformed_and_the_summary_is_written(repo, tmp_path):
     retained = _retain(repo)
     _edit_retained(
