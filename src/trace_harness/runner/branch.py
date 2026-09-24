@@ -55,7 +55,6 @@ from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.environment.tools import support_tool_definitions
 from trace_harness.models import (
     create_model_adapter,
-    estimate_cost_usd,
     makes_live_calls,
     resolve_call_policy,
     resolve_model_name,
@@ -86,6 +85,7 @@ from trace_harness.runner.batch import (
     attach_started_run,
     entry_from_pipeline,
     new_batch_id,
+    run_cost_usd,
 )
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
 from trace_harness.runner.experiment import ConditionKind, ConditionSpec, ExperimentSpec
@@ -279,10 +279,12 @@ def recorded_budget(store: ArtifactStore, experiment_id: str) -> RecordedBudget:
     Each branch batch's ``budget.spent_usd`` counts that batch's live runs. A
     live run the branch stage tagged with the experiment that no batch lists,
     because its invocation was interrupted or failed after the run, is priced
-    from its own trace as a batch entry is, so its spend still counts. When an
-    earlier batch stopped as ``budget_unenforceable``, or such a run has no
-    recorded cost, what the experiment spent is unknown, and the result carries
-    that stop so the next invocation starts stopped.
+    by :func:`~trace_harness.runner.batch.run_cost_usd`, the function that
+    prices every batch entry, so its spend still counts. When an earlier batch
+    stopped as ``budget_unenforceable``, or such a run has no known cost (its
+    model is unpriced, or its trace is gone or unreadable), what the experiment
+    spent is unknown, and the result carries that stop so the next invocation
+    starts stopped.
     """
     spent, listed, stop = 0.0, set(), None
     for path in sorted((store.runs_dir / names.BATCHES_DIR).glob(f"*/{names.BATCH_SUMMARY}")):
@@ -306,7 +308,7 @@ def recorded_budget(store: ArtifactStore, experiment_id: str) -> RecordedBudget:
         config = RunConfig.model_validate(raw)
         if not makes_live_calls(config.provider, config.cassette):
             continue
-        cost = estimate_cost_usd(config.provider, config.model or "", _responses(store, run_id))
+        cost = run_cost_usd(config, store.runs_dir, run_id)
         if cost is None:
             stop = stop or (
                 f"live run {run_id} of {experiment_id} is in no batch and has no recorded cost"
@@ -712,18 +714,6 @@ def _cassette_file(condition: ConditionSpec, task_id: str, seed: int | None) -> 
             prompt_version=agent.prompt_version or PROMPT_VERSION,
         ),
     )
-
-
-def _responses(store: ArtifactStore, run_id: str) -> list[dict[str, Any]]:
-    """Every raw provider response a run's trace recorded; none when it has no trace."""
-    if not store.trace_path(run_id).is_file():
-        return []
-    return [
-        event.payload["raw"]
-        for event in store.read_trace(run_id)
-        if event.event_type is TraceEventType.MODEL_RESPONSE
-        and isinstance(event.payload.get("raw"), dict)
-    ]
 
 
 def _already_recorded(condition: ConditionSpec, existing: list[str]) -> str:

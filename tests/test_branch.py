@@ -1679,6 +1679,42 @@ def test_an_unbatched_live_run_with_no_recorded_cost_stops_the_next_invocation(
     assert live_models == ["claude-no-usage"]
 
 
+def test_an_unbatched_live_run_whose_trace_is_gone_stops_the_next_invocation(
+    tmp_path, capsys, live_models, monkeypatch
+):
+    """An orphan is priced by run_cost_usd, which never reads a missing trace as free."""
+    import trace_harness.runner.branch as branch_module
+
+    path, artifact = _artifact(tmp_path)
+    spec_path, spec = _spec(tmp_path, _claude("live", "live", artifact), max_cost_usd=5.0)
+    runs = tmp_path / "runs"
+    real_run_seed = branch_module._run_seed
+
+    def interrupted_after_seed_zero(
+        artifact, task, experiment, condition, fork_step, seed, store, *rest
+    ):
+        real_run_seed(artifact, task, experiment, condition, fork_step, seed, store, *rest)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(branch_module, "_run_seed", interrupted_after_seed_zero)
+    branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]
+    with pytest.raises(KeyboardInterrupt):
+        main(branch)
+    monkeypatch.setattr(branch_module, "_run_seed", real_run_seed)
+    (orphan,) = runs.glob("run_*")
+    store = ArtifactStore(runs)
+    priced = branch_module.recorded_budget(store, spec.experiment_id)
+    assert (priced.spent_usd, priced.stop_reason) == (pytest.approx(RUN_COST), None)
+
+    (orphan / "trace.jsonl").unlink()
+    earlier = branch_module.recorded_budget(store, spec.experiment_id)
+    assert (earlier.spent_usd, earlier.stop_reason) == (0.0, "budget_unenforceable")
+    assert orphan.name in earlier.detail
+    capsys.readouterr()
+    assert main(branch) == 2
+    assert live_models == ["claude-sonnet-5"]
+
+
 def test_runs_of_another_experiment_or_the_fixture_never_count(tmp_path):
     from trace_harness.runner.branch import recorded_budget
 

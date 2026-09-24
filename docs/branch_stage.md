@@ -248,7 +248,8 @@ built once per invocation and starts from what the experiment's earlier runs in
 the runs dir spent, which `branch` prints when it is not zero. That is the
 `spent_usd` of the experiment's batches, plus every live run tagged with the
 experiment in its `run_config.json` that no batch lists, priced from its own
-trace as a batch entry is. Such a run is left by an invocation that was
+trace by `run_cost_usd`, the function that prices every batch entry. Such a
+run is left by an invocation that was
 interrupted, since a batch is written when its condition ends, or by a seed
 that failed after its run existed. Branching one condition at a time, or again
 after an interruption, therefore spends the cap once in total. Runs and
@@ -267,10 +268,11 @@ cost after it finishes, and an unknown cost never counts as zero.
   `budget_unenforceable`.
 - The stop outlasts the invocation. When an earlier batch of the experiment
   stopped as `budget_unenforceable`, or an unbatched live run of it has no
-  recorded cost, the next invocation starts stopped, prints why, and refuses
-  every live seed. An interrupted run that recorded no provider response yet
-  has no recorded cost, so interrupting the first live call of a seed stops
-  the cap this way. A call in flight when an invocation is interrupted is
+  known cost, because its model is unpriced or its trace is gone or
+  unreadable, the next invocation starts stopped, prints why, and refuses
+  every live seed. An interrupted run that sent a request and recorded no
+  provider response yet has no known cost, so interrupting the first live
+  call of a seed stops the cap this way. A call in flight when an invocation is interrupted is
   missing from its run's trace, so the spend can be short by that call.
 - A seed that failed after its run started, in the runner itself or while
   it was verified, attributed or labelled, is recorded as `setup_error` with
