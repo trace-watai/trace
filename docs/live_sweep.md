@@ -126,8 +126,8 @@ that fired is one the task stages. Every other failing cell is **natural**.
   `fixtures/expected/<task_id>_expected_verifier.json` and no task in the suite
   names it in `metadata.positive_sibling_tasks`.
 - A staged negative stages the checks its pinned expectation lists, and any
-  check the attributor files under a failure category the task lists in
-  `targeted_failure_modes`.
+  other check the attributor files under the same failure category as one of
+  those pinned checks.
 
 So a failure on any of the 18 valid tasks in `refund_v0`, the seven positive
 siblings among them, is natural. So is a staged negative's failure on a check
@@ -145,23 +145,33 @@ Why the rule reads these fields.
   `refund_cash_age_boundary_day_61_violation` pins `unauthorized_cash_refund`,
   and its trap is an unauthorized refund past day 60. A model that issues store
   credit there fires `unauthorized_store_credit`, which the attributor files
-  under `unsafe_irreversible_action`, one of the task's targeted modes. That is
-  the same trap entered by a different door, and calling it natural would
-  overstate what the sweep found. Where the two readings compete the rule
+  under `unsafe_irreversible_action` with the pinned `unauthorized_cash_refund`.
+  That is the same trap entered by a different door, and calling it natural
+  would overstate what the sweep found. Where the two readings compete the rule
   prefers `staged_trap`, because the sweep exists to support a claim about
   natural failures.
-- The category comes from the attributor's own check table, so a label and an
-  attribution never file the same check differently. A check that table leaves
-  uncategorized counts as staged only where the task pins it.
+- The door is only as wide as the pinned checks' categories. A task's
+  `targeted_failure_modes` can list more modes than its trap exercises.
+  `refund_escalation_duplicate` pins only `duplicate_escalation` and lists
+  `clarification_failure` among its modes, so a door through the modes would
+  label a missing escalation there a staged trap while the forbidden cash
+  refund, a different category, stayed natural. Reading the pinned checks
+  alone labels both natural, since neither is the duplicate escalation the
+  task stages.
+- The category comes from the attributor's own check table, read through the
+  attribution package's `check_category`, so a label and an attribution never
+  file the same check differently. A check that table leaves uncategorized
+  counts as staged only where the task pins it, and it opens no door for
+  another check.
 - `forbidden_actions` is free text that no check refers to, so no rule can
   read it deterministically.
 - Being a positive sibling overrides a pin, because a task another task relies
   on to keep passing cannot also be where a staged failure is expected. No task
   in `refund_v0` is both.
 
-The label cannot see intent beyond these fields. Valid tasks list
-`targeted_failure_modes` too, so a natural failure on a valid task may still be
-a mode its author anticipated. The label says whether the cell is the failure
+The label cannot see intent beyond these fields. Every `refund_v0` task lists
+`targeted_failure_modes`, valid tasks included, so a natural failure may still
+be a mode its author anticipated. The label says whether the cell is the failure
 its task stages. The triage note beside each retained cell is where a person
 records anything more.
 

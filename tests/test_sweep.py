@@ -27,8 +27,8 @@ from sweep_fakes import (
 from trace_harness.cli import main
 from trace_harness.models import is_priced
 from trace_harness.models.openai import OpenAINotConfiguredError
-from trace_harness.runner.batch import BUDGET_EXHAUSTED, BatchSummary
-from trace_harness.runner.suite import load_suite
+from trace_harness.runner.batch import BUDGET_EXHAUSTED, BatchRunner, BatchSummary
+from trace_harness.runner.suite import AgentConfig, SuiteSpec, load_suite
 from trace_harness.runner.sweep import (
     SweepLoadError,
     load_sweep,
@@ -103,6 +103,28 @@ def test_cells_run_seed_by_seed_across_providers(tmp_path, fake_providers) -> No
     _run(tmp_path)
     order = list(dict.fromkeys((name, seed) for name, _, seed in fake_providers))
     assert order == [(p, s) for s in SEEDS for p in ("gemini", "openai")]
+
+
+def test_sweep_and_suite_cells_take_one_public_cell_path(
+    tmp_path, fake_providers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sweep cell runs through BatchRunner.run_cell, as a run-suite cell does."""
+    cells: list[tuple[str, str]] = []
+    run_cell = BatchRunner.run_cell
+
+    def counting(self, config, task_path):
+        cells.append((config.label, task_path))
+        return run_cell(self, config, task_path)
+
+    monkeypatch.setattr(BatchRunner, "run_cell", counting)
+    summary, _ = _run(tmp_path)
+    assert len(cells) == summary.runs == len(TASKS) * len(SEEDS) * 2
+    assert cells[0] == ("flash-seed1", A)
+
+    cells.clear()
+    suite = SuiteSpec(suite_id="probe", tasks=[B], agent_configs=[AgentConfig(label="fx")])
+    BatchRunner(ArtifactStore(tmp_path / "suite")).run(suite)
+    assert cells == [("fx", B)]
 
 
 def test_each_provider_writes_one_batch_tagged_with_the_sweep(tmp_path, fake_providers) -> None:

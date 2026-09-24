@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 import pytest
 
 from conftest import REPO_ROOT
+from trace_harness.attribution.heuristic import check_category
+from trace_harness.attribution.schemas import FailureCategory
 from trace_harness.runner.batch import (
     BatchBudget,
     BatchRunEntry,
@@ -37,6 +39,10 @@ B = "fixtures/tasks/refund_policy_valid_cash.json"
 C = (
     "fixtures/tasks/refund_task_families/purchase_age/day_61_violation/"
     "refund_cash_age_boundary_day_61_violation.json"
+)
+D = (
+    "fixtures/tasks/refund_task_families/escalation/escalation_duplicate/"
+    "refund_escalation_duplicate.json"
 )
 NOW = datetime(2026, 9, 23, tzinfo=UTC)
 
@@ -78,9 +84,10 @@ def _pins():
     [
         # The check the author pinned.
         (C, ["unauthorized_cash_refund"], STAGED_TRAP, []),
-        # Unpinned, but filed under unsafe_irreversible_action, which C targets.
+        # Unpinned, but filed under unsafe_irreversible_action, the category of
+        # the unauthorized_cash_refund that C pins.
         (C, ["unauthorized_store_credit"], STAGED_TRAP, []),
-        # inconsistent_final_answer is not one of C's targeted modes.
+        # Filed under inconsistent_final_answer, a category C pins no check of.
         (
             C,
             ["final_answer_inconsistent_with_state"],
@@ -96,18 +103,35 @@ def _pins():
         (A, ["required_escalation_missing", "unauthorized_cash_refund"], STAGED_TRAP, []),
         # A valid task and positive sibling stages nothing.
         (B, ["expected_refund_missing"], NATURAL, ["expected_refund_missing"]),
+        # D pins duplicate_escalation, which the attributor leaves uncategorized,
+        # so only that check is its trap. Its targeted modes list
+        # clarification_failure, and a missing escalation there is still natural,
+        # as is the forbidden cash refund.
+        (D, ["duplicate_escalation"], STAGED_TRAP, []),
+        (D, ["required_escalation_missing"], NATURAL, ["required_escalation_missing"]),
+        (D, ["unauthorized_cash_refund"], NATURAL, ["unauthorized_cash_refund"]),
     ],
 )
 def test_labels(task: str, checks: list[str], label: str, natural: list[str]) -> None:
-    staging = load_staging([A, B, C])
+    staging = load_staging([A, B, C, D])
     assert label_failure(staging[task], checks)[:2] == (label, natural)
+
+
+def test_a_task_stages_only_the_categories_of_its_pinned_checks() -> None:
+    staging = load_staging([C, D])
+    assert staging[C].pinned_categories == {FailureCategory.UNSAFE_IRREVERSIBLE_ACTION}
+    assert staging[D].pinned_categories == frozenset()
+    assert check_category("unauthorized_store_credit") is (
+        FailureCategory.UNSAFE_IRREVERSIBLE_ACTION
+    )
+    assert check_category("required_escalation_missing") is FailureCategory.CLARIFICATION_FAILURE
+    assert check_category("duplicate_escalation") is None
 
 
 def test_a_pinned_task_that_is_also_a_positive_sibling_stages_nothing() -> None:
     staging = TaskStaging(
         task_id="t",
         pinned_checks=frozenset({"unauthorized_cash_refund"}),
-        targeted_modes=frozenset({"unsafe_irreversible_action"}),
         positive_sibling=True,
     )
     assert label_failure(staging, ["unauthorized_cash_refund"])[0] == NATURAL

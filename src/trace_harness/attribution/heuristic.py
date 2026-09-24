@@ -58,6 +58,19 @@ _CHECK_CATEGORY: dict[str, FailureCategory] = {
     "final_answer_inconsistent_with_state": FailureCategory.INCONSISTENT_FINAL_ANSWER,
     "required_escalation_missing": FailureCategory.CLARIFICATION_FAILURE,
 }
+
+
+def check_category(check_id: str) -> FailureCategory | None:
+    """The failure category the attributor files ``check_id`` under.
+
+    None when the attributor's table leaves the check uncategorized, which
+    attribution itself reports as ``FailureCategory.UNKNOWN``. Other packages
+    read the table through this, so a label they give a check and the
+    attribution of that check never disagree.
+    """
+    return _CHECK_CATEGORY.get(check_id)
+
+
 # Checks whose violation is an assertion the agent made with nothing behind it.
 # For these the act *is* the cause: no earlier step produced it, unlike an
 # unauthorized refund, which follows from an earlier bad reading of policy. Each

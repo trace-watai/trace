@@ -314,7 +314,7 @@ class BatchRunner:
                 if not guard.admit(config.provider, _guard_model(config), config.cassette):
                     not_run.append(NotRunCell(agent_label=config.label, task_path=str(task_path)))
                     continue
-                entry = self._run_cell(config, task_path)
+                entry = self.run_cell(config, task_path)
                 entries.append(entry)
                 guard.charge(entry.cost_usd, config.provider, config.cassette, run_id=entry.run_id)
         finished_at = utc_now()
@@ -333,7 +333,14 @@ class BatchRunner:
         self._enrich_index_entries(summary)
         return summary
 
-    def _run_cell(self, config: AgentConfig, task_path: str) -> BatchRunEntry:
+    def run_cell(self, config: AgentConfig, task_path: str) -> BatchRunEntry:
+        """Run one task under one agent config and return its batch entry.
+
+        This is the cell path of :meth:`run`, and ``run-sweep`` runs its cells
+        through it too. An exception anywhere in the pipeline becomes a
+        ``setup_error`` entry, so one broken cell never stops the batch. Budget
+        admission and charging stay with the caller.
+        """
         try:
             result = run_task_pipeline(task_path, config, self.store, controls=self.controls)
             return entry_from_pipeline(result, config, task_path, self.store.runs_dir)

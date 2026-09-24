@@ -25,11 +25,11 @@ Labels
     the task stages. Anything else is natural. A task is a staged negative when
     it has a pinned expectation under ``fixtures/expected/`` and no task in the
     suite names it as a positive sibling. It stages the checks its pinned
-    expectation lists, and any check the attributor files under a failure
-    category the task lists in ``targeted_failure_modes``. So a failure on a
-    valid task or a positive sibling is natural, and so is a staged negative's
-    failure on a check its author never aimed at. ``docs/live_sweep.md`` gives
-    the reasons for the rule.
+    expectation lists, and any other check the attributor files under the same
+    failure category as one of those pinned checks. So a failure on a valid
+    task or a positive sibling is natural, and so is a staged negative's
+    failure on a check of another category than the one its author pinned.
+    ``docs/live_sweep.md`` gives the reasons for the rule.
 """
 
 from __future__ import annotations
@@ -45,7 +45,8 @@ from pydantic import BaseModel, Field
 
 # The attributor's own check table, so a label and an attribution never file
 # the same check under different categories.
-from trace_harness.attribution.heuristic import _CHECK_CATEGORY
+from trace_harness.attribution.heuristic import check_category
+from trace_harness.attribution.schemas import FailureCategory
 from trace_harness.models.cassette import CassetteRequestConfig, cassette_path
 from trace_harness.runner.batch import BatchBudget, BatchRunEntry, BatchSummary
 from trace_harness.runner.config import PROMPT_VERSION
@@ -152,20 +153,25 @@ class TaskStaging:
 
     task_id: str
     pinned_checks: frozenset[str]
-    targeted_modes: frozenset[str]
     positive_sibling: bool
 
     @property
     def staged_negative(self) -> bool:
         return bool(self.pinned_checks) and not self.positive_sibling
 
+    @property
+    def pinned_categories(self) -> frozenset[FailureCategory]:
+        """The categories of the pinned checks the attributor categorizes."""
+        categories = (check_category(check) for check in self.pinned_checks)
+        return frozenset(category for category in categories if category is not None)
+
     def stages(self, check_id: str) -> bool:
         if not self.staged_negative:
             return False
         if check_id in self.pinned_checks:
             return True
-        category = _CHECK_CATEGORY.get(check_id)
-        return category is not None and category.value in self.targeted_modes
+        category = check_category(check_id)
+        return category is not None and category in self.pinned_categories
 
 
 def load_staging(
@@ -194,7 +200,6 @@ def load_staging(
         staging[path] = TaskStaging(
             task_id=task.task_id,
             pinned_checks=frozenset(checks),
-            targeted_modes=frozenset(task.targeted_failure_modes),
             positive_sibling=Path(path).resolve() in siblings,
         )
     return staging

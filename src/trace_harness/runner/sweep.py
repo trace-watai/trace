@@ -203,7 +203,7 @@ def run_sweep(
                     continue
                 # The batch's own cell path, so a sweep cell and a suite cell
                 # are the same run with the same failure isolation.
-                entry = runner._run_cell(config, task_path).model_copy(update={"seed": seed})
+                entry = runner.run_cell(config, task_path).model_copy(update={"seed": seed})
                 own.entries.append(entry)
                 before = guard.spent_usd
                 guard.charge(entry.cost_usd, config.provider, config.cassette, run_id=entry.run_id)
