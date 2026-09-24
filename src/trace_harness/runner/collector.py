@@ -32,6 +32,7 @@ from trace_harness.runner.experiment import (
     PRE_FROZEN_SET_SCHEMA_VERSION,
     ExperimentResult,
     ExperimentSpec,
+    load_plan,
 )
 from trace_harness.runner.frozen_set import FrozenFileChange, check_frozen_set
 from trace_harness.runner.suite import load_suite
@@ -326,7 +327,7 @@ def _check_experiments(directory: Path, summary: CollectorSummary) -> None:
 
 
 def _check_experiment(plan: Path) -> ExperimentFreezeEntry:
-    spec = ExperimentSpec.model_validate_json(plan.read_text(encoding="utf-8"))
+    spec = load_plan(json.loads(plan.read_text(encoding="utf-8")))
     result_path = plan.parent / EXPERIMENT_RESULT
     result = (
         ExperimentResult.model_validate_json(result_path.read_text(encoding="utf-8"))

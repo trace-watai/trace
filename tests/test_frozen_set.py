@@ -574,6 +574,23 @@ def test_a_plan_and_result_record_could_not_have_written_fail_the_gate(
     assert any(message in error for error in summary.errors), summary.errors
 
 
+@pytest.mark.parametrize("field", ["experiment_id", "created_at"])
+def test_a_retained_plan_that_omits_its_id_or_creation_time_fails_the_gate(repo, field) -> None:
+    """The gate reads a plan file the way record does, through load_plan (#155).
+
+    A defaulted id would name the entry after an id minted at read time.
+    """
+    retained = _retain(repo)
+    plan = retained / "exp_000_baseline/experiment.json"
+    data = json.loads(plan.read_text())
+    del data[field]
+    plan.write_text(json.dumps(data))
+    summary = _collect(repo, retained)
+    assert summary.exit_code == 2
+    assert summary.malformed == [str(retained / "exp_000_baseline")]
+    assert any(f"must state {field}" in error for error in summary.errors), summary.errors
+
+
 def test_a_plan_awaiting_freeze_without_a_result_passes(repo) -> None:
     """A registered plan is committed before it is frozen, as brief 001's runbook does."""
     retained = repo / "retained"
