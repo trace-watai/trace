@@ -219,8 +219,9 @@ run's card, and anything that pins that file's hash loses the file.
 `collect-regressions` discovers `regression_artifact.json` files, which only
 first occurrences hold, so each key is replayed once and reproductions are
 not counted in `artifacts_found`. A bundle cut short before its card was
-written can leave an artifact behind too, and the collector finds it until
-the run is bundled again.
+written can leave an artifact with no card beside it, which the collector
+still finds. Bundling the run again either writes the card beside it or,
+when the run joins another card, deletes it.
 A failed run from the collector's optional suite passes the coverage check
 when its pointer names a run holding an artifact, and the suite report
 credits that row with the first occurrence's `regression_test_name`. The cost

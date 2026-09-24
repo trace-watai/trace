@@ -534,7 +534,7 @@ class ArtifactStore:
 
         The bundle stage writes the repair package and the regression artifact
         before the card, so a card marks a finished bundle. A card found
-        without the other two was left by a crash or an older writer and is
+        without the other two was left by hand or by an older writer and is
         never joined.
         """
         return (
@@ -561,8 +561,9 @@ class ArtifactStore:
         same reconciliation ``RunReader.list_runs`` does.
 
         The index is a derived convenience and can lack a key the card has,
-        for instance when a writer that took no lock replaced it. So a miss
-        falls back to scanning every ``failure_card.json`` for the key before
+        for instance when it was edited by hand or written without the lock by
+        a tool or an older version. So a miss falls back to scanning every
+        ``failure_card.json`` for the key before
         it answers None, and a card found that way has its key written back to
         its index entry. Call this under :meth:`bundle_lock`, as the bundle
         stage does, so that no card can appear between the scan and the
