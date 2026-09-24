@@ -14,11 +14,16 @@ One run, one directory::
       failure_card.json         # human-readable failure summary (written by `bundle`)
       repair_package.json       # engineering recommendations (written by `bundle`)
       regression_artifact.json  # rerunnable regression spec (written by `bundle`)
+      bundle_ref.json           # pointer to an earlier run's card (written by `bundle`)
 
 The first six are written by the runner; the rest appear as the pipeline
 stages run. Partial directories are *valid* — a crashed run keeps whatever
 it managed to write, and every file is independently parseable JSON with a
 ``schema_version`` field.
+
+A failing run holds either the three bundle files or, when its bundle key
+matched an earlier card, only ``bundle_ref.json`` naming the run that holds
+them (#211).
 
 A runs-dir-level ``index.json`` sits alongside the run directories: one
 summary entry per run for cheap listing without scanning every directory. It
@@ -37,8 +42,10 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from pathlib import Path
-from typing import Any
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path, PurePath
+from typing import IO, Any
 
 from pydantic import BaseModel
 
@@ -61,9 +68,15 @@ REGRESSION_ARTIFACT = "regression_artifact.json"
 # Written by ``replay --apply-control`` rather than the run pipeline, so it is
 # deliberately absent from ``ALL_ARTIFACTS``.
 REPAIR_VALIDATION = "repair_validation.json"
+# Written by ``bundle`` in place of the three bundle files when the run
+# reproduces an earlier card (#211). A run holds one or the other, so it is
+# absent from ``ALL_ARTIFACTS`` too.
+BUNDLE_REF = "bundle_ref.json"
 
 # Runs-dir-level (not per-run): a derived, rebuildable index of all runs.
 RUN_INDEX = "index.json"
+# Runs-dir-level, held while the bundle stage looks a key up and writes (#211).
+BUNDLE_LOCK = ".bundle.lock"
 EXPERIMENTS_DIR = "experiments"
 EXPERIMENT_SPEC = "experiment.json"
 EXPERIMENT_RESULT = "result.json"
@@ -90,6 +103,51 @@ ALL_ARTIFACTS = (
     REPAIR_PACKAGE,
     REGRESSION_ARTIFACT,
 )
+
+
+def safe_run_dir_name(run_id: str) -> str:
+    """Return ``run_id`` when it names a directory beside other runs, else raise.
+
+    Pointers between runs are followed by joining a run id onto the runs
+    directory, so a value with a separator or a parent reference could read
+    outside it.
+    """
+    if (
+        not run_id
+        or run_id in {".", ".."}
+        or PurePath(run_id).name != run_id
+        or "/" in run_id
+        or "\\" in run_id
+        or ":" in run_id
+    ):
+        raise ValueError(f"not a run directory name: {run_id!r}")
+    return run_id
+
+
+if os.name == "nt":  # pragma: no cover - exercised on Windows only
+    import msvcrt
+
+    def _lock(handle: IO[bytes]) -> None:
+        handle.seek(0)
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:  # LK_LOCK gives up after ten one-second attempts
+                continue
+
+    def _unlock(handle: IO[bytes]) -> None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _lock(handle: IO[bytes]) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+    def _unlock(handle: IO[bytes]) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -392,6 +450,61 @@ class ArtifactStore:
 
     # --- failure bundles (#211) ---
 
+    @contextmanager
+    def bundle_lock(self) -> Iterator[None]:
+        """Hold the runs directory's bundle lock across a key lookup and its writes.
+
+        Two processes bundling into one runs directory would otherwise both miss
+        a card and both write one, or both rewrite a card and lose a run from
+        its occurrences. The lock is an advisory lock on ``.bundle.lock`` beside
+        ``index.json``. The operating system releases it when the holder exits,
+        so a crash never leaves the directory locked. It is not reentrant.
+        """
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
+        with (self.runs_dir / BUNDLE_LOCK).open("a+b") as handle:
+            _lock(handle)
+            try:
+                yield
+            finally:
+                _unlock(handle)
+
+    def find_bundle_card(self, bundle_key: str) -> str | None:
+        """The run whose directory holds the failure card for ``bundle_key``, or None.
+
+        The index nominates candidates and the card file has to carry the same
+        key, so an entry left by an interrupted bundle never resolves to a
+        run without a card. Candidates are tried in run id order, so a
+        duplicate left by an older writer resolves the same way every time. An
+        index that has fallen behind the run directories is rebuilt first, the
+        same reconciliation ``RunReader.list_runs`` does.
+        """
+        index = self.read_index()
+        listable = {run_id for run_id in self.list_runs() if self.exists(run_id, RUN_RESULT)}
+        if {entry.run_id for entry in index.entries} != listable:
+            index = self.rebuild_index()
+        for entry in index.entries:
+            if entry.bundle_key == bundle_key and self._card_bundle_key(entry.run_id) == bundle_key:
+                return entry.run_id
+        return None
+
+    def bundle_home(self, run_id: str) -> str | None:
+        """The run whose directory holds the bundle covering ``run_id``.
+
+        That is ``run_id`` itself when it holds a failure card, the run its
+        ``bundle_ref.json`` names when it reproduced an earlier card, and None
+        when it was never bundled. A pointer naming anything but a sibling run
+        directory raises ValueError.
+        """
+        if self.exists(run_id, FAILURE_CARD):
+            return run_id
+        if not self.exists(run_id, BUNDLE_REF):
+            return None
+        data = self.read_json(run_id, BUNDLE_REF)
+        canonical = data.get("canonical_run_id") if isinstance(data, dict) else None
+        if not isinstance(canonical, str):
+            raise ValueError(f"{BUNDLE_REF} for run '{run_id}' names no canonical_run_id")
+        return safe_run_dir_name(canonical)
+
     def set_index_bundle_key(self, run_id: str, bundle_key: str) -> None:
         """Record the run's bundle key on its index entry.
 
@@ -494,12 +607,17 @@ class ArtifactStore:
         value = data.get(field) if isinstance(data, dict) else None
         return value if isinstance(value, str) else None
 
+    def _card_bundle_key(self, run_id: str) -> str | None:
+        return self._read_json_field(run_id, FAILURE_CARD, "bundle_key")
+
     def _read_bundle_index_field(self, run_id: str) -> str | None:
-        """The run's bundle key from its card, without importing the card model.
+        """The run's bundle key from its card or its pointer, without importing either model.
 
         None for unbundled runs and for cards written before failure card 0.5.0.
         """
-        return self._read_json_field(run_id, FAILURE_CARD, "bundle_key")
+        return self._card_bundle_key(run_id) or self._read_json_field(
+            run_id, BUNDLE_REF, "bundle_key"
+        )
 
     def _read_config_index_fields(self, run_id: str) -> tuple[str, str | None] | None:
         """Read ``(provider, model)`` from run_config.json without importing RunConfig.

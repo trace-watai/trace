@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from trace_harness.environment.controls import ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
@@ -43,6 +43,9 @@ from trace_harness.verifiers.base import (
     merge_verifier_results,
 )
 from trace_harness.verifiers.registry import get_verifier
+
+if TYPE_CHECKING:
+    from trace_harness.failure_bundles.generator import RecordedBundle
 
 logger = logging.getLogger(__name__)
 
@@ -202,10 +205,14 @@ def verify_run(
 
 def attribute_and_bundle(
     store: ArtifactStore, run_id: str, task: TaskSpec, run_result: RunResult
-) -> None:
-    """Attribute a verified failure and generate its failure bundle."""
+) -> RecordedBundle:
+    """Attribute a verified failure and record its failure bundle.
+
+    The bundle is written to the run's directory, or the run joins the card
+    that already has its bundle key (#211); the returned record says which.
+    """
     from trace_harness.attribution.heuristic import HeuristicAttributor
-    from trace_harness.failure_bundles.generator import FailureBundleGenerator
+    from trace_harness.failure_bundles.generator import FailureBundleGenerator, record_bundle
 
     trace = store.read_trace(run_id)
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
@@ -227,7 +234,4 @@ def attribute_and_bundle(
         agent_ref=run_config.get("agent_ref"),
         run_config=run_config,
     )
-    store.write_json(run_id, names.FAILURE_CARD, bundle.failure_card)
-    store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)
-    store.write_json(run_id, names.REGRESSION_ARTIFACT, bundle.regression_artifact)
-    store.set_index_bundle_key(run_id, bundle.failure_card.bundle_key)
+    return record_bundle(store, bundle)

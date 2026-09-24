@@ -37,9 +37,11 @@ class RunIndexEntry(BaseModel):
     when a run is part of a suite batch. Rebuilds recover it from persisted
     batch summaries; it is ``None`` for single runs.
 
-    ``bundle_key`` is set by the bundle stage (#211) on every run it bundled.
-    Rebuilds recover it from ``failure_card.json``; it is ``None`` for
-    unbundled runs and for runs bundled before 0.6.0.
+    ``bundle_key`` is set by the bundle stage (#211) on every run it bundled,
+    whether the run holds the card or points to it. The bundle stage looks
+    cards up by this field. Rebuilds recover it from ``failure_card.json`` or
+    ``bundle_ref.json``; it is ``None`` for unbundled runs and for runs bundled
+    before 0.6.0.
     """
 
     run_id: str

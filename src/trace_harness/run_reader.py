@@ -216,24 +216,28 @@ class RunReader:
         return self._read_optional(run_id, names.ATTRIBUTION_RESULT, AttributionResult)
 
     def get_bundle(self, run_id: str) -> FailureBundle | None:
-        """The three bundle artifacts, or None if the run hasn't been bundled.
+        """The three bundle artifacts covering this run, or None if it hasn't been bundled.
 
         The ``bundle`` stage writes all three together, so they are present or
         absent as a set; a partial bundle (crash mid-stage) surfaces as a
         FileNotFoundError rather than a silently half-built bundle.
+
+        A run that reproduced an earlier card (#211) holds ``bundle_ref.json``
+        instead, and gets the bundle from the run it names. That card's
+        ``run_id`` is the first occurrence and its ``occurrences`` include this
+        run.
         """
         self._require_run(run_id)
-        if not self.store.exists(run_id, names.FAILURE_CARD):
+        home = self.store.bundle_home(run_id)
+        if home is None:
             return None
         return FailureBundle(
-            failure_card=FailureCard.model_validate(
-                self.store.read_json(run_id, names.FAILURE_CARD)
-            ),
+            failure_card=FailureCard.model_validate(self.store.read_json(home, names.FAILURE_CARD)),
             repair_package=RepairPackage.model_validate(
-                self.store.read_json(run_id, names.REPAIR_PACKAGE)
+                self.store.read_json(home, names.REPAIR_PACKAGE)
             ),
             regression_artifact=RegressionArtifact.model_validate(
-                self.store.read_json(run_id, names.REGRESSION_ARTIFACT)
+                self.store.read_json(home, names.REGRESSION_ARTIFACT)
             ),
         )
 

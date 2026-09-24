@@ -12,15 +12,17 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from trace_harness.attribution.schemas import FailureCategory
 from trace_harness.tasks.schemas import Severity
+from trace_harness.tracing.artifact_store import safe_run_dir_name
 from trace_harness.verifiers.base import EvidenceItem
 
 # 0.5.0: bundle_key and occurrences (#211); 0.4.0: BlastRadius gained escalation_count
 FAILURE_CARD_SCHEMA_VERSION = "0.5.0"
 REPAIR_PACKAGE_SCHEMA_VERSION = "0.3.0"
+BUNDLE_REF_SCHEMA_VERSION = "0.1.0"
 
 
 class BlastRadius(BaseModel):
@@ -114,6 +116,27 @@ class FailureCard(BaseModel):
         if run_ids and run_ids[0] != self.run_id:
             raise ValueError("the first occurrence must be the run the card was generated from")
         return self
+
+
+class BundleRef(BaseModel):
+    """What a reproduction's run directory holds in place of its own bundle (#211).
+
+    Written as ``bundle_ref.json`` when a run's bundle key matched an existing
+    card. The card, repair package and regression artifact stay in the
+    directory of ``canonical_run_id``, the key's first occurrence, whose card
+    lists this run among its occurrences.
+    """
+
+    schema_version: str = BUNDLE_REF_SCHEMA_VERSION
+    run_id: str
+    task_id: str
+    bundle_key: str
+    canonical_run_id: str
+
+    @field_validator("canonical_run_id")
+    @classmethod
+    def _canonical_is_a_sibling(cls, value: str) -> str:
+        return safe_run_dir_name(value)
 
 
 class RepairControl(BaseModel):

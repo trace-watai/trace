@@ -186,6 +186,29 @@ def test_bundles_are_complete_and_cross_consistent(
         assert regression.positive_sibling_tests, f"{entry.task_id}: no positive sibling pinned"
 
 
+def test_five_distinct_failures_keep_five_cards_under_one_card_per_key(
+    bundle_batch: tuple[ArtifactStore, BatchSummary],
+) -> None:
+    """#211: each bundle is its own root cause, so none became a reproduction.
+
+    The five failing cases trip different checks, so their bundle keys differ
+    and every card lists its own run as its only occurrence. Were two of them
+    to share a key, one would hold a bundle_ref.json pointer instead and the
+    completeness test above would fail for it.
+    """
+    store, summary = bundle_batch
+
+    keys = {}
+    for entry in summary.entries:
+        if entry.task_id not in EXPECTED_FAILURE_SIGNATURES:
+            continue
+        card = FailureCard.model_validate(_load(store, entry.run_id, "failure_card.json"))
+        assert [o.run_id for o in card.occurrences] == [entry.run_id]
+        keys[entry.task_id] = card.bundle_key
+    assert len(set(keys.values())) == 5
+    assert not list(store.runs_dir.glob("*/bundle_ref.json"))
+
+
 def test_passing_siblings_produce_no_failure_artifacts(
     bundle_batch: tuple[ArtifactStore, BatchSummary],
 ) -> None:

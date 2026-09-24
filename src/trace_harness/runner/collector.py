@@ -4,6 +4,12 @@ Baseline reproduction and positive siblings always gate. Control replay only
 gates for an explicit static_ok label; unlabeled/live_required results remain
 advisory. This reader accepts #156's labels without generating or changing them.
 
+A generated suite run that reproduced an earlier card holds a ``bundle_ref.json``
+pointer and no regression artifact of its own (#211). It counts as covered when
+the run it points to holds one. It is not an artifact itself, since discovery finds
+the first occurrence's artifact once, so a key is replayed once however many runs
+repeated it.
+
 Given an experiments directory, the collector also recomputes every retained
 experiment's frozen set (#195). Drift there is reported and recorded in the
 summary without failing the gate; a retained experiment that no longer loads
@@ -141,6 +147,14 @@ def _discover(source: Path, *, excluded: Path | None = None) -> list[Path]:
     return sorted(paths)
 
 
+def _covered(store: ArtifactStore, run_id: str | None) -> bool:
+    """Whether a failed run's regression artifact exists, in its own directory or its card's."""
+    if run_id is None:
+        return False
+    home = store.bundle_home(run_id)
+    return home is not None and store.exists(home, REGRESSION_ARTIFACT)
+
+
 def _replay(artifact: Path, evidence_dir: Path, *, apply_control: bool) -> ReplayReport:
     # Reuse the command's implementation, not its printed output or shell
     # replay_command. #146's per-control report can replace this one seam.
@@ -206,9 +220,7 @@ def collect_regressions(
                     summary.errors.append(
                         f"suite {entry.agent_label}/{entry.task_id}: {entry.error or entry.status}"
                     )
-                elif entry.verdict == "fail" and (
-                    entry.run_id is None or not generated.exists(entry.run_id, REGRESSION_ARTIFACT)
-                ):
+                elif entry.verdict == "fail" and not _covered(generated, entry.run_id):
                     summary.errors.append(
                         f"suite {entry.task_id}: failed run has no regression artifact"
                     )
