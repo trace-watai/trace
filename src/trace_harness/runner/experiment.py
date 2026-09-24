@@ -1,8 +1,8 @@
 """What an experiment is, so results can be compared instead of remembered (#155).
 
 A batch is one run of one suite under one or more agent configurations. Nothing
-in it says that two batches are the two sides of the same question. Run the
-suite with a guardrail on and again with it off and you get two batch ids in the
+in it says that two batches are the two sides of the same question. Running the
+suite with a guardrail on and again with it off leaves two batch ids in the
 batches folder, with the comparison living in somebody's notes.
 
 An experiment is that missing record, in two files.
@@ -18,7 +18,7 @@ decision together with who or what made it.
 
 There is deliberately no combined score. Eight named metrics, each with its own
 derivation in ``docs/methodology_metrics.md``, and a human or a policy deciding
-on the evidence rather than on an average of it.
+on that evidence itself. An average of it would decide nothing.
 """
 
 from __future__ import annotations

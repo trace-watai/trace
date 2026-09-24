@@ -2,8 +2,8 @@
 
 The load-bearing test here is ``test_metric_names_match_the_memo``. The metric
 names are a contract between this module, the #27 memo, and the dashboard
-mirror, so the test reads the memo's appendix off disk rather than restating
-the list, which would only prove the list equals itself.
+mirror, so the test reads the memo's appendix off disk. Restating the list here
+would only prove the list equals itself.
 """
 
 from __future__ import annotations
@@ -184,7 +184,7 @@ def _entry(task_id: str, verdict: str, *, cost=None, latency=None) -> BatchRunEn
 
 
 def test_derives_only_what_a_batch_can_support(tmp_path) -> None:
-    """Metrics needing the branch stage stay None rather than reading as zero."""
+    """Metrics needing the branch stage stay None, since a zero would read as measured."""
     summary = _summary("b1", [_entry("t1", "fail"), _entry("t2", "pass")])
     metrics = derive_metrics([summary])
 
@@ -196,7 +196,7 @@ def test_derives_only_what_a_batch_can_support(tmp_path) -> None:
 
 
 def test_cost_is_none_when_nothing_recorded_it() -> None:
-    """A null cost is unknown, not zero, exactly as the memo says."""
+    """A null cost means unknown, exactly as the memo says."""
     metrics = derive_metrics([_summary("b1", [_entry("t1", "pass")])])
     assert metrics.cost_usd is None
 

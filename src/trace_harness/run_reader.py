@@ -175,7 +175,7 @@ class RunReader:
     # --- experiments (#155) ---
 
     def list_experiments(self) -> list[ExperimentSpec]:
-        """Every experiment whose files load, oldest first by id.
+        """Every experiment whose files load, in id order.
 
         An experiment whose plan or result does not load is left out here and
         named by :meth:`unreadable_experiments`, so one bad file cannot hide
@@ -216,8 +216,8 @@ class RunReader:
         named = {spec.experiment_id, experiment_id} | ({result.experiment_id} if result else set())
         if len(named) != 1:
             raise ValueError(
-                f"{self.store.experiment_dir(experiment_id)} holds files for "
-                f"{sorted(named - {experiment_id})}, not for {experiment_id!r}"
+                f"{self.store.experiment_dir(experiment_id)} is {experiment_id!r} but its "
+                f"files name {sorted(named - {experiment_id})}"
             )
         return spec, result
 

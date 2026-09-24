@@ -148,7 +148,7 @@ def test_one_batch_cannot_answer_two_conditions(tmp_path, capsys) -> None:
 
 
 def test_the_retained_metrics_rederive_from_the_retained_batch() -> None:
-    """exp_000's five failures come from its batch, not from a typed number."""
+    """exp_000's five failures re-derive from its retained batch summary."""
     result = ExperimentResult.model_validate_json(
         (RETAINED / "experiments" / "exp_000_baseline" / "result.json").read_text()
     )

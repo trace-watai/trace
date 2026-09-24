@@ -2,8 +2,8 @@
 
 An experiment is the record that says two batches are the two sides of one
 question. A batch is one run of one suite under one or more agent
-configurations; nothing in it relates it to any other batch. Run the suite with
-a guardrail on and again with it off and you get two batch ids in the batches
+configurations; nothing in it relates it to any other batch. Running the suite
+with a guardrail on and again with it off leaves two batch ids in the batches
 folder, with the comparison living in somebody's notes.
 
 Owner: Evaluation Systems. Schema: `trace_harness/runner/experiment.py`
@@ -67,8 +67,8 @@ from those controls, and a test keeps each of them loadable in a plan.
 | `live_swapped` | the same conditions under a different model |
 
 `static_replay` not being able to react to a block is the limitation the whole
-replay-validity question exists to measure, which is why it is a named kind
-rather than an implementation detail.
+replay-validity question exists to measure, which is why it is a named kind of
+its own.
 
 ### `result.json`
 
@@ -84,7 +84,7 @@ records whether a `human` or a `policy` made the call.
 
 Eight, named in the memo, with no combined score. A single number would let a
 good result on one axis hide a bad one on another, and the decision is supposed
-to be made on the evidence rather than on an average of it.
+to be made on the evidence itself.
 
 Every metric is nullable, and a missing one stays null. A condition set that
 never ran live cannot produce a divergence rate, and reporting that as `0.0`

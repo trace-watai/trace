@@ -234,8 +234,8 @@ class ArtifactStore:
 
     # --- experiments (#155) ---
     #
-    # An experiment lives beside the batches it compares rather than inside any
-    # one of them, because it is the thing that relates several batches.
+    # An experiment lives beside the batches it compares, outside all of them,
+    # because it is the thing that relates several batches.
 
     def experiment_dir(self, experiment_id: str) -> Path:
         """Refuses an id that is not one plain path segment.
@@ -297,7 +297,11 @@ class ArtifactStore:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def list_experiments(self) -> list[str]:
-        """Experiment ids that have a plan on disk, oldest first by id."""
+        """Experiment ids that have a plan on disk, sorted.
+
+        Generated ids sort by creation time. Hand-named ones such as
+        ``exp_000_baseline`` sort by name.
+        """
         root = self.runs_dir / EXPERIMENTS_DIR
         if not root.is_dir():
             return []

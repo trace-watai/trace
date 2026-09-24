@@ -1657,7 +1657,7 @@ def main(argv: list[str] | None = None) -> int:
     p_exp_record.add_argument("--decided-by", default="human", choices=["human", "policy"])
 
     sub.add_parser(
-        "list-experiments", parents=[common], help="list recorded experiments, oldest first"
+        "list-experiments", parents=[common], help="list recorded experiments in id order"
     )
 
     p_suite = sub.add_parser(

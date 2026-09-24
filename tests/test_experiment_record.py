@@ -218,7 +218,7 @@ def test_one_unreadable_experiment_does_not_hide_the_rest(tmp_path, capsys) -> N
     unreadable = reader.unreadable_experiments()
     assert sorted(unreadable) == ["exp_broken_json", "exp_copied", "exp_no_id"]
     assert "must state experiment_id" in unreadable["exp_no_id"]
-    assert "not for 'exp_copied'" in unreadable["exp_copied"]
+    assert "is 'exp_copied' but its files name" in unreadable["exp_copied"]
 
     capsys.readouterr()
     assert main(["--runs-dir", str(store.runs_dir), "list-experiments"]) == 1

@@ -13,8 +13,8 @@
  * `listExperiments` leaves out an experiment whose files do not load and
  * `listUnreadableExperiments` names it, so one bad file cannot hide the rest.
  *
- * An experiment lives beside the batches it compares rather than inside any
- * one of them, because it is the thing that relates several batches.
+ * An experiment lives beside the batches it compares, outside all of them,
+ * because it is the thing that relates several batches.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -79,7 +79,7 @@ const experimentIdsOnDisk = (): string[] => {
     .sort();
 };
 
-/** Every experiment whose files load, oldest first by id. */
+/** Every experiment whose files load, in id order. */
 export const listExperiments = (): ExperimentSpec[] =>
   experimentIdsOnDisk().flatMap((experimentId) => {
     try {
@@ -105,8 +105,8 @@ export const listUnreadableExperiments = (): {
 
 /**
  * The plan and, when a result has been recorded, what came back. The result is
- * null while conditions are still running, which is a normal state rather than
- * an error.
+ * null while conditions are still running, which is a normal state and no
+ * error.
  */
 export const getExperiment = (
   experimentId: string,
