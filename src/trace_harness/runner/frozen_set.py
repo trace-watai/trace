@@ -15,11 +15,13 @@ The components, every path relative to the repository root:
                  ``HeuristicAttributor``, the schema it emits and the
                  validation it runs on its own output.
 ``suite``        ``fixtures/suites/{suite_id}.json``.
-``fixtures``     ``fixtures/`` without ``fixtures/controls/``. The control
-                 library is the treatment an experiment varies, and its
-                 evidence directories gain a generated ``index.json`` when
-                 re-verified, so freezing it would refuse every control
-                 experiment.
+``fixtures``     ``fixtures/``, the control library and its evidence
+                 included, apart from the ``index.json`` that re-verifying a
+                 retained evidence run writes at
+                 ``fixtures/controls/evidence/*/*/index.json``. Brief 001
+                 allows new control entries only before the first live run,
+                 and the plan is frozen before any condition runs, so a
+                 library change between freeze and record is drift.
 ``labels``       the plan's ``labels_path``, when it names one.
 
 A file hash is sha256 over the file's bytes with CRLF folded to LF, keyed by
@@ -33,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -46,7 +49,8 @@ CODE_COMPONENTS = {
     "attribution": "src/trace_harness/attribution",
 }
 FIXTURES_ROOT = "fixtures"
-FIXTURES_EXCLUDED = ("fixtures/controls",)
+# Matched one path segment at a time, as .gitignore reads the same pattern.
+FIXTURES_EXCLUDED = ("fixtures/controls/evidence/*/*/index.json",)
 
 _NOISE_DIRS = frozenset({"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"})
 _NOISE_FILES = frozenset({".DS_Store"})
@@ -95,23 +99,35 @@ def component_digest(files: dict[str, str]) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def _excluded(path: PurePosixPath, patterns: tuple[str, ...]) -> bool:
+    return any(
+        len(glob := PurePosixPath(pattern).parts) == len(path.parts)
+        and all(map(fnmatchcase, path.parts, glob))
+        for pattern in patterns
+    )
+
+
 def hash_component(root: Path, path: str, excluded: tuple[str, ...] = ()) -> FrozenComponent:
-    """Hash a file or directory under ``root``. A missing path hashes as empty."""
+    """Hash a file or directory under ``root``. A missing path hashes as empty.
+
+    ``excluded`` holds glob patterns matched one path segment at a time.
+    """
+    top = root / path
     found: list[str] = []
-    if (root / path).is_file():
+    if top.is_file():
         found.append(path)
-    for directory, dirs, names in os.walk(root / path):
+    for directory, dirs, names in os.walk(top):
         here = Path(directory)
-        dirs[:] = [
-            d
-            for d in dirs
-            if d not in _NOISE_DIRS and (here / d).relative_to(root).as_posix() not in excluded
-        ]
-        found += [
-            (here / name).relative_to(root).as_posix()
+        rel = PurePosixPath(here.relative_to(root).as_posix())
+        dirs[:] = [d for d in dirs if d not in _NOISE_DIRS and not _excluded(rel / d, excluded)]
+        names = [
+            name
             for name in names
-            if name not in _NOISE_FILES and not name.endswith(_NOISE_SUFFIXES)
+            if name not in _NOISE_FILES
+            and not name.endswith(_NOISE_SUFFIXES)
+            and not _excluded(rel / name, excluded)
         ]
+        found += [(rel / name).as_posix() for name in names]
     files = {rel: file_sha256(root / rel) for rel in sorted(found)}
     return FrozenComponent(path=path, digest=component_digest(files), files=files)
 

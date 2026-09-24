@@ -84,7 +84,7 @@ or was removed. The module is `trace_harness/runner/frozen_set.py`.
 | `environment` | `src/trace_harness/environment/` |
 | `attribution` | `src/trace_harness/attribution/` |
 | `suite` | `fixtures/suites/{suite_id}.json` |
-| `fixtures` | `fixtures/` except `fixtures/controls/` |
+| `fixtures` | `fixtures/` except the generated `fixtures/controls/evidence/*/*/index.json` |
 | `labels` | the plan's `labels_path`, when it names one |
 
 The attribution scorer is `src/trace_harness/attribution/`: `HeuristicAttributor`,
@@ -93,9 +93,18 @@ it runs on its own output. No attribution accuracy scorer exists yet (C1 in
 [methodology_metrics.md](methodology_metrics.md)); one added under that directory
 is frozen with it.
 
-`fixtures/controls/` is left out. The control library is the treatment an
-experiment varies, brief 001 lists its registry entries as an allowed change,
-and its evidence directories gain a generated `index.json` when re-verified.
+The control library in `fixtures/controls/` is frozen with the rest of
+`fixtures/`. Brief 001 allows new control entries in `controls.py`,
+`guardrails.py` and `library.json` only through an amendment made before the
+first live run, and keeps existing entries as registered. A plan is frozen
+before any condition runs, so a library change between freeze and record is
+drift, as a change to `controls.py` or `guardrails.py` already is through the
+`environment` component. The one exclusion is the `index.json` that
+`ArtifactStore` writes beside retained evidence runs when they are re-verified,
+at `fixtures/controls/evidence/*/*/index.json`. It is generated, `.gitignore`
+carries the same pattern, and the library's sha256 pins do not cover it. The
+pattern matches one path segment at a time, so an `index.json` at any other
+depth counts.
 
 **Hashing.** A file's hash is sha256 over its bytes with CRLF folded to LF,
 keyed by its POSIX path relative to the repository root. A component's digest is

@@ -158,17 +158,35 @@ class _Listing:
         return None
 
 
-def test_the_control_library_is_outside_the_freeze(repo) -> None:
-    """Controls are what an experiment varies; a re-verified evidence index is noise."""
+def test_the_control_library_is_frozen(repo, capsys) -> None:
+    """Brief 001 keeps existing control entries as registered once the runs start."""
     frozen = ExperimentSpec.model_validate_json((repo / "experiment.json").read_text())
-    assert not any(
-        p.startswith("fixtures/controls/")
-        for p in frozen.frozen_manifest.frozen_set["fixtures"].files
-    )
-    (repo / "fixtures/controls/evidence/x/y").mkdir(parents=True)
-    (repo / "fixtures/controls/evidence/x/y/index.json").write_text("{}")
+    files = frozen.frozen_manifest.frozen_set["fixtures"].files
+    assert "fixtures/controls/library.json" in files
+    assert any(p.startswith("fixtures/controls/evidence/") for p in files)
+    library = repo / "fixtures/controls/library.json"
+    library.write_text(library.read_text().replace('"active"', '"retired"', 1))
+    capsys.readouterr()
+    assert _record() == 2
+    assert "fixtures: changed fixtures/controls/library.json" in capsys.readouterr().err
+
+
+def test_a_generated_evidence_index_is_the_only_exclusion(repo, capsys) -> None:
+    """Re-verifying retained evidence writes index.json beside its runs, and nothing else."""
+    evidence = repo / "fixtures/controls/evidence"
+    (evidence / "x/y/z").mkdir(parents=True)
+    (evidence / "x/y/index.json").write_text("{}")
     assert _record() == 0
     assert _result(repo).frozen_set_verified
+
+    (evidence / "x/index.json").write_text("{}")
+    (evidence / "x/y/z/index.json").write_text("{}")
+    capsys.readouterr()
+    assert _record() == 2
+    err = capsys.readouterr().err
+    assert "fixtures: added fixtures/controls/evidence/x/index.json" in err
+    assert "fixtures: added fixtures/controls/evidence/x/y/z/index.json" in err
+    assert "evidence/x/y/index.json" not in err
 
 
 # --- recording ---
