@@ -579,6 +579,31 @@ def test_branch_names_a_missing_input(tmp_path, capsys, missing):
     assert f"{what} not found: {gone}" in capsys.readouterr().err
 
 
+def test_each_condition_keeps_its_own_failure_cards(tmp_path):
+    """Seeds of one condition share a card, and two conditions never do (#211).
+
+    Both conditions replay the recorded violation, so every run fails the same
+    way and has the same bundle key.
+    """
+    path, artifact = _artifact(tmp_path)
+    _, spec = _spec(
+        tmp_path,
+        _condition("off_a", "live_no_control", artifact, 2, seeds=[0, 1]),
+        _condition("off_b", "live_no_control", artifact, 2, seeds=[0, 1]),
+    )
+    store = ArtifactStore(tmp_path / "runs")
+    homes = []
+    for condition in spec.conditions:
+        batch = run_branch(path, spec, condition, store).summary
+        run_ids = [entry.run_id for entry in batch.entries]
+        by_run = store.bundle_homes(run_ids)
+        assert sorted(by_run) == sorted(run_ids)
+        assert set(by_run.values()) == {run_ids[0]}
+        homes.append(run_ids[0])
+    keys = {store.read_json(home, "failure_card.json")["bundle_key"] for home in homes}
+    assert len(keys) == 1 and homes[0] != homes[1]
+
+
 def test_experiment_record_fills_the_three_metrics_from_branch_batches(
     tmp_path, capsys, monkeypatch
 ):

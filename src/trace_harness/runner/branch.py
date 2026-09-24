@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -453,9 +453,11 @@ def run_branch(
             )
             continue
         progress = PipelineProgress()
+        # A failure card is shared by this condition's seeds only (#211).
+        scope = [e.run_id for e in entries if e.run_id is not None]
         try:
             entry = _run_seed(
-                artifact, task, experiment, condition, fork_step, seed, store, progress
+                artifact, task, experiment, condition, fork_step, seed, store, progress, scope
             )
         except Exception as exc:  # noqa: BLE001 (isolate the seed so the batch goes on)
             logger.warning("branch seed %s of %s failed: %s", seed, condition.name, exc)
@@ -530,12 +532,14 @@ def _run_seed(
     seed: int | None,
     store: ArtifactStore,
     progress: PipelineProgress,
+    bundle_scope: Collection[str] = (),
 ) -> BatchRunEntry:
     """Run one seed and score it.
 
     ``progress`` gets the run's configuration before the run and its id as
     soon as the runner made one, so a failure anywhere after that, in the
-    runner or in scoring, still names the run for pricing.
+    runner or in scoring, still names the run for pricing. ``bundle_scope``
+    names the runs whose failure cards this run may join (#211).
     """
     environment = SupportEnvironment.from_task(task, docs=None)
     # Controls enter only as installed controls, so every block carries blocked_by.
@@ -588,7 +592,9 @@ def _run_seed(
         run = runner.run(task, config)
     finally:
         progress.run_id = runner.run_id
-    return _scored_entry(artifact, task, condition, config, fork_step, seed, run, store)
+    return _scored_entry(
+        artifact, task, condition, config, fork_step, seed, run, store, bundle_scope
+    )
 
 
 def _scored_entry(
@@ -600,11 +606,17 @@ def _scored_entry(
     seed: int | None,
     run: RunResult,
     store: ArtifactStore,
+    bundle_scope: Collection[str] = (),
 ) -> BatchRunEntry:
-    """Verify, attribute and label a finished run, and compare it with the recording."""
+    """Verify, attribute and label a finished run, and compare it with the recording.
+
+    A failing run joins only a failure card of a run in ``bundle_scope``, the
+    runs of its own condition, so control-on and control-off runs that fail
+    alike never share a card, its repair package or its regression artifact.
+    """
     verdict = verify_run(store, run, task)
     if verdict is not None and verdict.has_violations:
-        attribute_and_bundle(store, run.run_id, task, run)
+        attribute_and_bundle(store, run.run_id, task, run, scope=bundle_scope)
 
     trace = store.read_trace(run.run_id)
     actions = [e.payload for e in trace if e.event_type is TraceEventType.MODEL_ACTION]

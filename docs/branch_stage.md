@@ -60,6 +60,9 @@ For each seed of a `live`, `live_no_control` or `live_swapped` condition:
 4. Verifies, attributes and bundles on failure as `run_task_pipeline` does,
    then labels the run with `classify_post_block_outcome`, passed runs
    included ([failure_taxonomy.md](failure_taxonomy.md#post-block-outcome-labels)).
+   A failing run joins only a failure card of an earlier run of its own
+   condition (#211), so its seeds that fail alike share one card and two
+   conditions never do ([failure_bundles.md](failure_bundles.md#scoping-the-lookup)).
 5. Compares the run's actions after the start step with the recording's.
 
 The start step is the last recorded step. At brief 001's fork points it is the

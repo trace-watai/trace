@@ -156,10 +156,11 @@ The branch stage is the caller the scope is for. Its conditions continue the
 same fork with the control on, with it off and with another model, and
 without a scope a failure in one condition joins a card from another. A
 control-on run would then be served the card and regression artifact of a
-control-off run. Passing the runs of one condition keeps each condition's
-cards apart, while its seeds still share one card per key. A scope over the
-whole experiment would merge the conditions again, so one condition's runs
-is the scope to pass. The experiment's metrics count verdicts from batch
+control-off run. `run_branch` passes each seed the runs its condition has
+already run in that batch, which keeps each condition's cards apart while
+its seeds still share one card per key. A scope over the whole experiment
+would merge the conditions again, so one condition's runs is the scope it
+passes. The experiment's metrics count verdicts from batch
 entries and come out the same either way. `run-sweep` scopes each cell to
 the sweep's cells that have already completed with verdict fail, the cells
 its retention keeps, so a failing cell never points to a card outside what is
