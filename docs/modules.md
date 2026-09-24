@@ -162,8 +162,8 @@ bump `RunConfig.prompt_version` when it changes); `BatchRunner(store).run(suite)
 on-disk artifacts — checks fired, failure categories, claimed-vs-observed
 coverage; see [suite_report.md](suite_report.md)).
 
-`collector.py` exposes `collect_regressions(path, store, suite_path=...)` and
-`CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
+`collector.py` exposes `collect_regressions(path, store, suite_path=...,
+experiments_path=...)` and `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
 completed failure reproduction and positive siblings. Control validation gates
 only for explicit `static_ok` labels; other labels remain advisory. The CLI and
 `check_repo.sh` call this collector. See [the gate contract](regression_contract.md#what-ci-does).

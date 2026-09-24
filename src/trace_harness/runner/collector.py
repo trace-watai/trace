@@ -3,6 +3,12 @@
 Baseline reproduction and positive siblings always gate. Control replay only
 gates for an explicit static_ok label; unlabeled/live_required results remain
 advisory. This reader accepts #156's labels without generating or changing them.
+
+Given an experiments directory, the collector also recomputes every retained
+experiment's frozen set (#195). Drift there is reported and recorded in the
+summary without failing the gate. A retained experiment that no longer loads,
+whose frozen set cannot be hashed, or whose plan and result contradict each
+other about the frozen set fails it.
 """
 
 from __future__ import annotations
@@ -22,8 +28,17 @@ from trace_harness.regression.report import ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.runner.batch import BatchRunner
 from trace_harness.runner.batch import summary_path as batch_summary_path
+from trace_harness.runner.experiment import (
+    PRE_FROZEN_SET_SCHEMA_VERSION,
+    ExperimentResult,
+    ExperimentSpec,
+    load_plan,
+)
+from trace_harness.runner.frozen_set import FrozenFileChange, check_frozen_set
 from trace_harness.runner.suite import load_suite
 from trace_harness.tracing.artifact_store import (
+    EXPERIMENT_RESULT,
+    EXPERIMENT_SPEC,
     REGRESSION_ARTIFACT,
     REGRESSION_GATE_SUMMARY,
     ArtifactStore,
@@ -65,6 +80,16 @@ class CollectorEntry(BaseModel):
     control_error: str | None = None
 
 
+class ExperimentFreezeEntry(BaseModel):
+    """One retained experiment's frozen set against the tree the gate ran on."""
+
+    experiment_id: str
+    status: Literal["matches", "drifted", "not_recorded"]
+    # The result was itself recorded over drift with --allow-drift.
+    recorded_drifted: bool = False
+    changes: list[FrozenFileChange] = Field(default_factory=list)
+
+
 class CollectorSummary(BaseModel):
     schema_version: Literal["0.1.0"] = "0.1.0"
     artifacts_found: int = 0
@@ -84,6 +109,9 @@ class CollectorSummary(BaseModel):
     suite_summary_path: str | None = None
     duration_s: float = 0.0
     entries: list[CollectorEntry] = Field(default_factory=list)
+    experiments: list[ExperimentFreezeEntry] = Field(default_factory=list)
+    # Warnings only: never part of exit_code (see _check_experiments).
+    experiments_drifted: list[str] = Field(default_factory=list)
 
     @computed_field
     @property
@@ -137,6 +165,7 @@ def collect_regressions(
     store: ArtifactStore,
     *,
     suite_path: Path | str | None = None,
+    experiments_path: Path | str | None = None,
 ) -> CollectorSummary:
     """Run a collection, retain its evidence, and atomically write the summary.
 
@@ -257,8 +286,90 @@ def collect_regressions(
             entry.control_status = "advisory"
             summary.controls_advisory += 1
 
+    if experiments_path is not None:
+        _check_experiments(Path(experiments_path), summary)
+
     summary.duration_s = round(monotonic() - started, 3)
     content = summary.model_dump_json(indent=2) + "\n"
     _atomic_write_text(work / SUMMARY_NAME, content)
     _atomic_write_text(runs_dir / SUMMARY_NAME, content)
     return summary
+
+
+def _check_experiments(directory: Path, summary: CollectorSummary) -> None:
+    """Recompute each retained experiment's frozen set against the working tree.
+
+    Drift is a warning here and blocks only at record time. A retained
+    experiment was checked when it was recorded; a later reviewed edit to the
+    verifier makes it stale without making its recorded numbers wrong. Failing
+    the gate on that would turn CI red on every verifier change until each
+    retained baseline was re-run. The cost is that CI never forces a
+    re-baseline, so the warning and ``experiments_drifted`` are the record.
+
+    An experiment that does not load, cannot be hashed, or pairs a plan and a
+    result that ``experiment record`` could not have written together is
+    malformed and fails the gate.
+    """
+    if not directory.is_dir():
+        summary.malformed.append(str(directory))
+        summary.errors.append(f"experiments directory not found: {directory}")
+        return
+    for plan in sorted(directory.glob(f"*/{EXPERIMENT_SPEC}")):
+        try:
+            entry = _check_experiment(plan)
+        except (OSError, ValueError) as exc:
+            summary.malformed.append(str(plan.parent))
+            summary.errors.append(f"{plan.parent}: {exc}")
+            continue
+        if entry.changes:
+            summary.experiments_drifted.append(entry.experiment_id)
+        summary.experiments.append(entry)
+
+
+def _check_experiment(plan: Path) -> ExperimentFreezeEntry:
+    spec = load_plan(json.loads(plan.read_text(encoding="utf-8")))
+    result_path = plan.parent / EXPERIMENT_RESULT
+    result = (
+        ExperimentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        if result_path.is_file()
+        else None
+    )
+    if result is not None:
+        _check_pair(spec, result)
+    manifest = spec.frozen_manifest
+    entry = ExperimentFreezeEntry(
+        experiment_id=spec.experiment_id,
+        status="not_recorded",
+        recorded_drifted=result is not None and result.frozen_set_drifted,
+    )
+    if manifest.frozen_set is not None:
+        entry.changes = check_frozen_set(
+            manifest.frozen_set,
+            Path.cwd(),
+            suite_id=manifest.suite_id,
+            labels_path=manifest.labels_path,
+        )
+        entry.status = "drifted" if entry.changes else "matches"
+    return entry
+
+
+def _check_pair(spec: ExperimentSpec, result: ExperimentResult) -> None:
+    """Refuse a plan and result that ``experiment record`` could not have written together.
+
+    Each file can load on its own after a hand edit of one of them. A plan
+    without a frozen set gets a result with both flags false, a frozen plan
+    gets one of them true, and a plan after 0.1.0 without a frozen set is never
+    recorded. A plan with no result yet is a registration awaiting its runs
+    and is not checked here.
+    """
+    frozen = spec.frozen_manifest.frozen_set is not None
+    checked = result.frozen_set_verified or result.frozen_set_drifted
+    if checked and not frozen:
+        raise ValueError("the result claims a frozen-set check, but the plan has no frozen set")
+    if frozen and not checked:
+        raise ValueError("the plan is frozen, but the result records no frozen-set check")
+    if not frozen and spec.schema_version != PRE_FROZEN_SET_SCHEMA_VERSION:
+        raise ValueError(
+            f"plan schema {spec.schema_version} has no frozen set, and experiment record "
+            "refuses such a plan, so record did not write this result"
+        )

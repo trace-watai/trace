@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from conftest import REPO_ROOT
-from test_experiment import _entry, _spec, _summary
+from test_experiment import _entry, _frozen, _spec, _summary
 from trace_harness.cli import main
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.batch import BatchSummary
@@ -65,10 +65,11 @@ def test_nothing_recorded_measures_nothing() -> None:
     assert only_incomplete.latency_ms_p50 is None
 
 
-def test_recording_no_condition_leaves_every_metric_unmeasured(tmp_path) -> None:
+def test_recording_no_condition_leaves_every_metric_unmeasured(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(REPO_ROOT)  # the frozen set is checked against the working tree
     runs = tmp_path / "runs"
     plan = tmp_path / "experiment.json"
-    plan.write_text(_spec().model_dump_json(indent=2), encoding="utf-8")
+    plan.write_text(_frozen(_spec()).model_dump_json(indent=2), encoding="utf-8")
     assert main(["--runs-dir", str(runs), "experiment", "record", str(plan)]) == 0
 
     _, result = RunReader(ArtifactStore(runs)).get_experiment(_spec().experiment_id)
@@ -194,13 +195,14 @@ def test_a_fresh_baseline_run_records_five_verified_failures(tmp_path, monkeypat
     assert result.metrics.extra["cost_recorded_n"] == 9
 
 
-def test_record_names_the_per_condition_metrics_after_the_plan(tmp_path) -> None:
+def test_record_names_the_per_condition_metrics_after_the_plan(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(REPO_ROOT)  # the frozen set is checked against the working tree
     runs = tmp_path / "runs"
     store = ArtifactStore(runs)
     store.write_batch_summary("b1", _summary("b1", [_entry("a", "fail"), _entry("b", "fail")]))
     store.write_batch_summary("b2", _summary("b2", [_entry("c", "pass")]))
     live = _spec().conditions[0].model_copy(update={"name": "live_on"})
-    spec = _spec(conditions=[_spec().conditions[0], live])
+    spec = _frozen(_spec(conditions=[_spec().conditions[0], live]))
     plan = tmp_path / "experiment.json"
     plan.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
 

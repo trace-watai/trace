@@ -34,6 +34,7 @@ from trace_harness.runner.experiment import (
     render_experiment_markdown,
     validate_condition_batches,
 )
+from trace_harness.runner.frozen_set import freeze
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import utc_now
@@ -60,6 +61,21 @@ def _spec(**overrides) -> ExperimentSpec:
         "budget": Budget(max_runs=10, max_cost_usd=0.0),
     }
     return ExperimentSpec(**{**base, **overrides})
+
+
+def _frozen(spec: ExperimentSpec) -> ExperimentSpec:
+    """``spec`` as ``experiment freeze`` leaves it, hashed from this checkout.
+
+    ``experiment record`` refuses a plan past schema 0.1.0 without a frozen
+    set, and checks the set against the working directory, so a test that
+    records this plan runs from the repository root.
+    """
+    manifest = spec.frozen_manifest
+    frozen = freeze(REPO_ROOT, suite_id=manifest.suite_id, labels_path=manifest.labels_path)
+    data = spec.model_dump(mode="json")
+    data["frozen_manifest"]["frozen_set"] = {n: c.model_dump() for n, c in frozen.items()}
+    data["frozen_manifest"]["fixtures_hash"] = frozen["fixtures"].digest
+    return ExperimentSpec.model_validate(data)
 
 
 # --- the contract with the #27 memo ---
@@ -216,7 +232,8 @@ def test_latency_p50_over_all_conditions() -> None:
 # --- the CLI, end to end ---
 
 
-def test_record_then_list(tmp_path, capsys) -> None:
+def test_record_then_list(tmp_path, capsys, monkeypatch) -> None:
+    monkeypatch.chdir(REPO_ROOT)  # the frozen set is hashed from the working tree
     runs_dir = tmp_path / "runs"
     store = ArtifactStore(runs_dir)
     batch_id = "batch_20260101T000000Z_aaaaaaaa"
@@ -227,6 +244,7 @@ def test_record_then_list(tmp_path, capsys) -> None:
     spec = _spec()
     plan = tmp_path / "experiment.json"
     plan.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
+    assert main(["experiment", "freeze", str(plan)]) == 0
 
     code = main(
         [
@@ -250,6 +268,7 @@ def test_record_then_list(tmp_path, capsys) -> None:
     assert result is not None
     assert result.condition_batches == {"replay_only": batch_id}
     assert result.metrics.verified_failure_count == 1
+    assert result.frozen_set_verified and not result.frozen_set_drifted
 
     capsys.readouterr()
     assert main(["--runs-dir", str(runs_dir), "list-experiments"]) == 0

@@ -31,10 +31,14 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trace_harness.environment.controls import resolve_control, select_controls
+from trace_harness.runner.frozen_set import FrozenComponent, FrozenFileChange, check_labels_path
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.events import utc_now
 
-EXPERIMENT_SCHEMA_VERSION = "0.1.0"
+# 0.2.0: the frozen set on the plan and the frozen_set_* fields on the result (#195)
+EXPERIMENT_SCHEMA_VERSION = "0.2.0"
+# Plans at this version predate the frozen set and may record without one.
+PRE_FROZEN_SET_SCHEMA_VERSION = "0.1.0"
 
 #: An experiment id names a directory under ``runs/experiments/``, so it must be
 #: a single path segment. Letters, digits, ``_`` and ``-`` only, which leaves no
@@ -121,11 +125,19 @@ class FrozenManifest(BaseModel):
     """What must not change while the conditions run.
 
     ``suite_id`` is enforced: ``experiment record`` refuses a batch whose
-    summary names any other suite. ``fixtures_hash`` is stored exactly as the
-    plan states it. Nothing here computes it from the fixture files or compares
-    it with them, so it records what the author froze and proves nothing about
-    the files. Computing it, and refusing a record when the files moved, is
-    #195's ``experiment freeze``.
+    summary names any other suite.
+
+    ``frozen_set`` covers the fixtures, the verifier, the environment, the
+    attribution scorer, the suite and the labels (#195). ``experiment freeze``
+    writes it and sets ``fixtures_hash`` to its fixtures digest, and
+    ``experiment record`` recomputes it and refuses when a file moved. If the
+    fixtures move between two conditions, the conditions answered different
+    questions and the comparison is void.
+
+    Without a frozen set, ``fixtures_hash`` is stored exactly as the plan
+    states it. Nothing computes it from the fixture files or compares it with
+    them, so it records what the author froze and proves nothing about the
+    files. Only a plan from schema 0.1.0 records without a frozen set.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -133,6 +145,24 @@ class FrozenManifest(BaseModel):
     suite_id: str
     verifier_ids: list[str] = Field(default_factory=list)
     fixtures_hash: str
+    labels_path: str | None = None
+    frozen_set: dict[str, FrozenComponent] | None = None
+
+    @model_validator(mode="after")
+    def _labels_path_stays_in_the_repository(self) -> FrozenManifest:
+        if self.labels_path is not None:
+            check_labels_path(self.labels_path)
+        return self
+
+    @model_validator(mode="after")
+    def _fixtures_hash_is_the_frozen_digest(self) -> FrozenManifest:
+        fixtures = (self.frozen_set or {}).get("fixtures")
+        if fixtures is not None and fixtures.digest != self.fixtures_hash:
+            raise ValueError(
+                f"fixtures_hash {self.fixtures_hash} disagrees with the frozen fixtures "
+                f"digest {fixtures.digest}"
+            )
+        return self
 
 
 class Budget(BaseModel):
@@ -214,6 +244,30 @@ class ExperimentResult(BaseModel):
     report_path: str | None = None
     finished_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # How the plan's frozen set compared with the tree at record time (#195).
+    # Both false means the plan carried no frozen set, which is never a pass.
+    frozen_set_verified: bool = False
+    frozen_set_drifted: bool = False
+    frozen_set_drift: list[FrozenFileChange] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _drift_forces_review(self) -> ExperimentResult:
+        """A result that says drifted carries its files and decision review.
+
+        This refuses an edit to the decision alone. An edit that also clears
+        the drift fields describes a clean record and loads; the file carries
+        no signature, so git history is the record against that.
+        """
+        if self.frozen_set_verified and self.frozen_set_drifted:
+            raise ValueError("a frozen set cannot be both verified and drifted")
+        if self.frozen_set_drifted != bool(self.frozen_set_drift):
+            raise ValueError("frozen_set_drifted must be true exactly when frozen_set_drift is set")
+        if self.frozen_set_drifted and self.decision is not Decision.REVIEW:
+            raise ValueError(
+                "a result recorded over a drifted frozen set must have decision review, "
+                f"got {self.decision.value}"
+            )
+        return self
 
 
 #: Fields a plan read from a file must state instead of taking a default.
@@ -283,10 +337,10 @@ def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -
         "",
         f"**Hypothesis.** {spec.hypothesis}",
         "",
-        f"Suite `{spec.frozen_manifest.suite_id}`. Fixtures hash "
-        f"`{spec.frozen_manifest.fixtures_hash}` as the plan states it; nothing "
-        "recomputed it from the files. "
-        f"Decision **{result.decision.value}** by {result.decided_by.value}.",
+        _suite_line(spec, result)
+        + f"Decision **{result.decision.value}** by {result.decided_by.value}.",
+        "",
+        _frozen_set_line(result),
         "",
         "## Conditions",
         "",
@@ -304,7 +358,35 @@ def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -
         lines.append(f"| {name} | {'not measured' if value is None else value} |")
     for name, value in sorted(result.metrics.extra.items()):
         lines.append(f"| {name} (extra) | {value} |")
+    if result.frozen_set_drift:
+        lines += ["", "## Frozen set drift", "", "| component | change | file |", "|---|---|---|"]
+        for c in result.frozen_set_drift:
+            lines.append(f"| {c.component} | {c.change} | {c.path} |")
     return "\n".join(lines) + "\n"
+
+
+def _suite_line(spec: ExperimentSpec, result: ExperimentResult) -> str:
+    """Say "frozen at" only when record time checked the frozen set and it held."""
+    manifest = spec.frozen_manifest
+    if result.frozen_set_verified:
+        return f"Suite `{manifest.suite_id}` frozen at `{manifest.fixtures_hash}`. "
+    if manifest.frozen_set is not None:
+        return f"Suite `{manifest.suite_id}`. Fixtures hash `{manifest.fixtures_hash}` at freeze. "
+    return (
+        f"Suite `{manifest.suite_id}`. Fixtures hash `{manifest.fixtures_hash}` as the plan "
+        "states it; nothing recomputed it from the files. "
+    )
+
+
+def _frozen_set_line(result: ExperimentResult) -> str:
+    if result.frozen_set_drifted:
+        return (
+            f"**Frozen set drifted.** {len(result.frozen_set_drift)} file(s) differed from "
+            "the plan at record time, so the decision is forced to review."
+        )
+    if result.frozen_set_verified:
+        return "Frozen set verified: every frozen file matched the plan at record time."
+    return "Frozen set not recorded: the plan predates it, so the evaluator was not checked."
 
 
 def derive_metrics(

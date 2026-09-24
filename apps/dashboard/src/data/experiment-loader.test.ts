@@ -1,9 +1,13 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { getExperiment, listExperiments } from "@/data/experiment-loader";
-import { EXPERIMENT_METRIC_NAMES } from "@/types/experiment";
+import {
+  EXPERIMENT_METRIC_NAMES,
+  parseExperimentSpec,
+  type RawExperimentSpec,
+} from "@/types/experiment";
 
 // The retained baseline lives beside the retained runs, under docs/acceptance.
 const ACCEPTANCE = path.join(process.cwd(), "..", "..", "docs", "acceptance");
@@ -21,6 +25,33 @@ describe("experiment loader", () => {
     expect(result).not.toBeNull();
     expect(result?.decision).toBe("baseline");
     expect(result?.metrics.verifiedFailureCount).toBe(5);
+    // exp_000 predates the frozen set, so its result must not read as verified.
+    expect(spec.frozenManifest.frozenSet).toBeNull();
+    expect(result?.frozenSetVerified).toBe(false);
+    expect(result?.frozenSetDrifted).toBe(false);
+    expect(result?.frozenSetDrift).toEqual([]);
+  });
+
+  it("keeps frozen file paths byte for byte", () => {
+    process.env.TRACE_RUNS_DIR = ACCEPTANCE;
+    const raw = JSON.parse(
+      readFileSync(
+        path.join(ACCEPTANCE, "experiments/exp_000_baseline/experiment.json"),
+        "utf8",
+      ),
+    ) as RawExperimentSpec;
+    const file = "src/trace_harness/verifiers/refund_policy.py";
+    raw.frozen_manifest.frozen_set = {
+      verifiers: {
+        path: "src/trace_harness/verifiers",
+        digest: "sha256:ab",
+        files: { [file]: "cd" },
+      },
+    };
+    const spec = parseExperimentSpec(raw);
+    expect(spec.frozenManifest.frozenSet?.verifiers.files).toEqual({
+      [file]: "cd",
+    });
   });
 
   it("maps every declared condition to a batch", () => {

@@ -7,6 +7,7 @@ that, so every refusal here is checked to leave the stored files untouched.
 
 from __future__ import annotations
 
+import functools
 import json
 import shutil
 from pathlib import Path
@@ -14,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO_ROOT
-from test_experiment import _entry, _spec, _summary
+from test_experiment import _entry, _frozen, _spec, _summary
 from trace_harness.cli import main
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.experiment import (
@@ -28,6 +29,17 @@ from trace_harness.tracing.artifact_store import ArtifactStore
 BATCH = "batch_20260101T000000Z_aaaaaaaa"
 ACCEPTANCE = REPO_ROOT / "docs" / "acceptance"
 RETAINED = ACCEPTANCE / "experiments" / "exp_000_baseline"
+
+
+@pytest.fixture(autouse=True)
+def _at_the_repository_root(monkeypatch) -> None:
+    """Record checks a frozen plan against the working directory (#195)."""
+    monkeypatch.chdir(REPO_ROOT)
+
+
+@functools.cache
+def _frozen_plan_json() -> str:
+    return _frozen(_spec()).model_dump_json()
 
 
 def _store_with_batch(tmp_path: Path, *, suite_id: str = "refund_bundles_v0") -> ArtifactStore:
@@ -47,7 +59,7 @@ def _record(store: ArtifactStore, plan: Path, *extra: str) -> int:
 
 
 def _plan_data() -> dict:
-    return json.loads(_spec().model_dump_json())
+    return json.loads(_frozen_plan_json())
 
 
 # --- the plan is stored once and never rewritten ---
@@ -182,10 +194,15 @@ def test_the_retained_baseline_still_records(tmp_path) -> None:
 
 
 def test_the_retained_files_round_trip_byte_for_byte() -> None:
-    """Loading and dumping the committed files changes nothing in them."""
+    """Loading and dumping the committed files changes nothing in them.
+
+    They were written at schema 0.1.0, before the frozen set fields existed
+    (#195), so the dump leaves out the fields the files never stated. Every
+    field they do state must come back unchanged.
+    """
     for name, model in (("experiment.json", ExperimentSpec), ("result.json", ExperimentResult)):
         raw = (RETAINED / name).read_text(encoding="utf-8")
-        dumped = model.model_validate_json(raw).model_dump(mode="json")
+        dumped = model.model_validate_json(raw).model_dump(mode="json", exclude_unset=True)
         assert json.dumps(dumped, indent=2) + "\n" == raw
 
 
