@@ -92,6 +92,11 @@ Owned by the research and QA lane. Every code PR that changes behavior
 described here updates the matching doc in the same PR, because a stale doc is
 a bug report waiting to happen.
 
-`tests/test_docs_index.py` fails when a doc is added without a link here, and
-`tests/test_docs_versions.py` fails when a doc quotes a schema version that
-disagrees with the constant in `src/`.
+`tests/test_docs_index.py` fails when a doc is added without a link here, or
+when a link here points at a doc that is gone. `tests/test_docs_versions.py`
+fails when a current doc quotes a schema version that disagrees with its
+constant in `src/`, but only for quotes in the forms it reads, such as
+`TaskSpec X.Y.Z` or `TRACE_SCHEMA_VERSION = X.Y.Z`. It skips dated records
+(acceptance records, ADRs, experiments, plans, the July 28 review) and notes
+like "since TaskSpec X.Y.Z". It also fails when a schema constant is added to
+`src/` without being mapped to a documented name or exempted.
