@@ -21,8 +21,11 @@ from pathlib import Path
 
 import pytest
 
+import postgrest_fake as fake
 from pg_cluster import PgCluster, dollar_quote, find_postgres_bin
 from trace_harness.public_results import schema
+from trace_harness.public_results.postgrest import PostgrestClient, PostgrestError
+from trace_harness.run_reader_supabase import SupabaseRunReader
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = sorted((REPO_ROOT / schema.MIGRATIONS_DIR).glob("*.sql"))
@@ -273,6 +276,37 @@ def test_inconsistent_run_rows_are_rejected(cluster: PgCluster, db: str, change:
     done = cluster.psql(f"set role service_role;\n{upsert_sql(schema.RUNS, [row])}", database=db)
     assert not done.ok
     assert "violates check constraint" in done.stderr
+
+
+def test_retained_results_round_trip_through_postgres_as_anon(
+    cluster: PgCluster, db: str, tmp_path: Path
+) -> None:
+    """Every retained item, written as service_role and read back as anon.
+
+    The rows go in through the statement PostgREST runs for an upsert and come
+    back through json_agg under row level security, so jsonb storage, the
+    grants and the check constraints are all the real ones.
+    """
+    fs, rows = fake.retained_rows(tmp_path / "staged")
+    server = fake.PsqlPostgrest(cluster, db)
+    writer = PostgrestClient(fake.BASE_URL, fake.SERVICE_KEY, transport=server)
+    for table, table_rows in rows.items():
+        writer.upsert(table, table_rows, on_conflict=schema.PRIMARY_KEYS[table])
+
+    hosted = SupabaseRunReader(
+        PostgrestClient(fake.BASE_URL, fake.ANON_KEY, transport=server, page_size=4)
+    )
+    fake.assert_same_reads(fs, hosted, [r["batch_id"] for r in rows[schema.BATCHES]])
+
+    anon = PostgrestClient(fake.BASE_URL, fake.ANON_KEY, transport=server)
+    before = table_md5(cluster, db, schema.RUNS)
+    with pytest.raises(PostgrestError) as refused:
+        anon.upsert(schema.RUNS, rows[schema.RUNS][:1], on_conflict="run_id")
+    assert (refused.value.status, refused.value.code) == (401, "42501")
+    with pytest.raises(PostgrestError) as refused:
+        anon.delete(schema.RUNS, "run_id", [rows[schema.RUNS][0]["run_id"]])
+    assert (refused.value.status, refused.value.code) == (401, "42501")
+    assert table_md5(cluster, db, schema.RUNS) == before
 
 
 # --- lockstep: runs without a database -------------------------------------

@@ -78,7 +78,7 @@ from trace_harness.regression.replay import (
 from trace_harness.regression.replay import pinned_script as build_pinned_script
 from trace_harness.regression.report import ReplayCaseResult, ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
-from trace_harness.run_reader import RunReader
+from trace_harness.run_readers import open_run_reader, reader_location
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.batch import new_batch_id
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
@@ -1347,10 +1347,11 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
 
 def _list_experiments(store: ArtifactStore) -> int:
     """One line per experiment, replacing any hand-kept spreadsheet of them."""
-    reader = RunReader(store)
+    reader = open_run_reader(store)
+    where = reader_location(reader)
     specs = reader.list_experiments()
     if not specs:
-        print(f"no experiments found in {store.runs_dir}")
+        print(f"no experiments found in {where}")
         return 0
     for spec in specs:
         _, result = reader.get_experiment(spec.experiment_id)
@@ -1359,15 +1360,15 @@ def _list_experiments(store: ArtifactStore) -> int:
         )
         conditions = ", ".join(c.name for c in spec.conditions)
         print(f"{spec.experiment_id}  {decision}  [{conditions}]  {spec.hypothesis[:60]}")
-    print(f"\n{len(specs)} experiment(s) in {store.runs_dir}")
+    print(f"\n{len(specs)} experiment(s) in {where}")
     return 0
 
 
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
     """Print a one-line summary per run, newest last (chronological)."""
-    reader = RunReader(store)
+    reader = open_run_reader(store)
     summaries = reader.list_runs_for_batch(batch_id) if batch_id else reader.list_runs()
-    where = f"batch {batch_id}" if batch_id else str(store.runs_dir)
+    where = f"batch {batch_id}" if batch_id else reader_location(reader)
     if not summaries:
         print(f"no runs found in {where}")
         return
