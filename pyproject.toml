@@ -46,6 +46,21 @@ anthropic = [
 openai = [
     "openai>=3.0,<4",
 ]
+# Optional: the reference outside agents (docs/bring_your_own_agent.md). The
+# core package never imports them and their tests skip when they are absent.
+langgraph = [
+    "langgraph>=1.2,<2",
+    "langchain-core>=1.6,<2",
+]
+# The Agents SDK is pre-1.0 and its Model interface has changed between minor
+# releases, so the range stays on the minor release the reference was built on.
+# The reference also imports the openai package's response types directly, so
+# openai is named here with the range openai-agents 0.22 itself requires. The
+# openai extra has to admit that range too for both extras to install together.
+openai-agents = [
+    "openai-agents>=0.22,<0.23",
+    "openai>=3,<4",
+]
 
 [project.scripts]
 trace-harness = "trace_harness.cli:main"

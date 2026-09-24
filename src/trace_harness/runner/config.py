@@ -8,8 +8,9 @@ that is a reproducibility bug — add it.
 provider; they exist so real adapters have a home for them from day one.
 
 ``call_policy`` is the retry, backoff and rate-limit policy a live run executed
-under (#196). It is null for runs that make no live call: the fixture provider
-and cassette replay.
+under (#196). It is null for runs that make no live call: the fixture provider,
+cassette replay, and an outside agent (provider ``external``), whose model
+calls the harness never makes.
 
 Known metadata keys used by the harness today:
     task_fixture_path    repo path of the task fixture the CLI ran
@@ -18,6 +19,9 @@ Known metadata keys used by the harness today:
     seed_sent            False when ``seed`` was configured for a provider
                          whose API has no seed (Anthropic), so it was
                          recorded and never sent; absent otherwise
+
+``agent_ref`` names the outside agent (``package.module:factory``) when
+``provider`` is ``external``; see ``runner/target_agent.py``.
 """
 
 from __future__ import annotations
@@ -30,8 +34,9 @@ from pydantic import BaseModel, Field
 from trace_harness.models.cassette import CassetteConfig
 from trace_harness.models.policy import CallPolicy
 
-# 0.3.0: optional live call policy; 0.2.0: optional explicit cassette configuration
-RUN_CONFIG_SCHEMA_VERSION = "0.3.0"
+# 0.4.0: agent_ref for provider "external"; 0.3.0: optional live call policy;
+# 0.2.0: optional explicit cassette configuration
+RUN_CONFIG_SCHEMA_VERSION = "0.4.0"
 
 # Version of the system/user prompt template built by
 # runner.agent_runner.build_initial_transcript. Bump when that template
@@ -65,4 +70,5 @@ class RunConfig(BaseModel):
     tool_mode: ToolMode = ToolMode.NATIVE
     cassette: CassetteConfig | None = None
     call_policy: CallPolicy | None = None
+    agent_ref: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

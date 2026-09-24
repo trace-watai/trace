@@ -77,6 +77,7 @@ from trace_harness.runner.pipeline import (
     verify_run,
 )
 from trace_harness.runner.result import RunResult
+from trace_harness.runner.target_agent import EXTERNAL_PROVIDER
 from trace_harness.tasks.loader import load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
@@ -112,12 +113,23 @@ def validate_condition(artifact: RegressionArtifact, condition: ConditionSpec) -
     The fork step is the last step the recording answers, 0 when the condition
     declares no start. Unknown control ids fail here, before a sweep spends
     anything, and so does a start the agent would never act after: the
-    recording's final answer, or a ``max_steps`` that ends the run by then.
+    recording's final answer, or a ``max_steps`` that ends the run by then. An
+    outside agent (provider ``external``), which branch does not run, fails
+    here too.
     """
     select_controls(condition.control_ids)
     if condition.kind is not ConditionKind.STATIC_REPLAY and not artifact.pinned_agent_actions:
         raise ValueError("the artifact pins no agent actions, so there is nothing to fork")
     agent = condition.agent_config
+    if agent.provider == EXTERNAL_PROVIDER:
+        # The fork adapter hands the continuation to a model adapter at the
+        # start step. An outside agent has its own loop and cannot be started
+        # mid-run from a recorded prefix, so branching one is not supported (#210).
+        raise ValueError(
+            f"condition {condition.name!r}: branch does not run outside agents yet "
+            f"(provider 'external', agent_ref {agent.agent_ref!r}); use a fixture or "
+            "live provider for the condition"
+        )
     if agent.provider == "fixture" and agent.cassette is not None:
         raise ValueError(f"condition {condition.name!r}: a fixture continuation takes no cassette")
     script = condition.continuation_script

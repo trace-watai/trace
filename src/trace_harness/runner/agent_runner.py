@@ -19,7 +19,10 @@ Failure behavior
     whatever artifacts were produced. Caught failures record an ``error``
     event and the run still finishes its bookkeeping (final state snapshot,
     ``run_finished``, ``run_result.json``); only a hard kill leaves a trace
-    truncated mid-stream. Partial evidence beats no evidence.
+    truncated mid-stream. Partial evidence beats no evidence. An adapter error
+    that carries a response the adapter received (``ModelAdapterError.raw``)
+    has it recorded as ``model_response`` at the failing step, ahead of the
+    error event.
 
 Live calls
     Retries, backoff and the per-provider rate limit live in
@@ -149,14 +152,15 @@ class ToolEnvironment(Protocol):
 
 
 def _record_unacted_response(recorder: TraceRecorder, step_id: int, exc: ModelAdapterError) -> bool:
-    """Record a billed response the adapter could not act on, before its error.
+    """Record a response the adapter received and could not act on, before its error.
 
-    The one place the trace keeps such a response (#160, #196). The provider
-    answered, and the answer could not become an action (a refusal, a blocked,
-    empty or truncated answer, parallel tool calls). It was billed, so it is
-    written as a ``model_response`` event, with the call record beside it as
-    for an accepted answer, and the run's cost is priced from its usage.
-    Returns whether there was one to record.
+    The one place the trace keeps such a response (#160, #196, #210). Either a
+    live provider answered and the answer could not become an action (a
+    refusal, a blocked, empty or truncated answer, parallel tool calls), or an
+    outside agent forwarded a response and then raised. It is written as a
+    ``model_response`` event, with the call record beside it as for an
+    accepted answer, so nothing it carried is lost and a billed answer is
+    priced from its usage. Returns whether there was one to record.
     """
     if exc.raw is None:
         return False
@@ -237,6 +241,12 @@ def _observation_to_tool_message(result: ToolResult) -> Message:
             "error": result.error,
         },
     )
+
+
+# Public for code that has to rebuild this transcript shape outside the
+# runner, such as the reference agents mapping a framework's conversation back.
+action_to_assistant_message = _action_to_assistant_message
+observation_to_tool_message = _observation_to_tool_message
 
 
 class AgentRunner:
@@ -361,6 +371,7 @@ class AgentRunner:
                     error_message = str(exc)
                     break
                 except ScriptExhaustedError as exc:
+                    _record_unacted_response(recorder, step_id, exc)
                     recorder.record(
                         TraceEventType.ERROR,
                         step_id=step_id,

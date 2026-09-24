@@ -17,9 +17,10 @@ export const TRACE_SCHEMA_VERSION = "0.5.0";
 
 /**
  * Every kind of event a run may emit (mirrors the backend `TraceEventType`
- * StrEnum). MVP runs emit a subset: the fixture adapter produces no separate
- * `model_response`, which is reserved for real provider adapters whose raw
- * response differs from the normalized action.
+ * StrEnum). MVP runs emit a subset. The fixture adapter produces no separate
+ * `model_response`. That type is for real provider adapters, whose raw
+ * response differs from the normalized action, and for outside agents
+ * (provider `external`), whose forwarded responses it records (#210).
  */
 export const TRACE_EVENT_TYPES = [
   "run_started",

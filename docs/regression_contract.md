@@ -158,8 +158,12 @@ and result contradict each other about the frozen set is malformed. See
 The command recursively finds `regression_artifact.json` files (or accepts one
 artifact file), generates fresh artifacts through the optional fixture suite,
 and calls the existing replay implementation for every release-blocking artifact.
-The retained artifact plus the five bundle artifacts produce six collected entries,
-including two separate recordings with the same test name.
+The three retained artifacts plus the five bundle artifacts produce eight
+collected entries, including four separate recordings with the same test name.
+Two of the retained artifacts come from the reference outside agents (#210) and
+replay from their pinned moves, so neither SDK is needed. The one retained
+experiment, `exp_000_baseline`, is checked beside them. `tests/test_collector.py`
+runs this same collection and pins both counts.
 
 Each pinned failure must reproduce and every declared positive sibling must pass.
 Both require completed runs: a partial run cannot satisfy the collector even if

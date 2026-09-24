@@ -106,13 +106,16 @@ class ModelAdapterError(RuntimeError):
     attempts that led to it reach the trace. It is None for a failure that
     never involved a provider request.
 
-    ``raw`` is set when the provider did answer, and billed for it, but the
-    answer could not become an action (a refusal, a blocked, empty or
-    truncated answer, parallel tool calls). The adapter's response normalizer
-    attaches it, and the runner writes it as a ``model_response`` event, with
-    ``call_record`` beside it, before the error, so the run's cost is priced
-    from it like any other response. It is None for a failure that got no
-    response at all.
+    ``raw`` is set when a model response arrived and the adapter failed instead
+    of acting on it. For a live provider the answer was billed but could not
+    become an action (a refusal, a blocked, empty or truncated answer, parallel
+    tool calls), and the adapter's response normalizer attaches it. For an
+    outside agent it is the last response the agent forwarded before it raised
+    (``runner/target_agent.py``). Either way the runner writes it as a
+    ``model_response`` event at the failing step, with ``call_record`` beside
+    it, before the error, so the response is not lost and a billed one is
+    priced like any other. It is None for a failure that got no response at
+    all.
     """
 
     call_record: dict[str, Any] | None = None

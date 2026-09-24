@@ -762,6 +762,25 @@ def test_a_bad_condition_fails_before_anything_runs(tmp_path, capsys, change, me
     assert not runs.exists()
 
 
+def test_branch_refuses_an_outside_agent_before_any_run(tmp_path, capsys):
+    """Branch conditions do not run outside agents yet (#210), and branch says so."""
+    path, artifact = _artifact(tmp_path)
+    outside = {"label": "outside", "provider": "external", "agent_ref": "mypackage.agents:agent"}
+    spec_path, _ = _spec(tmp_path, _condition("outside", "live", artifact, 2, agent_config=outside))
+    runs = tmp_path / "runs"
+    branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]
+    capsys.readouterr()
+    assert main(branch) == 2
+    assert "branch does not run outside agents yet" in capsys.readouterr().err
+    assert not runs.exists()
+    # Nor can one come in from the command line, since branch takes no --agent.
+    with pytest.raises(SystemExit) as exited:
+        main([*branch, "--agent", "mypackage.agents:agent"])
+    assert exited.value.code == 2
+    assert "unrecognized arguments: --agent" in capsys.readouterr().err
+    assert not runs.exists()
+
+
 def test_a_start_the_agent_would_never_act_after_fails_before_anything_runs(tmp_path, capsys):
     """A run ending at or before the fork has nothing to compare, so the rate would drop it."""
     path, artifact = _artifact(tmp_path)
