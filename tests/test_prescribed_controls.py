@@ -534,3 +534,36 @@ def test_an_explicit_selection_still_says_it_excluded_the_rest(tmp_path) -> None
     )
     (reason,) = [c.reason for c in validation.controls if c.control == REFUND_TEMPLATE]
     assert reason == "not_selected: this control was excluded by --control"
+
+
+@pytest.mark.parametrize(
+    ("task_path", "control_id", "name"),
+    [
+        (
+            FIXTURES_DIR / "tasks" / "refund_policy_phantom_refund.json",
+            "ctl_final_answer_grounding_v1",
+            "final_answer_state_grounding_check",
+        ),
+        (
+            FIXTURES_DIR / "tasks" / "refund_policy_missing_info_failure.json",
+            "ctl_required_escalation_v1",
+            "required_escalation_enforcement",
+        ),
+    ],
+)
+def test_a_final_answer_control_that_acts_can_never_be_accepted(
+    tmp_path, task_path, control_id, name
+) -> None:
+    """A blocked final answer ends the run (#193), so the pinned replay never completes.
+
+    docs/failure_bundles.md says these two controls can never be accepted for
+    this reason. If the seam starts handing the block back to the agent, this
+    fails and the docs need the new verdict.
+    """
+    validation = _validate(tmp_path, _bundle(tmp_path, task_path), control_id)
+    (verdict,) = [c for c in validation.controls if c.control == name]
+    assert verdict.control_id == control_id
+    assert verdict.verdict.value == "skipped"
+    assert verdict.reason == "validation_incomplete: the pinned replay did not complete"
+    assert verdict.originating_rerun is not None
+    assert verdict.originating_rerun.verdict == "INCOMPLETE"

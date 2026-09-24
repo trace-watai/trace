@@ -169,9 +169,12 @@ class SupportEnvironment:
     # --- controls as data (TRA-87) ---
 
     def install_control(self, instance: ControlInstance) -> None:
-        """Install a data-defined control as a pre-execute hook.
+        """Install a data-defined control on the seam its guardrail names.
 
-        Resolves ``instance.guardrail_ref`` through the guardrail registry and
+        A pre-call guardrail becomes a pre-execute hook and a final-answer
+        guardrail becomes a final-answer hook, which also receives the task
+        this environment was built from. Resolves ``instance.guardrail_ref``
+        through the guardrail registry and
         checks ``instance.rule_ref`` against the rules that guardrail reads
         *now*, so an unknown ref or a mismatched ``rule_ref`` fails here, at
         install time, never later at dispatch. Installing the same

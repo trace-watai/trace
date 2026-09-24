@@ -786,22 +786,24 @@ def _replay_with_report(
     normal meaning for a regression suite, since a bug silently stopping
     reproduction usually means the fixture broke, not that the bug got fixed.
 
-    With ``apply_control``: installs the reference controls (environment.
-    controls, all of them unless ``control_ids`` narrows the set) on the
-    environment before every run in this replay, and
+    With ``apply_control``: installs the reference set from
+    environment.controls, or the catalogue controls ``control_ids`` names,
+    on the environment before every run in this replay, and
     inverts the assertion — "gate clear" now requires that every pinned check
     stopped firing *and* that the control introduced no new blocking failure
     of its own. Both halves matter: a guardrail that blocks a harmful action
     while leaving the agent asserting it happened has moved the failure, not
     removed it, and must not read as a clear gate.
 
-    A control only affects checks its guardrails actually cover (today:
-    unauthorized_cash_refund). A fixture whose failure also depends on
+    A control only affects checks its guardrail covers (``checks_covered`` in
+    the guardrail registry). A fixture whose failure also depends on
     downstream narration (a ticket, a final answer) that the scripted agent
     repeats unconditionally will still fail on those other checks, because a
-    guardrail can only change what happens in *state*, not what a fixed
-    script says. See docs/regression_contract.md#control-flip-demo for a
-    fixture built so that isn't a problem.
+    pre-call guardrail can only change what happens in *state* and a fixed
+    script says the same thing either way. See
+    docs/regression_contract.md#control-flip-demo for a fixture built so that
+    isn't a problem. A final-answer guardrail that blocks ends the run (#193),
+    so its replay never completes.
 
     Returns structured evidence and the existing command's 0/1 exit status.
     """

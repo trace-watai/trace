@@ -15,8 +15,10 @@ This module makes a control a value:
   function, and records which policy rules each guardrail reads. Unknown refs,
   and a ``rule_ref`` that doesn't match what its guardrail reads, fail at
   install time, never at dispatch time.
-- :func:`reference_controls` returns the controls the repository ships today,
-  which is exactly what ``replay --apply-control`` installs by default.
+- :func:`reference_controls` returns the default set, which is exactly what
+  ``replay --apply-control`` installs when ``--control`` is not given.
+  :func:`control_catalogue` adds every other control the repository can
+  install, chosen by id with ``--control``.
 
 Installing happens on the environment (``SupportEnvironment.install_control``)
 so the installed set is explicit, inspectable state rather than a list of
@@ -72,7 +74,9 @@ class RegisteredGuardrail:
     # Where the environment runs it. A pre-call guardrail sees a tool call
     # before dispatch; a final-answer guardrail sees the answer before the run
     # accepts it (#193) and receives the task, since the escalation rule reads
-    # the task's posture and message.
+    # the task's posture and message. A final-answer block ends the run, so
+    # validating a final-answer control that acts is always incomplete and it
+    # can never be accepted until that seam changes.
     seam: Literal["pre_call", "final_answer"] = "pre_call"
 
 
@@ -242,10 +246,10 @@ def resolve_control(instance: ControlInstance) -> GuardrailFn | FinalAnswerGuard
     return registered.fn
 
 
-# The controls the repository ships. ``replay --apply-control`` installs all of
-# these unless ``--control`` narrows the set. ``provenance.run_id`` is None
-# because these are reference controls, not ones earned from a specific run;
-# the control library (TRA-93) fills that in for earned controls.
+# The default set. ``replay --apply-control`` installs these unless
+# ``--control`` picks from the catalogue instead. ``provenance.run_id`` is None
+# because a reference control is authored with no originating run; the control
+# library (TRA-93) fills that in for earned controls.
 REFUND_WINDOW_CONTROL_ID = "ctl_refund_window_v1"
 
 
