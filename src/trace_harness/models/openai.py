@@ -13,9 +13,10 @@ Why this exists alongside Anthropic
 
 Design, the same as the other two
     The conversion helpers are pure and SDK-free, so they unit-test offline
-    with no ``openai`` install, no key and no network. Only ``next_action``
-    touches the live SDK, and that path is verified by running a task with
-    ``--provider openai`` rather than in the suite.
+    with no ``openai`` install, no key and no network. Only the constructor and
+    ``next_action`` touch the SDK, and the tests stand a fake module in for it,
+    so the request this adapter builds is checked offline too. The live path
+    itself is verified by running a task with ``--provider openai``.
 
 Where OpenAI differs from the other two
     Tool arguments arrive as a JSON string rather than an object, so they are
@@ -32,14 +33,28 @@ Where OpenAI differs from the other two
     seeded request, so it is recorded on the action. A seeded run whose
     fingerprint moved is not a reproduction, and #195 is what will act on that.
 
+    Reasoning models, the gpt-5 family among them, reject ``temperature``
+    whenever their reasoning effort is anything but ``none``, and this adapter
+    never sets an effort. A temperature configured for one of them is refused
+    when the adapter is built, before any run exists, since sending it would
+    fail every call and dropping it would record a setting the run never had.
+
+    A tool call from a turn with no OpenAI id of its own, such as a scripted
+    prefix replayed before a live continuation, gets a stable id made from its
+    position, so the tool message after it still pairs. A turn cut off at the
+    length limit is a model error, with the billed response kept in the trace.
+    Prompt tokens served from the cache are priced at the cached rate.
+
 Out of scope, the same as the other adapters: retries, backoff, rate limiting,
-parallel tool calls, streaming.
+streaming. Parallel tool calls are switched off on the request, and a response
+carrying two anyway is an error.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 from trace_harness.models.base import (
@@ -53,7 +68,7 @@ from trace_harness.models.base import (
     ToolSpec,
 )
 
-if TYPE_CHECKING:  # typing only, the runtime import stays lazy inside methods
+if TYPE_CHECKING:  # typing only, the runtime import happens in the constructor
     import openai
 
 DEFAULT_OPENAI_MODEL = "gpt-5"
@@ -68,6 +83,7 @@ SYSTEM_FINGERPRINT_KEY = "system_fingerprint"
 
 #: USD per million tokens, keyed by model name. Data rather than logic, so a
 #: price change is a one-line diff and an unpriced model is visibly absent.
+#: Source: https://developers.openai.com/api/docs/pricing, checked 2026-09-24.
 OPENAI_PRICING: dict[str, tuple[float, float]] = {
     # model: (input per million, output per million)
     "gpt-5": (1.25, 10.0),
@@ -76,6 +92,44 @@ OPENAI_PRICING: dict[str, tuple[float, float]] = {
     "gpt-4.1-mini": (0.4, 1.6),
 }
 
+#: USD per million prompt tokens served from the cache, from the same page.
+#: ``prompt_tokens`` counts them too, so they are priced here in place of the
+#: full input rate.
+OPENAI_CACHED_INPUT_PRICING: dict[str, float] = {
+    "gpt-5": 0.125,
+    "gpt-5-mini": 0.025,
+    "gpt-4.1": 0.5,
+    "gpt-4.1-mini": 0.1,
+}
+
+#: Models that reject a non-default temperature at the reasoning effort this
+#: adapter runs them at, which is their default. OpenAI's model guidance says
+#: to remove temperature, top_p and top_logprobs whenever the effort is not
+#: ``none`` (https://developers.openai.com/api/docs/guides/latest-model). The
+#: gpt-5 family offers minimal to high with no ``none``
+#: (https://developers.openai.com/api/docs/models/gpt-5); gpt-5.5, gpt-6-sol and
+#: gpt-6-luna default to ``medium`` and gpt-6-astra has no ``none``
+#: (https://developers.openai.com/api/docs/guides/reasoning); the o-series are
+#: reasoning models under the same rule. Checked 2026-09-24. A dated snapshot
+#: such as gpt-5-2025-08-07 follows its base model.
+FIXED_SAMPLING_MODELS = frozenset(
+    {
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "gpt-5.5",
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "o1",
+        "o3",
+        "o3-mini",
+        "o4-mini",
+    }
+)
+
+_SNAPSHOT_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+
 
 class OpenAINotConfiguredError(ProviderNotConfiguredError):
     """Raised at construction time when the OpenAI adapter cannot be used."""
@@ -83,6 +137,27 @@ class OpenAINotConfiguredError(ProviderNotConfiguredError):
 
 OpenAIMessage = dict[str, Any]
 ToolDefinition = dict[str, Any]
+
+
+def check_sampling(model: str, temperature: float | None) -> None:
+    """Refuse a temperature the model would reject with a 400 on every call."""
+    if temperature is not None and _SNAPSHOT_SUFFIX.sub("", model) in FIXED_SAMPLING_MODELS:
+        raise OpenAINotConfiguredError(
+            f"{model} is a reasoning model and rejects a non-default temperature at its "
+            f"default reasoning effort, so temperature={temperature} cannot be sent. Leave "
+            "temperature unset for this model, or choose one that accepts it such as "
+            "gpt-4.1. See https://developers.openai.com/api/docs/guides/latest-model"
+        )
+
+
+def _synthetic_tool_call_id(position: int) -> str:
+    """A stable id for a tool call that arrived without one.
+
+    A scripted prefix, or a turn another provider produced, has no OpenAI id.
+    The position in the transcript never changes once written, so the id is
+    the same on every later request and the tool message can quote it.
+    """
+    return f"call_trace_{position}"
 
 
 def _transcript_to_messages(transcript: list[Message]) -> list[OpenAIMessage]:
@@ -101,12 +176,13 @@ def _transcript_to_messages(transcript: list[Message]) -> list[OpenAIMessage]:
 
     A tool message has to quote the id of the call it answers. That id arrives
     on the assistant turn before it, so the mapping carries the most recent one
-    forward.
+    forward. A tool message with no call before it cannot be paired with
+    anything, and is an adapter error here rather than a 400 mid-run.
     """
     messages: list[OpenAIMessage] = []
     pending_tool_call_id: str | None = None
 
-    for msg in transcript:
+    for position, msg in enumerate(transcript):
         if msg.role is MessageRole.SYSTEM:
             if msg.content:
                 messages.append({"role": "system", "content": msg.content})
@@ -117,7 +193,7 @@ def _transcript_to_messages(transcript: list[Message]) -> list[OpenAIMessage]:
             if tool_call:
                 pending_tool_call_id = (msg.metadata.get("provider_state") or {}).get(
                     TOOL_CALL_ID_KEY
-                ) or ""
+                ) or _synthetic_tool_call_id(position)
                 messages.append(
                     {
                         "role": "assistant",
@@ -139,11 +215,16 @@ def _transcript_to_messages(transcript: list[Message]) -> list[OpenAIMessage]:
             else:
                 messages.append({"role": "assistant", "content": msg.content})
         elif msg.role is MessageRole.TOOL:
+            if pending_tool_call_id is None:
+                raise ModelAdapterError(
+                    "a tool result has no tool call before it in the transcript, so "
+                    "there is no tool_call_id for it to quote"
+                )
             md = msg.metadata
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": pending_tool_call_id or "",
+                    "tool_call_id": pending_tool_call_id,
                     "content": _tool_result_text(md.get("result"), md.get("error")),
                 }
             )
@@ -193,11 +274,24 @@ def _normalize_response(response: Any) -> AgentAction:
 
     Duck-typed on ``response.choices`` so a fake object stands in for the SDK's.
 
+    A response that cannot become one action is an error carrying the raw
+    response, since the provider billed for it and the trace has to show it.
+    """
+    raw = _response_to_dict(response)
+    try:
+        return _action_from_response(response, raw)
+    except ModelAdapterError as exc:
+        exc.raw = raw
+        raise
+
+
+def _action_from_response(response: Any, raw: dict[str, Any]) -> AgentAction:
+    """The one action a response holds, or a ModelAdapterError saying why not.
+
     More than one tool call is an error rather than a silent drop. TRACE
     attributes a failure to a step, and two actions recorded as one step would
     make that attribution point at something that never happened.
     """
-    raw = _response_to_dict(response)
     choices = list(getattr(response, "choices", None) or [])
     if not choices:
         raise ModelAdapterError("OpenAI returned no choices (empty response)")
@@ -206,6 +300,11 @@ def _normalize_response(response: Any) -> AgentAction:
     finish_reason = getattr(choices[0], "finish_reason", None)
     if finish_reason == "content_filter":
         raise ModelAdapterError("OpenAI stopped on a content filter")
+    if finish_reason == "length":
+        raise ModelAdapterError(
+            "OpenAI stopped the turn at the token limit (finish_reason 'length'), so "
+            "what came back is incomplete"
+        )
 
     tool_calls = list(getattr(message, "tool_calls", None) or [])
     if len(tool_calls) > 1:
@@ -224,8 +323,12 @@ def _normalize_response(response: Any) -> AgentAction:
         call = tool_calls[0]
         function = getattr(call, "function", None)
         call_id = getattr(call, "id", None)
-        if call_id:
-            state[TOOL_CALL_ID_KEY] = call_id
+        if not call_id:
+            raise ModelAdapterError(
+                "OpenAI returned a tool call with no id, so its result could never be "
+                "paired with it"
+            )
+        state[TOOL_CALL_ID_KEY] = call_id
         return AgentAction(
             kind=ActionKind.TOOL_CALL,
             tool_call=ToolCall(
@@ -295,7 +398,8 @@ def extract_usage(raw: dict[str, Any]) -> tuple[int, int] | None:
 
     Returns None when the response carries no usage, which is what a fixture or
     a cassette replay looks like. None and ``(0, 0)`` mean different things, so
-    an absent usage block never becomes a zero cost.
+    an absent usage block never becomes a zero cost. Reasoning tokens are part
+    of ``completion_tokens`` and billed as output.
     """
     usage = raw.get("usage")
     if not isinstance(usage, dict):
@@ -307,31 +411,61 @@ def extract_usage(raw: dict[str, Any]) -> tuple[int, int] | None:
     return prompt, completion
 
 
+def extract_cached_prompt_tokens(raw: dict[str, Any]) -> int:
+    """How many of a response's prompt tokens were served from the cache, or 0."""
+    usage = raw.get("usage")
+    details = usage.get("prompt_tokens_details") if isinstance(usage, dict) else None
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    return cached if isinstance(cached, int) else 0
+
+
 def estimate_cost_usd(model: str, raws: list[dict[str, Any]]) -> float | None:
     """Price every recorded response for ``model``, or None if it cannot be priced.
 
     An unpriced model returns None rather than 0.0, because a run that cost
-    money and reports zero is worse than one that reports nothing.
+    money and reports zero is worse than one that reports nothing. Cached
+    prompt tokens are priced at the cached rate, or at the full input rate for
+    a model without one, which can only overstate the cost.
     """
     price = OPENAI_PRICING.get(model)
     if price is None:
         return None
     per_input, per_output = price
-    usages = [usage for raw in raws if (usage := extract_usage(raw)) is not None]
-    if not usages:
+    per_cached = OPENAI_CACHED_INPUT_PRICING.get(model, per_input)
+    total = 0.0
+    priced = False
+    for raw in raws:
+        usage = extract_usage(raw)
+        if usage is None:
+            continue
+        priced = True
+        prompt, completion = usage
+        cached = min(extract_cached_prompt_tokens(raw), prompt)
+        total += (
+            (prompt - cached) * per_input + cached * per_cached + completion * per_output
+        ) / 1_000_000
+    if not priced:
         return None
-    total = sum(
-        (prompt * per_input + completion * per_output) / 1_000_000 for prompt, completion in usages
-    )
     return round(total, 6)
+
+
+def _import_sdk() -> Any:
+    """The ``openai`` module, or the configuration error that says to install it."""
+    try:
+        import openai
+    except ImportError as exc:
+        raise OpenAINotConfiguredError(
+            "the 'openai' package is not installed; install it with: pip install -e \".[openai]\""
+        ) from exc
+    return openai
 
 
 class OpenAIModelAdapter:
     """Adapter for OpenAI chat models.
 
-    Construction validates configuration, so ``--provider openai`` fails fast
-    with instructions. ``next_action`` uses the pure helpers above and keeps
-    the optional SDK import at the live-call boundary.
+    Construction validates configuration, the model's sampling rules, the key
+    and the SDK, so ``--provider openai`` fails fast with instructions before a
+    run exists. ``next_action`` uses the pure helpers above.
     """
 
     name = "openai"
@@ -346,6 +480,7 @@ class OpenAIModelAdapter:
         timeout_seconds: float = 120.0,
     ):
         self.model = model or DEFAULT_OPENAI_MODEL
+        check_sampling(self.model, temperature)
         self.temperature = temperature
         # Sent, unlike the Anthropic adapter. Best-effort on the provider's
         # side, which is what system_fingerprint exists to expose.
@@ -360,20 +495,15 @@ class OpenAIModelAdapter:
                 "(TRACE_MODEL_PROVIDER=fixture) needs no key and is the "
                 "default for all tests and CI."
             )
+        # Imported here so a missing SDK stops the run before it starts. Only
+        # an OpenAI run builds this adapter, so nothing else needs it.
+        self._sdk = _import_sdk()
         self._client_obj: openai.OpenAI | None = None
 
     def _client(self) -> openai.OpenAI:
-        """Lazily build the SDK client, so a non-OpenAI run never needs the
-        ``openai`` package installed."""
+        """Build the SDK client once, on the first call."""
         if self._client_obj is None:
-            try:
-                import openai
-            except ImportError as exc:  # pragma: no cover - optional dependency
-                raise OpenAINotConfiguredError(
-                    "the 'openai' package is not installed; "
-                    'install it with: pip install -e ".[openai]"'
-                ) from exc
-            self._client_obj = openai.OpenAI(
+            self._client_obj = self._sdk.OpenAI(
                 api_key=self.api_key,
                 # Seconds, matching the Anthropic client. Complements the
                 # runner's between-call timeout rather than replacing it.
@@ -385,8 +515,6 @@ class OpenAIModelAdapter:
         client = self._client()
         messages = _transcript_to_messages(transcript)
         definitions = _tools_to_definitions(tools)
-
-        import openai
 
         request: dict[str, Any] = {"model": self.model, "messages": messages}
         if definitions:
@@ -401,7 +529,7 @@ class OpenAIModelAdapter:
 
         try:
             response = client.chat.completions.create(**request)
-        except openai.OpenAIError as exc:
+        except self._sdk.OpenAIError as exc:
             # Map provider errors to the runner's clean model_error termination.
             raise ModelAdapterError(f"OpenAI API call failed: {exc}") from exc
         return _normalize_response(response)
