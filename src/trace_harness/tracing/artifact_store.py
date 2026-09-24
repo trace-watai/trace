@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel
@@ -242,10 +242,25 @@ class ArtifactStore:
 
     # --- experiments (#155) ---
     #
-    # An experiment lives beside the batches it compares rather than inside any
-    # one of them, because it is the thing that relates several batches.
+    # An experiment lives beside the batches it compares, outside all of them,
+    # because it is the thing that relates several batches.
 
     def experiment_dir(self, experiment_id: str) -> Path:
+        """Refuses an id that is not one plain path segment.
+
+        Experiment ids come from hand-written plan files, so an id like
+        ``../../x`` would otherwise read or write outside the runs directory.
+        The plan model enforces the full id pattern; this is the last check
+        before a path is built.
+        """
+        segment = PurePosixPath(experiment_id)
+        if (
+            str(segment) != experiment_id
+            or len(segment.parts) != 1
+            or experiment_id in {".", ".."}
+            or "\\" in experiment_id
+        ):
+            raise ValueError(f"not a valid experiment id: {experiment_id!r}")
         return self.runs_dir / EXPERIMENTS_DIR / experiment_id
 
     def experiment_spec_path(self, experiment_id: str) -> Path:
@@ -290,7 +305,11 @@ class ArtifactStore:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def list_experiments(self) -> list[str]:
-        """Experiment ids that have a plan on disk, oldest first by id."""
+        """Experiment ids that have a plan on disk, sorted.
+
+        Generated ids sort by creation time. Hand-named ones such as
+        ``exp_000_baseline`` sort by name.
+        """
         root = self.runs_dir / EXPERIMENTS_DIR
         if not root.is_dir():
             return []

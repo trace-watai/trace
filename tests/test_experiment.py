@@ -2,8 +2,8 @@
 
 The load-bearing test here is ``test_metric_names_match_the_memo``. The metric
 names are a contract between this module, the #27 memo, and the dashboard
-mirror, so the test reads the memo's appendix off disk rather than restating
-the list, which would only prove the list equals itself.
+mirror, so the test reads the memo's appendix off disk. Restating the list here
+would only prove the list equals itself.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from trace_harness.runner.experiment import (
     render_experiment_markdown,
     validate_condition_batches,
 )
+from trace_harness.runner.frozen_set import freeze
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import utc_now
@@ -60,6 +61,21 @@ def _spec(**overrides) -> ExperimentSpec:
         "budget": Budget(max_runs=10, max_cost_usd=0.0),
     }
     return ExperimentSpec(**{**base, **overrides})
+
+
+def _frozen(spec: ExperimentSpec) -> ExperimentSpec:
+    """``spec`` as ``experiment freeze`` leaves it, hashed from this checkout.
+
+    ``experiment record`` refuses a plan past schema 0.1.0 without a frozen
+    set, and checks the set against the working directory, so a test that
+    records this plan runs from the repository root.
+    """
+    manifest = spec.frozen_manifest
+    frozen = freeze(REPO_ROOT, suite_id=manifest.suite_id, labels_path=manifest.labels_path)
+    data = spec.model_dump(mode="json")
+    data["frozen_manifest"]["frozen_set"] = {n: c.model_dump() for n, c in frozen.items()}
+    data["frozen_manifest"]["fixtures_hash"] = frozen["fixtures"].digest
+    return ExperimentSpec.model_validate(data)
 
 
 # --- the contract with the #27 memo ---
@@ -184,7 +200,7 @@ def _entry(task_id: str, verdict: str, *, cost=None, latency=None) -> BatchRunEn
 
 
 def test_derives_only_what_a_batch_can_support(tmp_path) -> None:
-    """Metrics needing the branch stage stay None rather than reading as zero."""
+    """Metrics needing the branch stage stay None, since a zero would read as measured."""
     summary = _summary("b1", [_entry("t1", "fail"), _entry("t2", "pass")])
     metrics = derive_metrics([summary])
 
@@ -196,7 +212,7 @@ def test_derives_only_what_a_batch_can_support(tmp_path) -> None:
 
 
 def test_cost_is_none_when_nothing_recorded_it() -> None:
-    """A null cost is unknown, not zero, exactly as the memo says."""
+    """A null cost means unknown, exactly as the memo says."""
     metrics = derive_metrics([_summary("b1", [_entry("t1", "pass")])])
     assert metrics.cost_usd is None
 

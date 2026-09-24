@@ -991,14 +991,16 @@ def _validate_fixtures(args: argparse.Namespace) -> int:
 
 
 def _load_experiment_plan(path: str) -> tuple[Path, Any]:
-    from trace_harness.runner.experiment import ExperimentSpec
+    """Read a plan file the way every experiment command does, through load_plan."""
+    from trace_harness.runner.experiment import load_plan
 
     spec_path = Path(path)
     if not spec_path.is_file():
         raise CliInputError(f"experiment plan not found: {spec_path}")
-    return spec_path, ExperimentSpec.model_validate(
-        json.loads(spec_path.read_text(encoding="utf-8"))
-    )
+    try:
+        return spec_path, load_plan(json.loads(spec_path.read_text(encoding="utf-8")))
+    except ValueError as exc:
+        raise CliInputError(f"{spec_path}: {exc}") from None
 
 
 def _experiment_freeze(args: argparse.Namespace) -> int:
@@ -1046,24 +1048,32 @@ def _experiment_freeze(args: argparse.Namespace) -> int:
 def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     """Record which batch answered which condition, and what was decided.
 
-    The plan is read, never written here. Recording cannot invent a condition:
-    a ``--condition`` naming something the spec does not declare is a usage
-    error, because a result that describes different arms than the plan is not
-    a result for that experiment.
+    The plan file itself is read, never written here. The first record of an
+    experiment stores a copy of the plan beside the result, and no later record
+    rewrites it. Recording again with a plan that differs from the stored one
+    is refused, because changing the plan after the numbers came in is exactly
+    what writing it first is meant to prevent.
+
+    Recording cannot invent a condition: a ``--condition`` naming something the
+    spec does not declare is a usage error, because a result that describes
+    different arms than the plan is not a result for that experiment. A batch
+    that ran another suite than the plan froze is refused for the same reason.
 
     Recording also recomputes the plan's frozen set (#195) and refuses, with
     the files listed, when anything differs. ``--allow-drift`` records anyway,
     marks the result drifted and forces its decision to review. A plan from
     schema 0.1.0 has no frozen set; it records, and the result says nothing
-    was checked.
+    was checked. Every refusal happens before anything is written.
     """
+    from trace_harness.runner.batch import BatchSummary
     from trace_harness.runner.experiment import (
         PRE_FROZEN_SET_SCHEMA_VERSION,
         DecidedBy,
         Decision,
         ExperimentResult,
-        UnknownConditionError,
+        check_frozen_suite,
         derive_metrics,
+        load_plan,
         render_experiment_markdown,
         validate_condition_batches,
     )
@@ -1071,16 +1081,37 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
 
     spec_path, spec = _load_experiment_plan(args.experiment_path)
 
+    stored_path = store.experiment_spec_path(spec.experiment_id)
+    stored = None
+    if stored_path.is_file():
+        try:
+            stored = load_plan(store.read_experiment_spec(spec.experiment_id))
+        except ValueError as exc:
+            raise CliInputError(f"{stored_path}: {exc}") from None
+        if stored.model_dump(mode="json") != spec.model_dump(mode="json"):
+            raise CliInputError(
+                f"{stored_path} already holds a different plan for {spec.experiment_id}. "
+                "A stored plan is never rewritten: record against that plan, or give "
+                "the changed plan a new experiment_id."
+            )
+
     condition_batches: dict[str, str] = {}
     for pair in args.condition or []:
         name, _, batch_id = pair.partition("=")
         if not name or not batch_id:
             raise CliInputError(f"--condition expects name=batch_id, got {pair!r}")
+        if name in condition_batches:
+            raise CliInputError(f"--condition names {name!r} twice; each condition has one batch")
+        if batch_id in condition_batches.values():
+            raise CliInputError(
+                f"--condition gives batch {batch_id} to two conditions; each batch answers one"
+            )
         condition_batches[name] = batch_id
     try:
         validate_condition_batches(spec, condition_batches)
-    except UnknownConditionError as exc:
+    except ValueError as exc:
         raise CliInputError(str(exc)) from None
+    declared = {condition.name: condition for condition in spec.conditions}
 
     manifest = spec.frozen_manifest
     drift = []
@@ -1108,14 +1139,24 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     summaries = []
     for batch_id in condition_batches.values():
         try:
-            summaries.append(store.read_batch_summary(batch_id))
+            summaries.append(BatchSummary.model_validate(store.read_batch_summary(batch_id)))
         except FileNotFoundError as exc:
             raise CliInputError(str(exc)) from None
+    try:
+        check_frozen_suite(
+            spec,
+            {name: s.suite_id for name, s in zip(condition_batches, summaries, strict=True)},
+        )
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from None
 
     result = ExperimentResult(
         experiment_id=spec.experiment_id,
         condition_batches=condition_batches,
-        metrics=derive_metrics(summaries),
+        metrics=derive_metrics(
+            summaries,
+            conditions={batch: declared[name] for name, batch in condition_batches.items()},
+        ),
         decision=Decision.REVIEW if drift else Decision(args.decision),
         decided_by=DecidedBy(args.decided_by),
         report_path=str(store.experiment_report_path(spec.experiment_id)),
@@ -1123,7 +1164,8 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         frozen_set_drifted=bool(drift),
         frozen_set_drift=drift,
     )
-    store.write_experiment_spec(spec.experiment_id, spec)
+    if stored is None:
+        store.write_experiment_spec(spec.experiment_id, spec)
     store.write_experiment_result(
         spec.experiment_id, result, markdown=render_experiment_markdown(spec, result)
     )
@@ -1151,21 +1193,34 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
 
 
 def _list_experiments(store: ArtifactStore) -> int:
-    """One line per experiment, replacing any hand-kept spreadsheet of them."""
+    """One line per experiment, replacing any hand-kept spreadsheet of them.
+
+    An experiment whose files do not load gets an ``unreadable`` line and its
+    error on stderr, and the rest are still listed. The exit code is 1 when any
+    was unreadable, so a script reading the list can tell.
+    """
     reader = RunReader(store)
-    specs = reader.list_experiments()
-    if not specs:
+    experiment_ids = store.list_experiments()
+    if not experiment_ids:
         print(f"no experiments found in {store.runs_dir}")
         return 0
-    for spec in specs:
-        _, result = reader.get_experiment(spec.experiment_id)
+    unreadable = 0
+    for experiment_id in experiment_ids:
+        try:
+            spec, result = reader.get_experiment(experiment_id)
+        except (OSError, ValueError) as exc:
+            unreadable += 1
+            print(f"{experiment_id}  unreadable")
+            print(f"error: {experiment_id}: {exc}", file=sys.stderr)
+            continue
         decision = (
             f"{result.decision.value}/{result.decided_by.value}" if result else "not recorded"
         )
         conditions = ", ".join(c.name for c in spec.conditions)
         print(f"{spec.experiment_id}  {decision}  [{conditions}]  {spec.hypothesis[:60]}")
-    print(f"\n{len(specs)} experiment(s) in {store.runs_dir}")
-    return 0
+    summary = f"\n{len(experiment_ids)} experiment(s) in {store.runs_dir}"
+    print(summary + (f", {unreadable} unreadable" if unreadable else ""))
+    return 1 if unreadable else 0
 
 
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
@@ -1722,7 +1777,7 @@ def main(argv: list[str] | None = None) -> int:
     p_exp_freeze.add_argument("experiment_path", help="path to the experiment plan JSON")
 
     sub.add_parser(
-        "list-experiments", parents=[common], help="list recorded experiments, oldest first"
+        "list-experiments", parents=[common], help="list recorded experiments in id order"
     )
 
     p_suite = sub.add_parser(
