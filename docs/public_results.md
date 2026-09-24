@@ -41,10 +41,12 @@ runs in the code point order `RunReader` uses, whatever the database's default
 collation. Each row also carries `content_sha256`, which the uploader uses to
 skip unchanged rows.
 
-Today that is 15 runs (five from the `refund_v0` batch of 20 August, eight live
-Gemini runs of 13 September, and the two reference-agent runs of 23
+Today that is 18 runs (five from the `refund_v0` batch of 20 August, eight live
+Gemini runs of 13 September, the two reference-agent runs of 23 September, and
+the three fork points retained with `exp_001_replay_validity` on 24
 September), two batches (that `refund_v0` batch and a `refund_bundles_v0` batch
-of 17 September) and one experiment.
+of 17 September) and two experiments (`exp_000_baseline` and
+`exp_001_replay_validity`).
 
 ## What is not hosted
 
@@ -270,22 +272,22 @@ only the failing cells.
 
 | Quantity | Measured |
 |---|---|
-| `docs/acceptance/`, 139 files | 1,144,293 bytes |
-| One retained run directory on disk, min / mean / max over 15 | 43,990 / 71,470 / 104,462 bytes |
-| One hosted run row as JSON, min / mean / max | 34,977 / 60,552 / 88,073 bytes |
-| Hosted rows as JSON, 15 runs + 2 batches + 1 experiment | 908,284 + 50,625 + 1,701 bytes |
-| Postgres size of the retained set, tables with TOAST and indexes | 884,736 bytes |
-| A stored run row as a share of its JSON, min / mean / max | 41.6 / 51.9 / 70.2 percent |
-| One sweep as JSON, 320 run rows copied from the retained rows largest first, plus two 160-entry batches | 19,504,736 + 372,894 bytes |
-| Postgres size of the retained set plus that sweep | 11,968,512 bytes (11.4 MiB) |
-| `list_runs()` response for all 335 runs | 155,255 bytes |
+| `docs/acceptance/`, 174 files | 1,400,508 bytes |
+| One retained run directory on disk, min / mean / max over 18 | 43,990 / 72,811 / 104,462 bytes |
+| One hosted run row as JSON, min / mean / max | 34,977 / 61,329 / 88,073 bytes |
+| Hosted rows as JSON, 18 runs + 2 batches + 2 experiments | 1,103,919 + 50,625 + 13,672 bytes |
+| Postgres size of the retained set, tables with TOAST and indexes | 1,024,000 bytes |
+| A stored run row as a share of its JSON, min / mean / max | 41.6 / 50.8 / 70.2 percent |
+| One sweep as JSON, 320 run rows copied from the retained rows largest first, plus two 160-entry batches | 19,735,058 + 372,894 bytes |
+| Postgres size of the retained set plus that sweep | 12,034,048 bytes (11.5 MiB) |
+| `list_runs()` response for all 338 runs | 158,333 bytes |
 
 The script builds the rows the way the uploader does, loads them into a
 throwaway PostgreSQL 16.14 cluster through the same statement PostgREST runs
 for an upsert, and reads `pg_total_relation_size` after `vacuum analyze`. A
 stored row's share is the sum of `pg_column_size` over its columns, which
 counts a TOASTed value at its compressed size, over the row's JSON. TOAST
-compression stores a run row in 42 to 70 percent of its JSON size, 52 percent
+compression stores a run row in 42 to 70 percent of its JSON size, 51 percent
 on average.
 
 Supabase's Free plan allows a 500 MB database and 5 GB of egress a month, with
