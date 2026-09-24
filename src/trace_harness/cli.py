@@ -21,11 +21,13 @@ Stages communicate only through run artifacts on disk — ``verify`` reads
 exactly what ``run-fixture`` wrote — so any stage can be re-run later, and
 the dashboard/API see the same data the pipeline used.
 
-Exit codes: 0 success; 1 verifier failed AND --fail-on-verifier was passed
-(CI gate mode); 2 usage or input errors (argparse errors, bad paths,
-malformed fixtures, missing artifacts, cassette errors, a suite budget cap that
-cannot be enforced). Without the flag a verified
-failure exits 0 — finding failures is this tool succeeding.
+Exit codes: 0 success; 1 with --fail-on-verifier (CI gate mode) when a run
+failed verification or did not complete, and for ``run-suite`` also when a run
+errored or the suite budget stopped the batch before every cell ran; 2 usage
+or input errors (argparse errors, bad paths, malformed fixtures, missing
+artifacts, cassette errors, a suite budget cap that cannot be enforced).
+Without the flag a verified failure exits 0, since finding failures is this
+tool succeeding.
 
 argparse over typer: subcommands this simple don't justify a dependency.
 Revisit if the CLI grows rich help/completions needs.
@@ -55,7 +57,13 @@ from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.failure_bundles.schemas import RepairPackage
 from trace_harness.metrics.history import HISTORY_PATH as DEFAULT_HISTORY_PATH
-from trace_harness.models import create_model_adapter, resolve_call_policy, resolve_model_name
+from trace_harness.models import (
+    KNOWN_PROVIDERS,
+    create_model_adapter,
+    resolve_call_policy,
+    resolve_model_name,
+    unsent_seed_metadata,
+)
 from trace_harness.models.base import ProviderNotConfiguredError
 from trace_harness.models.cassette import CassetteConfig, RecordingModelAdapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
@@ -148,12 +156,18 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--provider",
         default="fixture",
-        help="model provider: 'fixture' (scripted, default) or 'gemini'",
+        help=(
+            f"model provider: one of {', '.join(KNOWN_PROVIDERS)} (default fixture, "
+            "scripted; the others are live and need their own key and SDK extra)"
+        ),
     )
     parser.add_argument(
         "--model",
         default=None,
-        help="model name for real providers (e.g. gemini-3.6-flash); ignored by fixture",
+        help=(
+            "model name for live providers (e.g. gemini-3.6-flash, claude-sonnet-5, gpt-5); "
+            "ignored by fixture"
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -213,8 +227,9 @@ def _run_fixture(
     # A single live run uses the provider's default policy; suites can override it.
     call_policy = resolve_call_policy(args.provider, None, cassette)
 
-    # The fixture provider replays a script; real providers (gemini) drive the
-    # agent live and need no script — only the fixture path is required.
+    # The fixture provider replays a script. The live providers (gemini,
+    # anthropic, openai) drive the agent live and need no script, so only the
+    # fixture path is required.
     if args.provider == "fixture" and pinned_script is not None:
         if cassette is not None:
             raise CliInputError("regression replay cannot also use model cassettes")
@@ -243,6 +258,7 @@ def _run_fixture(
         )
         if isinstance(adapter, RecordingModelAdapter):
             metadata["cassette_path"] = _repo_relative(adapter.path)
+    metadata.update(unsent_seed_metadata(args.provider, seed))
 
     config = RunConfig(
         task_id=task.task_id,
