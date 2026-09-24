@@ -216,12 +216,15 @@ CASH = {"customer_name": CUSTOMER, "refund_type": "cash"}
             True,
         ),
         (_answer("No refund."), _call("escalate_case", customer_name=CUSTOMER, reason="r"), True),
-        # An argument the tool does not take makes a different call.
+        # A call the environment refuses is another action, free text included.
         (
             _call("issue_refund", **CASH, reason="r"),
             _call("issue_refund", **CASH, reason="r", amount=5),
             True,
         ),
+        (_call("issue_refund", **CASH, reason="r"), _call("issue_refund", **CASH), True),
+        (_call("issue_refund", **CASH, amount=5), _call("issue_refund", **CASH, amount=5), False),
+        (_call("issue_refund", **CASH), _call("issue_refund", **CASH, reason="r"), True),
         # A tool the environment does not offer compares every argument.
         (_call("send_email", body="a"), _call("send_email", body="b"), True),
     ],

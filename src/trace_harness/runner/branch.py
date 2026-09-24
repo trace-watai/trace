@@ -160,8 +160,9 @@ def compared_action(action: dict[str, Any]) -> dict[str, Any]:
     before it executes, so an argument left at its default equals the same
     value spelled out. The arguments the tool declares free text (a refund
     ``reason``, ticket ``title`` and ``notes``, a search ``query``) are left
-    out. A call the environment would refuse compares as given, and a tool the
-    environment does not offer compares every argument. A final answer
+    out. A call the environment would refuse matches only the same refused
+    call, and a tool the environment does not offer compares every argument.
+    A final answer
     compares by kind alone, so two answers worded differently are the same
     action. Reasoning and provider state never count.
 
@@ -178,10 +179,12 @@ def compared_action(action: dict[str, Any]) -> dict[str, Any]:
     if tool is None:
         return {"kind": kind, "tool_name": name, "arguments": arguments}
     try:
-        arguments = tool.args_model.model_validate(arguments).model_dump(mode="json")
+        parsed = tool.args_model.model_validate(arguments).model_dump(mode="json")
     except ValidationError:
-        pass
-    structured = {k: v for k, v in arguments.items() if k not in tool.free_text_arguments}
+        # The environment refuses this call before its handler runs, so it
+        # matches only the same refused call, free text included.
+        return {"kind": kind, "tool_name": name, "refused_arguments": arguments}
+    structured = {k: v for k, v in parsed.items() if k not in tool.free_text_arguments}
     return {"kind": kind, "tool_name": name, "arguments": structured}
 
 

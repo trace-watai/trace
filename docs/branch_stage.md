@@ -101,8 +101,9 @@ post-fork tool call, so only the call counts:
 - A tool call compares by tool name and structured arguments. The arguments
   are parsed through the tool's argument model first, as the environment
   parses them before it executes, so an argument left at its default equals
-  the same value spelled out. A call the environment would refuse compares as
-  given, and a tool the environment does not offer compares every argument.
+  the same value spelled out. A call the environment would refuse matches only
+  the same refused call, free text included, and a tool the environment does
+  not offer compares every argument.
 - The arguments a tool declares free text are left out. The agent words them
   itself, and a live model would word them differently on almost every run
   while making the same call.
