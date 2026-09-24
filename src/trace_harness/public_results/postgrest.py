@@ -22,6 +22,7 @@ key never appears in an error message.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -39,7 +40,8 @@ USER_AGENT = "trace-harness-public-results"
 class HttpRequest:
     method: str
     url: str
-    headers: Mapping[str, str]
+    # The headers carry the key, so they stay out of the repr.
+    headers: Mapping[str, str] = field(repr=False)
     body: bytes | None = None
 
 
@@ -80,7 +82,9 @@ def urllib_transport(request: HttpRequest, *, timeout: float = DEFAULT_TIMEOUT_S
     except urllib.error.HTTPError as exc:
         headers = {k.lower(): v for k, v in exc.headers.items()} if exc.headers else {}
         return HttpResponse(exc.code, headers, exc.read() or b"")
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
+        # HTTPException covers a connection dropped mid-response, which is
+        # neither an HTTP status nor an OSError.
         host = urllib.parse.urlsplit(request.url).netloc
         raise PostgrestError(f"could not reach {host}: {exc}") from None
 
@@ -118,8 +122,12 @@ def normalize_base_url(url: str) -> str:
     local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
     if parsed.scheme != "https" and not (parsed.scheme == "http" and local):
         raise ValueError(f"Supabase URL must start with https:// (got {url!r})")
-    if not parsed.netloc:
+    if not parsed.hostname:
         raise ValueError(f"Supabase URL has no host (got {url!r})")
+    try:
+        parsed.port  # noqa: B018 (raises on a port that is not a number)
+    except ValueError:
+        raise ValueError(f"Supabase URL has an invalid port (got {url!r})") from None
     return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
 
 
@@ -132,6 +140,13 @@ def _content_range_total(value: str | None) -> int | None:
 
 
 def _in_list(values: Iterable[str]) -> str:
+    """A PostgREST ``in`` filter that holds any value.
+
+    Every value is double quoted, so the reserved characters ``,.:*()`` are
+    plain text, and a double quote or backslash inside it is escaped with a
+    backslash, as the PostgREST URL grammar asks. The quotes are
+    percent-encoded when the URL is built.
+    """
     quoted = []
     for value in values:
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
@@ -253,7 +268,9 @@ class PostgrestClient:
         prefer: str | None = None,
         body: bytes | None = None,
     ) -> HttpResponse:
-        query = urllib.parse.urlencode(params, safe=",.()*:\"'", quote_via=urllib.parse.quote)
+        # The double quotes of an in list go out as %22, which PostgREST
+        # documents. A bare one is not a legal URL character.
+        query = urllib.parse.urlencode(params, safe=",.()*:'", quote_via=urllib.parse.quote)
         url = f"{self.base_url}/rest/v1/{table}?{query}"
         request = HttpRequest(method, url, self._headers(prefer, body is not None), body)
         return self.transport(request)

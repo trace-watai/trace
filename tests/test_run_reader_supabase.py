@@ -263,6 +263,7 @@ def test_urllib_transport_returns_error_statuses_and_hides_nothing_it_should_not
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The only code that reaches the network, exercised with urlopen replaced."""
+    import http.client
     import io
     import urllib.error
     import urllib.request
@@ -292,6 +293,8 @@ def test_urllib_transport_returns_error_statuses_and_hides_nothing_it_should_not
             )
         if "down" in request.full_url:
             raise urllib.error.URLError("connection refused")
+        if "cut" in request.full_url:
+            raise http.client.IncompleteRead(b"[", 10)
         return Ok(b"[]")
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -302,6 +305,13 @@ def test_urllib_transport_returns_error_statuses_and_hides_nothing_it_should_not
     assert failed.status == 401 and failed.body == b'{"message":"no"}'
     with pytest.raises(PostgrestError, match="could not reach x.supabase.co"):
         urllib_transport(HttpRequest("GET", "https://x.supabase.co/down", {}))
+    with pytest.raises(PostgrestError, match="could not reach x.supabase.co"):
+        urllib_transport(HttpRequest("GET", "https://x.supabase.co/cut", {}))
+
+
+def test_a_request_repr_never_shows_the_key() -> None:
+    request = HttpRequest("GET", "https://x.supabase.co/rest/v1/runs", {"apikey": fake.ANON_KEY})
+    assert fake.ANON_KEY not in repr(request) and "x.supabase.co" in repr(request)
 
 
 # --- choosing the backend -----------------------------------------------------
@@ -348,6 +358,62 @@ def test_cli_list_runs_reads_the_hosted_results_when_selected(
     assert main(["--runs-dir", str(tmp_path / "empty"), "list-experiments"]) == 0
     experiments = len(fs.list_experiments())
     assert f"{experiments} experiment(s) in {fake.BASE_URL}" in capsys.readouterr().out
+
+
+def test_cli_reports_an_unreachable_project_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    def unreachable(request: HttpRequest) -> HttpResponse:
+        raise PostgrestError("could not reach synthesized.supabase.invalid: connection refused")
+
+    original = SupabaseRunReader.from_env.__func__
+
+    def from_env_unreachable(cls, env=None, **kwargs):
+        return original(cls, env, transport=unreachable)
+
+    monkeypatch.setattr(SupabaseRunReader, "from_env", classmethod(from_env_unreachable))
+    monkeypatch.setenv("TRACE_RUN_READER", "supabase")
+    monkeypatch.setenv("TRACE_SUPABASE_URL", fake.BASE_URL)
+    monkeypatch.setenv("TRACE_SUPABASE_ANON_KEY", fake.ANON_KEY)
+    for command in ("list-runs", "list-experiments"):
+        assert main(["--runs-dir", str(tmp_path), command]) == 2
+        err = capsys.readouterr().err
+        assert err == "error: could not reach synthesized.supabase.invalid: connection refused\n"
+
+
+def test_a_url_with_a_port_that_is_not_a_number_is_refused_up_front() -> None:
+    with pytest.raises(ValueError, match="invalid port"):
+        PostgrestClient("https://x.supabase.co:abc", fake.ANON_KEY)
+    with pytest.raises(ValueError, match="no host"):
+        PostgrestClient("https://:443", fake.ANON_KEY)
+    assert PostgrestClient("https://x.supabase.co:443/", fake.ANON_KEY).base_url == (
+        "https://x.supabase.co:443"
+    )
+
+
+def test_an_in_list_quotes_every_value_the_way_postgrest_reads_it() -> None:
+    """Reserved characters, double quotes and backslashes in a key survive a delete."""
+    from trace_harness.public_results.postgrest import _in_list
+
+    awkward = ["plain", "a,b", "c.d:e", "f(g)*", 'say "hi"', "back\\slash"]
+    assert _in_list(awkward[4:]) == 'in.("say \\"hi\\"","back\\\\slash")'
+    seen: list[HttpRequest] = []
+    server = fake.MemoryPostgrest()
+    for key in [*awkward, "kept"]:
+        server.tables[schema.EXPERIMENTS][key] = {"experiment_id": key}
+
+    def spy(request: HttpRequest) -> HttpResponse:
+        seen.append(request)
+        return server(request)
+
+    PostgrestClient(fake.BASE_URL, fake.SERVICE_KEY, transport=spy).delete(
+        schema.EXPERIMENTS, "experiment_id", awkward
+    )
+    assert list(server.tables[schema.EXPERIMENTS]) == ["kept"]
+    query = seen[0].url.split("?", 1)[1]
+    assert '"' not in query, "a bare double quote is not a legal URL character"
+    assert query.startswith("experiment_id=in.(%22plain%22,%22a,b%22,")
+    assert "%22say%20%5C%22hi%5C%22%22" in query and "%22back%5C%5Cslash%22" in query
 
 
 def test_cli_rejects_an_unknown_backend(

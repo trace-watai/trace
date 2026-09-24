@@ -1,11 +1,12 @@
 """Push the retained evidence to the hosted public results, idempotently.
 
-    python -m trace_harness.public_results.upload [docs/acceptance] [--prune]
-        [--dry-run] [--offline [--dump DIR]]
+    python -m trace_harness.public_results.upload [docs/acceptance]
+        [--prune [--allow-empty-prune]] [--dry-run] [--offline [--dump DIR]]
 
 The retained tree is staged into a temp dir (``retained.stage_retained``) and
 read through RunReader. Rows are built from what RunReader returns
-(``rows.build_rows``), never from the files or the run index directly.
+(``rows.build_rows``). Apart from the batch ids and bundle pointers staging
+needs, no artifact file and no run index is read directly.
 
 Idempotence. The uploader first reads each table's natural keys and content
 hashes, then upserts only the rows that are missing or whose hash differs, on
@@ -13,19 +14,20 @@ the natural key with ``resolution=merge-duplicates``. A rerun over the same
 tree therefore sends no write at all. If it did send one, the upsert would
 replace a row with an identical row. ``--prune`` deletes hosted rows that are
 no longer retained, so the hosted set follows main when evidence is removed.
-It refuses to run over an empty retained set, so a staging mistake can never
-wipe the project.
+It refuses to take any table down to zero rows, so a staging mistake that
+loses one kind of evidence cannot wipe that table. ``--allow-empty-prune``
+lifts that refusal when emptying a table is intended.
 
 Configuration comes from ``TRACE_SUPABASE_URL`` and
 ``TRACE_SUPABASE_SERVICE_KEY``, repository secrets in CI. The service key maps
 to service_role, which bypasses row level security, and it is the only key
 that can write. The uploader refuses a key it can tell is the anonymous one.
 Before writing it checks that the project has the SQL schema version this code
-expects, so a migration that was never applied fails loudly instead of half
-writing.
+expects, so a migration that was never applied fails loudly before any write.
 
-Exit codes: 0 done (or nothing to do), 1 the project refused or is on the wrong
-schema, 2 a configuration or input problem.
+Exit codes: 0 done (or nothing to do), 1 the project refused, could not be
+reached, is on the wrong schema or would have a table pruned to zero rows, 2 a
+configuration or input problem.
 """
 
 from __future__ import annotations
@@ -143,17 +145,28 @@ def upload(
     rows_by_table: Mapping[str, list[Row]],
     *,
     prune: bool = False,
+    allow_empty_prune: bool = False,
     dry_run: bool = False,
     max_request_bytes: int = MAX_REQUEST_BYTES,
 ) -> list[TablePlan]:
-    """Bring the hosted tables in line with ``rows_by_table``. Returns what it did."""
-    if prune and not any(rows_by_table.values()):
-        raise UploadError("refusing to prune: the retained set is empty")
+    """Bring the hosted tables in line with ``rows_by_table``. Returns what it did.
+
+    With ``prune``, a table that has hosted rows and nothing retained would be
+    emptied. That is refused before any write, dry run included, unless
+    ``allow_empty_prune`` is set.
+    """
     check_schema(client)
     plans = [
         plan_table(table, rows, remote_hashes(client, table))
         for table, rows in rows_by_table.items()
     ]
+    emptied = [plan for plan in plans if plan.retained == 0 and plan.orphans]
+    if prune and emptied and not allow_empty_prune:
+        tables = ", ".join(f"{plan.table} ({len(plan.orphans)} hosted)" for plan in emptied)
+        raise UploadError(
+            f"refusing to prune {tables} to zero rows: nothing retained belongs there. "
+            "Pass --allow-empty-prune if emptying it is intended."
+        )
     if dry_run:
         return plans
     for plan in plans:
@@ -200,6 +213,11 @@ def main(
     )
     parser.add_argument("retained", nargs="?", default=DEFAULT_RETAINED)
     parser.add_argument("--prune", action="store_true", help="delete hosted rows not retained")
+    parser.add_argument(
+        "--allow-empty-prune",
+        action="store_true",
+        help="with --prune, allow a table to be pruned to zero rows",
+    )
     parser.add_argument("--dry-run", action="store_true", help="plan against the project only")
     parser.add_argument(
         "--offline", action="store_true", help="build the rows and report sizes, no network"
@@ -207,6 +225,9 @@ def main(
     parser.add_argument("--dump", metavar="DIR", help="with --offline, write the rows as JSON")
     args = parser.parse_args(argv)
     env = os.environ if env is None else env
+    if args.allow_empty_prune and not args.prune:
+        print("error: --allow-empty-prune needs --prune", file=sys.stderr)
+        return 2
 
     try:
         with tempfile.TemporaryDirectory(prefix="trace-public-results-") as tmp:
@@ -250,7 +271,13 @@ def main(
         return 2
 
     try:
-        plans = upload(client, rows_by_table, prune=args.prune, dry_run=args.dry_run)
+        plans = upload(
+            client,
+            rows_by_table,
+            prune=args.prune,
+            allow_empty_prune=args.allow_empty_prune,
+            dry_run=args.dry_run,
+        )
     except (PostgrestError, UploadError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

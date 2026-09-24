@@ -26,7 +26,8 @@ the dashboard/API see the same data the pipeline used.
 Exit codes: 0 success; 1 verifier failed AND --fail-on-verifier was passed
 (CI gate mode); 2 usage or input errors (argparse errors, bad paths,
 malformed fixtures, missing artifacts, cassette errors, a suite budget cap that
-cannot be enforced). Without the flag a verified
+cannot be enforced, hosted public results that refuse or cannot be reached
+when TRACE_RUN_READER=supabase). Without the flag a verified
 failure exits 0 — finding failures is this tool succeeding.
 
 argparse over typer: subcommands this simple don't justify a dependency.
@@ -61,6 +62,7 @@ from trace_harness.models import create_model_adapter, resolve_call_policy, reso
 from trace_harness.models.base import ProviderNotConfiguredError
 from trace_harness.models.cassette import CassetteConfig, RecordingModelAdapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
+from trace_harness.public_results.postgrest import PostgrestError
 from trace_harness.regression.promotion import LibraryGateError, commit_controls
 from trace_harness.regression.repair_validation import (
     ControlValidation,
@@ -2025,6 +2027,12 @@ def main(argv: list[str] | None = None) -> int:
         # A missing key or SDK is a setup problem, and the adapter's message
         # already says exactly what to do about it. Burying that under a
         # traceback helps nobody.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except PostgrestError as exc:
+        # TRACE_RUN_READER=supabase reads over HTTP. A project that cannot be
+        # reached or refuses the key is a setup problem, and the message
+        # already names the host and never the key.
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except (FileNotFoundError, KeyError, ValueError) as exc:

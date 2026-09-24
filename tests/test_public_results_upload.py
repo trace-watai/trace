@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import urllib.parse
 from pathlib import Path
 
@@ -124,10 +125,63 @@ def test_rows_no_longer_retained_are_pruned_only_when_asked(rows) -> None:
 def test_prune_refuses_an_empty_retained_set(rows) -> None:
     server = fake.MemoryPostgrest()
     upload(writer(server), rows)
-    before = server.snapshot()
-    with pytest.raises(UploadError, match="retained set is empty"):
+    before, writes = server.snapshot(), len(server.writes())
+    with pytest.raises(UploadError, match="to zero rows"):
         upload(writer(server), {table: [] for table in rows}, prune=True)
+    assert server.snapshot() == before and len(server.writes()) == writes
+
+
+@pytest.mark.parametrize("table", sorted(schema.PRIMARY_KEYS))
+@pytest.mark.parametrize("dry_run", [False, True], ids=["upload", "dry-run"])
+def test_prune_refuses_to_empty_any_one_table(rows, table: str, dry_run: bool) -> None:
+    """One kind of evidence lost in staging must not wipe its hosted table."""
+    server = fake.MemoryPostgrest()
+    upload(writer(server), rows)
+    before, writes = server.snapshot(), len(server.writes())
+    partial = rows | {table: []}
+    hosted = len(rows[table])
+
+    with pytest.raises(UploadError, match=rf"refusing to prune {table} \({hosted} hosted\)"):
+        upload(writer(server), partial, prune=True, dry_run=dry_run)
+    assert server.snapshot() == before and len(server.writes()) == writes
+
+    upload(writer(server), partial)  # without --prune the rows stay
     assert server.snapshot() == before
+
+
+def test_prune_empties_a_table_only_when_allowed(rows) -> None:
+    server = fake.MemoryPostgrest()
+    upload(writer(server), rows)
+    partial = rows | {schema.EXPERIMENTS: []}
+    plans = upload(writer(server), partial, prune=True, allow_empty_prune=True)
+    assert server.tables[schema.EXPERIMENTS] == {}
+    assert hosted_equals(server, partial)
+    assert next(p for p in plans if p.table == schema.EXPERIMENTS).orphans
+    # Nothing hosted and nothing retained is no prune at all.
+    upload(writer(server), partial, prune=True)
+
+
+def test_main_refuses_a_prune_to_zero_rows_until_allowed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    server = fake.MemoryPostgrest()
+    assert main([str(ACCEPTANCE)], env=ENV, transport=server) == 0
+    only_a_run = tmp_path / "retained"
+    first = next(ACCEPTANCE.rglob("run_result.json")).parent
+    shutil.copytree(first, only_a_run / first.name)
+    capsys.readouterr()
+    writes = len(server.writes())
+
+    assert main([str(only_a_run), "--prune"], env=ENV, transport=server) == 1
+    err = capsys.readouterr().err
+    assert "refusing to prune" in err and "--allow-empty-prune" in err
+    assert len(server.writes()) == writes
+
+    assert main([str(only_a_run), "--allow-empty-prune"], env=ENV, transport=server) == 2
+    assert "--allow-empty-prune needs --prune" in capsys.readouterr().err
+    assert main([str(only_a_run), "--prune", "--allow-empty-prune"], env=ENV, transport=server) == 0
+    assert list(server.tables[schema.RUNS]) == [first.name]
+    assert not server.tables[schema.BATCHES] and not server.tables[schema.EXPERIMENTS]
 
 
 def test_dry_run_plans_without_writing(rows) -> None:
@@ -232,8 +286,9 @@ def test_main_publishes_then_reports_nothing_to_do(capsys: pytest.CaptureFixture
         (ENV | {"TRACE_SUPABASE_SERVICE_KEY": fake.ANON_KEY}, "holds the anonymous key"),
         (ENV | {"TRACE_SUPABASE_SERVICE_KEY": fake.make_jwt("anon")}, "holds the anonymous key"),
         (ENV | {"TRACE_SUPABASE_URL": "http://x.supabase.co"}, "https://"),
+        (ENV | {"TRACE_SUPABASE_URL": "https://x.supabase.co:abc"}, "invalid port"),
     ],
-    ids=["unset", "publishable", "legacy-anon", "plain-http"],
+    ids=["unset", "publishable", "legacy-anon", "plain-http", "bad-port"],
 )
 def test_main_refuses_bad_configuration_before_any_request(
     env: dict, message: str, capsys: pytest.CaptureFixture[str]

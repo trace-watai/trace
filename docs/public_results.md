@@ -80,7 +80,8 @@ A response holds at most 1000 rows, Supabase's default. Ask with
 
 From Python, `TRACE_RUN_READER=supabase` swaps the backend behind
 `list-runs` and `list-experiments`, and `trace_harness.run_readers.open_run_reader`
-gives the same choice to any caller.
+gives the same choice to any caller. A project that cannot be reached or
+refuses the key makes those commands print the error and exit 2.
 
 ```sh
 TRACE_RUN_READER=supabase \
@@ -153,11 +154,13 @@ current time, so its `generated_at` is not hashed. The hosted value is the time
 of the upload that last changed that batch.
 
 Other guards stop a bad upload before anything is written. `--prune` refuses
-an empty retained set, so a staging mistake cannot wipe the project. The
-uploader refuses to write unless `schema_versions` records the version its code
-expects. It refuses a key it can tell is the anonymous one. `--dry-run` plans
-against the project without writing, and `--offline` builds the rows and
-reports their size with no network.
+to take any table down to zero rows, so a staging mistake that loses every run,
+batch or experiment cannot wipe that table, and `--allow-empty-prune` is the
+explicit way to empty one. The uploader refuses to write unless
+`schema_versions` records the version its code expects. It refuses a key it
+can tell is the anonymous one, and a project URL whose port is not a number.
+`--dry-run` plans against the project without writing, and `--offline` builds
+the rows and reports their size with no network.
 
 ## The publish job
 
