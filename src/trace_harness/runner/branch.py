@@ -15,19 +15,25 @@ CLI, and :func:`replay_batch` records that verdict as a batch of one.
 
 The plan's ``budget.max_cost_usd`` caps what the experiment spends on live
 calls, across every condition and seed, through the #196
-:class:`~trace_harness.runner.batch.BudgetGuard`. The guard starts from
-:func:`recorded_spend`, what earlier batches of the same experiment in the
-same runs dir already spent, so branching one condition at a time cannot
-multiply the cap. :func:`admit_before_any_run` asks it once per live condition
-before anything runs, and :func:`run_branch` asks it before each live seed and
-charges it after. A seed that calls no provider (the fixture provider, or a
-cassette replay) costs nothing and is never refused. Each batch's ``budget``
-block records what that condition spent and, when the guard stopped it, why.
+:class:`~trace_harness.runner.batch.BudgetGuard`. :func:`experiment_guard`
+starts the guard from :func:`recorded_budget`, what earlier runs of the same
+experiment in the same runs dir already spent and whether an earlier stop left
+the cap unenforceable, so branching one condition at a time, or again after an
+interruption, cannot multiply the cap. :func:`admit_before_any_run` asks it
+once per live condition before anything runs, and :func:`run_branch` asks it
+before each live seed and charges it after. A seed that calls no provider (the
+fixture provider, or a cassette replay) costs nothing and is never refused.
+Each batch's ``budget`` block records what that condition spent and, when the
+guard stopped it, why.
 
 A plan may list ``replacement_seeds`` in its metadata. A live seed whose run
-ends incomplete is then replaced by the next unused seed from that list,
-decided on run status alone, which is pre-registration 001's rule for seeds 5
-to 9. A seed the budget refused is not replaced.
+exists and ends incomplete is then replaced by the next unused seed from that
+list, decided on run status alone, which is pre-registration 001's rule for
+seeds 5 to 9. A seed the budget refused is not replaced, and neither is a seed
+that failed before its run existed, since that is a harness problem and not an
+incomplete run. Recording never overwrites a cassette, so a condition whose
+record-mode cassettes already exist for any seed it could run is refused before
+anything runs (:func:`recorded_cassettes`).
 """
 
 from __future__ import annotations
@@ -44,6 +50,7 @@ from trace_harness.environment.controls import select_controls
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models import (
     create_model_adapter,
+    estimate_cost_usd,
     makes_live_calls,
     resolve_call_policy,
     resolve_model_name,
@@ -62,10 +69,12 @@ from trace_harness.regression.report import ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.batch import (
+    BUDGET_UNENFORCEABLE,
     BatchBudget,
     BatchRunEntry,
     BatchSummary,
     BudgetGuard,
+    BudgetStopReason,
     NotRunCell,
     aggregate_entries,
     entry_from_pipeline,
@@ -99,6 +108,15 @@ class BranchResult:
     condition: str
     summary: BatchSummary | None = None
     skipped: str | None = None
+
+
+@dataclass
+class RecordedBudget:
+    """What earlier runs of one experiment in a runs dir spent, and whether the cap still holds."""
+
+    spent_usd: float = 0.0
+    stop_reason: BudgetStopReason | None = None
+    detail: str | None = None
 
 
 def load_artifact(path: Path | str) -> RegressionArtifact:
@@ -189,18 +207,82 @@ def replacement_seeds(experiment: ExperimentSpec) -> list[int]:
     return seeds
 
 
-def recorded_spend(store: ArtifactStore, experiment_id: str) -> float:
-    """What the experiment's earlier batches in this runs dir spent on live runs.
+def recorded_budget(store: ArtifactStore, experiment_id: str) -> RecordedBudget:
+    """What the experiment's earlier runs in this runs dir spent, and whether the cap still holds.
 
-    Read from each branch batch's ``budget.spent_usd``, which counts that
-    batch's live runs only, so the sum is the experiment's recorded spend.
+    Each branch batch's ``budget.spent_usd`` counts that batch's live runs. A
+    live run the branch stage tagged with the experiment that no batch lists,
+    because its invocation was interrupted or failed after the run, is priced
+    from its own trace as a batch entry is, so its spend still counts. When an
+    earlier batch stopped as ``budget_unenforceable``, or such a run has no
+    recorded cost, what the experiment spent is unknown, and the result carries
+    that stop so the next invocation starts stopped.
     """
-    total = 0.0
+    spent, listed, stop = 0.0, set(), None
     for path in sorted((store.runs_dir / names.BATCHES_DIR).glob(f"*/{names.BATCH_SUMMARY}")):
         summary = json.loads(path.read_text(encoding="utf-8"))
-        if (summary.get("metadata") or {}).get("experiment_id") == experiment_id:
-            total += (summary.get("budget") or {}).get("spent_usd") or 0.0
-    return round(total, 6)
+        if (summary.get("metadata") or {}).get("experiment_id") != experiment_id:
+            continue
+        budget = summary.get("budget") or {}
+        spent += budget.get("spent_usd") or 0.0
+        listed.update(e.get("run_id") for e in summary.get("entries") or [])
+        if budget.get("stop_reason") == BUDGET_UNENFORCEABLE and stop is None:
+            stop = (
+                f"batch {summary.get('batch_id')} of {experiment_id} stopped as "
+                f"{BUDGET_UNENFORCEABLE}: {budget.get('detail')}"
+            )
+    for run_id in store.list_runs():
+        if run_id in listed or not store.exists(run_id, names.RUN_CONFIG):
+            continue
+        raw = store.read_json(run_id, names.RUN_CONFIG)
+        if ((raw.get("metadata") or {}).get("branch") or {}).get("experiment_id") != experiment_id:
+            continue
+        config = RunConfig.model_validate(raw)
+        if not makes_live_calls(config.provider, config.cassette):
+            continue
+        cost = estimate_cost_usd(config.provider, config.model or "", _responses(store, run_id))
+        if cost is None:
+            stop = stop or (
+                f"live run {run_id} of {experiment_id} is in no batch and has no recorded cost"
+            )
+            continue
+        spent += cost
+    return RecordedBudget(round(spent, 6), BUDGET_UNENFORCEABLE if stop else None, stop)
+
+
+def experiment_guard(
+    store: ArtifactStore, experiment: ExperimentSpec
+) -> tuple[BudgetGuard, RecordedBudget]:
+    """The guard for one ``branch`` invocation, started from the experiment's earlier runs."""
+    guard = BudgetGuard(experiment.budget.max_cost_usd)
+    earlier = recorded_budget(store, experiment.experiment_id)
+    guard.spent_usd = earlier.spent_usd
+    if guard.max_cost_usd is not None and earlier.stop_reason is not None:
+        guard.stop_reason, guard.detail = earlier.stop_reason, earlier.detail
+    return guard, earlier
+
+
+def recorded_cassettes(
+    artifact: RegressionArtifact, experiment: ExperimentSpec, condition: ConditionSpec
+) -> list[str]:
+    """Record-mode cassettes already on disk for any seed the condition could run.
+
+    Recording never overwrites a cassette, so such a seed would fail before its
+    run existed, and a condition already branched into its cassette folder
+    would spend its replacement seeds live. Declared and replacement seeds are
+    both checked, before anything runs.
+    """
+    agent = condition.agent_config
+    if (
+        condition.kind not in LIVE_KINDS
+        or agent.cassette is None
+        or agent.cassette.mode != "record"
+    ):
+        return []
+    seeds = list(condition.seeds or [agent.seed])
+    seeds += [s for s in replacement_seeds(experiment) if s not in seeds]
+    paths = _cassette_paths(condition, _task(artifact).task_id, seeds)
+    return [str(path) for path in paths if path.is_file()]
 
 
 def calls_a_provider(condition: ConditionSpec) -> bool:
@@ -242,13 +324,15 @@ def run_branch(
         raise ValueError(f"{condition.kind.value} conditions run through replay, see replay_batch")
     artifact = load_artifact(artifact_path)
     fork_step = validate_condition(artifact, condition)
-    task = load_task(Path(artifact.task_fixture.replace("\\", "/")).resolve())
-    task = task.model_copy(update={"initial_state": pinned_initial_state(artifact)})
+    task = _task(artifact).model_copy(update={"initial_state": pinned_initial_state(artifact)})
     seeds = condition.seeds or [condition.agent_config.seed]
 
     missing = _missing_cassettes(condition, task.task_id, seeds)
     if missing:
         return BranchResult(condition.name, skipped=f"no cassette recorded at {', '.join(missing)}")
+    existing = recorded_cassettes(artifact, experiment, condition)
+    if existing:
+        raise ValueError(already_recorded(condition, existing))
 
     if guard is None:
         guard = BudgetGuard(experiment.budget.max_cost_usd)
@@ -276,7 +360,10 @@ def run_branch(
             entry = _setup_error(artifact, condition, seed, exc)
         entries.append(entry)
         guard.charge(entry.cost_usd, agent.provider, agent.cassette, run_id=entry.run_id)
-        if entry.status != "completed" and spare:
+        # Only a run that exists and ended incomplete is replaced. A seed that
+        # failed before its run existed is a harness problem, and replacing it
+        # would spend a live seed on the same failure.
+        if entry.run_id is not None and entry.status != "completed" and spare:
             queue.append(spare.pop(0))
 
     budget = _budget_block(guard, spent_before, stopped_before, not_run)
@@ -464,14 +551,38 @@ def _live_model(condition: ConditionSpec) -> str:
     return resolve_model_name(agent.provider, agent.model, None)
 
 
-def _missing_cassettes(
-    condition: ConditionSpec, task_id: str, seeds: list[int | None]
-) -> list[str]:
-    agent = condition.agent_config
-    if agent.cassette is None or agent.cassette.mode != "replay":
+def _task(artifact: RegressionArtifact) -> TaskSpec:
+    return load_task(Path(artifact.task_fixture.replace("\\", "/")).resolve())
+
+
+def _responses(store: ArtifactStore, run_id: str) -> list[dict[str, Any]]:
+    """Every raw provider response a run's trace recorded; none when it has no trace."""
+    if not store.trace_path(run_id).is_file():
         return []
+    return [
+        event.payload["raw"]
+        for event in store.read_trace(run_id)
+        if event.event_type is TraceEventType.MODEL_RESPONSE
+        and isinstance(event.payload.get("raw"), dict)
+    ]
+
+
+def already_recorded(condition: ConditionSpec, existing: list[str]) -> str:
+    """Why a condition with recorded cassettes is refused, with every cassette listed."""
+    listed = "\n".join(f"  {path}" for path in existing)
+    return (
+        f"{len(existing)} cassette(s) of condition {condition.name!r} already exist in "
+        f"{condition.agent_config.cassette.directory}, and recording never overwrites one, "
+        f"so branching it is refused before any run:\n{listed}\n"
+        "A condition is branched into its cassette folder once, and its first batch is the "
+        "one to record."
+    )
+
+
+def _cassette_paths(condition: ConditionSpec, task_id: str, seeds: list[int | None]) -> list[Path]:
+    agent = condition.agent_config
     model = resolve_model_name(agent.provider, agent.model, None)
-    paths = [
+    return [
         cassette_path(
             agent.cassette.directory,
             CassetteRequestConfig(
@@ -486,7 +597,15 @@ def _missing_cassettes(
         )
         for seed in seeds
     ]
-    return [str(path) for path in paths if not path.is_file()]
+
+
+def _missing_cassettes(
+    condition: ConditionSpec, task_id: str, seeds: list[int | None]
+) -> list[str]:
+    agent = condition.agent_config
+    if agent.cassette is None or agent.cassette.mode != "replay":
+        return []
+    return [str(path) for path in _cassette_paths(condition, task_id, seeds) if not path.is_file()]
 
 
 def _setup_error(

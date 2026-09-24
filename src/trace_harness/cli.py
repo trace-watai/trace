@@ -1151,6 +1151,12 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         name, _, batch_id = pair.partition("=")
         if not name or not batch_id:
             raise CliInputError(f"--condition expects name=batch_id, got {pair!r}")
+        # A repeated name would silently keep the last batch given for it.
+        if name in condition_batches:
+            raise CliInputError(
+                f"--condition {name} is given twice ({condition_batches[name]} and {batch_id}); "
+                "each condition is answered by one batch"
+            )
         condition_batches[name] = batch_id
     try:
         validate_condition_batches(spec, condition_batches)
@@ -1286,11 +1292,14 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     reuse the ``replay --apply-control`` path and record its verdict as a batch
     of one. Every condition is checked before any of them runs.
     """
-    from trace_harness.runner.batch import BUDGET_UNENFORCEABLE, BudgetGuard
+    from trace_harness.runner.batch import BUDGET_UNENFORCEABLE
     from trace_harness.runner.branch import (
         admit_before_any_run,
+        already_recorded,
+        calls_a_provider,
+        experiment_guard,
         load_artifact,
-        recorded_spend,
+        recorded_cassettes,
         replacement_seeds,
         replay_batch,
         run_branch,
@@ -1311,6 +1320,12 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     for condition in conditions:
         validate_condition(artifact, condition)
     replacement_seeds(spec)
+    # Recording never overwrites a cassette. A condition branched before would
+    # end its seeds as setup errors, so it is refused before anything runs (#200).
+    for condition in conditions:
+        existing = recorded_cassettes(artifact, spec, condition)
+        if existing:
+            raise CliInputError(already_recorded(condition, existing))
     # The same check record runs, made before any spend: a sweep on a changed
     # evaluator would be refused at record after its money was gone.
     drift = _frozen_set_drift(
@@ -1323,14 +1338,16 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     if drift:
         _print("frozen set:", f"DRIFTED, {len(drift)} file(s), running with --allow-drift")
     # One guard for the whole invocation, from the plan's cap (#196). It starts
-    # from what earlier batches of this experiment spent, so branching one
+    # from what earlier runs of this experiment spent, batched or not, and
+    # stopped when an earlier stop left the cap unenforceable, so branching one
     # condition at a time cannot multiply the cap (#200). Asking it about every
     # live condition first means a cap that cannot hold stops every live run
     # before the first one starts.
-    guard = BudgetGuard(spec.budget.max_cost_usd)
-    guard.spent_usd = recorded_spend(store, spec.experiment_id)
+    guard, earlier = experiment_guard(store, spec)
     if guard.spent_usd:
-        _print("budget:", f"${guard.spent_usd:.6f} already spent by earlier batches of the plan")
+        _print("budget:", f"${guard.spent_usd:.6f} already spent by earlier runs of the plan")
+    if guard.stop_reason is not None:
+        _print("budget:", f"stopped before this invocation, {earlier.detail}")
     admit_before_any_run(guard, conditions)
 
     pairs: list[str] = []
@@ -1378,8 +1395,10 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     if guard.stop_reason is not None:
         _print("stopped:", f"{guard.stop_reason}; {guard.detail}")
     # Exits as run-suite does: a cap the harness cannot enforce is a
-    # configuration problem, and an exhausted cap is a recorded early stop.
-    if guard.stop_reason == BUDGET_UNENFORCEABLE:
+    # configuration problem, and an exhausted cap is a recorded early stop. An
+    # invocation with no live condition never asked the guard, so a stop
+    # carried over from earlier runs does not fail it.
+    if guard.stop_reason == BUDGET_UNENFORCEABLE and any(map(calls_a_provider, conditions)):
         return 2
     if pairs:
         print("\nRecord with:")

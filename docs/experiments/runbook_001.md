@@ -144,14 +144,21 @@ done
 
 - Each invocation checks the frozen set before any run and exits 2 on drift.
 - The cap spans every invocation into `$RUNS`, and `branch` prints what the
-  earlier batches spent. The swapped arm runs last, so a cap reached late costs
+  earlier runs spent. The swapped arm runs last, so a cap reached late costs
   it first.
-- A seed that ends incomplete is replaced from seeds 5 to 9 inside the same
-  invocation.
+- A seed whose run ends incomplete is replaced from seeds 5 to 9 inside the
+  same invocation. A `setup_error`, where the harness failed before the run
+  existed, is not replaced.
 - Live runs record cassettes under the experiment folder, one folder per arm.
-  Recording refuses to overwrite a cassette, so a condition is branched once. A
-  repeated one ends its seeds as `setup_error`, and the first batch is the one
-  to record.
+  Recording never overwrites a cassette, so a condition is branched once.
+  Branching it again exits 2 before any run and lists the cassettes that
+  already exist, and the first batch is the one to record.
+- An interrupted invocation writes no batch for the condition it was in, but
+  its runs still count against the cap, priced from their traces, and its
+  cassettes stay, so that condition is refused afterwards. A run interrupted
+  before its first provider response has no recorded cost, and every later
+  live seed is then refused as `budget_unenforceable`. Either way that
+  condition has no batch for step 5, and the report names it as interrupted.
 
 **5. Record** every batch, with decision review by human. The pairs come from
 the `Record with` lines that step 4 logged.

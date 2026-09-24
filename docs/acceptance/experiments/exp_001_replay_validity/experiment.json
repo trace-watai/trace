@@ -470,7 +470,7 @@
     ],
     "seed_rule": "Seeds 0 to 4 are confirmatory for every pair, arm and live model. A run that ends incomplete is replaced by the next unused seed from 5 to 9, decided on run status alone, which branch applies from replacement_seeds. A pair with fewer than five completed seeds after replacement is insufficient and left out of verdict_agreement_rate, with the exclusion stated.",
     "temperature": "Provider default. temperature is null in every live agent_config, so no temperature is sent and each run_config.json records null.",
-    "budget_rule": "Recorded cost_usd across all live arms is capped at 50 US dollars. branch holds the cap across every invocation into one runs dir, and reaching it ends the experiment as incomplete with the finished runs reported.",
+    "budget_rule": "Recorded cost_usd across all live arms is capped at 50 US dollars. branch holds the cap across every invocation into one runs dir, counting the runs of an interrupted invocation, and reaching it ends the experiment as incomplete with the finished runs reported.",
     "harness_check": "Before the first live batch, scripts/dry_run_exp_001.py runs this frozen plan offline with the fixture model standing in for every live model. Its live verdicts must equal static_replay on all 3 pairs with zero divergence, or runs stop. The outcome is retained beside this plan as harness_check.json, with the plan's sha256 and frozen set.",
     "amendment_slots": {
       "natural_failing_cells_198": {

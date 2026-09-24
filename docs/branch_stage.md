@@ -79,6 +79,12 @@ missing recording cannot quietly shrink the sample. Cassettes live at
 `<directory>/<task_id>/<model>/<seed>.jsonl` and count steps from the first
 call after the fork.
 
+In `record` mode it is the other way round. Recording never overwrites a
+cassette, so when any seed the condition could run, declared or replacement,
+already has one, `branch` exits 2 before any run and lists them. A condition
+is branched into its cassette folder once, and its first batch is the one to
+record.
+
 ## Divergence
 
 Both fields compare `model_action` payloads through `material_action` in
@@ -170,13 +176,17 @@ its metadata names exits 2, since it would swap the two rates.
 The plan's `budget.max_cost_usd` caps what the experiment spends on live
 calls, across every condition and seed and every `branch` invocation into one
 runs dir, through the #196 `BudgetGuard` that `run-suite` uses. The guard is
-built once per invocation and starts from the `spent_usd` recorded by the
-batches of the same experiment already in the runs dir, which `branch` prints
-when it is not zero. Branching one condition at a time therefore spends the cap
-once in total. Batches of other experiments never count. The guard follows the
-`run-suite` contract: it admits a run before it starts and is charged the
-run's recorded cost after it finishes, and an unknown cost never counts as
-zero.
+built once per invocation and starts from what the experiment's earlier runs in
+the runs dir spent, which `branch` prints when it is not zero. That is the
+`spent_usd` of the experiment's batches, plus every live run tagged with the
+experiment in its `run_config.json` that no batch lists, priced from its own
+trace as a batch entry is. Such a run is left by an invocation that was
+interrupted, since a batch is written when its condition ends, or by a seed
+that failed after its run existed. Branching one condition at a time, or again
+after an interruption, therefore spends the cap once in total. Runs and
+batches of other experiments never count. The guard follows the `run-suite`
+contract: it admits a run before it starts and is charged the run's recorded
+cost after it finishes, and an unknown cost never counts as zero.
 
 - Before any condition runs, the guard is asked once about each live
   condition. A live model with no price under the cap, or a cap of zero, stops
@@ -187,6 +197,13 @@ zero.
   runs, so the overshoot is at most one run.
 - A live seed that finishes with no recorded cost stops the guard as
   `budget_unenforceable`.
+- The stop outlasts the invocation. When an earlier batch of the experiment
+  stopped as `budget_unenforceable`, or an unbatched live run of it has no
+  recorded cost, the next invocation starts stopped, prints why, and refuses
+  every live seed. An interrupted run that recorded no provider response yet
+  has no recorded cost, so interrupting the first live call of a seed stops
+  the cap this way. A call in flight when an invocation is interrupted is
+  missing from its run's trace, so the spend can be short by that call.
 - A seed that calls no provider, meaning the fixture provider or a cassette
   replay, costs nothing and is never refused, even after the guard has
   stopped. `static_replay` conditions never ask the guard.
@@ -199,22 +216,26 @@ condition, or stopped while the condition ran, the block records
 each seed never run in `not_run`. A condition refused whole still writes its
 batch, with no entries. `branch` exits as `run-suite` does without
 `--fail-on-verifier`: 2 when the cap cannot be enforced, without the
-`Record with` line, and 0 after an exhausted cap. `max_runs` is recorded in
-the plan and not enforced.
+`Record with` line, and 0 after an exhausted cap. An invocation that runs only
+`static_replay` conditions never asks the guard and exits 0 even when an
+earlier stop was carried over. `max_runs` is recorded in the plan and not
+enforced.
 
 ## Seed replacement
 
 A plan may list `replacement_seeds` in its `metadata`. A live seed whose run
-ends with any status other than `completed` is then replaced by the next unused
-seed from that list, and a replacement that ends incomplete is replaced in
-turn, until the list runs out. The decision reads run status alone, never the
-verdict, which is pre-registration 001's rule for seeds 5 to 9. A seed the
-budget refused is not replaced. Replacement seeds land in the same batch with
-their own seed numbers. With cassettes in `replay` mode, only the declared
-seeds are checked up front, so a replacement with no recording ends as a
-`setup_error` and is replaced in turn. The list rides in plan metadata because
-`ConditionSpec` has no field for it, and a malformed list exits 2 before any
-run.
+exists and ends with any status other than `completed` is then replaced by the
+next unused seed from that list, and a replacement that ends incomplete is
+replaced in turn, until the list runs out. The decision reads run status alone,
+never the verdict, which is pre-registration 001's rule for seeds 5 to 9. A
+seed the budget refused is not replaced, and neither is a `setup_error`, a
+seed that failed before its run existed: that is a harness problem, and a
+replacement would only spend a live seed on the same failure. Replacement
+seeds land in the same batch with their own seed numbers. With cassettes in
+`replay` mode, only the declared seeds are checked up front, so a replacement
+with no recording ends as a `setup_error`. The list rides in plan metadata
+because `ConditionSpec` has no field for it, and a malformed list exits 2
+before any run.
 
 ## Harness check
 
@@ -238,5 +259,5 @@ would disagree without any harness defect.
 - A prefix recorded by the fixture adapter carries no provider state. No test
   here calls a live provider, so whether one accepts earlier turns without it
   is unexercised.
-- `max_runs` is not enforced. The cap spans the batches in one runs dir, so
-  two runs dirs of one plan may each spend up to it.
+- `max_runs` is not enforced. The cap spans the runs and batches in one runs
+  dir, so two runs dirs of one plan may each spend up to it.
