@@ -7,8 +7,10 @@ The ticket builds a sqlite index beside `index.json` only if
 `trace-harness list-runs` over a sweep directory takes more than five seconds
 or `index.json` passes fifty megabytes. At one sweep plus a second domain (640
 runs) `list-runs` took 0.24 s and the index was 343 kB. Neither threshold
-trips, so no index code was written. Both lines are crossed only near 100,000
-runs in one directory, about 300 sweeps.
+trips, so no index code was written. The size line is crossed between 87,000
+and 93,000 runs in one directory, 270 to 290 sweeps. `list-runs` stayed under
+5 s at 100,000 runs in the final pass (2.8 s) and crossed it there in an
+earlier pass under heavier load (6.5 s).
 
 ## Scales
 
@@ -24,7 +26,7 @@ A sweep is 2 providers by 5 seeds by the 32 tasks in
 | sweep_x50 | 16,000 | fifty sweeps in one directory |
 | probe_50000 | 50,000 | listing-only point |
 | probe_100000 | 100,000 | listing-only point |
-| end_to_end | 320 | one real fixture sweep through `BatchRunner` |
+| end_to_end | 320 | five fixture suite runs through `BatchRunner`, 64 runs each |
 
 ## Method
 
@@ -34,18 +36,29 @@ rebuilds as its own run. The script then replays the index writes of a sweep
 through the real `ArtifactStore` methods, in the order the runner makes them.
 `upsert_index_entry` runs when a run finalizes, `enrich_index_entry_with_verifier`
 after the verify stage, and `enrich_index_entry_with_batch` for each run once
-its batch of 32 has a summary. Every replayed index equaled a fresh
-`rebuild_index` entry for entry.
+its batch has a summary. The replay batches 32 runs, one provider and seed.
 
 A full replay at 50x would take over an hour per repetition. That total is
 estimated instead from the per-run index cost timed at 17 evenly spaced index
-sizes and summed over the sweep. At 10x the estimate came within 7 percent of
-the full replay (128 s against 138 s).
+sizes and summed over the sweep. At 10x the estimate was 128 s against 138 s
+for the full replay, 7 percent low.
 
 The end-to-end row runs the refund_v0 suite through `BatchRunner` five times,
 with two fixture agent configs standing in for two providers, and times every
-index call the runner makes. It confirms the replay exercises the path a real
-sweep takes.
+index call the runner makes. Each invocation is one batch holding both
+configs, 64 runs, twice the replay's batch. It confirms the replay exercises
+the path a real sweep takes.
+
+The script stops with an error instead of timing a directory it cannot vouch
+for. A replayed index, and the end-to-end runner's own index, must equal a
+fresh `rebuild_index`. The sampled estimate must leave the index exactly as the
+full sweep left it. Before any listing is timed, `index.json` must hold exactly
+the run ids on disk at the current schema, because `RunReader.list_runs`
+rebuilds whenever they differ and the listing columns would then time rebuilds.
+The figures below were taken with the revision of the script committed with
+them, before these checks were enforced. That pass recorded every replayed
+index as equal to its rebuild. The checks sit outside the timed calls and
+change nothing that is timed.
 
 The probes hold only the three files the index path reads (`run_result.json`,
 `run_config.json`, `verifier_result.json`) and get their index from one
@@ -56,8 +69,9 @@ Listing is timed five ways over the same directory.
 
 - `trace-harness list-runs` as a subprocess. Each call is paired with one over
   an empty runs directory taken right beside it, and the "above empty dir"
-  column is the median of the paired differences. Interpreter startup alone
-  cost 0.17 to 0.8 s on this machine depending on load.
+  column is the median of the paired differences. Interpreter startup
+  dominates the small scales and swings with load. The CLI median exceeds the
+  paired median by 0.17 to 0.73 s across the rows below.
 - `RunReader.list_runs` in process.
 - `ArtifactStore.rebuild_index`, which `list_runs` pays once whenever the
   index is missing a run that is on disk.
@@ -66,10 +80,28 @@ Listing is timed five ways over the same directory.
   first call is left out as warm-up.
 - `GET /runs` under `next dev`, up to 3,200 runs. `next build` prerenders
   `/runs` as a static page, so under `next start` a request would time a
-  static file written at build time.
+  static file written at build time. `next dev` writes `.next` into its working
+  directory, so the script runs it from a copy of `apps/dashboard` in its own
+  scratch directory, linked to the installed `node_modules`. The final pass
+  predates that and ran it inside `apps/dashboard`.
 
-Listing figures are the median and max of five repetitions. Write replays and
-rebuilds are three repetitions, except the probe rebuilds, which ran once.
+Repetitions differ by column.
+
+- `list-runs`, `RunReader.list_runs` and the dashboard's `listRuns()` are the
+  median and max of five timed calls. `list-runs` and `listRuns()` each make
+  one untimed call first.
+- `GET /runs` is the median and max of three renders, after one untimed
+  request that compiles the page.
+- Full write replays ran three times. The per-run cost at the end is the mean
+  over the last batch, 32 runs (15 at the retained scale), taken as the median
+  of the three replays.
+- The sampled estimate times each of its 17 positions three times and sums
+  the per-position medians over the sweep by the trapezoid rule. For sweep_x50
+  the per-run cost at the end is the median at the last position.
+- `rebuild_index` ran three times at the synthetic scales and once for the
+  probes and the end-to-end row.
+- The end-to-end write figures come from a single pass of five invocations.
+  The per-run cost at the end is the mean over the last invocation's 64 runs.
 
 ## Machine
 
@@ -134,7 +166,7 @@ machine's load.
 
 The thresholds are 5 s for `list-runs` and 50 MB for `index.json`. At one
 sweep plus a second domain `list-runs` took 0.24 s (0.50 s in the earlier
-pass), a twentieth of the time line, and the index was 343 kB, under a
+pass), about a twentieth of the time line, and the index was 343 kB, under a
 hundredth of the size line. The index stays JSON and no sqlite index was
 built.
 
@@ -144,36 +176,38 @@ built.
   the real fixture sweep. It passes 50 MB between 87,000 and 93,000 runs,
   which is 270 to 290 sweeps in one directory. The 100,000-run probe measured
   53.6 MB.
-- `list-runs` costs about 21 microseconds per run above interpreter startup up
-  to 50,000 runs and 26 at 100,000. At 100,000 runs that time splits between
-  parsing the index, the directory scan with two `stat` calls per run, and
-  building the summaries, and the scan is the largest part. It stayed under
-  5 s at 100,000 runs in the final pass (2.8 s), crossed it there in the
-  earlier pass under heavier load (6.5 s), and took 25.6 s at 200,000. On this
-  machine it crosses 5 s between 100,000 and 200,000 runs, and sooner when the
-  machine is swapping.
-- A stale index crosses 5 s much sooner. `RunReader.list_runs` rebuilds from
-  every run's artifacts when the index misses a run on disk, and that rebuild
-  took 4.7 s (5.2 s max) at 16,000 runs. It happens once per mismatch, and
-  listing is fast again afterwards. At 640 runs the rebuild is 0.1 s.
+- `list-runs` costs about 21 microseconds per run above interpreter startup
+  from 16,000 to 50,000 runs and 26 at 100,000. That time covers parsing the
+  index, a directory scan with two `stat` calls per run, and building the
+  summaries. How it splits between them was not profiled. It stayed under 5 s
+  at 100,000 runs in the final pass (2.8 s) and crossed it there in the
+  earlier pass under heavier load (6.5 s), so where it crosses depends on
+  load. The earlier pass took 25.6 s at 200,000 runs.
+- A stale index costs far more. `RunReader.list_runs` rebuilds from every
+  run's artifacts when the index misses a run on disk, and that rebuild took
+  4.7 s (5.2 s max) at 16,000 runs, 16.8 s at 50,000 and 77.3 s at 100,000. It
+  happens once per mismatch, and listing is fast again afterwards. At 640 runs
+  the rebuild is 0.1 s.
 
 ## Costs outside the two thresholds
 
 - Total index writes grow with the square of the run count. Each run reads the
-  whole index five times and rewrites it three times, and every rewrite is fsynced.
-  The per-run cost at the end of a sweep was 23 ms at 640 runs, 82 ms at 3,200
-  and 631 ms at 16,000. A sweep's writes summed to 8 to 19 s at 640 runs and
-  138 to 184 s at 3,200. In the real fixture sweep, index calls took 48 percent
-  of the 3.9 s wall time because fixture runs finish in milliseconds. Live
-  provider runs spend seconds per model call, so the share stays small until a
-  directory holds thousands of runs.
+  whole index five times and rewrites it three times, and every rewrite is
+  fsynced. The per-run cost at the end of a sweep was 23 ms at 640 runs, 82 ms
+  at 3,200 and 631 ms at 16,000, the last timed at the final sampled position.
+  A sweep's writes summed to 7.7 to 19.2 s at 640 runs and 138 to 184 s at
+  3,200 across the two passes. In the real fixture sweep, index calls took 48
+  percent of the 3.9 s wall time because fixture runs finish in milliseconds.
+  A live provider run spends seconds on each model call, so the same index
+  cost is a much smaller share of a live sweep.
 - The dashboard run list slows from rendering, and the index read barely
-  registers. `listRuns()` stays under 25 ms at 16,000 runs and under 250 ms at
+  registers. `listRuns()` took a median of 23 ms at 16,000 runs and 193 ms at
   100,000. `GET /runs` under `next dev` renders every run on one page and took
-  3.7 s at 640 runs and 31 s at 3,200, returning 15 MB of HTML. In a production
-  build `/runs` is prerendered, so it shows the runs present at the last
-  `next build`. Paging the list would bound the render with either index
-  format.
+  3.7 s at 640 runs and 30.8 s at 3,200. The page carries about 7.5 kB of HTML
+  per run, measured at 15 to 150 runs on 2026-09-24, so 3,200 runs come to
+  about 24 MB. In a production build `/runs` is prerendered, so it shows the
+  runs present at the last `next build`. Paging the list would bound the
+  render with either index format.
 
 ## Reproduce
 
@@ -183,7 +217,9 @@ python scripts/measure_run_index.py --work /tmp/scale213/final --next-dev \
   --end-to-end 5 --probe 50000 --probe 100000 --json /tmp/scale213/final.json
 ```
 
-The work directory must sit outside the repository, and each scale's
-directory is removed once it is measured unless `--keep` is given. The final
-pass took about 20 minutes on this machine, most of it in the 10x write
+The work directory must sit outside the repository. The script writes
+everything into a new directory it creates there, so nothing already in the
+work directory is reused or removed. Each scale's runs are deleted once
+measured, and the new directory at the end, unless `--keep` is given. The
+final pass took about 20 minutes on this machine, most of it in the 10x write
 replays and the probe rebuilds.

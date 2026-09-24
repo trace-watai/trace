@@ -353,7 +353,9 @@ def check_index_matches_dirs(runs_dir: Path, run_ids: list[str]) -> None:
     indexed = [entry.run_id for entry in index.entries]
     problems = []
     if index.schema_version != RUN_INDEX_SCHEMA_VERSION:
-        problems.append(f"index schema {index.schema_version}, not {RUN_INDEX_SCHEMA_VERSION}")
+        problems.append(
+            f"index schema {index.schema_version} where the store writes {RUN_INDEX_SCHEMA_VERSION}"
+        )
     if listable != expected:
         problems.append(
             f"{len(listable - expected)} unexpected and {len(expected - listable)} missing run dirs"
@@ -567,7 +569,8 @@ def measure_listing(
     if not args.no_dashboard:
         dashboard = time_dashboard_list(runs_dir, work, args.list_reps)
         if "count" in dashboard and dashboard["count"] != count:
-            raise RuntimeError(f"dashboard listRuns() saw {dashboard['count']} runs, not {count}")
+            seen = dashboard["count"]
+            raise RuntimeError(f"dashboard listRuns() saw {seen} runs, expected {count}")
         out["dashboard_list_runs_s"] = dashboard
     if args.next_dev and count <= args.next_dev_max:
         out["next_dev_runs_page_s"] = time_next_dev_render(runs_dir, work, args.next_dev_reps)

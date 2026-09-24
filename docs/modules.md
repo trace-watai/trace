@@ -281,9 +281,10 @@ verifiers/attribution), no database before local JSON actually hurts.
 **Measured 2026-09-23 (#213).** At one sweep plus a second domain (640 runs)
 `list-runs` takes 0.24 s and `index.json` is 343 kB, far under the 5 s and
 50 MB that would justify a sqlite index, so the run index stays JSON. The size
-line is crossed near 90,000 runs and the time line between 100,000 and 200,000,
-about 300 sweeps in one directory. Two costs grow sooner. Every run rewrites
-the whole index, which takes 631 ms per run at 16,000 runs, and the dashboard
+line is crossed between 87,000 and 93,000 runs in one directory, 270 to 290
+sweeps. `list-runs` took 2.8 s at 100,000 runs, and 6.5 s in an earlier pass
+under heavier load. Two costs grow sooner. Every run rewrites the whole index
+three times, which costs 631 ms per run at 16,000 runs, and the dashboard
 renders every run on one page. Method and numbers are in
 [measurements/run_index_scale.md](measurements/run_index_scale.md), and
 `scripts/measure_run_index.py` reproduces them.
