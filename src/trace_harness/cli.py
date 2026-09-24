@@ -1206,18 +1206,18 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     from trace_harness.runner.batch import BUDGET_UNENFORCEABLE, BudgetGuard
     from trace_harness.runner.branch import (
         admit_before_any_run,
+        check_cassette_paths,
         load_artifact,
         replay_batch,
         run_branch,
         validate_condition,
     )
-    from trace_harness.runner.experiment import ConditionKind, ExperimentSpec
+    from trace_harness.runner.experiment import ConditionKind
 
-    artifact_path, spec_path = Path(args.artifact_path), Path(args.experiment)
-    for path, what in ((artifact_path, "regression artifact"), (spec_path, "experiment plan")):
-        if not path.is_file():
-            raise CliInputError(f"{what} not found: {path}")
-    spec = ExperimentSpec.model_validate(json.loads(spec_path.read_text(encoding="utf-8")))
+    artifact_path = Path(args.artifact_path)
+    if not artifact_path.is_file():
+        raise CliInputError(f"regression artifact not found: {artifact_path}")
+    spec_path, spec = _load_experiment_plan(args.experiment)
     conditions = [c for c in spec.conditions if args.condition in (None, c.name)]
     if not conditions:
         declared = sorted(c.name for c in spec.conditions)
@@ -1225,6 +1225,9 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     artifact = load_artifact(artifact_path)
     for condition in conditions:
         validate_condition(artifact, condition)
+    # Recording never overwrites a cassette, so a collision found at a later
+    # seed would come after earlier seeds had spent.
+    check_cassette_paths(artifact, conditions)
     # The same check record runs, made before any spend: a sweep on a changed
     # evaluator would be refused at record after its money was gone.
     drift = _frozen_set_drift(

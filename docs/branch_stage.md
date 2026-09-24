@@ -76,6 +76,13 @@ missing recording cannot quietly shrink the sample. Cassettes live at
 `<directory>/<task_id>/<model>/<seed>.jsonl` and count steps from the first
 call after the fork.
 
+That path names no condition, and recording never overwrites a file. So
+before any condition runs, `branch` exits 2 when a seed in record mode would
+write a file that already exists, or when two selected seeds share a path and
+at least one of them records. Either would otherwise fail only after earlier
+seeds had spent. Give each condition its own `cassette.directory`. Several
+conditions may still replay one recording.
+
 ## Divergence
 
 Both fields compare the run's `model_action` payloads with the recording's,
@@ -117,9 +124,9 @@ to the list after `experiment freeze` shows up as drift.
   end, and when the run took no action after the start step.
 - `diverged` records whether the first action after the start step differed,
   which is what `first_post_fork_divergence_rate` averages. It is null when
-  the run took no action after the start step. A condition whose runs would
-  end at or before the start step is refused before anything runs, so every
-  completed branch run has a value.
+  the run took no action after the start step. A start where the recording's
+  final answer or `max_steps` would end every run by the start step is refused
+  before anything runs, so every completed branch run has a value.
 
 Replay's drift notes are unchanged. `describe_action_drift` still compares the
 pinned actions with the fixture script through `material_action` in
@@ -191,6 +198,12 @@ zero.
   runs, so the overshoot is at most one run.
 - A live seed that finishes with no recorded cost stops the guard as
   `budget_unenforceable`.
+- A seed whose run finished but could not be verified, attributed or labelled
+  is recorded as `setup_error` with its run id and the error, and is priced
+  from its trace like any other run, so the guard charges what it spent. When
+  even the price cannot be read, its cost stays null and the guard stops as
+  `budget_unenforceable`. Only a seed that failed before its run existed has
+  no run id, and such a seed called no provider.
 - A seed that calls no provider, meaning the fixture provider or a cassette
   replay, costs nothing and is never refused, even after the guard has
   stopped. `static_replay` conditions never ask the guard.

@@ -207,6 +207,48 @@ def post_fork_divergence(
     return first_step, first_step == fork_step + 1
 
 
+def check_cassette_paths(artifact: RegressionArtifact, conditions: list[ConditionSpec]) -> None:
+    """Refuse cassette recordings that would collide, before any condition runs.
+
+    A cassette lives at ``<directory>/<task_id>/<model>/<seed>.jsonl``, with no
+    condition in the path, and recording never overwrites a file. Two cells (a
+    condition and a seed) that share a path while at least one of them
+    records, or a recording whose file is already on disk, would each fail
+    only after earlier cells had spent, so both raise here instead. Replaying
+    one recording from several conditions stays allowed.
+    """
+    cells: dict[Path, list[tuple[ConditionSpec, int | None]]] = {}
+    task_id: str | None = None
+    for condition in conditions:
+        if condition.kind not in LIVE_KINDS or condition.agent_config.cassette is None:
+            continue
+        task_id = task_id or _load_task(artifact).task_id
+        for seed in _seeds(condition):
+            cells.setdefault(_cassette_file(condition, task_id, seed), []).append((condition, seed))
+    for path, sharing in cells.items():
+        if not any(_records(condition) for condition, _ in sharing):
+            continue
+        named = [
+            f"condition {c.name!r} seed {'default' if seed is None else seed}"
+            for c, seed in sharing
+        ]
+        if len(sharing) > 1:
+            raise ValueError(
+                f"{', '.join(named[:-1])} and {named[-1]} share the cassette {path}, and "
+                "recording never overwrites one; give each condition its own cassette directory"
+            )
+        if path.exists():
+            raise ValueError(
+                f"{named[0]} would record to {path}, which already exists; record into a "
+                "new cassette directory"
+            )
+
+
+def _records(condition: ConditionSpec) -> bool:
+    cassette = condition.agent_config.cassette
+    return cassette is not None and cassette.mode == "record"
+
+
 def calls_a_provider(condition: ConditionSpec) -> bool:
     """Whether a condition's runs call a live provider, and so can cost money."""
     agent = condition.agent_config
@@ -246,9 +288,10 @@ def run_branch(
         raise ValueError(f"{condition.kind.value} conditions run through replay, see replay_batch")
     artifact = load_artifact(artifact_path)
     fork_step = validate_condition(artifact, condition)
-    task = load_task(Path(artifact.task_fixture.replace("\\", "/")).resolve())
+    check_cassette_paths(artifact, [condition])
+    task = _load_task(artifact)
     task = task.model_copy(update={"initial_state": pinned_initial_state(artifact)})
-    seeds = condition.seeds or [condition.agent_config.seed]
+    seeds = _seeds(condition)
 
     missing = _missing_cassettes(condition, task.task_id, seeds)
     if missing:
@@ -376,6 +419,24 @@ def _run_seed(
         metadata=metadata,
     )
     run = AgentRunner(adapter, environment, store).run(task, config)
+    try:
+        return _scored_entry(artifact, task, condition, config, fork_step, seed, run, store)
+    except Exception as exc:  # noqa: BLE001 (the run exists and may have spent)
+        logger.warning("branch seed %s of %s could not be scored: %s", seed, condition.name, exc)
+        return _unscored_entry(artifact, task, condition, config, seed, run, store, exc)
+
+
+def _scored_entry(
+    artifact: RegressionArtifact,
+    task: TaskSpec,
+    condition: ConditionSpec,
+    config: RunConfig,
+    fork_step: int,
+    seed: int | None,
+    run: RunResult,
+    store: ArtifactStore,
+) -> BatchRunEntry:
+    """Verify, attribute and label a finished run, and compare it with the recording."""
     verdict = verify_run(store, run, task)
     if verdict is not None and verdict.has_violations:
         attribute_and_bundle(store, run.run_id, task, run)
@@ -385,7 +446,10 @@ def _run_seed(
     step, diverged = post_fork_divergence(artifact.pinned_agent_actions, actions, fork_step)
     block = classify_post_block_outcome(trace, verdict, run) if verdict is not None else None
     return entry_from_pipeline(
-        PipelineResult(task, config, run, verdict), agent, artifact.task_fixture, store.runs_dir
+        PipelineResult(task, config, run, verdict),
+        condition.agent_config,
+        artifact.task_fixture,
+        store.runs_dir,
     ).model_copy(
         update={
             "condition": condition.name,
@@ -395,6 +459,49 @@ def _run_seed(
             "post_block_outcome": block.outcome if block else None,
         }
     )
+
+
+def _unscored_entry(
+    artifact: RegressionArtifact,
+    task: TaskSpec,
+    condition: ConditionSpec,
+    config: RunConfig,
+    seed: int | None,
+    run: RunResult,
+    store: ArtifactStore,
+    exc: Exception,
+) -> BatchRunEntry:
+    """The entry of a run that finished but could not be verified, attributed or labelled.
+
+    The run may have called a provider, so it keeps its run id and is priced
+    from its own trace like any other, and the budget guard charges it. When
+    even that fails its cost stays null, which stops the guard as
+    ``budget_unenforceable``.
+    """
+    fields = {
+        "status": "setup_error",
+        "error": f"post-run processing failed: {type(exc).__name__}: {exc}",
+        "condition": condition.name,
+        "seed": seed,
+    }
+    agent = condition.agent_config
+    try:
+        entry = entry_from_pipeline(
+            PipelineResult(task, config, run, None), agent, artifact.task_fixture, store.runs_dir
+        )
+    except Exception:  # noqa: BLE001 (an unknown cost is recorded as unknown)
+        logger.warning("branch run %s could not be priced", run.run_id)
+        return BatchRunEntry(
+            run_id=run.run_id,
+            task_id=run.task_id,
+            task_path=artifact.task_fixture,
+            agent_label=agent.label,
+            provider=config.provider,
+            model=config.model,
+            prompt_version=config.prompt_version,
+            **fields,
+        )
+    return entry.model_copy(update=fields)
 
 
 def _continuation(
@@ -460,28 +567,40 @@ def _live_model(condition: ConditionSpec) -> str:
     return resolve_model_name(agent.provider, agent.model, None)
 
 
+def _load_task(artifact: RegressionArtifact) -> TaskSpec:
+    return load_task(Path(artifact.task_fixture.replace("\\", "/")).resolve())
+
+
+def _seeds(condition: ConditionSpec) -> list[int | None]:
+    """The seeds a live condition runs, its agent's own seed when it lists none."""
+    return list(condition.seeds) or [condition.agent_config.seed]
+
+
+def _cassette_file(condition: ConditionSpec, task_id: str, seed: int | None) -> Path:
+    """Where the adapter factory reads or writes this seed's cassette."""
+    agent = condition.agent_config
+    assert agent.cassette is not None
+    return cassette_path(
+        agent.cassette.directory,
+        CassetteRequestConfig(
+            task_id=task_id,
+            provider=agent.provider,
+            model=resolve_model_name(agent.provider, agent.model, None),
+            temperature=agent.temperature,
+            seed=seed,
+            timeout_seconds=agent.timeout_seconds,
+            prompt_version=agent.prompt_version or PROMPT_VERSION,
+        ),
+    )
+
+
 def _missing_cassettes(
     condition: ConditionSpec, task_id: str, seeds: list[int | None]
 ) -> list[str]:
     agent = condition.agent_config
     if agent.cassette is None or agent.cassette.mode != "replay":
         return []
-    model = resolve_model_name(agent.provider, agent.model, None)
-    paths = [
-        cassette_path(
-            agent.cassette.directory,
-            CassetteRequestConfig(
-                task_id=task_id,
-                provider=agent.provider,
-                model=model,
-                temperature=agent.temperature,
-                seed=seed,
-                timeout_seconds=agent.timeout_seconds,
-                prompt_version=agent.prompt_version or PROMPT_VERSION,
-            ),
-        )
-        for seed in seeds
-    ]
+    paths = [_cassette_file(condition, task_id, seed) for seed in seeds]
     return [str(path) for path in paths if not path.is_file()]
 
 

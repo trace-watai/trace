@@ -490,6 +490,70 @@ def test_live_condition_runs_offline_from_a_cassette_and_skips_without_one(
     assert not (runs / "batches").exists()
 
 
+def test_cassette_recordings_that_would_collide_are_refused_before_any_run(
+    tmp_path, monkeypatch, capsys
+):
+    """The cassette path has no condition in it, and recording never overwrites (#159)."""
+    path, artifact = _artifact(tmp_path)
+    cassettes = tmp_path / "cassettes"
+    built: list[int | None] = []
+
+    def scripted(self, *args, **kwargs):
+        built.append(kwargs.get("seed"))
+        _ScriptedGemini.__init__(self, *args, **kwargs)
+
+    monkeypatch.setattr(GeminiModelAdapter, "__init__", scripted)
+    monkeypatch.setattr(GeminiModelAdapter, "next_action", _ScriptedGemini.next_action)
+
+    def recording(name: str, kind: str, **fields) -> dict:
+        condition = _condition(name, kind, artifact, 2, seeds=[0, 1], **fields)
+        condition["agent_config"] = {
+            "label": name,
+            "provider": "gemini",
+            "cassette": {"mode": "record", "directory": str(cassettes)},
+        }
+        return condition
+
+    live = recording("live", "live", control_ids=[REFUND_WINDOW_CONTROL_ID])
+    runs = tmp_path / "runs"
+    branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment"]
+
+    # Two conditions recording into one directory would meet at every seed.
+    spec_path, _ = _spec(tmp_path, live, recording("off", "live_no_control"), max_cost_usd=1.0)
+    capsys.readouterr()
+    assert main([*branch, str(spec_path)]) == 2
+    assert "condition 'live' seed 0 and condition 'off' seed 0 share" in capsys.readouterr().err
+    assert (built, cassettes.exists(), runs.exists()) == ([], False, False)
+
+    # A second invocation would find the first one's files.
+    spec_path, _ = _spec(tmp_path, live, max_cost_usd=1.0)
+    assert main([*branch, str(spec_path)]) == 0
+    assert built == [0, 1]
+    capsys.readouterr()
+    assert main([*branch, str(spec_path)]) == 2
+    err = capsys.readouterr().err
+    assert "condition 'live' seed 0 would record to" in err and "which already exists" in err
+    assert built == [0, 1]
+    assert len(list((runs / "batches").iterdir())) == 1
+    # A caller that skips the CLI gets the same check per condition.
+    _, spec = _spec(tmp_path, live, max_cost_usd=1.0)
+    with pytest.raises(ValueError, match="which already exists"):
+        run_branch(path, spec, spec.conditions[0], ArtifactStore(tmp_path / "direct"))
+    assert built == [0, 1]
+
+
+@pytest.mark.parametrize("missing", ["artifact", "plan"])
+def test_branch_names_a_missing_input(tmp_path, capsys, missing):
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(tmp_path, _condition("off", "live_no_control", artifact, 2))
+    gone = tmp_path / "gone.json"
+    artifact_arg, plan_arg = (gone, spec_path) if missing == "artifact" else (path, gone)
+    capsys.readouterr()
+    assert main(["branch", str(artifact_arg), "--experiment", str(plan_arg)]) == 2
+    what = "regression artifact" if missing == "artifact" else "experiment plan"
+    assert f"{what} not found: {gone}" in capsys.readouterr().err
+
+
 def test_experiment_record_fills_the_three_metrics_from_branch_batches(
     tmp_path, capsys, monkeypatch
 ):
@@ -862,6 +926,52 @@ def test_a_live_seed_with_no_recorded_cost_stops_the_condition(
     assert batches["live"].budget.stop_reason == "budget_unenforceable"
     assert entry.run_id in batches["live"].budget.detail
     assert [c.seed for c in batches["live"].budget.not_run] == [1, 2]
+
+
+def _break(monkeypatch, name: str) -> None:
+    def broken(*args, **kwargs):
+        raise RuntimeError(f"{name} broke")
+
+    monkeypatch.setattr(f"trace_harness.runner.branch.{name}", broken)
+
+
+def test_a_seed_that_fails_after_its_run_is_still_charged(tmp_path, live_models, monkeypatch):
+    """The run called the provider, so its cost counts even when scoring it raised."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(tmp_path, _claude("live", "live", artifact), max_cost_usd=0.01)
+    _break(monkeypatch, "classify_post_block_outcome")
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 0
+    live = batches["live"]
+    (entry,) = live.entries
+    assert (entry.status, entry.seed, entry.condition) == ("setup_error", 0, "live")
+    assert entry.run_id is not None and (tmp_path / "runs" / entry.run_id).is_dir()
+    assert entry.error == (
+        "post-run processing failed: RuntimeError: classify_post_block_outcome broke"
+    )
+    assert entry.cost_usd == pytest.approx(RUN_COST)
+    assert live.budget.spent_usd == pytest.approx(RUN_COST)
+    assert live.budget.stop_reason == "budget_exhausted"
+    assert [c.seed for c in live.budget.not_run] == [1, 2]
+
+
+def test_a_seed_whose_cost_cannot_be_read_after_its_run_stops_the_guard(
+    tmp_path, live_models, monkeypatch
+):
+    """Unknown spend is never counted as zero, even on the error path."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(tmp_path, _claude("live", "live", artifact), max_cost_usd=5.0)
+    _break(monkeypatch, "entry_from_pipeline")
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 2
+    (entry,) = batches["live"].entries
+    assert entry.run_id is not None and entry.cost_usd is None
+    assert batches["live"].budget.stop_reason == "budget_unenforceable"
+    assert entry.run_id in batches["live"].budget.detail
 
 
 def _record(tmp_path: Path, spec_path: Path, batches: dict[str, BatchSummary]) -> list[str]:
