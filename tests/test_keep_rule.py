@@ -359,18 +359,20 @@ def test_each_unmet_check_turns_keep_into_review(change, check, detail):
 def test_stalled_runs_count_against_the_control():
     """B1 leaves incomplete runs out, and post_block_outcomes keeps them as stalled.
 
-    One completed run recovered and four stalled, so B1 is 1.0 while only 1 of 5
-    blocked runs recovered, against 1 of 5 noise floor runs that stayed clean.
+    Five completed runs recovered and fifteen stalled, so B1 is 1.0 while only 5
+    of 20 blocked runs recovered, against 1 of 5 noise floor runs that stayed
+    clean. Five completed runs on each side is the least #200 computes B1 on.
     """
     evidence = replace(
         LIVE,
-        post_block_outcomes={"recovered": 1, "stalled": 4},
-        effectiveness=_entry(on=(0, 1), off=(4, 5)),
+        post_block_outcomes={"recovered": 5, "stalled": 15},
+        effectiveness=_entry(on=(0, 5), off=(4, 5)),
     )
     outcome = decide_keep(evidence, RULE)
     assert _check(outcome, "repair_effectiveness").value == 1.0
-    assert _check(outcome, "margin_over_noise_floor").value == 0.0
+    assert _check(outcome, "margin_over_noise_floor").value == 0.05
     assert outcome.decision is Decision.REVIEW
+    assert [c.name for c in outcome.checks if not c.met] == ["margin_over_noise_floor"]
 
 
 def test_a_noise_floor_without_completed_runs_gives_no_margin():

@@ -218,7 +218,8 @@ seam, a wrapper around `ArtifactStore.write_experiment_result`, which takes the
 same arguments on both sides of #200. It fills only the metrics record left
 null, from the recorded batches by the formulas in
 [methodology_metrics.md](methodology_metrics.md), and writes the sidecar beside
-the result. With #200 merged, #200's own numbers stand.
+the result. With #200 merged, #200's own numbers stand, and
+`tests/test_validate_control_needs_200.py` runs the command with no stand-in.
 
 ## Limits
 
