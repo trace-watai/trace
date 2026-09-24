@@ -85,6 +85,73 @@ jobs:
           git commit -m "metrics history for ${GITHUB_SHA} [skip ci]"
           git push origin HEAD:main
 
+  publish-results:
+    name: Publish public results
+    # The hosted tables mirror the retained evidence on main (#205), so this
+    # runs only on a push to main and only once both gates have passed.
+    needs: [backend, dashboard]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # One upload at a time. A later push waits for an earlier one instead of
+    # racing its prune.
+    concurrency:
+      group: publish-results
+      cancel-in-progress: false
+    # secrets cannot be read in a step-level if, so they are lifted into env and
+    # every step checks PUBLISH, the way metrics-history checks its token. with
+    # either secret missing the job skips itself, stays green and publishes
+    # nothing. see docs/public_results.md for the secrets.
+    env:
+      TRACE_SUPABASE_URL: ${{ secrets.TRACE_SUPABASE_URL }}
+      TRACE_SUPABASE_SERVICE_KEY: ${{ secrets.TRACE_SUPABASE_SERVICE_KEY }}
+      PUBLISH: ${{ secrets.TRACE_SUPABASE_URL != '' && secrets.TRACE_SUPABASE_SERVICE_KEY != '' }}
+    steps:
+      - name: Skip when the Supabase secrets are not configured
+        if: env.PUBLISH != 'true'
+        run: echo "TRACE_SUPABASE_URL or TRACE_SUPABASE_SERVICE_KEY is not set, nothing published for ${GITHUB_SHA}. see docs/public_results.md"
+
+      - uses: actions/checkout@v7
+        if: env.PUBLISH == 'true'
+
+      # gates for two pushes can finish out of order. an older commit must not
+      # overwrite or prune what a newer one retained, so this run steps aside
+      # when main has moved on with a different retained tree. a later commit
+      # that only appends metrics history does not count.
+      - name: Skip when a newer push changed the retained tree
+        id: current
+        if: env.PUBLISH == 'true'
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          if git diff --quiet "${GITHUB_SHA}" FETCH_HEAD -- docs/acceptance \
+              ':(exclude)docs/acceptance/metrics_history.jsonl'; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "main moved past ${GITHUB_SHA} with retained changes, the newer run publishes them"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v7
+        if: env.PUBLISH == 'true' && steps.current.outputs.stale == 'false'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend
+        if: env.PUBLISH == 'true' && steps.current.outputs.stale == 'false'
+        run: python -m pip install -e .
+
+      # fails on any key pattern under docs/acceptance/ or in a cassettes
+      # folder, and prints hits redacted because this log is public.
+      - name: Scan the retained tree and cassettes for keys
+        if: env.PUBLISH == 'true' && steps.current.outputs.stale == 'false'
+        run: python -m trace_harness.public_results.secret_scan
+
+      - name: Upload the retained results
+        if: env.PUBLISH == 'true' && steps.current.outputs.stale == 'false'
+        run: python -m trace_harness.public_results.upload docs/acceptance --prune
+
   dashboard:
     name: Dashboard gate
     runs-on: ubuntu-latest

@@ -25,6 +25,7 @@ import postgrest_fake as fake
 from pg_cluster import PgCluster, dollar_quote, find_postgres_bin
 from trace_harness.public_results import schema
 from trace_harness.public_results.postgrest import PostgrestClient, PostgrestError
+from trace_harness.public_results.upload import upload
 from trace_harness.run_reader_supabase import SupabaseRunReader
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -307,6 +308,33 @@ def test_retained_results_round_trip_through_postgres_as_anon(
         anon.delete(schema.RUNS, "run_id", [rows[schema.RUNS][0]["run_id"]])
     assert (refused.value.status, refused.value.code) == (401, "42501")
     assert table_md5(cluster, db, schema.RUNS) == before
+
+
+def test_a_second_upload_leaves_every_tuple_untouched(
+    cluster: PgCluster, db: str, tmp_path: Path
+) -> None:
+    """Idempotence on the real tables. xmin changes whenever Postgres rewrites a row."""
+    _, rows = fake.retained_rows(tmp_path / "staged")
+    server = fake.PsqlPostgrest(cluster, db)
+    client = PostgrestClient(fake.BASE_URL, fake.SERVICE_KEY, transport=server)
+    upload(client, rows, prune=True)
+
+    def state() -> list[str]:
+        return [
+            scalar(
+                cluster,
+                db,
+                f"select string_agg(xmin::text || ':' || md5(t::text), ',' order by t::text) "
+                f"from public.{table} t",
+            )
+            for table in schema.PRIMARY_KEYS
+        ]
+
+    before, requests = state(), len(server.requests)
+    plans = upload(client, rows, prune=True)
+    assert state() == before
+    assert [p.method for p in server.requests[requests:]] == ["GET"] * 4
+    assert all(p.unchanged == p.retained for p in plans)
 
 
 # --- lockstep: runs without a database -------------------------------------
