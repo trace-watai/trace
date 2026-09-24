@@ -21,9 +21,12 @@ before the run returns.
 
 The model here is :class:`TurnSourceModel`, whose turns come from a scripted
 source (see ``turns.py``). Swap in any SDK ``Model`` to run a real one.
-Opaque provider state such as a Gemini thought signature is not carried
-through this model, so recording a model that needs it echoed back would need
-that added first.
+Opaque provider state, such as a Gemini thought signature or Anthropic's
+tool-use id and thinking blocks, rides through the SDK in the turn's reasoning
+item (:func:`output_items`). The SDK replays that item on the next request and
+:func:`transcript_of` puts the state back on the harness turn, so a model that
+needs its state echoed back gets it, as it does through the LangGraph
+reference.
 
 ``--agent trace_harness.agents.openai_agents_ref:agent`` replays the committed
 cassette for the task; ``:scripted_agent`` plays the task's fixture script
@@ -83,6 +86,12 @@ from trace_harness.models.base import (
 from trace_harness.runner.target_agent import ModelResponseCallback, TaskPrompt, ToolCallback
 
 NAMESPACE = "openai_agents_ref"
+
+#: Marks an ``encrypted_content`` this module wrote. The Responses API uses that
+#: field for reasoning state a client hands back without reading, and the SDK
+#: replays it unchanged, so a turn's ``provider_state`` is kept there as JSON.
+#: A real model's encrypted reasoning has no such prefix and is left alone.
+PROVIDER_STATE_PREFIX = "trace_harness.provider_state:"
 
 
 def harness_tools(tools: list[ToolSpec], call_tool: ToolCallback) -> list[FunctionTool]:
@@ -160,14 +169,29 @@ class ModelResponseForwarder(RunHooks):
 
 
 def output_items(action: AgentAction, *, turn: int) -> list[Any]:
-    """One scripted or recorded turn as the output items a model would return."""
+    """One scripted or recorded turn as the output items a model would return.
+
+    The turn's reasoning and its opaque ``provider_state`` go in one reasoning
+    item, the state under :data:`PROVIDER_STATE_PREFIX`. A turn with neither
+    has no reasoning item, and a turn without state writes the same item it
+    did before state was carried.
+    """
     items: list[Any] = []
-    if action.reasoning:
+    if action.reasoning or action.provider_state:
+        state = {}
+        if action.provider_state:
+            encoded = json.dumps(action.provider_state, sort_keys=True)
+            state["encrypted_content"] = PROVIDER_STATE_PREFIX + encoded
         items.append(
             ResponseReasoningItem(
                 id=f"rs_{turn}",
-                summary=[Summary(text=action.reasoning, type="summary_text")],
+                summary=(
+                    [Summary(text=action.reasoning, type="summary_text")]
+                    if action.reasoning
+                    else []
+                ),
                 type="reasoning",
+                **state,
             )
         )
     if action.kind is ActionKind.TOOL_CALL:
@@ -207,6 +231,7 @@ def transcript_of(system_instructions: str | None, input: str | list[Any]) -> li
     items = [{"role": "user", "content": input}] if isinstance(input, str) else input
     thinking: list[str] = []
     said: list[str] = []
+    state: dict[str, Any] | None = None
     tool_names: dict[str, str] = {}
     for raw in items:
         item = _item(raw)
@@ -215,14 +240,17 @@ def transcript_of(system_instructions: str | None, input: str | list[Any]) -> li
             transcript.append(Message(role=MessageRole.USER, content=_text(item)))
         elif kind == "reasoning":
             thinking += [str(s.get("text", "")) for s in item.get("summary") or []]
+            state = _provider_state(item) or state
         elif kind == "message":
             said.append(_text(item))
         elif kind == "function_call":
             tool_names[item["call_id"]] = item["name"]
             reasoning = "\n\n".join(part for part in thinking + said if part) or None
-            thinking, said = [], []
             call = ToolCall(tool_name=item["name"], arguments=tool_arguments(item["arguments"]))
-            action = AgentAction(kind=ActionKind.TOOL_CALL, tool_call=call, reasoning=reasoning)
+            action = AgentAction(
+                kind=ActionKind.TOOL_CALL, tool_call=call, reasoning=reasoning, provider_state=state
+            )
+            thinking, said, state = [], [], None
             transcript.append(assistant_message(action))
         elif kind == "function_call_output":
             name = tool_names.get(item.get("call_id", ""), "")
@@ -232,9 +260,19 @@ def transcript_of(system_instructions: str | None, input: str | list[Any]) -> li
             kind=ActionKind.FINAL_ANSWER,
             final_answer="".join(said),
             reasoning="\n\n".join(part for part in thinking if part) or None,
+            provider_state=state,
         )
         transcript.append(assistant_message(action))
     return transcript
+
+
+def _provider_state(item: dict[str, Any]) -> dict[str, Any] | None:
+    """The provider state :func:`output_items` kept on a reasoning item, if any."""
+    content = item.get("encrypted_content")
+    if not isinstance(content, str) or not content.startswith(PROVIDER_STATE_PREFIX):
+        return None
+    state = json.loads(content[len(PROVIDER_STATE_PREFIX) :])
+    return state if isinstance(state, dict) else None
 
 
 class TurnSourceModel(Model):

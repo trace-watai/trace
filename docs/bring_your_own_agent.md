@@ -282,10 +282,12 @@ the answer. Pass `RunConfig(tracing_disabled=True)` unless you want the SDK to
 export its own traces. The reference agent always passes it, and its tests
 check that no SDK trace is started.
 
-The reference model does not carry opaque provider state such as a Gemini
-thought signature through the SDK's items, so recording a model that needs its
-state echoed back would need that added first. The LangGraph reference carries
-it.
+The reference model carries opaque provider state, such as a Gemini thought
+signature or Anthropic's tool-use id and thinking blocks, through the SDK's
+items. `output_items` keeps it in the turn's reasoning item, in the
+`encrypted_content` field the SDK replays unchanged, and `transcript_of` puts
+it back on the harness turn for the next request. The LangGraph reference
+carries it in the message's `additional_kwargs`.
 
 ## Out of scope
 

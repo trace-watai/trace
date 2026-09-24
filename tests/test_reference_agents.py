@@ -38,7 +38,7 @@ from trace_harness.attribution.heuristic import HeuristicAttributor
 from trace_harness.cli import main
 from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID, reference_controls
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.models.base import ActionKind, AgentAction, MessageRole, ToolCall
+from trace_harness.models.base import ActionKind, AgentAction, MessageRole, ToolCall, ToolSpec
 from trace_harness.models.fixture import FixtureScript
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.pipeline import run_task_pipeline
@@ -506,6 +506,62 @@ def test_turns_round_trip_through_agents_sdk_items():
     assert transcript[4] == assistant_message(ANSWER)
     assert openai_agents_ref.reasoning_of(call_items) == "checking the order first"
     assert openai_agents_ref.reasoning_of(answer_items) == "wrap up"
+
+
+#: What the Anthropic adapter keeps on a tool-use turn (#160): the id its result
+#: must quote and the thinking blocks that have to go back unmodified.
+ANTHROPIC_STATE = {
+    "tool_use_id": "toolu_01",
+    "thinking_blocks": [{"type": "thinking", "thinking": "", "signature": "sig=="}],
+}
+
+
+def test_provider_state_round_trips_through_agents_sdk_items():
+    """A turn's opaque provider state comes back on the next request's transcript."""
+    openai_agents_ref = _import("openai_agents_ref")
+    call = CALL.model_copy(update={"provider_state": ANTHROPIC_STATE})
+    quiet = call.model_copy(update={"reasoning": None})
+    for action in (call, quiet):
+        request = [
+            {"role": "user", "content": "user"},
+            *[
+                item.model_dump(mode="json", exclude_unset=True)
+                for item in openai_agents_ref.output_items(action, turn=1)
+            ],
+            {"type": "function_call_output", "call_id": "call_1", "output": "{}"},
+        ]
+        transcript = openai_agents_ref.transcript_of("system", request)
+        assert transcript[2] == assistant_message(action)
+        assert transcript[2].metadata["provider_state"] == ANTHROPIC_STATE
+    # A turn without state writes the same items it always did.
+    (reasoning, _) = openai_agents_ref.output_items(CALL, turn=1)
+    assert "encrypted_content" not in reasoning.model_dump(exclude_unset=True)
+    # Reasoning state a real model encrypted is not read as provider state.
+    real = {"type": "reasoning", "id": "rs_9", "summary": [], "encrypted_content": "gAAAA"}
+    call_item = {"type": "function_call", "call_id": "c", "name": "get_order", "arguments": "{}"}
+    user = {"role": "user", "content": "u"}
+    (_, turn) = openai_agents_ref.transcript_of(None, [user, real, call_item])
+    assert "provider_state" not in turn.metadata
+
+
+def test_an_agents_sdk_run_hands_provider_state_back_to_the_model():
+    """The SDK replays the reasoning item, so the second request carries the first turn's state."""
+    openai_agents_ref = _import("openai_agents_ref")
+    call = CALL.model_copy(update={"provider_state": ANTHROPIC_STATE})
+    seen: list = []
+
+    class Source:
+        def next_action(self, transcript, tools):
+            seen.append(transcript)
+            return call if len(seen) == 1 else ANSWER
+
+    agent = openai_agents_ref.OpenAIAgentsReferenceAgent(lambda prompt: Source())
+    prompt = TaskPrompt(task_id="t", system="system", user="user", max_steps=5)
+    tools = [ToolSpec(name="get_order", description="Look up an order", parameters={})]
+    answer = agent.run(prompt, tools, lambda name, arguments: OBSERVATION)
+    assert answer == "done"
+    (turn,) = [m for m in seen[1] if m.role is MessageRole.ASSISTANT]
+    assert turn.metadata["provider_state"] == ANTHROPIC_STATE
 
 
 def test_agents_sdk_runs_create_no_sdk_traces(tmp_path):
