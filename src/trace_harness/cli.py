@@ -1706,20 +1706,10 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
 
 
 def _experiment_markdown(spec: Any, result: Any, sidecar: Any) -> str:
-    """``report.md`` as record renders it, with the B1 sidecar when the renderer takes one.
-
-    #200 gives ``render_experiment_markdown`` a ``repair`` argument for the
-    sidecar. Passing it whenever the renderer accepts it keeps the B1 section
-    that record wrote when validate-control rewrites the report, on either
-    signature.
-    """
-    import inspect
-
+    """``report.md`` as record renders it, so a rewrite keeps record's B1 section (#200)."""
     from trace_harness.runner.experiment import render_experiment_markdown
 
-    if sidecar is not None and "repair" in inspect.signature(render_experiment_markdown).parameters:
-        return render_experiment_markdown(spec, result, repair=sidecar)
-    return render_experiment_markdown(spec, result)
+    return render_experiment_markdown(spec, result, repair=sidecar)
 
 
 def _list_experiments(store: ArtifactStore) -> int:

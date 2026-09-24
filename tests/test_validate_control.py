@@ -30,7 +30,6 @@ The #200 seam
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import shutil
 from dataclasses import replace
@@ -76,8 +75,6 @@ RULE = KeepRule(
     max_live_violation_rate=0.5,
 )
 SEEDS = [0, 1, 2, 3, 4]
-# #200 adds this module; with it, record derives both metrics and writes the sidecar.
-HAS_200 = importlib.util.find_spec("trace_harness.runner.verdict_agreement") is not None
 LIVE_CHECKS = {
     "live_evidence": ("recorded", True),
     "static_verdict": ("accepted", True),
@@ -785,10 +782,8 @@ def test_a_sidecar_left_from_an_earlier_record_is_never_read_as_this_one(
     ]
 
 
-def test_the_rewritten_report_keeps_the_sidecar_section_when_the_renderer_takes_it(
-    tmp_path, monkeypatch, no_commit
-):
-    """#200's renderer takes the sidecar as ``repair``; the base's takes no such argument."""
+def test_the_rewritten_report_keeps_the_sidecar_section(tmp_path, monkeypatch, no_commit):
+    """The rewrite hands the renderer the sidecar as ``repair``, as record does (#200)."""
     path, artifact = _demo_artifact(tmp_path)
     plan = _plan(tmp_path, *_arms(tmp_path, artifact))
     StandInFor200(artifact, REFUND_WINDOW_CONTROL_ID).install(monkeypatch)
@@ -808,24 +803,6 @@ def test_the_rewritten_report_keeps_the_sidecar_section_when_the_renderer_takes_
     assert isinstance(rewrite, RepairEffectivenessReport) and len(rewrite.entries) == 1
     report = ArtifactStore(tmp_path / "runs").experiment_report_path(EXPERIMENT_ID).read_text()
     assert "## B1 from the sidecar, 1" in report and "Decision **keep** by policy" in report
-
-
-@pytest.mark.skipif(HAS_200, reason="#200 derives both metrics and writes the sidecar")
-def test_on_this_base_the_command_reviews_and_names_what_is_missing(tmp_path, no_commit):
-    """No stand-in, so the two #200 metrics are null and no sidecar exists."""
-    path, artifact = _demo_artifact(tmp_path)
-    plan = _plan(tmp_path, *_arms(tmp_path, artifact))
-
-    assert _validate(tmp_path, plan, path, REFUND_WINDOW_CONTROL_ID) == 0
-
-    result = _result(tmp_path)
-    assert result.decision.value == "review"
-    assert result.metadata["validate_control"]["reasons"] == [
-        "verdict_agreement_rate was not measured",
-        "sibling_failure_rate was not measured, so the sibling pass rate is unknown",
-        "no repair_effectiveness.json beside the result, so B1 is unknown",
-        "without a B1 entry there is no noise floor count to compare against",
-    ]
 
 
 # --- what the command refuses before anything runs ---

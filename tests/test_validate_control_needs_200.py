@@ -1,11 +1,8 @@
 """validate-control end to end on #200's own derivation (#203).
 
-It uses no stand-in. experiment record must derive verdict_agreement_rate and
-sibling_failure_rate itself and write repair_effectiveness.json beside
-result.json on the path validate-control shares with it. Until #200 is merged
-the module it adds is missing and the test is skipped, since both metrics are
-null there, no sidecar exists and the decision is review, which
-test_validate_control.py pins.
+It uses no stand-in. experiment record derives verdict_agreement_rate and
+sibling_failure_rate itself and writes repair_effectiveness.json beside
+result.json on the path validate-control shares with it.
 
 The conditions are the offline ones from tests/test_validate_control.py. The
 control demo with the valid-cash sibling forks at step 1. The live arm's
@@ -21,7 +18,6 @@ import pytest
 from conftest import REPO_ROOT
 from test_validate_control import (
     EXPERIMENT_ID,
-    HAS_200,
     LIVE_CHECKS,
     RULE,
     _arms,
@@ -37,8 +33,6 @@ from trace_harness.runner.repair_effectiveness import (
     RepairEffectivenessReport,
 )
 from trace_harness.tracing.artifact_store import ArtifactStore
-
-pytestmark = pytest.mark.skipif(not HAS_200, reason="needs #200's metrics and sidecar")
 
 
 @pytest.fixture(autouse=True)
