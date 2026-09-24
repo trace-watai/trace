@@ -164,7 +164,9 @@ reporting that as `0.0` would read as a measurement that was never taken.
 `latency_ms_p50` from any batch summaries, and the two divergence rates and
 `post_block_outcomes` from the batches the branch stage writes, with the
 counts behind each rate in `extra` ([branch_stage.md](branch_stage.md#metrics)).
-`verdict_agreement_rate` and `sibling_failure_rate` are not derived yet.
+`verdict_agreement_rate` and `sibling_failure_rate` come from the same batches
+and each run's verifier result, per model, with a pair of fewer than five
+completed seeds left out and named, so a complete experiment fills all eight.
 
 ## Commands
 

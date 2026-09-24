@@ -100,7 +100,9 @@ A `static_replay` condition reuses `replay --apply-control` with the
 condition's controls, or a plain replay when it has none. The replayed scenario
 run becomes a batch of one whose entry carries the scenario's verdict and
 post-block outcome, and the replay's exit code goes in
-`metadata.replay_exit_code`. The divergence fields stay null.
+`metadata.replay_exit_code`. The positive siblings the replay ran go in
+`metadata.siblings` as `test_name` and `run_id`, since the sibling rate reads
+their verdicts. The divergence fields stay null.
 
 ## Batches
 
@@ -115,15 +117,41 @@ mirror is `apps/dashboard/src/types/batch-summary.ts`.
 
 ## Metrics
 
-`experiment record` maps each recorded batch to the kind of the condition it
-answers and fills three metrics as Part B2 of
-[methodology_metrics.md](methodology_metrics.md) defines them.
+`experiment record` maps each recorded batch to the condition it answers and
+fills five metrics as Part B2 of
+[methodology_metrics.md](methodology_metrics.md) defines them. The last two
+read each run's `verifier_result.json` as well, because a blocking failure
+after the fork depends on the steps of the failed checks, which a batch entry
+does not keep (`runner/verdict_agreement.py`).
 
 | Metric | Formula |
 |---|---|
 | `first_post_fork_divergence_rate` | `diverged / completed` over `live` batches |
 | `noise_floor_divergence_rate` | The same over `live_no_control` batches |
 | `post_block_outcomes` | Count per label over `live` batches |
+| `verdict_agreement_rate` | Agreeing pairs over sufficient pairs of the `live` arm |
+| `sibling_failure_rate` | Failed siblings over judged siblings, over `static_replay` batches with a control |
+
+A pair is one arm, artifact, control and model. Its static verdict is clear
+when `metadata.replay_exit_code` is 0 on the `static_replay` batch for that
+artifact and control. A completed control-on seed is clear when its verdict
+records no blocking failure after the fork, meaning no failed check with
+`blocks_release` and a step id past the start step. The live verdict is clear
+when at least half the completed seeds are. A pair with fewer than five
+completed seeds, or with no static verdict, is excluded and its reason stated,
+as pre-registration 001 requires. `live` and `live_swapped` pairs are rated per
+model. The headline is the `live` arm's rate and is null when more than one
+model answers that arm, since the pre-registration never pools models.
+
+`extra` carries `verdict_agreement_k`, `_n` and `_excluded` for the headline,
+the same three and `verdict_agreement_rate` per arm and model under
+`/<arm>/<model>`, and for each pair
+`pair/<arm>/<model>/<task>/<control>/` with `completed_seeds`,
+`live_clear_share` and `static_clear`. The share is what the memo asks to see
+beside a majority. `result.metadata.verdict_agreement_pairs` holds the same
+pairs as rows with the exclusion reasons, and `report.md` prints them. A
+sibling that never completed stays out of the sibling denominator, and
+`sibling_failure_k` and `_n` go in `extra`.
 
 The k and n behind each rate go in `metrics.extra` as
 `first_post_fork_divergence_k` and `_n`, and `noise_floor_divergence_k` and
@@ -188,6 +216,5 @@ would disagree without any harness defect.
 - A prefix recorded by the fixture adapter carries no provider state. No test
   here calls a live provider, so whether one accepts earlier turns without it
   is unexercised.
-- `verdict_agreement_rate` and `sibling_failure_rate` stay null.
 - `max_runs` is not enforced, and the cap is per invocation, so two
   invocations of one plan may each spend up to it.

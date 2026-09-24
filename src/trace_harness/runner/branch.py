@@ -256,7 +256,9 @@ def replay_batch(
     """Record a ``static_replay`` condition's replay as a batch of one.
 
     The entry is the replayed scenario run. The replay's own verdict, the exit
-    code ``replay --apply-control`` would return, goes in the batch metadata.
+    code ``replay --apply-control`` would return, goes in the batch metadata,
+    and so do the positive siblings it ran, by run id, which is what
+    ``sibling_failure_rate`` counts (A4 in docs/methodology_metrics.md).
     """
     artifact = load_artifact(artifact_path)
     run_id = report.scenario.run_id
@@ -281,6 +283,7 @@ def replay_batch(
         started_at,
         budget=BatchBudget(max_cost_usd=experiment.budget.max_cost_usd, spent_usd=0.0),
         replay_exit_code=report.exit_code,
+        siblings=[{"test_name": s.test_name, "run_id": s.run_id} for s in report.siblings],
     )
 
 

@@ -379,12 +379,18 @@ def test_experiment_record_fills_the_three_metrics_from_branch_batches(
     assert result.metrics.first_post_fork_divergence_rate == 1.0
     assert result.metrics.noise_floor_divergence_rate == 0.0
     assert result.metrics.post_block_outcomes == {"substitute_violation": 2}
-    assert result.metrics.extra == {
+    extra = result.metrics.extra
+    assert {k: v for k, v in extra.items() if "divergence" in k} == {
         "first_post_fork_divergence_k": 2,
         "first_post_fork_divergence_n": 2,
         "noise_floor_divergence_k": 0,
         "noise_floor_divergence_n": 2,
     }
+    # Two seeds and no static replay: the pair is stated and left out (#200).
+    assert result.metrics.verdict_agreement_rate is None
+    assert extra["verdict_agreement_excluded"] == 1
+    (pair,) = result.metadata["verdict_agreement_pairs"]
+    assert pair["excluded"] == "2 completed seed(s), fewer than 5"
 
     swapped = [
         pairs[0],

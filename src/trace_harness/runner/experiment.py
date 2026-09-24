@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any
 
@@ -289,11 +290,32 @@ def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -
         lines.append(f"| {name} | {'not measured' if value is None else value} |")
     for name, value in sorted(result.metrics.extra.items()):
         lines.append(f"| {name} (extra) | {value} |")
+    lines += _pair_lines(result.metadata.get("verdict_agreement_pairs") or [])
     if result.frozen_set_drift:
         lines += ["", "## Frozen set drift", "", "| component | change | file |", "|---|---|---|"]
         for c in result.frozen_set_drift:
             lines.append(f"| {c.component} | {c.change} | {c.path} |")
     return "\n".join(lines) + "\n"
+
+
+def _pair_lines(pairs: list[dict[str, Any]]) -> list[str]:
+    """The verdict agreement pairs, each excluded pair with its reason."""
+    if not pairs:
+        return []
+    lines = [
+        "",
+        "## Verdict agreement pairs",
+        "",
+        "| arm | model | task | control | static clear | clear seeds | agrees |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for p in pairs:
+        agrees = f"excluded: {p['excluded']}" if p["excluded"] else p["agrees"]
+        lines.append(
+            f"| {p['kind']} | {p['model']} | {p['task_id']} | {p['control']} "
+            f"| {p['static_clear']} | {p['clear_seeds']}/{p['completed_seeds']} | {agrees} |"
+        )
+    return lines
 
 
 def _frozen_set_line(result: ExperimentResult) -> str:
@@ -308,9 +330,13 @@ def _frozen_set_line(result: ExperimentResult) -> str:
 
 
 def derive_metrics(
-    batch_summaries: list[Any], condition_kinds: dict[str, ConditionKind] | None = None
+    batch_summaries: list[Any],
+    condition_kinds: dict[str, ConditionKind] | None = None,
+    *,
+    conditions: dict[str, ConditionSpec] | None = None,
+    verifier_results: Mapping[str, Any] | None = None,
 ) -> ExperimentMetrics:
-    """Compute every metric the batch summaries can support today.
+    """Compute every metric the batch summaries can support.
 
     ``condition_kinds`` maps a batch id to the kind of the condition it
     answered. With it, the branch stage's entry fields (#159) give the two
@@ -319,18 +345,28 @@ def derive_metrics(
     docs/methodology_metrics.md defines them. ``live_swapped`` batches feed
     none of the three, because the pre-registration reports each live model on
     its own. The counts behind each rate go in ``extra`` so the rate is never
-    read without its denominator. Nothing derives ``verdict_agreement_rate``
-    or ``sibling_failure_rate`` yet, so they stay ``None``, since a zero there
-    would read as a measurement.
+    read without its denominator.
+
+    ``conditions`` maps a batch id to the plan's condition, and
+    ``verifier_results`` maps a run id to its verifier result. With both,
+    ``verdict_agreement_rate`` and ``sibling_failure_rate`` are derived as
+    ``runner/verdict_agreement.py`` documents (#200). Without them the two
+    stay ``None``, since a zero there would read as a measurement.
     """
     from trace_harness.runner.batch import BatchSummary
+    from trace_harness.runner.verdict_agreement import (
+        agreement_rate,
+        recorded_batches,
+        score_pairs,
+        sibling_failures,
+    )
 
     summaries = [
         s if isinstance(s, BatchSummary) else BatchSummary.model_validate(s)
         for s in batch_summaries
     ]
     entries = [e for s in summaries for e in s.entries]
-    kinds = condition_kinds or {}
+    kinds = condition_kinds or {b: c.kind for b, c in (conditions or {}).items()}
 
     def of_kind(kind: ConditionKind) -> list[Any]:
         return [e for s in summaries if kinds.get(s.batch_id) is kind for e in s.entries]
@@ -342,7 +378,19 @@ def derive_metrics(
     control_on = of_kind(ConditionKind.LIVE)
     outcomes = Counter(str(e.post_block_outcome) for e in control_on if e.post_block_outcome)
 
+    agreement = siblings = None
+    if conditions is not None and verifier_results is not None:
+        recorded = recorded_batches(summaries, conditions)
+        agreement = agreement_rate(score_pairs(recorded, verifier_results), extra)
+        failed_siblings = sibling_failures(recorded, verifier_results)
+        if failed_siblings is not None:
+            k, n = failed_siblings
+            extra["sibling_failure_k"], extra["sibling_failure_n"] = k, n
+            siblings = round(k / n, 4)
+
     return ExperimentMetrics(
+        verdict_agreement_rate=agreement,
+        sibling_failure_rate=siblings,
         first_post_fork_divergence_rate=_divergence_rate(
             control_on, extra, "first_post_fork_divergence"
         ),
