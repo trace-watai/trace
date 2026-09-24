@@ -372,7 +372,12 @@ def _attribute(run_dir: Path) -> bool:
         )
         return False
 
-    attribution = HeuristicAttributor().attribute(task, trace, verifier_result)
+    run_result = (
+        RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT))
+        if store.exists(run_id, names.RUN_RESULT)
+        else None
+    )
+    attribution = HeuristicAttributor().attribute(task, trace, verifier_result, run_result)
     store.write_json(run_id, names.ATTRIBUTION_RESULT, attribution)
 
     print(f"\nAttribution for {run_id} (heuristic, confidence {attribution.confidence:.2f}):")
@@ -385,6 +390,10 @@ def _attribute(run_dir: Path) -> bool:
         "contributing:",
         ", ".join(c.value for c in attribution.contributing_failure_categories) or "—",
     )
+    block = (
+        "" if attribution.block_step is None else f" (first block at step {attribution.block_step})"
+    )
+    _print("post_block_outcome:", f"{attribution.post_block_outcome}{block}")
     _print("written:", str(store.artifact_path(run_id, names.ATTRIBUTION_RESULT)))
     return True
 

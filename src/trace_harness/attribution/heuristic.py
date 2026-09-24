@@ -24,6 +24,8 @@ How each field is derived (MVP heuristics, all evidence-based):
       action.
     - visible_symptom_steps: step ids of failed checks whose category is
       symptom-like (refund issued, false ticket, inconsistent answer).
+    - block_step / post_block_outcome: the first step an installed control
+      blocked and what the agent did next, from ``post_block.py``.
 
 What this is NOT
     A judge. It cannot explain novel failures, weigh competing causes, or
@@ -39,8 +41,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from trace_harness.attribution.post_block import classify_post_block_outcome
 from trace_harness.attribution.schemas import AttributionResult, FailureCategory
 from trace_harness.attribution.validation import validate_attribution_result
+from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import VerifierResult
@@ -102,6 +106,7 @@ class HeuristicAttributor:
         task: TaskSpec,
         trace: list[TraceEvent],
         verifier_result: VerifierResult,
+        run_result: RunResult | None = None,
     ) -> AttributionResult:
         if verifier_result.passed:
             raise ValueError(
@@ -268,6 +273,7 @@ class HeuristicAttributor:
         if not evidence_steps:
             confidence = 0.0
 
+        block = classify_post_block_outcome(trace, verifier_result, run_result)
         result = AttributionResult(
             run_id=verifier_result.run_id,
             root_cause_step=root_cause_step,
@@ -286,6 +292,8 @@ class HeuristicAttributor:
                 "attributor": "heuristic",
                 "deprecated_doc_ids_seen": sorted(deprecated_ids),
             },
+            block_step=block.block_step,
+            post_block_outcome=block.outcome,
         )
         validation_issues = validate_attribution_result(result, trace, verifier_result)
         if validation_issues:
