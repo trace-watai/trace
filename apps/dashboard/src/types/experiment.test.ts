@@ -48,6 +48,7 @@ const AGENT: Required<RawAgentConfig> = {
   timeout_seconds: 120,
   cassette: CASSETTE,
   call_policy: CALL_POLICY,
+  agent_ref: null,
 };
 
 describe("the agent config mirror", () => {
