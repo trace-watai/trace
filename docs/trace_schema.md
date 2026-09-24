@@ -5,13 +5,13 @@ The trace is the evidence record of a run: an append-only sequence of
 `runs/{run_id}/trace.jsonl`. Everything downstream — verifiers,
 attribution, failure bundles, the dashboard — consumes traces. Owner:
 Samrath. Schema: `trace_harness/tracing/events.py`
-(`TRACE_SCHEMA_VERSION = 0.4.0`).
+(`TRACE_SCHEMA_VERSION = 0.5.0`).
 
 ## Event envelope
 
 ```json
 {
-  "schema_version": "0.4.0",
+  "schema_version": "0.5.0",
   "event_id": "evt_000007",        // unique within the run, ordered
   "run_id": "run_20260611T025555Z_99032a0d",
   "step_id": 3,                    // decision step; null for run-level events
@@ -48,7 +48,7 @@ that caused a child.
 | `tool_call_executed` | step | tool_name, arguments, status, **side_effect**, error?, **blocked_by**? — only emitted for valid calls |
 | `tool_observation` | step | tool_name, status, result (full, incl. doc content), error?, blocked_by? — what the agent saw |
 | `retrieval_result` | step | query, result_count, results: `list[RetrievalResultItem]` = [{doc_id, **status**, title?, score?, source?}] (content lives in the observation) |
-| `final_answer` | step | final_answer |
+| `final_answer` | step | final_answer, **blocked_by**? |
 | `run_finished` | null | status, termination_reason, steps_taken |
 | `error` | step? | error, kind (model_timeout \| script_exhausted \| model_error \| internal_error), traceback? |
 | `model_response` | step | **reserved** — raw provider response when a real adapter's output differs from the normalized action |
@@ -66,6 +66,12 @@ blocks by raw pre-execute hooks, which have no control id. A block keeps
 `status: "error"`, so status-based consumers see no change, and attribution
 never counts a blocked irreversible call as the first irreversible action
 (it requires `status == "ok"`).
+
+**Final answer blocks (0.5.0):** a final answer never reaches the
+environment, so the runner asks the installed controls before accepting it
+(#193). `final_answer` carries `blocked_by` with the blocking control's
+`control_id`, or `null` when the answer stood. A blocked answer ends the run
+as terminated with `final_answer_blocked`, since no answer was given.
 
 Each event type has a Pydantic payload model in
 `trace_harness.tracing.payloads`. `TraceEvent.payload` remains the lossless raw
@@ -86,7 +92,8 @@ from newer runners without discarding the raw data.
 - **Backward-readable envelope:** traces written before 0.2.0 remain readable;
   `parent_event_id` defaults to `null`.
 - **Backward-readable payloads:** traces written before 0.4.0 have no
-  `blocked_by`; the typed payloads default it to `null`.
+  `blocked_by` on tool events, and traces written before 0.5.0 have none on
+  `final_answer`. The typed payloads default it to `null` in both cases.
 
 ## Intended evolution
 

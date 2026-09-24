@@ -92,7 +92,7 @@ finding becomes a permanent test.
 
 | Field | Type | Required | Source | Description |
 |---|---|---|---|---|
-| `schema_version` | `str` | auto | hardcoded | Schema version; bump when fields are added or removed (currently `0.2.0`) |
+| `schema_version` | `str` | auto | hardcoded | Schema version; bump when fields are added or removed (`FailureCard 0.4.0`) |
 | `run_id` | `str` | yes | runner | Unique ID of the run that produced this failure |
 | `task_id` | `str` | yes | task spec | ID of the task that was attempted |
 | `title` | `str` | yes | generated | Short headline: task title + first failed check message |
@@ -160,7 +160,7 @@ notices.
 
 ### Control validation
 
-`replay --apply-control` writes `repair_validation.json` at schema `0.1.0`
+`replay --apply-control` writes `repair_validation.json` at `RepairValidation 0.1.0`
 under `<output-runs-dir>/<source_run_id>/`, reading prescriptions beside the
 input regression artifact. Invalid or mismatched packages fail before replay;
 empty packages produce no verdicts. Without a package, selected reference
@@ -222,7 +222,7 @@ remains advisory for live-agent recovery under ADR-0002.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `schema_version` | `str` | auto | Currently `0.2.0` |
+| `schema_version` | `str` | auto | `RepairPackage 0.3.0` |
 | `run_id` | `str` | yes | Run that produced this package |
 | `task_id` | `str` | yes | Task that was attempted |
 | `summary` | `str` | yes | How many controls, which checks they address, overall severity |

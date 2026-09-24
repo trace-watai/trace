@@ -47,15 +47,21 @@ Attribution (attribution/heuristic.py)
 FailureBundleGenerator (failure_bundles/generator.py + regression/materializer.py)
    │  → failure_card.json / repair_package.json / regression_artifact.json
    ▼
-Dashboard & API (future — consume the run directory as-is;
-                 contracts pinned in docs/future_api.md / docs/future_dashboard.md)
+Dashboard (apps/dashboard/, consumes the run directory as-is)
+API (future, contract pinned in docs/future_api.md)
 ```
 
 The CLI (`trace_harness/cli.py`) exposes each arrow as a subcommand
 (`run-fixture`, `verify`, `attribute`, `bundle`) and chains them as
-`run-pipeline`. **Stages communicate only through artifacts on disk** — any
-stage can be re-run later (e.g. re-verify an old trace with a new
-verifier), and the dashboard sees exactly what the pipeline saw.
+`run-pipeline`. Thirteen subcommands exist. Alongside the five above there are
+`run-suite` and `report-suite` for batches, `list-runs` and `inspect` for the
+read path, `replay` and `collect-regressions` for the regression gate,
+`controls` for the control library, and `validate-fixtures` for the task
+rubric. `trace-harness --help` is the list that cannot go stale.
+
+**Stages communicate only through artifacts on disk**, so any stage can be
+re-run later (e.g. re-verify an old trace with a new verifier), and the
+dashboard sees exactly what the pipeline saw.
 
 ## Dependency rules (what keeps this modular)
 
@@ -69,18 +75,22 @@ verifier), and the dashboard sees exactly what the pipeline saw.
   dicts) — they never reach into a live environment.
 - Nothing outside `tracing/artifact_store.py` spells artifact filenames.
 
-## Key boundaries and their owners
+## Key boundaries and their lanes
 
-| Boundary | Contract | Owner |
+ADR-0002 replaced per-person ownership with lanes. A boundary belongs to a
+lane, and a cross-lane boundary is a contract both lanes have to agree to
+change, listed in [team_ownership.md](team_ownership.md).
+
+| Boundary | Contract | Lane |
 |---|---|---|
-| Task fixtures → loader | `TaskSpec` (extra=forbid) | Emily |
-| Adapter ↔ runner | `ModelAdapter.next_action(transcript, tools) → AgentAction` | Rupert |
-| Runner ↔ environment | `ToolEnvironment` protocol; `ToolResult` with side-effect class | Rupert + Evan Yang |
-| Everything ↔ trace | `TraceEvent` + run-directory layout | Samrath |
-| Trace/state → verdict | `VerifierResult` with `FailedCheck`s | Karan |
-| Verdict → explanation | `AttributionResult` (step fields are distinct concepts) | Darrel |
-| Explanation → artifacts | `FailureCard` / `RepairPackage` / `RegressionArtifact` | Samir |
-| Artifacts → UI/API | the `runs/{run_id}/` files themselves | Skye + Samrath |
+| Task fixtures → loader | `TaskSpec` (extra=forbid) | Evaluation Core |
+| Adapter ↔ runner | `ModelAdapter.next_action(transcript, tools) → AgentAction` | Evaluation Systems |
+| Runner ↔ environment | `ToolEnvironment` protocol; `ToolResult` with side-effect class | Evaluation Systems |
+| Everything ↔ trace | `TraceEvent` + run-directory layout | Evaluation Systems |
+| Trace/state → verdict | `VerifierResult` with `FailedCheck`s | Evaluation Core |
+| Verdict → explanation | `AttributionResult` (step fields are distinct concepts) | Evaluation Core |
+| Explanation → artifacts | `FailureCard` / `RepairPackage` / `RegressionArtifact` | Evaluation Core |
+| Artifacts → UI/API | the `runs/{run_id}/` files themselves | Frontend with Evaluation Systems |
 
 Every schema carries `schema_version`. Changing a contract = bump the
 version + update consumers + tests + the matching doc, in one PR.
@@ -119,5 +129,8 @@ work — note it in the PR instead. See CONTRIBUTING.md.
 ## What is deliberately absent (see ADR-0001)
 
 No vector DB, no Docker/Kubernetes, no hosted services, no database, no
-live LLM calls in tests, no dashboard implementation. Each becomes worth
-adding only after the thing it replaces demonstrably hurts.
+live LLM calls in tests. Each becomes worth adding only after the thing it
+replaces demonstrably hurts. The dashboard was on this list when ADR-0001 was
+written. #58 scaffolded `apps/dashboard/`, #119 rendered the first failure card
+from a bundled fixture, and #149 and #150 moved it onto retained runs, which it
+reads directly off disk with no service behind it.

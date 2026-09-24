@@ -330,7 +330,7 @@ class GeminiModelAdapter:
                 "GEMINI_API_KEY is not set. Get a free key from "
                 "https://aistudio.google.com/apikey, put it in your local "
                 ".env (see .env.example), and re-run. The fixture provider "
-                "(TRACE_MODEL_PROVIDER=fixture) needs no key and is the "
+                "(--provider fixture) needs no key and is the "
                 "default for all tests and CI."
             )
         self._client_obj: genai.Client | None = None

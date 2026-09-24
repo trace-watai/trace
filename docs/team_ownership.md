@@ -14,7 +14,7 @@ match reality, change the row.
 | **Evaluation Systems** | `trace_harness/runner/`, `trace_harness/models/` (adapter contract, live adapters), `cli.py`; `trace_harness/environment/` (state, tools, retrieval, registry, guardrails, controls), `fixtures/docs/`; `trace_harness/tracing/` (events, recorder, artifact store, run index), `config.py`, the read path and future API (`docs/future_api.md`), data contracts to the frontend | Rupert Maiti, Evan Yang, Samrath |
 | **Frontend** | the dashboard (`apps/dashboard/`, spec in `docs/future_dashboard.md`); TypeScript mirrors of every artifact schema; the offline fixture bundle | Skye Haik |
 | **Research and QA** | `docs/verifier_philosophy.md`, `docs/attribution_methodology.md`, the metrics memo, the related-work matrix and claims memo, research briefs and pre-registration; docs quality across the repo; audit passes over fixtures and verifier assumptions; the human-labeled attribution set | Justin Lam, Katharine |
-| **TPM** | architecture decisions (ADRs), cross-lane tradeoffs, this map; Linear hygiene, CI (`scripts/check_repo.sh` → GitHub Actions), release cadence, readiness decisions | Mohammed Elshrief, Sarp Doven |
+| **TPM** | architecture decisions (ADRs), cross-lane tradeoffs, this map; Linear hygiene, CI (`scripts/check_repo.sh` → GitHub Actions), release cadence, readiness decisions | Sarp Doven |
 
 ## Reviews
 
