@@ -523,7 +523,7 @@ def _estimate_module():
 
 
 def test_the_cost_estimate_prices_through_the_adapter_tables():
-    """Prices are read from the tables, so this holds before and after #229 corrects them."""
+    """Prices are read from the tables, so a price change in code moves both sides."""
     result = _estimate_module().estimate()
     assert result["cassette_inputs"] == [995, 1251, 1750, 2851, 3573]
     assert result["cassette_max_output"] == result["output_tokens_per_call"] == 690
@@ -554,10 +554,10 @@ def _runbook_cost_table() -> dict[str, tuple[float, float]]:
     return {arm: (float(expected), float(high)) for arm, expected, high in rows}
 
 
-def test_the_runbook_cost_table_is_the_estimate_at_the_prices_it_states(monkeypatch):
-    """The runbook prices claude-sonnet-5 at 2 and 10, #229's corrected table."""
-    monkeypatch.setitem(GEMINI_PRICING, "gemini-3.6-flash", (0.75, 3.75))
-    monkeypatch.setitem(ANTHROPIC_PRICING, "claude-sonnet-5", (2.0, 10.0))
+def test_the_runbook_cost_table_is_the_estimate_at_the_prices_it_states():
+    """The runbook's prices are the adapter tables', claude-sonnet-5 at 2 and 10."""
+    assert GEMINI_PRICING["gemini-3.6-flash"] == (0.75, 3.75)
+    assert ANTHROPIC_PRICING["claude-sonnet-5"] == (2.0, 10.0)
     module = _estimate_module()
     result = module.estimate()
     by_arm: dict[str, list[float]] = {}
@@ -582,11 +582,4 @@ def test_the_runbook_cost_table_is_the_estimate_at_the_prices_it_states(monkeypa
     wide = module.estimate(output_tokens=1010)
     assert (wide["expected_usd"], wide["high_usd"]) == (0.8, 18.47)
     assert "gives $0.80 expected and $18.47 high" in runbook
-    # What the script prints until #229 corrects the table, as the runbook says.
-    monkeypatch.setitem(ANTHROPIC_PRICING, "claude-sonnet-5", (3.0, 15.0))
-    old = module.estimate()
-    swapped = [r for r in old["rows"] if r["condition"].startswith("live_swapped")]
-    assert round(sum(r["expected_usd"] for r in swapped), 2) == 0.57
-    assert round(sum(r["high_usd"] for r in swapped), 2) == 14.1
-    assert (old["expected_usd"], old["high_usd"]) == (0.85, 21.15)
-    assert "$0.57 and $14.10 for the swapped arm, $0.85 and $21.15 in total" in runbook
+    assert "at 2 and 10 for claude-sonnet-5" in runbook

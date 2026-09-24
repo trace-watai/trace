@@ -204,12 +204,11 @@ most 690 output tokens. A call at step `s` is priced at the cassette's input for
 step `s`, growing by 1101 tokens a step past step 5, and at 690 output tokens.
 
 The numbers below are priced at 0.75 and 3.75 US dollars per million input and
-output tokens for gemini-3.6-flash, and at 2 and 10 for claude-sonnet-5. The
-Sonnet 5 price is Anthropic's published one, which assumes #229's corrected
-`ANTHROPIC_PRICING`. Before that fix lands the table says 3 and 15, and the
-script prints $0.57 and $14.10 for the swapped arm, $0.85 and $21.15 in total.
-`tests/test_exp_001.py` recomputes this table from the script at the prices
-stated here.
+output tokens for gemini-3.6-flash, and at 2 and 10 for claude-sonnet-5, the
+prices in `GEMINI_PRICING` and `ANTHROPIC_PRICING`. The Sonnet 5 price is
+Anthropic's published one, which #229 put in the table.
+`tests/test_exp_001.py` recomputes this table from the script and checks that
+the tables still hold the prices stated here.
 
 | Arm | Model | Expected | High |
 |---|---|---|---|
@@ -278,7 +277,8 @@ past it is at most one run.
   ([branch_stage.md](../branch_stage.md#limits)). If a provider rejects the
   prefix, every seed of that condition ends incomplete, the replacement pool
   runs out, and the pair is insufficient.
-- The metrics history job scans `docs/acceptance` recursively. Once step 8
-  lands, the experiment's batch summaries and repair packages enter its suite
-  pass rate and control coverage unless the job excludes
-  `docs/acceptance/experiments`.
+- The metrics history job scans `docs/acceptance` recursively and leaves out
+  `docs/acceptance/batches` and `docs/acceptance/experiments`
+  (`EXPERIMENT_EVIDENCE` in `metrics/history.py`, decision D4). Once step 8
+  lands, the experiment's batch summaries and repair packages therefore stay
+  out of its suite pass rate and control coverage.
