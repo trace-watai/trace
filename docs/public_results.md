@@ -25,6 +25,7 @@ pipeline writes, `schema_version` included. Nothing is reshaped.
 | | | `verifier_result` | `get_verifier(id)`, null until verified |
 | | | `attribution_result` | `get_attribution(id)`, null until attributed |
 | | | `failure_card`, `repair_package`, `regression_artifact` | `get_bundle(id)`, all three or none |
+| | | `canonical_run_id` | `get_bundle(id)` for a reproduction (#211), the run whose row holds its card |
 | `batches` | `batch_id` | `summary` | `get_batch_summary(id)` |
 | | | `suite_report` | `get_suite_report(id)` |
 | `experiments` | `experiment_id` | `spec`, `result` | `list_experiments()`, `get_experiment(id)`, `result` null until recorded |
@@ -109,12 +110,15 @@ things in order.
    batch summary and experiment into one runs directory in a temp dir. A run
    directory is one holding `run_result.json`, a batch summary is a file named
    `batch_summary.json` or ending in `_batch_summary.json`, and an experiment is
-   a directory holding `experiment.json`. Two sources with the same id are an
-   error. Index files are never copied or read.
+   a directory holding `experiment.json`. Only the files directly in an
+   experiment folder are the experiment's own, and staging goes on into its
+   subfolders, so runs retained inside it, such as the fork points of a branch
+   experiment, are staged as runs. Two sources with the same id are an error.
+   Index files are never copied or read.
 2. Read. The staged copy is read with the filesystem `RunReader`, which
    rebuilds the index from the artifacts. The upload therefore never depends
-   on the index format (#213 may change it), and reading never rewrites the
-   retained `index.json` in place. That file predates index schema 0.5.0, so
+   on the index or its format, and reading never rewrites the retained
+   `index.json` in place. That file predates index schema 0.5.0, so
    `RunReader` would otherwise rebuild it on the spot.
 3. Build rows. `public_results/rows.py` turns each `RunReader` answer into a
    row with `model_dump(mode="json")`, the serialization `ArtifactStore` writes
@@ -124,6 +128,17 @@ things in order.
 5. Write. New and changed rows are upserted on the natural key with
    `Prefer: resolution=merge-duplicates`, in requests under 1 MB. With
    `--prune`, hosted rows that are no longer retained are deleted.
+
+A run that reproduced an earlier failure card holds `bundle_ref.json` in place
+of its own card, repair package and regression artifact (#211). Staging reads
+the pointer, and the run's row keeps the three bundle columns null and names
+the run holding the card in `canonical_run_id`. `SupabaseRunReader.get_bundle`
+follows it the way the filesystem reader follows the pointer. The card is
+hosted once, so a card that gains an occurrence re-uploads one row. Staging
+refuses a pointer to a run that is not retained or holds no card, and names
+both runs, because the hosted row would otherwise show a bundled failure as
+unbundled. A run that holds a card of its own is its own bundle home, whatever
+pointer sits beside it.
 
 It is idempotent. A rerun over the same tree finds every hash equal and sends
 no write at all. Even a forced rewrite of every row would replace each row with
@@ -328,7 +343,8 @@ TPM does this once.
    `main`. The job log ends with `published to https://<ref>.supabase.co`, and
    a second run ends with `nothing to publish`.
 6. Check the anonymous side with the publishable key. `list-runs` as shown
-   above lists 15 runs. A write is refused with 401 and code `42501`.
+   above lists as many runs as the upload log reported for the `runs` table.
+   A write is refused with 401 and code `42501`.
 
    ```sh
    curl -i -X POST "$TRACE_SUPABASE_URL/rest/v1/experiments" \

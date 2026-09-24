@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import shutil
 import sys
 import tempfile
 import urllib.parse
@@ -41,7 +42,7 @@ import pytest
 
 from trace_harness.public_results import schema
 from trace_harness.public_results.postgrest import HttpRequest, HttpResponse, key_role
-from trace_harness.run_reader import RunNotFound
+from trace_harness.run_reader import RunNotFound, RunReader
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "postgrest" / "synthesized_retained.json"
@@ -426,21 +427,23 @@ def without_generated_at(report: Any) -> dict:
     return report.model_dump(mode="json") | {"generated_at": None}
 
 
-def assert_same_reads(fs: Any, hosted: Any, batch_ids: list[str]) -> None:
-    """Every RunReader method on every retained id, plus an unknown id of each kind."""
+def assert_same_reads(
+    fs: Any, hosted: Any, batch_ids: list[str], bundle_refs: dict[str, str] | None = None
+) -> None:
+    """Every RunReader method on every retained id, plus an unknown id of each kind.
+
+    A reproduction in ``bundle_refs`` gets the bundle of the run it names, as
+    RunReader.get_bundle has it since #211.
+    """
+    bundle_refs = bundle_refs or {}
     summaries = fs.list_runs()
     assert hosted.list_runs() == summaries
     for summary in summaries:
         run_id = summary.run_id
-        for method in (
-            "get_run",
-            "get_task",
-            "get_trace",
-            "get_verifier",
-            "get_attribution",
-            "get_bundle",
-        ):
+        for method in ("get_run", "get_task", "get_trace", "get_verifier", "get_attribution"):
             assert getattr(hosted, method)(run_id) == getattr(fs, method)(run_id), (method, run_id)
+        bundle_home = bundle_refs.get(run_id, run_id)
+        assert hosted.get_bundle(run_id) == fs.get_bundle(bundle_home), ("get_bundle", run_id)
     for method in ("get_run", "get_task", "get_trace", "get_verifier", "get_bundle"):
         with pytest.raises(RunNotFound):
             getattr(fs, method)("run_not_retained")
@@ -471,8 +474,8 @@ def assert_same_reads(fs: Any, hosted: Any, batch_ids: list[str]) -> None:
 # --- the committed fixture ----------------------------------------------------
 
 FIXTURE_NOTE = (
-    "Synthesized PostgREST responses, not a recording from a live Supabase project, "
-    "which did not exist when this was written. The rows are built through RunReader "
+    "Synthesized PostgREST responses. No Supabase project existed when this was written, "
+    "so nothing here was recorded from a live one. The rows are built through RunReader "
     "from the real retained artifacts under docs/acceptance/ (public_results.rows), "
     "loaded into tests/postgrest_fake.py's MemoryPostgrest, and each exchange is what "
     "SupabaseRunReader asked and what that stand-in answered, shaped like PostgREST "
@@ -489,6 +492,78 @@ FIXTURE_EXPERIMENT = "exp_000_baseline"
 FIXTURE_PAGE_SIZE = 10
 
 
+# --- a retained tree with a reproduction (#211) ---------------------------------
+
+# Two retained runs that both carry a full bundle. In the tree below the second
+# becomes a reproduction of the first: its own bundle files are removed and a
+# bundle_ref.json names the first, as the bundle stage writes it since #211.
+CARD_RUN = FULL_CHAIN_RUN
+REPRODUCTION_RUN = "run_20260913T150039Z_0f2f19b7"
+BUNDLE_FILES = ("failure_card.json", "repair_package.json", "regression_artifact.json")
+BUNDLE_COLUMNS = ("failure_card", "repair_package", "regression_artifact")
+
+
+def retained_run_dir(run_id: str) -> Path:
+    return next(
+        p.parent
+        for p in (REPO_ROOT / "docs" / "acceptance").rglob("run_result.json")
+        if p.parent.name == run_id
+    )
+
+
+def bundle_ref(run_id: str, canonical_run_id: Any) -> dict[str, Any]:
+    """bundle_ref.json in BundleRef 0.1.0's shape (#211)."""
+    return {
+        "schema_version": "0.1.0",
+        "run_id": run_id,
+        "task_id": json.loads((retained_run_dir(run_id) / "run_result.json").read_text())[
+            "task_id"
+        ],
+        "bundle_key": "synthesized-bundle-key",
+        "canonical_run_id": canonical_run_id,
+    }
+
+
+def retained_with_reproduction(
+    root: Path, *, canonical_run_id: Any = CARD_RUN, with_card_run: bool = True
+) -> Path:
+    """A retained tree holding the card run and a reproduction pointing at it."""
+    if with_card_run:
+        shutil.copytree(retained_run_dir(CARD_RUN), root / "runs" / CARD_RUN)
+    reproduction = root / "live" / REPRODUCTION_RUN
+    shutil.copytree(retained_run_dir(REPRODUCTION_RUN), reproduction)
+    for name in BUNDLE_FILES:
+        (reproduction / name).unlink()
+    (reproduction / "bundle_ref.json").write_text(
+        json.dumps(bundle_ref(REPRODUCTION_RUN, canonical_run_id)), encoding="utf-8"
+    )
+    return root
+
+
+class BundleRefReader(RunReader):
+    """RunReader whose get_bundle follows bundle_ref.json, as it does since #211.
+
+    This branch predates #211, so its RunReader returns None for a
+    reproduction. Rows must come out the same with either reader.
+    """
+
+    def get_bundle(self, run_id: str) -> Any:
+        ref = self.store.run_dir(run_id) / "bundle_ref.json"
+        if ref.is_file() and not self.store.exists(run_id, "failure_card.json"):
+            return super().get_bundle(json.loads(ref.read_text("utf-8"))["canonical_run_id"])
+        return super().get_bundle(run_id)
+
+
+def reproduction_rows(root: Path, staging: Path) -> tuple[Any, Any, dict[str, list[dict]]]:
+    """Stage ``root`` and build rows with a reader that follows pointers."""
+    from trace_harness.public_results.retained import stage_retained
+    from trace_harness.public_results.rows import build_rows
+
+    staged = stage_retained(root, staging)
+    reader = BundleRefReader.from_runs_dir(staged.runs_dir)
+    return reader, staged, build_rows(reader, sorted(staged.batches), staged.bundle_refs)
+
+
 def retained_rows(staging: Path) -> tuple[Any, dict[str, list[dict[str, Any]]]]:
     """Stage the retained tree into ``staging`` and build every row through RunReader."""
     from trace_harness.public_results.retained import stage_retained
@@ -497,7 +572,7 @@ def retained_rows(staging: Path) -> tuple[Any, dict[str, list[dict[str, Any]]]]:
 
     staged = stage_retained(REPO_ROOT / "docs" / "acceptance", staging)
     reader = RunReader.from_runs_dir(staged.runs_dir)
-    return reader, build_rows(reader, sorted(staged.batches))
+    return reader, build_rows(reader, sorted(staged.batches), staged.bundle_refs)
 
 
 def exercise_fixture_reads(reader: Any) -> None:

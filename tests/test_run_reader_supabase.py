@@ -72,9 +72,11 @@ def test_supabase_reader_has_every_filesystem_read_with_the_same_signature() -> 
 
 def test_the_retained_set_is_what_the_issue_expects(retained) -> None:
     fs, rows = retained
-    assert len(rows[schema.RUNS]) == len(fs.list_runs()) >= 15
+    acceptance = fake.REPO_ROOT / "docs" / "acceptance"
+    run_dirs = len(list(acceptance.rglob("run_result.json")))
+    assert len(rows[schema.RUNS]) == len(fs.list_runs()) == run_dirs >= 15
     assert len(rows[schema.BATCHES]) >= 2
-    assert len(rows[schema.EXPERIMENTS]) >= 1
+    assert len(rows[schema.EXPERIMENTS]) == len(list(acceptance.rglob("experiment.json"))) >= 1
     full_chain = [r for r in rows[schema.RUNS] if r["failure_card"] is not None]
     assert full_chain, "no retained run carries a bundle"
 
@@ -86,6 +88,21 @@ def test_supabase_reader_returns_what_the_filesystem_reader_returns(retained, pa
     hosted = supabase_reader(server, page_size=page_size)
     fake.assert_same_reads(fs, hosted, [r["batch_id"] for r in rows[schema.BATCHES]])
     assert not server.writes()
+
+
+def test_a_reproduction_reads_the_bundle_of_the_run_holding_its_card(tmp_path: Path) -> None:
+    root = fake.retained_with_reproduction(tmp_path / "retained")
+    fs, staged, rows = fake.reproduction_rows(root, tmp_path / "staged")
+    server = fake.MemoryPostgrest().load(rows)
+    hosted = supabase_reader(server)
+
+    fake.assert_same_reads(fs, hosted, [], staged.bundle_refs)
+    assert hosted.get_bundle(fake.REPRODUCTION_RUN) == fs.get_bundle(fake.CARD_RUN) is not None
+
+    # A pointer whose card row is gone reads like a card file that is gone.
+    del server.tables[schema.RUNS][fake.CARD_RUN]
+    with pytest.raises(FileNotFoundError, match=f"failure card of run '{fake.CARD_RUN}'"):
+        hosted.get_bundle(fake.REPRODUCTION_RUN)
 
 
 def test_committed_fixture_replays_to_the_filesystem_answers(retained) -> None:
@@ -329,7 +346,8 @@ def test_cli_list_runs_reads_the_hosted_results_when_selected(
     out = capsys.readouterr().out
     assert f"{len(fs.list_runs())} run(s) in {fake.BASE_URL}" in out
     assert main(["--runs-dir", str(tmp_path / "empty"), "list-experiments"]) == 0
-    assert "1 experiment(s) in " + fake.BASE_URL in capsys.readouterr().out
+    experiments = len(fs.list_experiments())
+    assert f"{experiments} experiment(s) in {fake.BASE_URL}" in capsys.readouterr().out
 
 
 def test_cli_rejects_an_unknown_backend(

@@ -46,6 +46,12 @@ comment on table public.schema_versions is
 -- task_spec is get_task(), trace is get_trace() as an array of events,
 -- verifier_result, attribution_result and the three bundle artifacts are
 -- get_verifier(), get_attribution() and get_bundle(), null until produced.
+--
+-- A run that reproduced an earlier failure card (#211) holds bundle_ref.json
+-- in place of its own bundle. Its row keeps the three bundle columns null and
+-- names the run whose row holds the card in canonical_run_id, and get_bundle()
+-- reads the card from there. The card is stored once, so a card that gains an
+-- occurrence changes one row.
 create table public.runs (
     run_id text collate "C" primary key,
     task_id text not null,
@@ -59,6 +65,7 @@ create table public.runs (
     failure_card jsonb,
     repair_package jsonb,
     regression_artifact jsonb,
+    canonical_run_id text,
     content_sha256 text not null,
     constraint runs_summary_matches_keys check (
         (summary ->> 'run_id') is not distinct from run_id
@@ -74,6 +81,11 @@ create table public.runs (
     constraint runs_bundle_is_whole check (
         (failure_card is null) = (repair_package is null)
         and (failure_card is null) = (regression_artifact is null)
+    ),
+    -- A reproduction holds no bundle of its own and never points at itself.
+    constraint runs_reproduction_holds_no_bundle check (
+        canonical_run_id is null
+        or (failure_card is null and canonical_run_id is distinct from run_id)
     ),
     constraint runs_content_sha256_is_hex check (content_sha256 ~ '^[0-9a-f]{64}$')
 );

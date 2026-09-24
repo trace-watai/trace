@@ -11,7 +11,8 @@ backends method by method over every retained run, batch and experiment.
     list_runs_for_batch(id)    -> runs.summary where batch_id = id
     get_run / get_task / get_trace / get_verifier / get_attribution
                                -> the matching runs column
-    get_bundle(id)             -> runs.failure_card, repair_package, regression_artifact
+    get_bundle(id)             -> runs.failure_card, repair_package, regression_artifact,
+                                  from the row canonical_run_id names when it is set
     get_batch_summary(id)      -> batches.summary
     get_suite_report(id)       -> batches.suite_report
     list_experiments()         -> experiments.spec, ordered by experiment_id
@@ -59,6 +60,7 @@ from trace_harness.verifiers.base import VerifierResult
 
 URL_ENV = "TRACE_SUPABASE_URL"
 ANON_KEY_ENV = "TRACE_SUPABASE_ANON_KEY"
+_BUNDLE_COLUMNS = "failure_card,repair_package,regression_artifact"
 
 
 class SupabaseRunReader:
@@ -161,8 +163,22 @@ class SupabaseRunReader:
         return self._optional(run_id, "attribution_result", AttributionResult)
 
     def get_bundle(self, run_id: str) -> FailureBundle | None:
-        """The three bundle artifacts, or None if the run hasn't been bundled."""
-        row = self._run_columns(run_id, "failure_card,repair_package,regression_artifact")
+        """The three bundle artifacts covering this run, or None if it hasn't been bundled.
+
+        A run that reproduced an earlier card (#211) has its row's
+        ``canonical_run_id`` set, and gets the bundle from that run's row, the
+        way the filesystem reader follows ``bundle_ref.json``.
+        """
+        row = self._run_columns(run_id, f"{_BUNDLE_COLUMNS},canonical_run_id")
+        canonical = row.get("canonical_run_id")
+        if canonical is not None:
+            home = self.client.select_one(schema.RUNS, _BUNDLE_COLUMNS, "run_id", canonical)
+            if home is None or home["failure_card"] is None:
+                raise FileNotFoundError(
+                    f"run '{run_id}' is covered by the failure card of run '{canonical}', "
+                    f"which {self._table_url(schema.RUNS)} does not hold"
+                )
+            row = home
         parts = (row["failure_card"], row["repair_package"], row["regression_artifact"])
         if all(part is None for part in parts):
             return None

@@ -1,5 +1,5 @@
 {
- "note": "Synthesized PostgREST responses, not a recording from a live Supabase project, which did not exist when this was written. The rows are built through RunReader from the real retained artifacts under docs/acceptance/ (public_results.rows), loaded into tests/postgrest_fake.py's MemoryPostgrest, and each exchange is what SupabaseRunReader asked and what that stand-in answered, shaped like PostgREST output (JSON arrays of selected columns, Content-Range with the exact count, 206 for a partial page, error bodies with code, details, hint and message). Regenerate with: PYTHONPATH=src:tests python tests/postgrest_fake.py --write-fixture",
+ "note": "Synthesized PostgREST responses. No Supabase project existed when this was written, so nothing here was recorded from a live one. The rows are built through RunReader from the real retained artifacts under docs/acceptance/ (public_results.rows), loaded into tests/postgrest_fake.py's MemoryPostgrest, and each exchange is what SupabaseRunReader asked and what that stand-in answered, shaped like PostgREST output (JSON arrays of selected columns, Content-Range with the exact count, 206 for a partial page, error bodies with code, details, hint and message). Regenerate with: PYTHONPATH=src:tests python tests/postgrest_fake.py --write-fixture",
  "base_url": "https://synthesized.supabase.invalid",
  "exchanges": [
   {
@@ -2282,7 +2282,7 @@
   {
    "request": {
     "method": "GET",
-    "url": "https://synthesized.supabase.invalid/rest/v1/runs?select=failure_card,repair_package,regression_artifact&run_id=eq.run_20260820T012748Z_0e9c6172"
+    "url": "https://synthesized.supabase.invalid/rest/v1/runs?select=failure_card,repair_package,regression_artifact,canonical_run_id&run_id=eq.run_20260820T012748Z_0e9c6172"
    },
    "response": {
     "status": 200,
@@ -2844,7 +2844,8 @@
          "harness": "unknown"
         }
        }
-      }
+      },
+      "canonical_run_id": null
      }
     ]
    }
@@ -2956,7 +2957,7 @@
   {
    "request": {
     "method": "GET",
-    "url": "https://synthesized.supabase.invalid/rest/v1/runs?select=failure_card,repair_package,regression_artifact&run_id=eq.run_20260913T141412Z_3e4b44a9"
+    "url": "https://synthesized.supabase.invalid/rest/v1/runs?select=failure_card,repair_package,regression_artifact,canonical_run_id&run_id=eq.run_20260913T141412Z_3e4b44a9"
    },
    "response": {
     "status": 200,
@@ -2968,7 +2969,8 @@
      {
       "failure_card": null,
       "repair_package": null,
-      "regression_artifact": null
+      "regression_artifact": null,
+      "canonical_run_id": null
      }
     ]
    }
@@ -3279,7 +3281,7 @@
        "schema_version": "0.1.0",
        "batch_id": "batch_20260917T191429Z_87bfa2c7",
        "suite_id": "refund_bundles_v0",
-       "generated_at": "2026-09-24T00:59:52.535163Z",
+       "generated_at": "2026-09-24T13:22:52.223766Z",
        "total_rows": 9,
        "failing_rows": 5,
        "rows": [

@@ -81,7 +81,7 @@ def prepare_rows(retained_root: Path | str, staging_dir: Path | str) -> dict[str
     """Stage the retained tree and build every row through RunReader."""
     staged = stage_retained(retained_root, staging_dir)
     reader = RunReader.from_runs_dir(staged.runs_dir)
-    return build_rows(reader, sorted(staged.batches))
+    return build_rows(reader, sorted(staged.batches), staged.bundle_refs)
 
 
 def check_schema(client: PostgrestClient) -> None:

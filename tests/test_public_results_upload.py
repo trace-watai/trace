@@ -29,6 +29,9 @@ from trace_harness.public_results.upload import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ACCEPTANCE = REPO_ROOT / "docs" / "acceptance"
 ENV = {"TRACE_SUPABASE_URL": fake.BASE_URL, "TRACE_SUPABASE_SERVICE_KEY": fake.SERVICE_KEY}
+# Counted from the tree, independently of the stager, so evidence retained
+# anywhere under docs/acceptance/ (inside an experiment folder too) is expected.
+RETAINED_RUNS = len(list(ACCEPTANCE.rglob("run_result.json")))
 
 
 @pytest.fixture(scope="module")
@@ -156,6 +159,37 @@ def test_request_bodies_stay_under_the_limit(rows) -> None:
     assert request_chunks([big, big], max_bytes=10) == [[big], [big]]
 
 
+def test_a_card_that_changes_rewrites_its_own_row_and_no_reproduction(tmp_path: Path) -> None:
+    root = fake.retained_with_reproduction(tmp_path / "retained")
+    _, _, first = fake.reproduction_rows(root, tmp_path / "staged")
+    server = fake.MemoryPostgrest()
+    upload(writer(server), first)
+    card_path = root / "runs" / fake.CARD_RUN / "failure_card.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card["metadata"] = card["metadata"] | {"occurrences_seen": 2}
+    card_path.write_text(json.dumps(card), encoding="utf-8")
+
+    _, _, second = fake.reproduction_rows(root, tmp_path / "staged_again")
+    plans = upload(writer(server), second)
+
+    runs = next(p for p in plans if p.table == schema.RUNS)
+    assert [r["run_id"] for r in runs.updates] == [fake.CARD_RUN] and not runs.inserts
+    hosted = server.tables[schema.RUNS]
+    assert hosted[fake.CARD_RUN]["failure_card"]["metadata"]["occurrences_seen"] == 2
+    assert hosted[fake.REPRODUCTION_RUN]["failure_card"] is None
+
+
+def test_main_refuses_a_reproduction_whose_card_is_not_retained(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = fake.retained_with_reproduction(tmp_path / "retained", with_card_run=False)
+    server = fake.MemoryPostgrest()
+    assert main([str(root)], env=ENV, transport=server) == 2
+    err = capsys.readouterr().err
+    assert f"'{fake.CARD_RUN}' is not retained" in err and fake.REPRODUCTION_RUN in err
+    assert not server.requests
+
+
 # --- refusals -----------------------------------------------------------------
 
 
@@ -185,7 +219,8 @@ def test_main_publishes_then_reports_nothing_to_do(capsys: pytest.CaptureFixture
     assert main([str(ACCEPTANCE), "--prune"], env=ENV, transport=server) == 0
     second = capsys.readouterr().out
     assert f"nothing to publish, {fake.BASE_URL} already matches" in second
-    assert "runs: 15 retained, 0 new, 0 changed, 15 unchanged, 0 pruned" in second
+    runs = RETAINED_RUNS
+    assert f"runs: {runs} retained, 0 new, 0 changed, {runs} unchanged, 0 pruned" in second
     assert len(server.writes()) == writes
     assert fake.SERVICE_KEY not in first + second
 
@@ -227,9 +262,9 @@ def test_offline_builds_and_dumps_without_a_request(
         == 0
     )
     out = capsys.readouterr().out
-    assert "runs: 15 rows" in out
+    assert f"runs: {RETAINED_RUNS} rows" in out
     dumped = json.loads((tmp_path / "runs.json").read_text(encoding="utf-8"))
-    assert len(dumped) == 15 and tuple(dumped[0]) == schema.COLUMNS[schema.RUNS]
+    assert len(dumped) == RETAINED_RUNS and tuple(dumped[0]) == schema.COLUMNS[schema.RUNS]
 
 
 # --- the key scan -------------------------------------------------------------

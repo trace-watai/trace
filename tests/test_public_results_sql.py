@@ -269,8 +269,24 @@ def test_service_role_upserts_on_the_natural_key_and_deletes(cluster: PgCluster,
         {"trace": {"step": 0}},
         {"failure_card": {"card": 1}},
         {"content_sha256": "not-a-hash"},
+        {"canonical_run_id": "run_a"},
+        {
+            "canonical_run_id": "run_b",
+            "failure_card": {"card": 1},
+            "repair_package": {"package": 1},
+            "regression_artifact": {"artifact": 1},
+        },
     ],
-    ids=["summary-key", "batch-filter", "result-key", "trace-shape", "half-bundle", "hash"],
+    ids=[
+        "summary-key",
+        "batch-filter",
+        "result-key",
+        "trace-shape",
+        "half-bundle",
+        "hash",
+        "points-at-itself",
+        "reproduction-with-a-card",
+    ],
 )
 def test_inconsistent_run_rows_are_rejected(cluster: PgCluster, db: str, change: dict) -> None:
     row = sample_rows()[schema.RUNS][0] | change
@@ -411,6 +427,26 @@ def test_retained_results_round_trip_through_postgres_as_anon(
         anon.delete(schema.RUNS, "run_id", [rows[schema.RUNS][0]["run_id"]])
     assert (refused.value.status, refused.value.code) == (401, "42501")
     assert table_md5(cluster, db, schema.RUNS) == before
+
+
+def test_a_reproduction_round_trips_through_postgres_as_anon(
+    cluster: PgCluster, db: str, tmp_path: Path
+) -> None:
+    root = fake.retained_with_reproduction(tmp_path / "retained")
+    fs, staged, rows = fake.reproduction_rows(root, tmp_path / "staged")
+    server = fake.PsqlPostgrest(cluster, db)
+    upload(PostgrestClient(fake.BASE_URL, fake.SERVICE_KEY, transport=server), rows)
+
+    hosted = SupabaseRunReader(PostgrestClient(fake.BASE_URL, fake.ANON_KEY, transport=server))
+    fake.assert_same_reads(fs, hosted, [], staged.bundle_refs)
+    stored = scalar(
+        cluster,
+        db,
+        "select canonical_run_id || ':' || (failure_card is null)::text from public.runs "
+        f"where run_id = '{fake.REPRODUCTION_RUN}'",
+        "anon",
+    )
+    assert stored == f"{fake.CARD_RUN}:true"
 
 
 def test_a_second_upload_leaves_every_tuple_untouched(
