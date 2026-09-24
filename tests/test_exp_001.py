@@ -15,6 +15,7 @@ B1 sidecar exactly. It runs in a scratch folder and is never retained.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -324,3 +325,28 @@ def test_retain_refuses_a_credential(dry_run, tmp_path):
     assert ran.returncode == 1
     assert "nothing was retained" in ran.stderr
     assert not (target / "result.json").exists()
+
+
+# --- the cost estimate in the runbook ---
+
+
+def test_the_cost_estimate_stays_under_the_cap_by_hand():
+    spec = importlib.util.spec_from_file_location(
+        "estimate_exp_001_cost", REPO_ROOT / "scripts" / "estimate_exp_001_cost.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = module.estimate()
+    assert result["cassette_inputs"] == [995, 1251, 1750, 2851, 3573]
+    assert result["cassette_max_output"] == 690
+    rows = {r["condition"]: r for r in result["rows"]}
+    assert len(rows) == 9
+    # refund_policy_failure forks at 5 and the recording has 2 steps after it.
+    # Step 6 sends 3573 + 1101 = 4674 input tokens and step 7 sends 5775, each
+    # answered with 690 output tokens, at $0.75 and $3.75 per million.
+    # The harness rounds a run's cost to the micro-dollar.
+    per_run = round((4674 * 0.75 + 690 * 3.75 + 5775 * 0.75 + 690 * 3.75) / 1_000_000, 6)
+    assert per_run == 0.013012
+    assert rows["live__refund_policy_failure"]["expected_usd"] == pytest.approx(5 * per_run)
+    assert result["ceiling_usd"] <= result["cap_usd"] == 50.0
+    assert (result["expected_usd"], result["ceiling_usd"]) == (0.85, 21.15)

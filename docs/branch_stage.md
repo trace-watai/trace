@@ -39,6 +39,10 @@ freeze. `branch` checks before any run, so a changed evaluator costs nothing.
 `branch --allow-drift` runs anyway and prints the drift, and `record` then
 needs the flag too, which forces the decision to review.
 
+Brief 001 runs this sequence once per condition, with its harness check,
+retention and offline regeneration around it, in
+[runbook_001.md](experiments/runbook_001.md).
+
 ## What a live condition does
 
 For each seed of a `live`, `live_no_control` or `live_swapped` condition:

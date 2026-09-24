@@ -7,9 +7,9 @@ beside each batch, so every assertion below can be checked with a pencil.
   Live control on, 5 completed seeds: 4 clear, 1 blocking after the fork, so
   the live verdict is clear (4/5 >= 1/2) and the pair agrees. Control off, 4 of
   5 blocking after the fork. B1 = 1 - (1/5) / (4/5) = 0.75.
-- Artifact B, fork 3. Static exits 1, not clear. Live control on, 6 completed
-  seeds with 3 clear, which is exactly half and therefore clear, so the pair
-  disagrees. Control off never blocks after the fork, so B1 is null.
+- Artifact B, fork 3. Static exits 1, so it is not clear. Live control on,
+  6 completed seeds with 3 clear, which is exactly half and therefore clear, so
+  the pair disagrees. Control off never blocks after the fork, so B1 is null.
 - Artifact D, fork 4. Static exits 1. Live has 4 completed seeds and a setup
   error, which is insufficient, so the pair is excluded. No control-off runs,
   so B1 is null.
