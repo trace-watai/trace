@@ -550,7 +550,7 @@ DRIFTED = {
         (
             UNFROZEN,
             {"frozen_set_verified": False},
-            "plan schema 0.2.0 has no frozen set",
+            "has no frozen set, and experiment record refuses such a plan",
         ),
     ],
     ids=[
