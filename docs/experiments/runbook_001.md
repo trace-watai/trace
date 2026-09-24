@@ -44,8 +44,8 @@ confirms them.
 
 B1 as written cannot see the violation the control prevents at these fork
 points, and in the offline rehearsal it is null at two of the three. This
-needs a decision from Sarp before freeze. The code follows the documents as written and does not choose
-among the options below.
+needs a decision from Sarp before freeze. The code follows the documents as
+written and does not choose among the options below.
 
 Two passages fix the behavior together. The pre-registration's arms table says
 the `live` arm "continues from the recorded control step with the control

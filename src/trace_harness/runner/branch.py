@@ -30,10 +30,10 @@ A plan may list ``replacement_seeds`` in its metadata. A live seed whose run
 exists and ends incomplete is then replaced by the next unused seed from that
 list, decided on run status alone, which is pre-registration 001's rule for
 seeds 5 to 9. A seed the budget refused is not replaced, and neither is a seed
-that failed before its run existed, since that is a harness problem and not an
-incomplete run. Recording never overwrites a cassette, so a condition whose
-record-mode cassettes already exist for any seed it could run is refused before
-anything runs (:func:`recorded_cassettes`).
+that failed before its run existed, since that failure is the harness's own.
+Recording never overwrites a cassette, so a condition whose record-mode
+cassettes already exist for any seed it could run is refused before anything
+runs (:func:`recorded_cassettes`).
 """
 
 from __future__ import annotations
