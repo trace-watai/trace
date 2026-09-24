@@ -1,0 +1,23 @@
+{
+  "schema_version": "0.1.0",
+  "sweep_name": "refund_v0_live",
+  "description": "Every refund_v0 task under two live models from different vendors, five seeds each, every call recorded. Both models accept a seed and have a price in the harness price tables. Temperature is left at each provider's default so seeds sample the model rather than repeat it.",
+  "suite": "fixtures/suites/refund_v0.json",
+  "seeds": [1, 2, 3, 4, 5],
+  "providers": [
+    {
+      "label": "gemini-3.6-flash",
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "timeout_seconds": 300
+    },
+    {
+      "label": "gpt-5-mini",
+      "provider": "openai",
+      "model": "gpt-5-mini",
+      "timeout_seconds": 300
+    }
+  ],
+  "max_cost_usd": 10.0,
+  "budget_note": "Proposed cap, awaiting confirmation from Sarp. The expected spend is about $2.50 to $3.20 and the high estimate is $5.60, from the token counts of the eight retained Gemini runs of 13 September and the price tables in models/gemini.py and models/openai.py. docs/live_sweep.md shows the derivation."
+}

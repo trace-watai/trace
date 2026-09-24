@@ -1,12 +1,87 @@
 # Live sweep
 
-The code is in `runner/sweep_summary.py`, for issue #198.
+The code is in `runner/sweep.py` and `runner/sweep_summary.py`, for issue #198.
 
 A live sweep runs every task in a suite under two or more live models for
 several seeds each and records every model call to a cassette. It exists to
 find failures nobody authored. Every failure `refund_v0` produces under the
 fixture provider is one a script performs, and ADR-0002 rests external validity
 on failures a real model produced.
+
+## Running a sweep
+
+```sh
+trace-harness run-sweep fixtures/sweeps/refund_v0_live.json
+```
+
+A sweep spec names a suite, the live providers and models, the seeds, and a
+spend cap in USD. `run-sweep` runs every cell, meaning one task under one
+provider for one seed, through the same path a `run-suite` cell takes, and
+records every model call under `runs/sweeps/{sweep_id}/cassettes/`. Each
+provider's cells are written as one ordinary batch under `runs/batches/`, with
+`sweep_id`, `sweep_name` and `provider_label` in the batch's `metadata` and the
+seed on each entry, so no batch schema changed. The summary goes to
+`runs/sweeps/{sweep_id}/sweep_summary.json`.
+
+Cells run seed by seed, and within a seed provider by provider over every task.
+One `BudgetGuard` spans the whole sweep, so a cap reached early leaves every
+provider with the same number of complete seeds. Before any cell runs, each
+provider's adapter is built once, which fails on a missing key without a call,
+and the guard is asked once per provider, which refuses an unpriced model or a
+zero cap. After that the guard works as it does for a batch. It admits each
+cell before it starts and is charged the cell's recorded cost after, so the
+overshoot is at most one run, and a live run that finishes without a cost stops
+the sweep as `budget_unenforceable`. The command exits 2 when the cap cannot be
+enforced or a key is missing, and 0 otherwise, including after an exhausted
+cap. The summary's `budget` block and each batch's own say when and why the
+sweep stopped, and list every cell it never ran.
+
+### The committed spec
+
+`fixtures/sweeps/refund_v0_live.json` runs all 32 `refund_v0` tasks under two
+models for seeds 1 to 5, which is 320 cells.
+
+| Label | Provider | Model | Why |
+|---|---|---|---|
+| `gemini-3.6-flash` | gemini | `gemini-3.6-flash` | The one live model the repository already has evidence for, in the eight retained runs of 13 September and the retained cassette, on a key the team holds. It accepts a seed and has a price. |
+| `gpt-5-mini` | openai | `gpt-5-mini` | #160 chose OpenAI as the vendor that has native tool calling, a seed and a published price. Anthropic has no seed, so five seeds against it would be five unseeded samples, and #217 needs two seeded providers. The mini model sits in the same price tier as Gemini Flash, so the comparison is between vendors rather than model sizes, and it costs a fifth of `gpt-5`. |
+
+Temperature is left at each provider's default, so seeds sample the model
+rather than repeat one answer, and the GPT-5 models accept only their default.
+`timeout_seconds` is 300 because Gemini is paced to ten requests a minute by
+default, which alone takes 90 seconds across a 16 step run. At that pace the
+sweep takes about three hours. A paid Gemini tier can raise the pace with a
+`call_policy` on the provider.
+
+### Cost
+
+The cap in the spec is $10.00, proposed and awaiting confirmation from Sarp.
+The estimate comes from the eight retained Gemini runs of 13 September under
+`docs/acceptance/live-gemini-2026-09-13/`, which are the only live token counts
+in the repository, and the price tables in `models/gemini.py` and
+`models/openai.py`.
+
+| Quantity | Value |
+|---|---|
+| Model calls per run, retained runs | 3 to 5 |
+| Input tokens per run, mean and largest | 6,339 and 10,420 |
+| Output tokens per run with thinking, mean and largest | 1,139 and 2,096 |
+| `gemini-3.6-flash` price per million, input and output | $0.75 and $3.75 |
+| `gpt-5-mini` price per million, input and output | $0.25 and $2.00 |
+| Gemini, 160 cells at the mean run | $1.44 |
+| Gemini, 160 cells at the largest run | $2.51 |
+| OpenAI, 160 cells at the mean input and two to four times the output | $0.98 to $1.71 |
+| OpenAI, 160 cells at the largest input and four times the largest output | $3.10 |
+| Expected total | $2.43 to $3.16 |
+| High estimate, every cell as long as the longest retained run | $5.61 |
+
+OpenAI's output is scaled up because `gpt-5-mini` spends reasoning tokens that
+bill as output, and nothing retained measures how many. The two to four times
+multiplier is an assumption, and the first sweep replaces it with a
+measurement. The cap sits well above the high estimate and well below the
+spend of a sweep where every run used all 16 steps, which would be about $28
+since the prompt grows with each turn. The guard is what makes that ceiling
+unreachable.
 
 ## The summary
 

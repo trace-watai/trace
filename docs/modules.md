@@ -211,7 +211,8 @@ recorded as `budget_unenforceable` and `run-suite` exits 2. Fixture and replay
 runs cost exactly zero and are never refused on price. `branch` drives one
 guard per invocation from the experiment plan's `max_cost_usd`, shared by every
 condition and seed ([branch_stage.md](branch_stage.md#budget)). `run-sweep`
-does not exist yet and is meant to drive the same `BudgetGuard`.
+drives one guard per sweep, shared by every provider and seed
+([live_sweep.md](live_sweep.md)).
 
 `branch.py` exposes `run_branch(artifact_path, experiment, condition, store)`
 and `replay_batch(...)`, behind `trace-harness branch`. It continues a

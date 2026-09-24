@@ -39,10 +39,10 @@ Budget guard (#196)
     ``run-suite`` and ``branch`` drive it. ``branch`` builds one guard per
     invocation from the experiment plan's ``budget.max_cost_usd``, shared by
     every condition and seed, and records a budget block on each condition's
-    batch (see ``runner/branch.py``). ``run-sweep`` (#198) does not exist yet;
-    it is meant to build a ``BudgetGuard`` from its own ``max_cost_usd`` and
-    call ``admit`` before and ``charge`` after each run, the same way
-    ``BatchRunner.run`` does.
+    batch (see ``runner/branch.py``). ``run-sweep`` (#198) builds one guard
+    per sweep from its own ``max_cost_usd``, shared by every provider and seed,
+    and calls ``admit`` before and ``charge`` after each run, the same way
+    ``BatchRunner.run`` does (see ``runner/sweep.py``).
 """
 
 from __future__ import annotations
@@ -108,10 +108,10 @@ class BatchRunEntry(BaseModel):
     latency_ms: float | None = None
     cost_usd: float | None = None
     error: str | None = None
-    # Filled by the branch stage (#159); None on suite entries and on files
-    # written before 0.4.0. ``diverged`` says whether the first action after
-    # the fork differed from the recording, and the step says where the run
-    # first differed at all.
+    # Filled by the branch stage (#159), and ``seed`` by a sweep (#198); None
+    # on suite entries and on files written before 0.4.0. ``diverged`` says
+    # whether the first action after the fork differed from the recording, and
+    # the step says where the run first differed at all.
     condition: str | None = None
     seed: int | None = None
     first_post_fork_divergence_step: int | None = None
@@ -145,7 +145,7 @@ class NotRunCell(BaseModel):
 
     agent_label: str
     task_path: str
-    # The branch stage's cell is a seed (0.4.0); None on suite cells.
+    # The seed of a branch or sweep cell (0.4.0); None on suite cells.
     seed: int | None = None
 
 
