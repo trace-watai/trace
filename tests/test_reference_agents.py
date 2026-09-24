@@ -8,17 +8,22 @@ reach a model or export a trace would fail the test.
 from __future__ import annotations
 
 import gc
+import importlib.metadata
 import json
 import runpy
 import socket
 import sys
 import threading
 import time
+import tomllib
 import types
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, REPO_ROOT, VALID_TASK_PATH
 from trace_harness.agents.turns import (
@@ -528,3 +533,64 @@ def test_agents_sdk_runs_create_no_sdk_traces(tmp_path):
         set_trace_processors([default_processor()])
     assert result.status is RunStatus.COMPLETED
     assert started == []
+
+
+# --- the extras the reference agents install with ---
+
+
+def _pyproject_requirements() -> dict[str, list[tuple[str, Requirement]]]:
+    """Every requirement in pyproject.toml, by distribution, with the group naming it."""
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    groups = {"dependencies": project["dependencies"], **project["optional-dependencies"]}
+    by_name: dict[str, list[tuple[str, Requirement]]] = {}
+    for group, lines in groups.items():
+        for line in lines:
+            requirement = Requirement(line)
+            by_name.setdefault(canonicalize_name(requirement.name), []).append((group, requirement))
+    return by_name
+
+
+def test_the_openai_agents_extra_names_the_openai_range_its_reference_imports():
+    """openai_agents_ref imports openai's response types, and openai-agents 0.22 needs openai 3."""
+    ranges = [r.specifier for g, r in _pyproject_requirements()["openai"] if g == "openai-agents"]
+    assert len(ranges) == 1
+    (openai_range,) = ranges
+    assert openai_range.contains("3.0.0") and openai_range.contains("3.19.0")
+    assert not openai_range.contains("2.99.0") and not openai_range.contains("4.0.0")
+    try:
+        installed = importlib.metadata.version("openai-agents")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    # Where the SDK is installed, what it asks of openai sits inside this range.
+    (sdk_openai,) = [
+        Requirement(line)
+        for line in importlib.metadata.requires("openai-agents") or []
+        if Requirement(line).name == "openai" and Requirement(line).marker is None
+    ]
+    assert installed.startswith("0.22.")
+    for version in ("2.99.0", "3.0.0", "3.19.0", "4.0.0"):
+        assert openai_range.contains(version) == sdk_openai.specifier.contains(version)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "the openai extra still pins openai<2 on this branch. The #229 review widens it to "
+        "admit 3.x, and this marker comes off when that change merges"
+    ),
+)
+def test_every_extra_installs_together():
+    """No two groups in pyproject.toml ask for versions of one package that cannot coexist.
+
+    ``pip install -e ".[openai,openai-agents]"`` fails otherwise. The ranges
+    use only ``>=``, ``<`` and ``==``, so a common version exists exactly when
+    one of the bounds (or 0) satisfies every range.
+    """
+    clashes = []
+    for name, entries in _pyproject_requirements().items():
+        ranges = [requirement.specifier for _, requirement in entries]
+        assert {spec.operator for spec_set in ranges for spec in spec_set} <= {">=", "<", "=="}
+        candidates = {Version("0")} | {Version(spec.version) for s in ranges for spec in s}
+        if not any(all(r.contains(c, prereleases=True) for r in ranges) for c in candidates):
+            clashes.append(f"{name}: " + ", ".join(f"{g} {r.specifier}" for g, r in entries))
+    assert clashes == []

@@ -255,6 +255,11 @@ trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \
   --agent trace_harness.agents.openai_agents_ref:agent
 ```
 
+The extra names `openai>=3,<4` beside the SDK, because the reference imports
+openai's response types directly and openai-agents 0.22 requires openai 3. It
+installs together with the `openai` extra only where that extra's range admits
+openai 3.
+
 `openai_agents_ref.py` builds an SDK `Agent` with the task's tools and runs it
 with `Runner.run` under `asyncio.run`, so the loop, the turn limit, and tool
 dispatch are the SDK's own. `Runner.run_sync` would leave its event loop open on
