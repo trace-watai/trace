@@ -151,6 +151,14 @@ def _read_optional_dict(store: ArtifactStore, run_id: str, name: str) -> dict | 
     return data if isinstance(data, dict) else None
 
 
+def _bundle_home(store: ArtifactStore, run_id: str) -> str | None:
+    """The run holding this run's bundle, or None when absent or its pointer is unreadable."""
+    try:
+        return store.bundle_home(run_id)
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 class _CoverageAccumulator:
     """Threaded through row building so coverage is a single pass over the batch."""
 
@@ -260,7 +268,9 @@ def _build_row(
         primary_category, contributing = "", []
         root_cause_step, first_irreversible_step = None, None
 
-    regression = _read_optional_dict(store, run_id, names.REGRESSION_ARTIFACT) if run_id else None
+    # A reproduction (#211) is covered by its first occurrence's regression.
+    home = _bundle_home(store, run_id) if run_id else None
+    regression = _read_optional_dict(store, home, names.REGRESSION_ARTIFACT) if home else None
     regression_test_name = (
         regression["test_name"]
         if regression is not None and isinstance(regression.get("test_name"), str)

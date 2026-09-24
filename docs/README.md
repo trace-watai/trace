@@ -18,6 +18,7 @@ you change X" column.
 | [attribution_canonical_run_results.md](attribution_canonical_run_results.md) | Reviewing canonical attribution results, step meanings, evidence rules, and null handling. |
 | [failure_bundles.md](failure_bundles.md) | Before changing cards, repair packages, or regression artifacts. |
 | [bring_your_own_agent.md](bring_your_own_agent.md) | Running an agent built elsewhere (LangGraph, the OpenAI Agents SDK, or anything with its own loop) through the harness, and what the trace guarantees for it. |
+| [measurements/run_index_scale.md](measurements/run_index_scale.md) | Before proposing a database or a new index format for `runs/`. What `index.json` costs at sweep scale and where it stops being enough. |
 | [team_ownership.md](team_ownership.md) | To find an owner, a reviewer, or your Linear workstream. |
 | [public_results.md](public_results.md) | What is hosted in Supabase for public reads, how it is published and regenerated, its free tier sizing, and the local API plan. |
 | [future_dashboard.md](future_dashboard.md) | Picking up the dashboard. Contracts and start conditions are pinned there. |
