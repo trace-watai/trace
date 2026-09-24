@@ -972,6 +972,31 @@ def test_a_live_seed_with_no_recorded_cost_stops_the_condition(
     assert [c.seed for c in batches["live"].budget.not_run] == [1, 2]
 
 
+def test_a_seed_the_provider_cannot_send_is_marked_unsent(tmp_path, live_models):
+    """Anthropic has no seed parameter, so a branch run says its seed was never sent (#160)."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, _ = _spec(
+        tmp_path,
+        _claude("live", "live", artifact, control_ids=[REFUND_WINDOW_CONTROL_ID]),
+        _condition("recorded", "live_no_control", artifact, 2, seeds=[0]),
+        max_cost_usd=5.0,
+    )
+
+    code, batches = _branch(tmp_path, path, spec_path)
+
+    assert code == 0
+    store = ArtifactStore(tmp_path / "runs")
+    live = [store.read_json(e.run_id, names.RUN_CONFIG) for e in batches["live"].entries]
+    assert [(c["seed"], c["metadata"].get("seed_sent")) for c in live] == [
+        (0, False),
+        (1, False),
+        (2, False),
+    ]
+    # The fixture provider plays a recording and is not marked either way.
+    (recorded,) = batches["recorded"].entries
+    assert "seed_sent" not in store.read_json(recorded.run_id, names.RUN_CONFIG)["metadata"]
+
+
 def _break(monkeypatch, name: str) -> None:
     def broken(*args, **kwargs):
         raise RuntimeError(f"{name} broke")

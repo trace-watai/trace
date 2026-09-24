@@ -42,6 +42,7 @@ from trace_harness.models import (
     makes_live_calls,
     resolve_call_policy,
     resolve_model_name,
+    unsent_seed_metadata,
 )
 from trace_harness.models.base import ActionKind, ModelAdapter
 from trace_harness.models.cassette import (
@@ -408,6 +409,9 @@ def _run_seed(
         metadata["controls"] = [c.model_dump(mode="json") for c in environment.installed_controls]
     if isinstance(continuation, RecordingModelAdapter):
         metadata["cassette_path"] = str(continuation.path)
+    # A seed the provider has no parameter for is recorded and marked unsent,
+    # as run_task_pipeline does (#160).
+    metadata.update(unsent_seed_metadata(agent.provider, seed))
     config = RunConfig(
         task_id=task.task_id,
         provider=agent.provider,
