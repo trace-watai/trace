@@ -17,6 +17,13 @@ import { camelizeKeys, type Camelize } from "@/lib/casing";
 export const EXPERIMENT_SCHEMA_VERSION = "0.3.0";
 
 /**
+ * `EXPERIMENT_ID_PATTERN` in `runner/experiment.py`. An experiment id names a
+ * directory, so it is one path segment with no separator and no dot. A test
+ * reads the Python source and asserts the two patterns are the same.
+ */
+export const EXPERIMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
  * What a condition does to produce its runs. `static_replay` re-runs recorded
  * actions and cannot react to being blocked, which is the limitation the
  * replay-validity question exists to measure.
@@ -106,11 +113,13 @@ export interface RawFrozenFileChange {
 }
 
 /**
- * What must not change while the conditions run. If `fixtures_hash` differs
- * between two conditions they answered different questions, and comparing
- * them is void. `frozen_set` covers the verifier, environment, attribution
- * scorer, suite, fixtures and labels, keyed by component name; it is absent
- * on plans from schema 0.1.0.
+ * What must not change while the conditions run. `experiment record` refuses
+ * a batch from any suite but `suite_id`. If `fixtures_hash` differs between
+ * two conditions they answered different questions, and comparing them is
+ * void. `frozen_set` covers the verifier, environment, attribution scorer,
+ * suite, fixtures and labels, keyed by component name, and `fixtures_hash` is
+ * its fixtures digest. It is absent on plans from schema 0.1.0, whose
+ * `fixtures_hash` is stored as the plan states it and checked by nothing.
  */
 export interface RawFrozenManifest {
   suite_id: string;
@@ -262,8 +271,8 @@ export const parseExperimentResult = (
 
 /**
  * Metric field names in the order the memo lists them, for table headers.
- * Kept in sync with the backend by `tests/test_experiment.py`, which asserts
- * the Python field set against the memo's appendix.
+ * `experiment-loader.test.ts` asserts them against the memo's appendix, the
+ * same list `tests/test_experiment.py` asserts the Python fields against.
  */
 export const EXPERIMENT_METRIC_NAMES = [
   "verdictAgreementRate",

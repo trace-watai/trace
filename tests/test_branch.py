@@ -592,12 +592,20 @@ def test_experiment_record_fills_the_three_metrics_from_branch_batches(
     assert result.metrics.first_post_fork_divergence_rate == 1.0
     assert result.metrics.noise_floor_divergence_rate == 0.0
     assert result.metrics.post_block_outcomes == {"substitute_violation": 2}
-    assert result.metrics.extra == {
+    # #155's cost coverage and per-condition counts ride beside the rate
+    # counts. The per-condition medians are timings and vary run to run.
+    extra = result.metrics.extra
+    assert {k: v for k, v in extra.items() if not k.startswith("latency_ms_p50.")} == {
+        "cost_recorded_k": 4,
+        "cost_recorded_n": 4,
+        "verified_failure_count.live": 2,
+        "verified_failure_count.live_no_control": 2,
         "first_post_fork_divergence_k": 2,
         "first_post_fork_divergence_n": 2,
         "noise_floor_divergence_k": 0,
         "noise_floor_divergence_n": 2,
     }
+    assert {"latency_ms_p50.live", "latency_ms_p50.live_no_control"} <= set(extra)
 
     swapped = [
         pairs[0],
@@ -738,7 +746,15 @@ def test_a_bad_condition_fails_before_anything_runs(tmp_path, capsys, change, me
     path, artifact = _artifact(tmp_path)
     condition = _condition("live", "live", artifact, change.get("start_step", 2))
     fields = {key: value for key, value in change.items() if key != "start_step"}
-    spec_path, _ = _spec(tmp_path, {**condition, **fields})
+    if "control_ids" in fields:
+        # An unknown control id fails when the plan loads (#155), so this plan
+        # file is written as JSON without going through the model.
+        spec_path, _ = _spec(tmp_path, condition)
+        data = json.loads(spec_path.read_text(encoding="utf-8"))
+        data["conditions"][0].update(fields)
+        spec_path.write_text(json.dumps(data), encoding="utf-8")
+    else:
+        spec_path, _ = _spec(tmp_path, {**condition, **fields})
     runs = tmp_path / "runs"
     capsys.readouterr()
     assert main(["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]) == 2
@@ -1037,7 +1053,12 @@ def test_record_reads_the_live_metrics_from_one_real_model(tmp_path, capsys, liv
     )
     # Claude answers where the recording answered, in other words: no divergence.
     assert result.metrics.first_post_fork_divergence_rate == 0.0
-    assert result.metrics.extra == {
+    extra = result.metrics.extra
+    assert {k: v for k, v in extra.items() if not k.startswith("latency_ms_p50.")} == {
+        "cost_recorded_k": 4,
+        "cost_recorded_n": 4,
+        "verified_failure_count.check": 0,
+        "verified_failure_count.live": 0,
         "first_post_fork_divergence_k": 0,
         "first_post_fork_divergence_n": 3,
         "live_fixture_batches_excluded": 1,

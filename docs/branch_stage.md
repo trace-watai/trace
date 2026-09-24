@@ -181,10 +181,12 @@ live model separately. Recording a batch under a condition other than the one
 its metadata names exits 2, since it would swap the two rates, and so does
 recording a batch whose metadata names another experiment.
 
-`verified_failure_count` counts every failing run of every recorded batch,
-`live_no_control` included. Where the replayed start step is the violation,
-each `live_no_control` run adds a failure the recording's prefix caused before
-the agent acted. In the #159 handoff on the control demo, 5 of its 10 verified
+`verified_failure_count` counts every completed failing run of every recorded
+batch, `live_no_control` included, and `metrics.extra` gives it per condition
+as `verified_failure_count.<condition>` ([experiment_contract.md](experiment_contract.md#the-metrics)).
+Where the replayed start step is the violation, each completed
+`live_no_control` run adds a failure the recording's prefix caused before the
+agent acted. In the #159 handoff on the control demo, 5 of its 10 verified
 failures were `live_no_control` runs failing `unauthorized_cash_refund` at
 step 2, the replayed start step, and the other 5 were `live` runs failing
 `unauthorized_store_credit` at step 3, after the block. Each run's failed
