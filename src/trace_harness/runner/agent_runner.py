@@ -218,6 +218,10 @@ class AgentRunner:
         self.environment = environment
         self.artifact_store = artifact_store
         self._consumed = False
+        # The id of the run this runner started, set before anything can call
+        # a provider. A caller that sees run() raise can still find the run's
+        # trace, and what the run spent, through it.
+        self.run_id: str | None = None
 
     def run(self, task: TaskSpec, config: RunConfig) -> RunResult:
         # Fail loud on reuse: the environment's state and a fixture script's
@@ -230,7 +234,7 @@ class AgentRunner:
                 "environment, and runner for each run."
             )
         self._consumed = True
-        run_id = new_run_id()
+        run_id = self.run_id = new_run_id()
         store = self.artifact_store
         store.create_run_dir(run_id)
         recorder = TraceRecorder(run_id, jsonl_path=store.trace_path(run_id))

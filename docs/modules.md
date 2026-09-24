@@ -201,12 +201,25 @@ coverage; see [suite_report.md](suite_report.md)).
 A suite may set `max_cost_usd` (`Suite 0.3.0`). `BatchRunner` asks
 `BudgetGuard` before each run and stops the batch once the recorded spend of
 its live runs reaches the cap, which the summary's `budget` block records as
-`budget_exhausted` along with the cells never run (`BatchSummary 0.3.0`). A
-live run of an unpriced model under a cap is refused before it starts, and a
-live run that finishes with no recorded cost stops the batch after it; both are
-recorded as `budget_unenforceable` and `run-suite` exits 2. Fixture and replay
-runs cost exactly zero and are never refused on price. `run-sweep` and `branch`
-do not exist yet and are meant to drive the same `BudgetGuard`.
+`budget_exhausted` along with the cells never run (`BatchSummary 0.3.0`). The
+run that reaches the cap records the stop, so the summary says so even when it
+was the last cell. A live run of an unpriced model under a cap is refused
+before it starts, and a live run that finishes with no recorded cost stops the
+batch after it; both are recorded as `budget_unenforceable` and `run-suite`
+exits 2. Fixture and replay runs cost exactly zero and are never refused on
+price.
+
+A live run that never got an answer costs exactly zero when the call policy
+gave up and every failed attempt carried an HTTP status, so one outage cell
+does not end a capped batch. Google documents that a request failing with a
+400 or 500 error is not charged; the same reading is applied to Anthropic and
+OpenAI, whose error pages do not say. A failure with no status, or a call
+abandoned at the run's timeout, may have been billed, and that run's cost stays
+null. A cell whose pipeline raised after its run started (in verification,
+bundling, or the runner's own bookkeeping) is a `setup_error` that keeps the
+run's id and the cost its trace records, so the guard still counts it.
+`run-sweep` and `branch` do not exist yet and are meant to drive the same
+`BudgetGuard`.
 
 `collector.py` exposes `collect_regressions(path, store, suite_path=...)` and
 `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate

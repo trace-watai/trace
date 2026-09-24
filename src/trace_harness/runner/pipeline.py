@@ -50,6 +50,21 @@ class PipelineResult:
     verifier_result: VerifierResult | None  # None when the task declares no verifiers
 
 
+@dataclass
+class PipelineProgress:
+    """How far one ``run_task_pipeline`` call got, filled in as it goes.
+
+    A caller that has to account for a failure passes one in. When a later
+    stage raises, ``run_id`` says whether the agent run had already started,
+    and so whether a live run may have spent money that its trace can still
+    price. ``run_config`` is the configuration that run executed. Both stay
+    None when the pipeline failed before the run, which calls no provider.
+    """
+
+    run_id: str | None = None
+    run_config: RunConfig | None = None
+
+
 def _repo_relative(path: Path) -> str:
     try:
         return str(path.relative_to(Path.cwd()))
@@ -75,8 +90,14 @@ def run_task_pipeline(
     bundle_on_fail: bool = True,
     control_library: Path | str | None = None,
     controls: list[ControlInstance] | None = None,
+    progress: PipelineProgress | None = None,
 ) -> PipelineResult:
-    """Run one task under one agent config and produce all pipeline artifacts."""
+    """Run one task under one agent config and produce all pipeline artifacts.
+
+    ``progress``, when given, records the run's id and configuration as soon
+    as the run starts, so a caller can still find the run if a later stage
+    raises.
+    """
     task_path = Path(task_path).resolve()
     task = load_task(task_path)
     docs = load_docs_for_task(task, task_path)
@@ -128,7 +149,14 @@ def run_task_pipeline(
         call_policy=call_policy,
         metadata=metadata,
     )
-    run_result = AgentRunner(adapter, environment, store).run(task, config)
+    runner = AgentRunner(adapter, environment, store)
+    if progress is not None:
+        progress.run_config = config
+    try:
+        run_result = runner.run(task, config)
+    finally:
+        if progress is not None:
+            progress.run_id = runner.run_id
 
     verifier_result = _verify_run(store, run_result, task)
     if verifier_result is not None and verifier_result.has_violations and bundle_on_fail:
