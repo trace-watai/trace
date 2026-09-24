@@ -45,6 +45,12 @@ HISTORY_PATH = Path("docs/acceptance/metrics_history.jsonl")
 #: Side effect classes that cannot be undone by re-running anything.
 IRREVERSIBLE_SIDE_EFFECT = "external_irreversible"
 
+#: Retained trees, relative to the history root, that a snapshot never reads.
+#: Their batches, runs and bundles are evidence for one experiment's conditions.
+#: Counting them as suite results would have moved the suite pass rate from
+#: 18/29 to 22/38 when #155 retained its single baseline batch.
+EXPERIMENT_EVIDENCE = (Path("docs/acceptance/batches"), Path("docs/acceptance/experiments"))
+
 
 class Ratio(BaseModel):
     """A rate that always carries the two counts it came from.
@@ -379,9 +385,11 @@ def build_snapshot(root: Path, *, commit: str, exclude: Sequence[Path] = ()) -> 
 
     ``exclude`` names directories whose artifacts are scratch, normally the
     runs directory the gate just wrote into. A snapshot describes what a commit
-    retained, so it only reads files that commit actually carries.
+    retained, so it only reads files that commit actually carries. The
+    :data:`EXPERIMENT_EVIDENCE` trees under ``root`` are always skipped too, so
+    the workflow and a local ``--append-history`` read the same files.
     """
-    exclude = [directory.resolve() for directory in exclude]
+    exclude = [d.resolve() for d in (*exclude, *(root / d for d in EXPERIMENT_EVIDENCE))]
     root = root.resolve()
     pairs = find_repair_validations(root, exclude=exclude)
     validations = [v for _, v in pairs]
