@@ -20,11 +20,20 @@ full replay would take hours, so the total is estimated instead from the
 per-run cost measured at evenly spaced index sizes. Every scale small enough
 for a full replay also gets the estimate, which shows how close it lands.
 
+The script stops with an error instead of timing a directory it cannot vouch
+for. A replayed index must equal a fresh ``rebuild_index``, the sampled
+estimate must leave the index exactly as the full sweep left it, and before any
+listing is timed the index must hold exactly the run ids on disk. Without that
+last check a stale index would make ``RunReader.list_runs`` rebuild on every
+call, and the listing figures would silently time rebuilds.
+
 Once the index is written, the script times listing four ways over the same
 directory: ``trace-harness list-runs`` as a subprocess, ``RunReader.list_runs``
 in process, ``ArtifactStore.rebuild_index`` (what listing pays once when the
 index is stale), and the dashboard's server-side ``listRuns()`` loaded under
-node. ``--next-dev`` also times a full render of ``/runs`` under ``next dev``.
+node. ``--next-dev`` also times a full render of ``/runs`` under ``next dev``,
+run from a copy of ``apps/dashboard`` so its ``.next`` output never lands in
+the repository.
 
 ``--probe N`` adds a listing-only point at N runs. Probe directories hold only
 the three files the index path reads (``run_result.json``, ``run_config.json``,
@@ -34,14 +43,20 @@ they locate where the thresholds trip without hours of copying and replay.
 ``--end-to-end SEEDS`` cross-checks the replay against the real thing. It runs
 the refund_v0 suite through ``BatchRunner`` SEEDS times with two fixture agent
 configs standing in for two providers, and times every index call the runner
-makes along the way.
+makes along the way. Each invocation is one batch of both configs, 64 runs,
+where the replay batches the 32 runs of one provider and seed.
+
+Everything the script writes goes into a new directory it creates under
+``--work``, so a folder already there is never reused or removed. That
+directory is deleted at the end unless ``--keep`` is given.
 
 Usage (from the repo root, with the package importable)::
 
     python scripts/measure_run_index.py --work /tmp/scale213 --json /tmp/scale213/results.json
 
 The script lives outside ``tests/`` and has no ``test_`` prefix, so pytest never
-collects it and CI never runs it.
+collects it and CI never runs it. ``tests/test_measure_run_index.py`` covers its
+checks and its handling of the work directory at the smallest scale.
 """
 
 from __future__ import annotations
@@ -58,6 +73,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -72,7 +88,7 @@ from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunResult
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
-from trace_harness.tracing.run_index import RunIndex, RunIndexEntry
+from trace_harness.tracing.run_index import RUN_INDEX_SCHEMA_VERSION, RunIndex, RunIndexEntry
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RETAINED_ROOT = REPO_ROOT / "docs" / "acceptance"
@@ -192,12 +208,21 @@ def copy_run(template: Path, target: Path, run_id: str, only: tuple[str, ...] | 
             shutil.copyfile(source, target / source.name)
 
 
+def new_session_dir(work: Path) -> Path:
+    """Create the directory that holds everything one invocation writes.
+
+    Every scale, probe, the empty floor directory, the node harness and the
+    dashboard copy live inside it. A folder that already sat in ``work`` is
+    never reused, so the cleanup below can only remove what this run made.
+    """
+    work.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix="measure_run_index_", dir=work))
+
+
 def build_runs_dir(
     runs_dir: Path, count: int, templates: list[Path], seed: int, only: tuple[str, ...] | None
 ) -> list[str]:
-    if runs_dir.exists():
-        shutil.rmtree(runs_dir)
-    runs_dir.mkdir(parents=True)
+    runs_dir.mkdir()  # raises FileExistsError rather than reuse a directory
     run_ids = fresh_run_ids(count, seed)
     for i, run_id in enumerate(run_ids):
         copy_run(templates[i % len(templates)], runs_dir / run_id, run_id, only)
@@ -276,15 +301,24 @@ def sampled_write_estimate(
     positions before repeating any, so a burst of load from elsewhere on the
     machine lands on one pass rather than on every repetition of one point. The
     total is the trapezoid sum of the per-position medians over the sweep.
+
+    The last position is always the sweep's final run, so the index this leaves
+    behind is what the real calls made from the first ``count - 1`` entries. It
+    is not rewritten afterwards, which lets the caller check that it equals the
+    full sweep's index.
     """
+    if samples < 2:
+        raise ValueError("the estimate needs at least two sampled positions")
     runs = [(run, batch.batch_id) for batch in batches for run in batch.runs]
     count = len(runs)
-    positions = sorted({round(i * (count - 1) / max(samples - 1, 1)) for i in range(samples)})
+    positions = sorted({round(i * (count - 1) / (samples - 1)) for i in range(samples)})
     timings: dict[int, list[float]] = {k: [] for k in positions}
     for _ in range(reps):
         for k in positions:
             run, batch_id = runs[k]
-            store._write_index(RunIndex(entries=final_entries[:k]))  # setup, untimed
+            # Untimed setup. The store's own writer, so the file the timed calls
+            # read is byte for byte the file the runner would have written.
+            store._write_index(RunIndex(entries=final_entries[:k]))
             start = time.perf_counter()
             index_ops_for_run(store, run)
             store.enrich_index_entry_with_batch(run.run_id, batch_id)
@@ -294,7 +328,6 @@ def sampled_write_estimate(
     total = (points[0][1] + points[-1][1]) / 2
     for (k0, c0), (k1, c1) in zip(points, points[1:], strict=False):
         total += (k1 - k0) * (c0 + c1) / 2
-    store._write_index(RunIndex(entries=final_entries))
     return {
         "estimated_total_s": total,
         "per_run_ms_at": {str(k): round(c * 1000, 2) for k, c in points},
@@ -302,6 +335,38 @@ def sampled_write_estimate(
 
 
 # --- read path ---
+
+
+def check_index_matches_dirs(runs_dir: Path, run_ids: list[str]) -> None:
+    """Refuse to time listing unless the index holds exactly the runs on disk.
+
+    ``RunReader.list_runs`` rebuilds the index whenever the ids in it differ
+    from the listable run directories, so a mismatch would turn every listing
+    sample into a rebuild. The expected ids are the ones this script created.
+    The file is parsed directly because ``read_index`` would quietly rebuild an
+    unreadable or outdated index and hide the problem.
+    """
+    store = ArtifactStore(runs_dir)
+    expected = set(run_ids)
+    listable = {r for r in store.list_runs() if store.exists(r, names.RUN_RESULT)}
+    index = RunIndex.model_validate_json(store.index_path().read_text(encoding="utf-8"))
+    indexed = [entry.run_id for entry in index.entries]
+    problems = []
+    if index.schema_version != RUN_INDEX_SCHEMA_VERSION:
+        problems.append(f"index schema {index.schema_version}, not {RUN_INDEX_SCHEMA_VERSION}")
+    if listable != expected:
+        problems.append(
+            f"{len(listable - expected)} unexpected and {len(expected - listable)} missing run dirs"
+        )
+    if set(indexed) != expected:
+        problems.append(
+            f"{len(set(indexed) - expected)} unexpected and "
+            f"{len(expected - set(indexed))} missing index entries"
+        )
+    if len(indexed) != len(set(indexed)):
+        problems.append(f"{len(indexed) - len(set(indexed))} duplicate index entries")
+    if problems:
+        raise RuntimeError(f"{runs_dir}: {'; '.join(problems)}; listing would time a rebuild")
 
 
 def summarize(samples: list[float]) -> dict[str, float]:
@@ -423,16 +488,33 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def time_next_dev_render(runs_dir: Path, reps: int) -> dict[str, Any]:
+def dashboard_copy(work: Path) -> Path:
+    """A copy of ``apps/dashboard`` under ``work`` for ``next dev`` to run from.
+
+    ``next dev`` writes ``.next`` into its working directory, which in the
+    repository would replace the output of a ``next build``. The copy leaves out
+    ``node_modules``, ``.next`` and local env files, and links the installed
+    ``node_modules`` in place of copying it.
+    """
+    copy = work / "dashboard"
+    if not copy.exists():
+        shutil.copytree(
+            DASHBOARD, copy, ignore=shutil.ignore_patterns("node_modules", ".next", ".env*")
+        )
+        (copy / "node_modules").symlink_to(DASHBOARD / "node_modules", target_is_directory=True)
+    return copy
+
+
+def time_next_dev_render(runs_dir: Path, work: Path, reps: int) -> dict[str, Any]:
     """Time GET /runs under ``next dev``; the page is prerendered by ``next build``."""
-    next_bin = DASHBOARD / "node_modules" / ".bin" / "next"
-    if not next_bin.is_file():
+    if not (DASHBOARD / "node_modules" / ".bin" / "next").is_file():
         return {"error": "dashboard node_modules not installed"}
+    app = dashboard_copy(work)
     port = free_port()
     env = child_env(TRACE_RUNS_DIR=str(runs_dir), NEXT_TELEMETRY_DISABLED="1")
     proc = subprocess.Popen(
-        [str(next_bin), "dev", "-p", str(port)],
-        cwd=DASHBOARD,
+        [str(app / "node_modules" / ".bin" / "next"), "dev", "-p", str(port)],
+        cwd=app,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -471,8 +553,10 @@ def time_next_dev_render(runs_dir: Path, reps: int) -> dict[str, Any]:
 
 
 def measure_listing(
-    runs_dir: Path, count: int, work: Path, args: argparse.Namespace
+    runs_dir: Path, run_ids: list[str], work: Path, args: argparse.Namespace
 ) -> dict[str, Any]:
+    check_index_matches_dirs(runs_dir, run_ids)
+    count = len(run_ids)
     out: dict[str, Any] = {
         "index_bytes": (runs_dir / names.RUN_INDEX).stat().st_size,
         "list_runs_cli_s": time_cli_list(
@@ -481,9 +565,12 @@ def measure_listing(
         "reader_list_runs_s": time_reader_list(runs_dir, args.list_reps, count),
     }
     if not args.no_dashboard:
-        out["dashboard_list_runs_s"] = time_dashboard_list(runs_dir, work, args.list_reps)
+        dashboard = time_dashboard_list(runs_dir, work, args.list_reps)
+        if "count" in dashboard and dashboard["count"] != count:
+            raise RuntimeError(f"dashboard listRuns() saw {dashboard['count']} runs, not {count}")
+        out["dashboard_list_runs_s"] = dashboard
     if args.next_dev and count <= args.next_dev_max:
-        out["next_dev_runs_page_s"] = time_next_dev_render(runs_dir, args.next_dev_reps)
+        out["next_dev_runs_page_s"] = time_next_dev_render(runs_dir, work, args.next_dev_reps)
     return out
 
 
@@ -516,8 +603,8 @@ def measure_scale(
             [r["last_batch_per_run_ms"] for r in replays]
         )
         replayed = store.read_index()
-        rebuilt = store.rebuild_index()
-        out["replay_matches_rebuild"] = replayed == rebuilt
+        if replayed != store.rebuild_index():
+            raise RuntimeError(f"[{scale.name}] the replayed index differs from rebuild_index")
         out["rebuild_index_s"] = time_rebuild(runs_dir, args.write_reps)
     else:
         # Too large for a full replay. Write batch summaries, rebuild once, then sample.
@@ -530,12 +617,12 @@ def measure_scale(
         store, batches, final_entries, args.samples, args.write_reps
     )
     if store.read_index().entries != final_entries:
-        raise RuntimeError("sampling left the index different from the full sweep")
+        raise RuntimeError(f"[{scale.name}] sampling left the index different from the full sweep")
     # Listing in process should see a heap like a fresh CLI's, without the plan.
     del batches, final_entries
 
     print(f"[{scale.name}] listing", flush=True)
-    out.update(measure_listing(runs_dir, scale.runs, work, args))
+    out.update(measure_listing(runs_dir, run_ids, work, args))
     if not args.keep:
         shutil.rmtree(runs_dir)
     return out
@@ -563,7 +650,7 @@ def measure_probe(
         "rebuild_index_s": time_rebuild(runs_dir, 1),
     }
     print(f"[probe_{count}] listing", flush=True)
-    out.update(measure_listing(runs_dir, count, work, args))
+    out.update(measure_listing(runs_dir, run_ids, work, args))
     if not args.keep:
         shutil.rmtree(runs_dir)
     return out
@@ -573,15 +660,15 @@ def measure_end_to_end(seeds: int, work: Path, args: argparse.Namespace) -> dict
     """Run real fixture-provider sweeps through BatchRunner and time its index calls.
 
     This cross-checks the replay. Two fixture agent configs stand in for the two
-    providers and each suite invocation stands in for one seed. Only the
-    outermost index call is timed, because the enrich calls upsert inside.
+    providers and each suite invocation stands in for one seed, so each batch
+    holds both configs' runs. Only the outermost index call is timed, because
+    the enrich calls upsert inside.
     """
     from trace_harness.runner.batch import BatchRunner
     from trace_harness.runner.suite import load_suite
 
     runs_dir = work / "end_to_end"
-    if runs_dir.exists():
-        shutil.rmtree(runs_dir)
+    runs_dir.mkdir()  # raises FileExistsError rather than reuse a directory
     store = ArtifactStore(runs_dir)
     suite = load_suite(SWEEP_SUITE)
     base = suite.agent_configs[0]
@@ -621,17 +708,23 @@ def measure_end_to_end(seeds: int, work: Path, args: argparse.Namespace) -> dict
     wrap("enrich_index_entry_with_batch", lambda run_id, batch_id: run_id)
     print(f"[end_to_end] {seeds} run-suite invocations of {len(suite.tasks)} tasks", flush=True)
     loadavg_start = os.getloadavg()
+    run_ids: list[str] = []
     last_batch: list[str] = []
     start = time.perf_counter()
     try:
         for _ in range(seeds):
             summary = BatchRunner(store).run(suite)
             last_batch = [e.run_id for e in summary.entries if e.run_id is not None]
+            run_ids.extend(last_batch)
     finally:
         wall = time.perf_counter() - start
         for name, original in originals.items():
             setattr(ArtifactStore, name, original)
-    count = len(per_run)
+    if set(per_run) != set(run_ids):
+        raise RuntimeError("[end_to_end] the timed index calls do not cover the batch runs")
+    if store.read_index() != store.rebuild_index():
+        raise RuntimeError("[end_to_end] the runner's index differs from rebuild_index")
+    count = len(run_ids)
     index_total = sum(per_run.values())
     out: dict[str, Any] = {
         "scale": "end_to_end",
@@ -646,7 +739,7 @@ def measure_end_to_end(seeds: int, work: Path, args: argparse.Namespace) -> dict
         ),
         "rebuild_index_s": time_rebuild(runs_dir, 1),
     }
-    out.update(measure_listing(runs_dir, count, work, args))
+    out.update(measure_listing(runs_dir, run_ids, work, args))
     if not args.keep:
         shutil.rmtree(runs_dir)
     return out
@@ -741,6 +834,33 @@ def render_table(results: list[dict[str, Any]]) -> str:
     return "\n".join(rows)
 
 
+def run_measurements(
+    scales: list[Scale], templates: list[Path], tasks: int, work: Path, args: argparse.Namespace
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "date": datetime.now(UTC).isoformat(timespec="seconds"),
+        "machine": machine(),
+        "templates": [str(t.relative_to(REPO_ROOT)) for t in templates],
+        "sweep_tasks": tasks,
+        "cli_floor_s": cli_floor(work, args.list_reps),
+        "results": [],
+    }
+    for scale in scales:
+        report["results"].append(measure_scale(scale, templates, tasks, work, args))
+        if args.json:
+            args.json.write_text(json.dumps(report, indent=2, default=str) + "\n")
+    for count in args.probe:
+        report["results"].append(measure_probe(count, templates, tasks, work, args))
+        if args.json:
+            args.json.write_text(json.dumps(report, indent=2, default=str) + "\n")
+    if args.end_to_end:
+        report["results"].append(measure_end_to_end(args.end_to_end, work, args))
+    report["machine"]["loadavg_end"] = os.getloadavg()
+    if args.json:
+        args.json.write_text(json.dumps(report, indent=2, default=str) + "\n")
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--work", required=True, type=Path, help="scratch dir outside the repo")
@@ -765,14 +885,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--next-dev", action="store_true", help="also time GET /runs on next dev")
     parser.add_argument("--next-dev-max", type=int, default=3200, help="skip the render above this")
     parser.add_argument("--next-dev-reps", type=int, default=3)
-    parser.add_argument("--keep", action="store_true", help="keep the synthetic runs dirs")
+    parser.add_argument(
+        "--keep", action="store_true", help="keep the directory this run creates under --work"
+    )
     parser.add_argument("--json", type=Path, default=None, help="write raw results here")
     args = parser.parse_args(argv)
 
     work = args.work.resolve()
     if work == REPO_ROOT or REPO_ROOT in work.parents:
         parser.error("--work must be outside the repository")
-    work.mkdir(parents=True, exist_ok=True)
+    if args.samples < 2:
+        parser.error("--samples must be at least 2")
 
     templates = retained_templates()
     tasks = sweep_task_count()
@@ -784,27 +907,15 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"unknown scales: {', '.join(sorted(unknown))}")
         scales = [s for s in scales if s.name in wanted]
 
-    report: dict[str, Any] = {
-        "date": datetime.now(UTC).isoformat(timespec="seconds"),
-        "machine": machine(),
-        "templates": [str(t.relative_to(REPO_ROOT)) for t in templates],
-        "sweep_tasks": tasks,
-        "cli_floor_s": cli_floor(work, args.list_reps),
-        "results": [],
-    }
-    for scale in scales:
-        report["results"].append(measure_scale(scale, templates, tasks, work, args))
-        if args.json:
-            args.json.write_text(json.dumps(report, indent=2, default=str) + "\n")
-    for count in args.probe:
-        report["results"].append(measure_probe(count, templates, tasks, work, args))
-        if args.json:
-            args.json.write_text(json.dumps(report, indent=2, default=str) + "\n")
-    if args.end_to_end:
-        report["results"].append(measure_end_to_end(args.end_to_end, work, args))
-    report["machine"]["loadavg_end"] = os.getloadavg()
-    if args.json:
-        args.json.write_text(json.dumps(report, indent=2, default=str) + "\n")
+    session = new_session_dir(work)
+    print(f"writing under {session}", flush=True)
+    try:
+        report = run_measurements(scales, templates, tasks, session, args)
+    finally:
+        if args.keep:
+            print(f"kept {session}", flush=True)
+        else:
+            shutil.rmtree(session)
 
     print()
     print(render_table(report["results"]))
