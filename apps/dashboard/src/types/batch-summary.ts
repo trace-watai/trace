@@ -40,7 +40,10 @@ export interface RawBatchRunEntry {
   /** Null is unknown cost, which is different from zero. */
   cost_usd?: number | null;
   error?: string | null;
-  /** Branch stage fields (0.4.0); null on suite entries. */
+  /**
+   * Branch stage fields (0.4.0), with `seed` also set on sweep cells (#198);
+   * null on suite entries.
+   */
   condition?: string | null;
   seed?: number | null;
   /** Step where the run first differed from the recording after the fork. */
@@ -77,7 +80,10 @@ export type BudgetStopReason = (typeof BUDGET_STOP_REASONS)[number];
 export interface RawNotRunCell {
   agent_label: string;
   task_path: string;
-  /** The seed a branch condition never ran (0.4.0); absent or null on suite cells. */
+  /**
+   * The seed a branch condition or a sweep never ran (0.4.0); absent or null
+   * on suite cells.
+   */
   seed?: number | null;
 }
 
@@ -105,7 +111,10 @@ export interface RawBatchSummary {
    * does; absent before 0.3.0.
    */
   budget?: RawBatchBudget | null;
-  /** Branch batches: experiment_id, condition, condition_kind, source_run_id, start. */
+  /**
+   * Branch batches: experiment_id, condition, condition_kind, source_run_id,
+   * start. Sweep batches (#198): sweep_id, sweep_name, provider_label.
+   */
   metadata?: Record<string, unknown>;
 }
 

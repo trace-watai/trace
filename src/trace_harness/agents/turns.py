@@ -5,8 +5,9 @@ model, an Agents SDK ``Model``). Behind that interface sits an ordinary harness
 :class:`~trace_harness.models.base.ModelAdapter`, which is where the turns come
 from.
 
-- :class:`ScriptedTurns` plays the task's fixture script and ignores what the
-  model is sent.
+- :class:`ScriptedTurns` plays the task's fixture script (the file its
+  ``metadata.fixture_script`` names, as for the fixture provider) and ignores
+  what the model is sent.
 - :class:`CassetteTurns` replays a harness model cassette, or records one around
   another turn source. Replay checks every request against the recording, so a
   change in what the agent sends its model fails loudly. The same cassette
@@ -15,6 +16,10 @@ from.
 The helpers below turn a framework conversation back into the harness
 transcript shape (the runner's own message builders are reused), so a cassette
 fingerprints the same kind of transcript for every agent.
+
+Both sources find the committed fixtures from this package's location in the
+repository, so a reference agent runs the same from any working directory. They
+need the source checkout (an editable install); a wheel carries no fixtures.
 """
 
 from __future__ import annotations
@@ -38,8 +43,8 @@ from trace_harness.models.cassette import (
 )
 from trace_harness.models.fixture import FixtureModelAdapter
 from trace_harness.runner.agent_runner import (
-    _action_to_assistant_message,
-    _observation_to_tool_message,
+    action_to_assistant_message,
+    observation_to_tool_message,
 )
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunResult
@@ -55,19 +60,54 @@ from trace_harness.tracing.artifact_store import ArtifactStore
 
 TurnSource = Callable[[TaskPrompt], ModelAdapter]
 
-CASSETTE_ROOT = Path("fixtures/cassettes")
-SCRIPTS_DIR = Path("fixtures/scripts")
+REPO_ROOT = Path(__file__).resolve().parents[3]
+CASSETTE_ROOT = REPO_ROOT / "fixtures" / "cassettes"
+TASKS_DIR = REPO_ROOT / "fixtures" / "tasks"
+
+
+def fixture_script_for(task_id: str, tasks_dir: Path = TASKS_DIR) -> Path:
+    """The fixture script a task names in ``metadata.fixture_script``, found by task id.
+
+    The task file is looked up under ``tasks_dir`` and the script resolved
+    against its directory, as the fixture provider resolves it, so a scripted
+    reference agent plays the same file the fixture provider plays for that task.
+    """
+    matches: list[tuple[Path, dict]] = []
+    for path in sorted(Path(tasks_dir).rglob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("task_id") == task_id:
+            matches.append((path, data))
+    if len(matches) != 1:
+        found = "no task file" if not matches else f"{len(matches)} task files"
+        raise FileNotFoundError(f"{found} with task_id {task_id!r} under {tasks_dir}")
+    path, data = matches[0]
+    script = (data.get("metadata") or {}).get("fixture_script")
+    if not script:
+        raise FileNotFoundError(f"task {task_id!r} ({path}) has no metadata.fixture_script")
+    return (path.parent / script).resolve()
 
 
 @dataclass(frozen=True)
 class ScriptedTurns:
-    """Turns from ``<scripts_dir>/<task_id>_script.json``, whatever the model is sent."""
+    """Turns from a fixture script, whatever the model is sent.
 
-    scripts_dir: Path = SCRIPTS_DIR
+    Each task plays the script its own ``metadata.fixture_script`` names (see
+    :func:`fixture_script_for`). ``script`` plays one given file instead, which
+    is how :func:`record_cassette` plays the script of the task file it was given.
+    """
+
+    tasks_dir: Path = TASKS_DIR
+    script: Path | None = None
     label: str = field(default="scripted", init=False)
 
     def __call__(self, prompt: TaskPrompt) -> ModelAdapter:
-        return FixtureModelAdapter.from_file(self.scripts_dir / f"{prompt.task_id}_script.json")
+        script = self.script
+        if script is None:
+            script = fixture_script_for(prompt.task_id, self.tasks_dir)
+        return FixtureModelAdapter.from_file(script)
 
 
 @dataclass(frozen=True)
@@ -108,7 +148,7 @@ class CassetteTurns:
 
 def assistant_message(action: AgentAction) -> Message:
     """An agent's model turn as the harness runner would have written it."""
-    return _action_to_assistant_message(action)
+    return action_to_assistant_message(action)
 
 
 def observation_text(observation: ToolObservation) -> str:
@@ -132,7 +172,7 @@ def tool_message(tool_name: str, content: str) -> Message:
         )
     except (ValidationError, ValueError):
         return Message(role=MessageRole.TOOL, content=content, metadata={"tool_name": tool_name})
-    return _observation_to_tool_message(result)
+    return observation_to_tool_message(result)
 
 
 def tool_arguments(raw: str | dict) -> dict:
@@ -162,9 +202,7 @@ def record_cassette(
     task_path = Path(task_path).resolve()
     task = load_task(task_path)
     script = (task_path.parent / task.metadata["fixture_script"]).resolve()
-    turns = CassetteTurns(
-        namespace, root=root, mode="record", inner=ScriptedTurns(scripts_dir=script.parent)
-    )
+    turns = CassetteTurns(namespace, root=root, mode="record", inner=ScriptedTurns(script=script))
     agent = make_agent(turns)
     environment = SupportEnvironment.from_task(task, docs=load_docs_for_task(task, task_path))
     config = RunConfig(task_id=task.task_id, provider=EXTERNAL_PROVIDER, model=agent.name)
