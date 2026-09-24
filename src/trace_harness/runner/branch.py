@@ -29,8 +29,8 @@ guard stopped it, why.
 A plan may list ``replacement_seeds`` in its metadata. A live seed whose run
 exists and ends incomplete is then replaced by the next unused seed from that
 list, decided on run status alone, which is pre-registration 001's rule for
-seeds 5 to 9. A seed the budget refused is not replaced, and neither is a seed
-that failed before its run existed, since that failure is the harness's own.
+seeds 5 to 9. A seed the budget refused is not replaced, and neither is a
+``setup_error``, since that failure is the harness's own.
 Recording never overwrites a cassette, so a condition whose record-mode
 cassettes already exist for any seed it could run is refused before anything
 runs (:func:`recorded_cassettes`).
@@ -83,7 +83,7 @@ from trace_harness.runner.batch import (
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
 from trace_harness.runner.experiment import ConditionKind, ConditionSpec, ExperimentSpec
 from trace_harness.runner.pipeline import PipelineResult, attribute_and_bundle, verify_run
-from trace_harness.runner.result import RunResult
+from trace_harness.runner.result import RunResult, RunStatus
 from trace_harness.runner.target_agent import EXTERNAL_PROVIDER
 from trace_harness.tasks.loader import load_task
 from trace_harness.tasks.schemas import TaskSpec
@@ -99,6 +99,8 @@ LIVE_KINDS = frozenset(
 )
 #: Plan metadata key listing the seeds that replace a run ending incomplete.
 REPLACEMENT_SEEDS = "replacement_seeds"
+#: The statuses of a run that exists and ended incomplete, the ones replaced.
+INCOMPLETE_RUN_STATUSES = frozenset({RunStatus.TERMINATED.value, RunStatus.ERROR.value})
 
 
 @dataclass
@@ -360,10 +362,10 @@ def run_branch(
             entry = _setup_error(artifact, condition, seed, exc)
         entries.append(entry)
         guard.charge(entry.cost_usd, agent.provider, agent.cassette, run_id=entry.run_id)
-        # Only a run that exists and ended incomplete is replaced. A seed that
-        # failed before its run existed is a harness problem, and replacing it
-        # would spend a live seed on the same failure.
-        if entry.run_id is not None and entry.status != "completed" and spare:
+        # Only a run that exists and ended incomplete is replaced. A setup_error
+        # is a harness problem, and replacing it would spend a live seed on the
+        # same failure.
+        if entry.run_id is not None and entry.status in INCOMPLETE_RUN_STATUSES and spare:
             queue.append(spare.pop(0))
 
     budget = _budget_block(guard, spent_before, stopped_before, not_run)

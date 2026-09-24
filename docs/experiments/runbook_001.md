@@ -147,8 +147,8 @@ done
   earlier runs spent. The swapped arm runs last, so a cap reached late costs
   it first.
 - A seed whose run ends incomplete is replaced from seeds 5 to 9 inside the
-  same invocation. A `setup_error`, where the harness failed before the run
-  existed, is not replaced.
+  same invocation. A `setup_error`, where the harness failed around the run,
+  is not replaced.
 - Live runs record cassettes under the experiment folder, one folder per arm.
   Recording never overwrites a cassette, so a condition is branched once.
   Branching it again exits 2 before any run and lists the cassettes that

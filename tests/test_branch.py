@@ -1047,6 +1047,38 @@ def test_a_seed_that_failed_before_its_run_existed_is_not_replaced(tmp_path, mon
     ]
 
 
+def test_a_setup_error_is_not_replaced_even_when_its_run_exists(tmp_path, monkeypatch):
+    """A seed whose run existed but whose processing failed is still the harness's failure."""
+    from trace_harness.runner.batch import BatchRunEntry
+
+    path, artifact = _artifact(tmp_path)
+    _, spec = _spec(tmp_path, _condition("live", "live", artifact, 2, seeds=[0, 1]))
+    spec = spec.model_copy(update={"metadata": {"replacement_seeds": [5, 6]}})
+    statuses = {0: "setup_error", 1: "error"}
+
+    def run_seed(artifact, task, experiment, condition, fork_step, seed, store):
+        return BatchRunEntry(
+            run_id=f"run_seed_{seed}",
+            task_id=task.task_id,
+            task_path=artifact.task_fixture,
+            agent_label=condition.agent_config.label,
+            provider="fixture",
+            status=statuses.get(seed, "completed"),
+            cost_usd=0.0,
+            condition=condition.name,
+            seed=seed,
+        )
+
+    monkeypatch.setattr("trace_harness.runner.branch._run_seed", run_seed)
+    summary = run_branch(path, spec, spec.conditions[0], ArtifactStore(tmp_path / "runs")).summary
+    # Seed 1's error run takes spare 5, and seed 0's setup_error takes nothing.
+    assert [(e.seed, e.status) for e in summary.entries] == [
+        (0, "setup_error"),
+        (1, "error"),
+        (5, "completed"),
+    ]
+
+
 def test_record_refuses_a_condition_given_twice(tmp_path, capsys):
     path, artifact = _artifact(tmp_path)
     spec_path, _ = _spec(tmp_path, _condition("live", "live", artifact, 2, seeds=[0]))
