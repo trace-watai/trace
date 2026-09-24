@@ -492,7 +492,7 @@ class OpenAIModelAdapter:
                 "OPENAI_API_KEY is not set. Get a key from "
                 "https://platform.openai.com/api-keys, put it in your local "
                 ".env (see .env.example), and re-run. The fixture provider "
-                "(TRACE_MODEL_PROVIDER=fixture) needs no key and is the "
+                "(--provider fixture) needs no key and is the "
                 "default for all tests and CI."
             )
         # Imported here so a missing SDK stops the run before it starts. Only
