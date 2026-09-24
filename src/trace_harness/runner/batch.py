@@ -17,12 +17,29 @@ exactly zero. A live run is priced from the usage its own trace recorded. A
 provider or model with no price records ``null``, and aggregate coverage makes
 that missing telemetry visible.
 
+A live run that never got an answer is priced from how its call failed. When
+the call policy gave up and every failed attempt carried an HTTP status, the
+provider answered each request with an error, and the run is recorded as
+costing exactly zero. Google's billing page says a request that fails with a
+400 or 500 error is not charged; Anthropic's and OpenAI's error pages say
+nothing either way, and the same reading is applied to them. A failure with no
+status (a dropped connection or a network timeout) or a call the runner
+abandoned at its timeout may still have reached the model and been billed, so
+that run's cost stays ``null``.
+
+A cell whose pipeline raised after its run started, in verification, bundling
+or the runner's own bookkeeping, is still a ``setup_error`` entry. It keeps the
+run's id and the cost its trace records, because the run may have spent money
+before the failure.
+
 Budget guard (#196)
     A suite may set ``max_cost_usd``. :class:`BudgetGuard` is asked before
     every run and stops the batch, recorded as ``budget_exhausted`` in the
     summary's ``budget`` block, once the recorded spend of its live runs has
-    reached the cap. The check happens between runs, so the run that crosses
-    the cap finishes and the overshoot is at most one run's cost.
+    reached the cap. The stop is recorded by the run that reaches the cap, so a
+    summary says so even when that run was the last cell. The check happens
+    between runs, so the run that crosses the cap finishes and the overshoot is
+    at most one run's cost.
 
     Only recorded costs count, and an unknown cost is never taken as zero. A
     live run whose model has no price is refused before it starts, and a live
@@ -39,15 +56,14 @@ Budget guard (#196)
     ``run-suite`` and ``branch`` drive it. ``branch`` builds one guard per
     invocation from the experiment plan's ``budget.max_cost_usd``, shared by
     every condition and seed, and records a budget block on each condition's
-    batch (see ``runner/branch.py``). ``run-sweep`` (#198) does not exist yet;
-    it is meant to build a ``BudgetGuard`` from its own ``max_cost_usd`` and
-    call ``admit`` before and ``charge`` after each run, the same way
-    ``BatchRunner.run`` does.
+    batch (see ``runner/branch.py``). ``run-sweep`` (#198) builds one guard
+    per sweep from its own ``max_cost_usd``, shared by every provider and seed,
+    and calls ``admit`` before and ``charge`` after each run, the same way
+    ``BatchRunner.run`` does (see ``runner/sweep.py``).
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import datetime
@@ -65,12 +81,14 @@ from trace_harness.models import (
     resolve_model_name,
 )
 from trace_harness.models.cassette import CassetteConfig
-from trace_harness.runner.pipeline import PipelineResult, run_task_pipeline
-from trace_harness.runner.result import RunResult, RunStatus
+from trace_harness.models.policy import LIVE_PROVIDERS
+from trace_harness.runner.config import RunConfig
+from trace_harness.runner.pipeline import PipelineProgress, PipelineResult, run_task_pipeline
+from trace_harness.runner.result import RunStatus
 from trace_harness.runner.suite import AgentConfig, SuiteSpec
 from trace_harness.runner.target_agent import EXTERNAL_PROVIDER
-from trace_harness.tracing.artifact_store import TRACE, ArtifactStore
-from trace_harness.tracing.events import TraceEventType, utc_now
+from trace_harness.tracing.artifact_store import ArtifactStore
+from trace_harness.tracing.events import TraceEvent, TraceEventType, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +108,9 @@ _ERROR_STATUSES = ("error", "setup_error")
 class BatchRunEntry(BaseModel):
     """One cell of the suite: one task under one agent config."""
 
-    run_id: str | None  # None when setup failed before a run existed
+    # None when setup failed before a run existed. A setup_error raised after
+    # the run started keeps the run's id, and its cost_usd.
+    run_id: str | None
     task_id: str
     task_path: str
     task_schema_version: str | None = None  # task "version" for reproducibility
@@ -108,10 +128,10 @@ class BatchRunEntry(BaseModel):
     latency_ms: float | None = None
     cost_usd: float | None = None
     error: str | None = None
-    # Filled by the branch stage (#159); None on suite entries and on files
-    # written before 0.4.0. ``diverged`` says whether the first action after
-    # the fork differed from the recording, and the step says where the run
-    # first differed at all.
+    # Filled by the branch stage (#159), and ``seed`` by a sweep (#198); None
+    # on suite entries and on files written before 0.4.0. ``diverged`` says
+    # whether the first action after the fork differed from the recording, and
+    # the step says where the run first differed at all.
     condition: str | None = None
     seed: int | None = None
     first_post_fork_divergence_step: int | None = None
@@ -145,7 +165,7 @@ class NotRunCell(BaseModel):
 
     agent_label: str
     task_path: str
-    # The branch stage's cell is a seed (0.4.0); None on suite cells.
+    # The seed of a branch or sweep cell (0.4.0); None on suite cells.
     seed: int | None = None
 
 
@@ -186,7 +206,8 @@ class BudgetGuard:
     Construct one per batch from the spec's ``max_cost_usd``, or one per
     ``branch`` invocation shared by its conditions; None never refuses. Call
     :meth:`admit` before each run and :meth:`charge` after it with the cost its
-    entry recorded. Once it refuses, it refuses everything after, so the batch
+    entry recorded. The charge that brings spend to the cap records the stop.
+    Once stopped, it refuses everything after, so the batch
     stops at that point.
     """
 
@@ -246,7 +267,9 @@ class BudgetGuard:
         """Add a finished run's recorded cost.
 
         A live run with no recorded cost stops the batch, because what it
-        spent is unknown. A cell that failed before any run existed
+        spent is unknown. A run that brings the recorded spend to the cap
+        stops it as ``budget_exhausted``, so the stop is on record even when no
+        cell is left to refuse. A cell that failed before any run existed
         (``run_id`` None) made no provider call and adds nothing.
         """
         if self.max_cost_usd is None or run_id is None:
@@ -261,6 +284,12 @@ class BudgetGuard:
                 )
             return
         self.spent_usd = round(self.spent_usd + cost_usd, 6)
+        if self.stop_reason is None and self.spent_usd >= self.max_cost_usd:
+            self._stop(
+                BUDGET_EXHAUSTED,
+                f"recorded live spend ${self.spent_usd:.6f} reached the "
+                f"${self.max_cost_usd:.6f} cap with live run {run_id}",
+            )
 
     def _stop(self, reason: BudgetStopReason, detail: str) -> None:
         self.stop_reason = reason
@@ -314,7 +343,7 @@ class BatchRunner:
                 if not guard.admit(config.provider, _guard_model(config), config.cassette):
                     not_run.append(NotRunCell(agent_label=config.label, task_path=str(task_path)))
                     continue
-                entry = self._run_cell(config, task_path)
+                entry = self.run_cell(config, task_path)
                 entries.append(entry)
                 guard.charge(entry.cost_usd, config.provider, config.cassette, run_id=entry.run_id)
         finished_at = utc_now()
@@ -333,15 +362,30 @@ class BatchRunner:
         self._enrich_index_entries(summary)
         return summary
 
-    def _run_cell(self, config: AgentConfig, task_path: str) -> BatchRunEntry:
+    def run_cell(self, config: AgentConfig, task_path: str) -> BatchRunEntry:
+        """Run one task under one agent config and return its batch entry.
+
+        This is the cell path of :meth:`run`, and ``run-sweep`` runs its cells
+        through it too. An exception anywhere in the pipeline becomes a
+        ``setup_error`` entry, so one broken cell never stops the batch. When
+        the run had already started, :func:`attach_started_run` keeps its id
+        and the cost its trace records on that entry, so the caller's
+        ``BudgetGuard.charge`` still counts a billed call. Budget admission and
+        charging stay with the caller.
+        """
+        progress = PipelineProgress()
         try:
-            result = run_task_pipeline(task_path, config, self.store, controls=self.controls)
+            result = run_task_pipeline(
+                task_path, config, self.store, controls=self.controls, progress=progress
+            )
             return entry_from_pipeline(result, config, task_path, self.store.runs_dir)
         except Exception as exc:  # noqa: BLE001 — isolate the cell; the batch goes on
             logger.warning(
                 "batch cell failed (agent=%s, task=%s): %s", config.label, task_path, exc
             )
-            return _setup_error_entry(config, task_path, exc)
+            return attach_started_run(
+                _setup_error_entry(config, task_path, exc), progress, self.store.runs_dir
+            )
 
     def _write_summary(self, summary: BatchSummary) -> Path:
         return self.store.write_batch_summary(summary.batch_id, summary)
@@ -357,35 +401,45 @@ class BatchRunner:
                 logger.warning("batch index enrich failed for %s", entry.run_id)
 
 
-def _recorded_provider_responses(runs_dir: Path, run: RunResult) -> list[dict]:
-    """Every raw provider response this run recorded, read back from its trace.
+def _trace_events(runs_dir: Path, run_id: str) -> list[TraceEvent] | None:
+    """The run's trace, or None when there is no trace that can be read.
 
-    The adapter puts the provider's response on ``AgentAction.raw`` and the
-    runner writes it as a ``model_response`` event, so the usage a vendor
-    reported is already retained. Reading it back here means a cost is priced
-    from the same bytes the trace carries rather than from a second accounting
-    path that could disagree with it.
+    Read through ``ArtifactStore.read_trace``, the one trace parser, because a
+    cost is worked out even for a run whose pipeline failed. It already drops a
+    final line a hard kill left half written; a trace corrupt anywhere else
+    gives no cost.
     """
-    relative = run.artifact_paths.get(TRACE)
-    if relative is None:
-        return []
-    path = runs_dir / relative
-    if not path.is_file():
-        return []
-    raws = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event.get("event_type") != TraceEventType.MODEL_RESPONSE.value:
-            continue
-        raw = (event.get("payload") or {}).get("raw")
-        if isinstance(raw, dict):
-            raws.append(raw)
-    return raws
+    try:
+        return ArtifactStore(runs_dir).read_trace(run_id)
+    except (OSError, ValueError):
+        return None
+
+
+def _nothing_billed(events: list[TraceEvent]) -> bool:
+    """Whether a live run that recorded no response spent nothing, as its trace shows.
+
+    True when no request was ever prepared, or when the call policy gave up on
+    the run's one call and every failed attempt carried an HTTP status, so the
+    provider answered each request with an error (see the module docstring on
+    why that is taken as unbilled). False for anything else, including a
+    failure with no status (the request may have reached the model before the
+    connection dropped), a call the runner abandoned at its timeout, a response
+    that arrived and was rejected, and an error with no call record.
+    """
+    kinds = {event.event_type for event in events}
+    if TraceEventType.MODEL_PROMPT not in kinds:
+        return True
+    errors = [e.payload for e in events if e.event_type is TraceEventType.ERROR]
+    if len(errors) != 1 or errors[0].get("kind") != "model_error":
+        return False
+    record = errors[0].get("call_record")
+    if not isinstance(record, dict) or record.get("outcome") == "ok":
+        return False
+    failures = record.get("failures")
+    return isinstance(failures, list) and all(
+        isinstance(failure, dict) and isinstance(failure.get("status_code"), int)
+        for failure in failures
+    )
 
 
 def _guard_model(config: AgentConfig) -> str | None:
@@ -399,23 +453,56 @@ def _guard_model(config: AgentConfig) -> str | None:
     return resolve_model_name(config.provider, config.model, None)
 
 
-def _cost_usd(result: PipelineResult, runs_dir: Path) -> float | None:
-    """What this run cost, or None when that cannot be established.
+def run_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None:
+    """What one run cost, read from its trace, or None when that cannot be established.
+
+    The one place a run is priced: a finished cell, a cell whose pipeline
+    raised after its run started, and any other stage that runs cells all come
+    here, so the same trace always gets the same cost.
 
     Fixture and cassette-replay runs call no provider, so they cost nothing and
-    say so. A live run is priced from the usage its own trace recorded, and a
-    provider or model with no price table stays null, so a live run whose cost
-    is unknown is never reported as free.
+    say so. A live run is priced from the raw provider responses its trace
+    recorded as ``model_response`` events, a billed answer the adapter
+    rejected included, so the cost comes from the same bytes the trace carries
+    rather than from a second accounting path. A provider or model with no
+    price stays null. A live run that recorded no response costs zero only when
+    its trace shows nothing was billed (see ``_nothing_billed``). Otherwise,
+    and when the trace cannot be read, the cost is null, so a live run whose
+    cost is unknown is never reported as free.
     """
-    config = result.run_config
     if config.provider == "fixture" or (
         config.cassette is not None and config.cassette.mode == "replay"
     ):
         return 0.0
-    return estimate_cost_usd(
-        result.run_config.provider,
-        result.run_config.model,
-        _recorded_provider_responses(runs_dir, result.run_result),
+    events = _trace_events(runs_dir, run_id)
+    if events is None:
+        return None
+    responses = [e for e in events if e.event_type is TraceEventType.MODEL_RESPONSE]
+    if not responses and config.provider in LIVE_PROVIDERS and _nothing_billed(events):
+        return 0.0
+    raws = [raw for e in responses if isinstance(raw := e.payload.get("raw"), dict)]
+    return estimate_cost_usd(config.provider, config.model, raws)
+
+
+def attach_started_run(
+    entry: BatchRunEntry, progress: PipelineProgress, runs_dir: Path
+) -> BatchRunEntry:
+    """Point a failed cell's ``setup_error`` entry at its run, if the run had started.
+
+    The run may have been billed before the failure, so the entry keeps the
+    run's id, the model it ran and the cost its trace records, priced by
+    :func:`run_cost_usd` like a finished cell. A failure before the run leaves
+    the entry as it is, since nothing called a provider. ``run-suite`` cells
+    and ``branch`` seeds both come through here.
+    """
+    if progress.run_id is None or progress.run_config is None:
+        return entry
+    return entry.model_copy(
+        update={
+            "run_id": progress.run_id,
+            "model": progress.run_config.model,
+            "cost_usd": run_cost_usd(progress.run_config, runs_dir, progress.run_id),
+        }
     )
 
 
@@ -442,7 +529,7 @@ def entry_from_pipeline(
         verifier_id=(verifier.verifier_id if verifier is not None else None),
         severity=(verifier.severity.value if verifier and verifier.severity else None),
         latency_ms=latency_ms,
-        cost_usd=_cost_usd(result, runs_dir),
+        cost_usd=run_cost_usd(result.run_config, runs_dir, run.run_id),
         error=run.error,
     )
 

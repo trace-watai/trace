@@ -2,8 +2,8 @@
 
 The load-bearing test here is ``test_metric_names_match_the_memo``. The metric
 names are a contract between this module, the #27 memo, and the dashboard
-mirror, so the test reads the memo's appendix off disk rather than restating
-the list, which would only prove the list equals itself.
+mirror, so the test reads the memo's appendix off disk. Restating the list here
+would only prove the list equals itself.
 """
 
 from __future__ import annotations
@@ -28,12 +28,14 @@ from trace_harness.runner.experiment import (
     ExperimentResult,
     ExperimentSpec,
     FrozenManifest,
+    MixedLiveModelsError,
     UnknownConditionError,
     derive_metrics,
     new_experiment_id,
     render_experiment_markdown,
     validate_condition_batches,
 )
+from trace_harness.runner.frozen_set import freeze
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import utc_now
@@ -60,6 +62,21 @@ def _spec(**overrides) -> ExperimentSpec:
         "budget": Budget(max_runs=10, max_cost_usd=0.0),
     }
     return ExperimentSpec(**{**base, **overrides})
+
+
+def _frozen(spec: ExperimentSpec) -> ExperimentSpec:
+    """``spec`` as ``experiment freeze`` leaves it, hashed from this checkout.
+
+    ``experiment record`` refuses a plan past schema 0.1.0 without a frozen
+    set, and checks the set against the working directory, so a test that
+    records this plan runs from the repository root.
+    """
+    manifest = spec.frozen_manifest
+    frozen = freeze(REPO_ROOT, suite_id=manifest.suite_id, labels_path=manifest.labels_path)
+    data = spec.model_dump(mode="json")
+    data["frozen_manifest"]["frozen_set"] = {n: c.model_dump() for n, c in frozen.items()}
+    data["frozen_manifest"]["fixtures_hash"] = frozen["fixtures"].digest
+    return ExperimentSpec.model_validate(data)
 
 
 # --- the contract with the #27 memo ---
@@ -184,7 +201,7 @@ def _entry(task_id: str, verdict: str, *, cost=None, latency=None) -> BatchRunEn
 
 
 def test_derives_only_what_a_batch_can_support(tmp_path) -> None:
-    """Metrics needing the branch stage stay None rather than reading as zero."""
+    """Metrics needing the branch stage stay None, since a zero would read as measured."""
     summary = _summary("b1", [_entry("t1", "fail"), _entry("t2", "pass")])
     metrics = derive_metrics([summary])
 
@@ -204,6 +221,19 @@ def _branch_entry(condition, status, diverged, outcome) -> BatchRunEntry:
             "post_block_outcome": outcome,
         }
     )
+
+
+def _answered(kinds: dict[str, ConditionKind]) -> dict[str, ConditionSpec]:
+    """Batch id to the condition it answered, each condition named after its batch."""
+    return {
+        batch_id: ConditionSpec(name=batch_id, kind=kind, agent_config=AgentConfig(label=batch_id))
+        for batch_id, kind in kinds.items()
+    }
+
+
+def _rate_counts(extra: dict[str, int | float]) -> dict[str, int | float]:
+    """The counts behind the live metrics, without #155's cost and per-condition keys."""
+    return {k: v for k, v in extra.items() if "divergence" in k or k.startswith("live_")}
 
 
 def test_branch_metrics_follow_the_memo_formulas() -> None:
@@ -232,7 +262,7 @@ def test_branch_metrics_follow_the_memo_formulas() -> None:
         "swap": ConditionKind.LIVE_SWAPPED,
     }
 
-    metrics = derive_metrics([live, off, swapped], kinds)
+    metrics = derive_metrics([live, off, swapped], conditions=_answered(kinds))
 
     assert metrics.first_post_fork_divergence_rate == round(2 / 3, 4)
     assert metrics.noise_floor_divergence_rate == 0.5
@@ -241,13 +271,99 @@ def test_branch_metrics_follow_the_memo_formulas() -> None:
         "stalled": 1,
         "substitute_violation": 2,
     }
-    assert metrics.extra == {
+    assert _rate_counts(metrics.extra) == {
         "first_post_fork_divergence_k": 2,
         "first_post_fork_divergence_n": 3,
         "noise_floor_divergence_k": 1,
         "noise_floor_divergence_n": 2,
     }
+    # Counts stay integers on disk, where 2 == 2.0 would hide a float. Only the
+    # per-condition medians are real numbers.
+    written = ExperimentMetrics.model_validate_json(metrics.model_dump_json()).extra
+    assert {type(v) for k, v in written.items() if not k.startswith("latency_ms_p50.")} == {int}
+    assert '"first_post_fork_divergence_k":2,' in metrics.model_dump_json()
     assert derive_metrics([live, off]).first_post_fork_divergence_rate is None
+
+
+def _model_summary(batch_id: str, provider: str, model: str | None, diverged: list[bool]):
+    """A branch batch whose runs came from one provider and model."""
+    entries = [
+        _branch_entry("c", "completed", d, "substitute_violation").model_copy(
+            update={"provider": provider, "model": model}
+        )
+        for d in diverged
+    ]
+    return _summary(batch_id, entries).model_copy(
+        update={"agent_configs": [AgentConfig(label=batch_id, provider=provider, model=model)]}
+    )
+
+
+def test_live_metrics_never_pool_two_models() -> None:
+    """A rate and its noise floor from different agents compare nothing (#159)."""
+    kinds = {"on": ConditionKind.LIVE, "off": ConditionKind.LIVE_NO_CONTROL}
+    gemini = _model_summary("on", "gemini", "gemini-3.6-flash", [True])
+    for provider, model in (("anthropic", "claude-sonnet-5"), ("gemini", "gemini-2.5-flash")):
+        other = _model_summary("off", provider, model, [False])
+        with pytest.raises(MixedLiveModelsError, match=f"{provider} {model}"):
+            derive_metrics([gemini, other], conditions=_answered(kinds))
+        with pytest.raises(MixedLiveModelsError):
+            derive_metrics(
+                [gemini, other.model_copy(update={"batch_id": "on2"})],
+                conditions=_answered({"on": ConditionKind.LIVE, "on2": ConditionKind.LIVE}),
+            )
+
+    # A model left to the provider's default is that default.
+    default = _model_summary("off", "gemini", None, [False])
+    metrics = derive_metrics([gemini, default], conditions=_answered(kinds))
+    assert (metrics.first_post_fork_divergence_rate, metrics.noise_floor_divergence_rate) == (
+        1.0,
+        0.0,
+    )
+    # live_swapped is another model on purpose and feeds none of the three.
+    swapped = _model_summary("swap", "anthropic", "claude-sonnet-5", [True])
+    derive_metrics(
+        [gemini, default, swapped],
+        conditions=_answered({**kinds, "swap": ConditionKind.LIVE_SWAPPED}),
+    )
+    # One batch that ran two models is refused as well.
+    two = gemini.model_copy(
+        update={"agent_configs": [*gemini.agent_configs, AgentConfig(label="x", provider="openai")]}
+    )
+    with pytest.raises(MixedLiveModelsError, match="openai gpt-5"):
+        derive_metrics([two], conditions=_answered({"on": ConditionKind.LIVE}))
+
+
+def test_fixture_batches_stay_out_of_the_live_metrics_beside_a_real_model() -> None:
+    """A harness check recorded next to Gemini batches would pull both rates toward it."""
+    check = _summary("check", [_branch_entry("live", "completed", False, "recovered")] * 3)
+    kinds = {
+        "check": ConditionKind.LIVE,
+        "on": ConditionKind.LIVE,
+        "off": ConditionKind.LIVE_NO_CONTROL,
+    }
+    on = _model_summary("on", "gemini", None, [True, True])
+    off = _model_summary("off", "gemini", None, [False, True])
+
+    metrics = derive_metrics([check, on, off], conditions=_answered(kinds))
+
+    assert metrics.first_post_fork_divergence_rate == 1.0
+    assert metrics.noise_floor_divergence_rate == 0.5
+    assert metrics.post_block_outcomes == {"substitute_violation": 2}
+    assert _rate_counts(metrics.extra) == {
+        "first_post_fork_divergence_k": 2,
+        "first_post_fork_divergence_n": 2,
+        "noise_floor_divergence_k": 1,
+        "noise_floor_divergence_n": 2,
+        "live_fixture_batches_excluded": 1,
+    }
+    # The other metrics still read every batch.
+    assert metrics.verified_failure_count == 7
+
+    # With no real model recorded, fixture batches are the live metrics.
+    alone = derive_metrics([check], conditions=_answered({"check": ConditionKind.LIVE}))
+    assert alone.first_post_fork_divergence_rate == 0.0
+    assert alone.post_block_outcomes == {"recovered": 3}
+    assert "live_fixture_batches_excluded" not in alone.extra
 
 
 def test_a_continuation_script_needs_the_fixture_provider() -> None:
@@ -261,7 +377,7 @@ def test_a_continuation_script_needs_the_fixture_provider() -> None:
 
 
 def test_cost_is_none_when_nothing_recorded_it() -> None:
-    """A null cost is unknown, not zero, exactly as the memo says."""
+    """A null cost means unknown, exactly as the memo says."""
     metrics = derive_metrics([_summary("b1", [_entry("t1", "pass")])])
     assert metrics.cost_usd is None
 

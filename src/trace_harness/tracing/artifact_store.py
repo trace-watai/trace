@@ -48,7 +48,7 @@ import tempfile
 import threading
 from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import contextmanager
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import IO, Any
 
 from pydantic import BaseModel
@@ -214,6 +214,14 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """The same all-or-nothing write, for a file the store does not own.
+
+    ``experiment freeze`` rewrites a plan in place with it (#195).
+    """
+    _atomic_write_text(path, text)
+
+
 def _with_verdict(entry: RunIndexEntry, fields: tuple[bool, int, str | None]) -> RunIndexEntry:
     """Apply verifier fields to an index entry, deriving the three-state verdict.
 
@@ -328,10 +336,25 @@ class ArtifactStore:
 
     # --- experiments (#155) ---
     #
-    # An experiment lives beside the batches it compares rather than inside any
-    # one of them, because it is the thing that relates several batches.
+    # An experiment lives beside the batches it compares, outside all of them,
+    # because it is the thing that relates several batches.
 
     def experiment_dir(self, experiment_id: str) -> Path:
+        """Refuses an id that is not one plain path segment.
+
+        Experiment ids come from hand-written plan files, so an id like
+        ``../../x`` would otherwise read or write outside the runs directory.
+        The plan model enforces the full id pattern; this is the last check
+        before a path is built.
+        """
+        segment = PurePosixPath(experiment_id)
+        if (
+            str(segment) != experiment_id
+            or len(segment.parts) != 1
+            or experiment_id in {".", ".."}
+            or "\\" in experiment_id
+        ):
+            raise ValueError(f"not a valid experiment id: {experiment_id!r}")
         return self.runs_dir / EXPERIMENTS_DIR / experiment_id
 
     def experiment_spec_path(self, experiment_id: str) -> Path:
@@ -376,7 +399,11 @@ class ArtifactStore:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def list_experiments(self) -> list[str]:
-        """Experiment ids that have a plan on disk, oldest first by id."""
+        """Experiment ids that have a plan on disk, sorted.
+
+        Generated ids sort by creation time. Hand-named ones such as
+        ``exp_000_baseline`` sort by name.
+        """
         root = self.runs_dir / EXPERIMENTS_DIR
         if not root.is_dir():
             return []

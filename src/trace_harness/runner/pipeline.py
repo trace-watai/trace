@@ -20,7 +20,12 @@ from typing import TYPE_CHECKING, Any
 
 from trace_harness.environment.controls import ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.models import create_model_adapter, resolve_call_policy, resolve_model_name
+from trace_harness.models import (
+    create_model_adapter,
+    resolve_call_policy,
+    resolve_model_name,
+    unsent_seed_metadata,
+)
 from trace_harness.models.cassette import RecordingModelAdapter
 from trace_harness.models.policy import CallPolicy
 from trace_harness.runner.agent_runner import AgentRunner
@@ -61,6 +66,21 @@ class PipelineResult:
     verifier_result: VerifierResult | None  # None when the task declares no verifiers
 
 
+@dataclass
+class PipelineProgress:
+    """How far one ``run_task_pipeline`` call got, filled in as it goes.
+
+    A caller that has to account for a failure passes one in. When a later
+    stage raises, ``run_id`` says whether the agent run had already started,
+    and so whether a live run may have spent money that its trace can still
+    price. ``run_config`` is the configuration that run executed. Both stay
+    None when the pipeline failed before the run, which calls no provider.
+    """
+
+    run_id: str | None = None
+    run_config: RunConfig | None = None
+
+
 def _repo_relative(path: Path) -> str:
     try:
         return str(path.relative_to(Path.cwd()))
@@ -87,12 +107,17 @@ def run_task_pipeline(
     control_library: Path | str | None = None,
     controls: list[ControlInstance] | None = None,
     bundle_scope: Collection[str] | None = None,
+    progress: PipelineProgress | None = None,
 ) -> PipelineResult:
     """Run one task under one agent config and produce all pipeline artifacts.
 
     ``bundle_scope`` limits which runs' failure cards a failing run may join
     (see :func:`attribute_and_bundle`). None joins a card anywhere in the runs
     directory.
+
+    ``progress``, when given, records the run's id and configuration as soon
+    as the run starts, so a caller can still find the run if a later stage
+    raises.
     """
     task_path = Path(task_path).resolve()
     task = load_task(task_path)
@@ -141,6 +166,7 @@ def run_task_pipeline(
         )
         if isinstance(adapter, RecordingModelAdapter):
             metadata["cassette_path"] = _repo_relative(adapter.path)
+        metadata.update(unsent_seed_metadata(agent_config.provider, agent_config.seed))
 
     config = RunConfig(
         task_id=task.task_id,
@@ -156,10 +182,17 @@ def run_task_pipeline(
         agent_ref=agent_config.agent_ref,
         metadata=metadata,
     )
+    if progress is not None:
+        progress.run_config = config
     if agent is not None:
-        run_result = run_target_agent(agent, environment, store, task, config)
+        run_result = run_target_agent(agent, environment, store, task, config, progress=progress)
     else:
-        run_result = AgentRunner(adapter, environment, store).run(task, config)
+        runner = AgentRunner(adapter, environment, store)
+        try:
+            run_result = runner.run(task, config)
+        finally:
+            if progress is not None:
+                progress.run_id = runner.run_id
 
     verifier_result = verify_run(store, run_result, task)
     if verifier_result is not None and verifier_result.has_violations and bundle_on_fail:

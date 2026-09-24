@@ -43,9 +43,10 @@ TRACE_SCHEMA_VERSION = "0.5.0"  # 0.5.0: blocked_by on final_answer; 0.4.0: on t
 class TraceEventType(StrEnum):
     """Every kind of event a run may emit.
 
-    MVP runs emit a subset (the fixture adapter produces no separate
-    ``model_response``; that type is reserved for real provider adapters
-    whose raw response differs from the normalized action).
+    MVP runs emit a subset. The fixture adapter produces no separate
+    ``model_response``. That type is for real provider adapters, whose raw
+    response differs from the normalized action, and for outside agents
+    (provider ``external``), whose forwarded responses it records.
     """
 
     RUN_STARTED = "run_started"
