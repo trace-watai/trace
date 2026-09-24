@@ -263,9 +263,19 @@ def _normalize_response(response: Any) -> AgentAction:
         - neither -> raise ModelAdapterError (empty/blocked response)
 
     For ``raw``, prefer ``response.model_dump(mode="json")`` when available,
-    else best-effort ``dict(response)`` / ``{}``.
+    else best-effort ``dict(response)`` / ``{}``. A response that cannot become
+    one action was still billed, so the error carries ``raw`` too, and the
+    runner records it before the error.
     """
     raw = _response_to_dict(response)
+    try:
+        return _action_from_response(response, raw)
+    except ModelAdapterError as exc:
+        exc.raw = raw
+        raise
+
+
+def _action_from_response(response: Any, raw: dict[str, Any]) -> AgentAction:
     function_calls = getattr(response, "function_calls", None)
     if function_calls and len(function_calls) != 1:
         raise ModelAdapterError(
@@ -521,8 +531,4 @@ class GeminiModelAdapter:
             ),
             classify_error,
         )
-        return with_call_record(
-            record,
-            lambda: _normalize_response(response),
-            raw=lambda: _response_to_dict(response),
-        )
+        return with_call_record(record, lambda: _normalize_response(response))

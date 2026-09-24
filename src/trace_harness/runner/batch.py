@@ -56,7 +56,6 @@ Budget guard (#196)
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import datetime
@@ -79,7 +78,7 @@ from trace_harness.runner.pipeline import PipelineProgress, PipelineResult, run_
 from trace_harness.runner.result import RunStatus
 from trace_harness.runner.suite import AgentConfig, SuiteSpec
 from trace_harness.tracing.artifact_store import ArtifactStore
-from trace_harness.tracing.events import TraceEventType, utc_now
+from trace_harness.tracing.events import TraceEvent, TraceEventType, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -363,36 +362,21 @@ class BatchRunner:
                 logger.warning("batch index enrich failed for %s", entry.run_id)
 
 
-def _trace_events(runs_dir: Path, run_id: str) -> list[dict] | None:
-    """The run's trace events as plain dicts, or None when there is no trace to read.
+def _trace_events(runs_dir: Path, run_id: str) -> list[TraceEvent] | None:
+    """The run's trace, or None when there is no trace that can be read.
 
-    Read leniently, one JSON line at a time, because a cost is worked out even
-    for a run whose pipeline failed. A line that will not parse is skipped.
+    Read through ``ArtifactStore.read_trace``, the one trace parser, because a
+    cost is worked out even for a run whose pipeline failed. It already drops a
+    final line a hard kill left half written; a trace corrupt anywhere else
+    gives no cost.
     """
-    path = ArtifactStore(runs_dir).trace_path(run_id)
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        return ArtifactStore(runs_dir).read_trace(run_id)
+    except (OSError, ValueError):
         return None
-    events = []
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict):
-            events.append(event)
-    return events
 
 
-def _payload(event: dict) -> dict:
-    payload = event.get("payload")
-    return payload if isinstance(payload, dict) else {}
-
-
-def _nothing_billed(events: list[dict]) -> bool:
+def _nothing_billed(events: list[TraceEvent]) -> bool:
     """Whether a live run that recorded no response spent nothing, as its trace shows.
 
     True when no request was ever prepared, or when the call policy gave up on
@@ -403,10 +387,10 @@ def _nothing_billed(events: list[dict]) -> bool:
     connection dropped), a call the runner abandoned at its timeout, a response
     that arrived and was rejected, and an error with no call record.
     """
-    kinds = [event.get("event_type") for event in events]
-    if TraceEventType.MODEL_PROMPT.value not in kinds:
+    kinds = {event.event_type for event in events}
+    if TraceEventType.MODEL_PROMPT not in kinds:
         return True
-    errors = [_payload(e) for e in events if e.get("event_type") == TraceEventType.ERROR.value]
+    errors = [e.payload for e in events if e.event_type is TraceEventType.ERROR]
     if len(errors) != 1 or errors[0].get("kind") != "model_error":
         return False
     record = errors[0].get("call_record")
@@ -433,13 +417,19 @@ def _guard_model(config: AgentConfig) -> str | None:
 def run_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None:
     """What one run cost, read from its trace, or None when that cannot be established.
 
+    The one place a run is priced: a finished cell, a cell whose pipeline
+    raised after its run started, and any other stage that runs cells all come
+    here, so the same trace always gets the same cost.
+
     Fixture and cassette-replay runs call no provider, so they cost nothing and
-    say so. A live run that recorded a provider response is priced from the
-    usage those responses carry, and a provider or model with no price stays
-    null. A live run that recorded no response costs zero only when its trace
-    shows nothing was billed (see ``_nothing_billed``). Otherwise, and when the
-    trace cannot be read, the cost is null, so a live run whose cost is unknown
-    is never reported as free.
+    say so. A live run is priced from the raw provider responses its trace
+    recorded as ``model_response`` events, a billed answer the adapter
+    rejected included, so the cost comes from the same bytes the trace carries
+    rather than from a second accounting path. A provider or model with no
+    price stays null. A live run that recorded no response costs zero only when
+    its trace shows nothing was billed (see ``_nothing_billed``). Otherwise,
+    and when the trace cannot be read, the cost is null, so a live run whose
+    cost is unknown is never reported as free.
     """
     if config.provider == "fixture" or (
         config.cassette is not None and config.cassette.mode == "replay"
@@ -448,16 +438,11 @@ def run_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None
     events = _trace_events(runs_dir, run_id)
     if events is None:
         return None
-    responses = [e for e in events if e.get("event_type") == TraceEventType.MODEL_RESPONSE.value]
+    responses = [e for e in events if e.event_type is TraceEventType.MODEL_RESPONSE]
     if not responses and config.provider in LIVE_PROVIDERS and _nothing_billed(events):
         return 0.0
-    raws = [raw for e in responses if isinstance(raw := _payload(e).get("raw"), dict)]
+    raws = [raw for e in responses if isinstance(raw := e.payload.get("raw"), dict)]
     return estimate_cost_usd(config.provider, config.model, raws)
-
-
-def _cost_usd(result: PipelineResult, runs_dir: Path) -> float | None:
-    """What a finished pipeline's run cost; see :func:`run_cost_usd`."""
-    return run_cost_usd(result.run_config, runs_dir, result.run_result.run_id)
 
 
 def _entry_from_pipeline(
@@ -483,7 +468,7 @@ def _entry_from_pipeline(
         verifier_id=(verifier.verifier_id if verifier is not None else None),
         severity=(verifier.severity.value if verifier and verifier.severity else None),
         latency_ms=latency_ms,
-        cost_usd=_cost_usd(result, runs_dir),
+        cost_usd=run_cost_usd(result.run_config, runs_dir, run.run_id),
         error=run.error,
     )
 

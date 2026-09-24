@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from conftest import VALID_TASK_PATH
+from fake_provider_sdk import install_anthropic, install_openai
 from trace_harness.models import resolve_call_policy
 from trace_harness.models.anthropic import ANTHROPIC_PRICING, AnthropicModelAdapter
 from trace_harness.models.anthropic import classify_error as anthropic_classify
@@ -662,6 +663,19 @@ TRANSCRIPT = [
     Message(role=MessageRole.USER, content="Refund me."),
 ]
 TOOLS = [ToolSpec(name="get_order", description="Look up an order", parameters={})]
+
+
+@pytest.fixture(autouse=True)
+def _fake_provider_sdks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Anthropic and OpenAI adapters import their SDK when built (#160).
+
+    Every adapter built here, by the builders below or directly, finds the
+    stand-in modules from ``fake_provider_sdk`` instead, so this file passes
+    with both packages absent. The builders then swap in their own client, and
+    a test that needs a different module installs it over these.
+    """
+    install_anthropic(monkeypatch)
+    install_openai(monkeypatch)
 
 
 @dataclass

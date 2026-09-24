@@ -103,13 +103,16 @@ class ModelAdapterError(RuntimeError):
     """Base class for adapter failures the runner should treat as model errors.
 
     ``call_record`` is set when the failure came out of a live call, so the
-    attempts that led to it reach the trace's error event. It is None for a
-    failure that never involved a provider request.
+    attempts that led to it reach the trace. It is None for a failure that
+    never involved a provider request.
 
-    ``raw`` is set when the provider did answer and the answer was rejected
-    after the call (a refusal, a blocked or empty answer, parallel tool
-    calls). That answer was billed, so the runner records it as a
-    ``model_response`` event with its usage, the same as an accepted one.
+    ``raw`` is set when the provider did answer, and billed for it, but the
+    answer could not become an action (a refusal, a blocked, empty or
+    truncated answer, parallel tool calls). The adapter's response normalizer
+    attaches it, and the runner writes it as a ``model_response`` event, with
+    ``call_record`` beside it, before the error, so the run's cost is priced
+    from it like any other response. It is None for a failure that got no
+    response at all.
     """
 
     call_record: dict[str, Any] | None = None
@@ -117,7 +120,8 @@ class ModelAdapterError(RuntimeError):
 
 
 class ProviderNotConfiguredError(RuntimeError):
-    """A provider cannot be used because its key or SDK is missing.
+    """A provider cannot be used as configured: its key or SDK is missing, or
+    the run asks for a setting the chosen model rejects.
 
     Separate from :class:`ModelAdapterError` because it is raised at
     construction, before any run exists, so there is nothing to terminate. The

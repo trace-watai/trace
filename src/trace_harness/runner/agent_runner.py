@@ -148,6 +148,25 @@ class ToolEnvironment(Protocol):
         return None
 
 
+def _record_unacted_response(recorder: TraceRecorder, step_id: int, exc: ModelAdapterError) -> bool:
+    """Record a billed response the adapter could not act on, before its error.
+
+    The one place the trace keeps such a response (#160, #196). The provider
+    answered, and the answer could not become an action (a refusal, a blocked,
+    empty or truncated answer, parallel tool calls). It was billed, so it is
+    written as a ``model_response`` event, with the call record beside it as
+    for an accepted answer, and the run's cost is priced from its usage.
+    Returns whether there was one to record.
+    """
+    if exc.raw is None:
+        return False
+    payload: dict[str, Any] = {"raw": exc.raw}
+    if exc.call_record is not None:
+        payload["call_record"] = exc.call_record
+    recorder.record(TraceEventType.MODEL_RESPONSE, step_id=step_id, payload=payload)
+    return True
+
+
 def _check_final_answer(environment: ToolEnvironment, answer: str) -> ToolResult | None:
     """Ask the environment about an answer, tolerating one that has no seam.
 
@@ -353,19 +372,8 @@ class AgentRunner:
                     break
                 except ModelAdapterError as exc:
                     error_payload: dict[str, Any] = {"error": str(exc), "kind": "model_error"}
-                    if exc.raw is not None:
-                        # The provider answered and the adapter rejected the
-                        # answer. It was billed, so it is recorded like any
-                        # response, with how it was obtained beside it.
-                        rejected_payload: dict[str, Any] = {"raw": exc.raw}
-                        if exc.call_record is not None:
-                            rejected_payload["call_record"] = exc.call_record
-                        recorder.record(
-                            TraceEventType.MODEL_RESPONSE,
-                            step_id=step_id,
-                            payload=rejected_payload,
-                        )
-                    elif exc.call_record is not None:
+                    recorded = _record_unacted_response(recorder, step_id, exc)
+                    if not recorded and exc.call_record is not None:
                         # A live call that failed after retries says so here.
                         error_payload["call_record"] = exc.call_record
                     recorder.record(

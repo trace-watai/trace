@@ -81,9 +81,10 @@ What is recorded
 
     A response that arrives and is then rejected by the adapter (a refusal, a
     content filter, an empty answer, parallel tool calls) was still billed.
-    :func:`with_call_record` puts the raw response on the error beside the
-    record, and the runner writes it as a ``model_response`` event before the
-    ``error``, so its usage is priced like any other response.
+    The adapter's response normalizer puts the raw response on the error,
+    :func:`with_call_record` puts the record beside it, and the runner writes
+    both as a ``model_response`` event before the ``error``, so its usage is
+    priced like any other response.
 
 SDK retries are off
     The Anthropic and OpenAI clients retry twice by default, which would hide
@@ -578,25 +579,19 @@ def build_live_caller(
     )
 
 
-def with_call_record(
-    record: CallRecord,
-    normalize: Callable[[], AgentAction],
-    raw: Callable[[], dict[str, Any]] | None = None,
-) -> AgentAction:
+def with_call_record(record: CallRecord, normalize: Callable[[], AgentAction]) -> AgentAction:
     """Normalize a response and attach how it was obtained.
 
-    A response that normalizes into an error (a refusal, a blocked or empty
-    answer, parallel tool calls) still cost a request, so the record rides on
-    that error, and so does the raw response from ``raw``, which carries the
-    usage it was billed for. The runner writes both as a ``model_response``
-    event before the ``error``.
+    A response that normalizes into an error (a refusal, a blocked, empty or
+    truncated answer, parallel tool calls) still cost a request, so the record
+    rides on that error too. The normalizer has already put the raw response,
+    with the usage it was billed for, on the error, and the runner writes both
+    as a ``model_response`` event before the ``error``.
     """
     recorded = record.model_dump(mode="json")
     try:
         action = normalize()
     except ModelAdapterError as exc:
         exc.call_record = recorded
-        if raw is not None and exc.raw is None:
-            exc.raw = raw()
         raise
     return action.model_copy(update={"call_record": recorded})
