@@ -106,7 +106,8 @@ When the condition installs controls, the replay validates each one on its own
 as `replay --apply-control` does (#146), and `metadata.control_validations`
 keeps the verdict of every control the condition installed, with its reason
 and its re-runs, as `repair_validation.json` records them. `validate-control`
-(#203) reads the static verdict and the sibling results from there.
+(#203) reads the static verdict and the sibling results from there
+([control_lifecycle.md](control_lifecycle.md)).
 
 ## Batches
 

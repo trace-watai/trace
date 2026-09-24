@@ -42,7 +42,7 @@ The rule
       ``repair_effectiveness.json`` is at least ``min_repair_effectiveness``,
       and the live control condition beats the noise floor on
       ``post_block_outcomes`` by at least ``min_margin_over_noise_floor``.
-      That margin is the share of blocked control-on runs labelled
+      That margin is the share of blocked control-on runs labeled
       ``recovered`` minus the share of completed noise floor runs with no
       blocking failure after the fork.
 

@@ -36,7 +36,7 @@ result.
 | `frozen_manifest` | `suite_id`, `verifier_ids`, `fixtures_hash`, `labels_path`, `frozen_set` |
 | `conditions` | one per arm, names unique within the experiment |
 | `budget` | `max_runs`, `max_cost_usd`; `branch` enforces `max_cost_usd` per invocation ([branch_stage.md](branch_stage.md#budget)), and `max_runs` is not enforced |
-| `keep_rule` | the thresholds `validate-control` holds a control to (#203), optional |
+| `keep_rule` | the thresholds `validate-control` holds a control to, optional ([control_lifecycle.md](control_lifecycle.md#the-keep-rule)) |
 
 `fixtures_hash` is what makes the freeze checkable rather than asserted. If the
 fixtures move between two conditions then the conditions answered different
@@ -186,6 +186,7 @@ counts behind each rate in `extra` ([branch_stage.md](branch_stage.md#metrics)).
 trace-harness experiment freeze <experiment.json>
 trace-harness branch <regression_artifact.json> --experiment <experiment.json> [--allow-drift]
 trace-harness experiment record <experiment.json> --condition <name>=<batch_id> ... [--allow-drift]
+trace-harness validate-control <control_id> --experiment <experiment.json> --artifact <regression_artifact.json>
 trace-harness list-experiments
 ```
 
@@ -193,6 +194,9 @@ trace-harness list-experiments
 writes a plan. `branch` runs the conditions and prints the pairs `record`
 takes ([branch_stage.md](branch_stage.md)). `record` reads the plan, never writes it, checks the frozen set,
 computes what it can, and writes the result and report beside it.
+`validate-control` runs one control's conditions through `branch`, records them
+through `record`, and writes the keep rule's decision by `policy` into the
+result ([control_lifecycle.md](control_lifecycle.md)).
 `list-experiments` prints one line per experiment and replaces any hand-kept
 spreadsheet of them.
 
