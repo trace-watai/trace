@@ -102,7 +102,7 @@ and a tool but fired different checks. With no irreversible step the JSON
 records `"tool":null` and the prefix reads `none`. Run ids, task ids, step
 numbers, messages and evidence stay out of the key, so one failure keys the
 same way across tasks, providers, seeds and days. Changing any of the three
-facts, or how they are written, means bumping `v1`. `tests/test_bundle_dedup.py`
+facts, or how they are written, means bumping `v1`. `tests/test_bundle_key.py`
 pins the key of every failing task fixture so such a change shows up as an
 edit to that table.
 
@@ -177,10 +177,12 @@ reproduction whose home is missing from the runs directory raises
 
 Bundling a run again never counts it twice. A reproduction already on the
 card keeps its place, and the card's own run keeps its occurrences. A run
-whose key changed since it was last bundled leaves its old card's
-occurrences. A run holding a card that other runs point to refuses a new key
-with `BundleKeyConflictError`, because moving that card would leave their
-pointers naming the wrong failure.
+whose bundle moves elsewhere, because its key changed or a scope leaves out
+its old card, leaves that card's occurrences. A run holding a card that
+other runs point to refuses to become anything else with
+`BundleKeyConflictError`, whether its key changed or another card with its
+key won the lookup, because moving that card would leave their pointers
+naming the wrong failure.
 
 The card is written last, after the repair package and the regression
 artifact, so a card marks a finished bundle. A bundle cut short therefore
@@ -204,11 +206,21 @@ is rebuilt on first read, recovering keys from cards and pointers.
 
 ### Replay and the regression gate
 
-A regression artifact is never rewritten once written, so `replay`, the
-control library's evidence hashes and the collector's `source_sha256` see the
-same bytes however many reproductions accrue. `collect-regressions` discovers
-`regression_artifact.json` files, which only first occurrences hold, so each
-key is replayed once and reproductions are not counted in `artifacts_found`.
+A reproduction never touches the regression artifact of the card it joins,
+so `replay`, the control library's evidence hashes and the collector's
+`source_sha256` see the same bytes however many reproductions accrue. Once
+written, a regression artifact changes only when its own run is bundled
+again. Bundling a first occurrence again rewrites its three files from the
+same run files, which gives the same bytes while the generator is unchanged.
+A run that held its own bundle, written before 0.5.0 or under a key it no
+longer has, deletes its regression artifact when bundled again into another
+run's card, and anything that pins that file's hash loses the file.
+
+`collect-regressions` discovers `regression_artifact.json` files, which only
+first occurrences hold, so each key is replayed once and reproductions are
+not counted in `artifacts_found`. A bundle cut short before its card was
+written can leave an artifact behind too, and the collector finds it until
+the run is bundled again.
 A failed run from the collector's optional suite passes the coverage check
 when its pointer names a run holding an artifact, and the suite report
 credits that row with the first occurrence's `regression_test_name`. The cost
