@@ -283,9 +283,11 @@ def _response_to_dict(response: Any) -> dict[str, Any]:
 def extract_usage(raw: dict[str, Any]) -> tuple[int, int] | None:
     """Read (input_tokens, output_tokens) out of a recorded raw response.
 
-    Returns None when the response carries no usage, which is what a fixture or
-    a cassette replay looks like. None and ``(0, 0)`` mean different things, so
-    an absent usage block never becomes a zero cost.
+    Returns None when the response carries no usage, which is what a fixture
+    action and an entry from a cassette recorded before #196 look like. None
+    and ``(0, 0)`` mean different things, so an absent usage block never
+    becomes a zero cost. A newer recording rebuilds the counts on replay, and
+    the batch still prices a replayed run at exactly zero without reading them.
     """
     usage = raw.get("usage")
     if not isinstance(usage, dict):

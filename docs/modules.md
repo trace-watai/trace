@@ -86,7 +86,7 @@ shared action contract supports them.
 | Mode | Configuration | Behavior |
 | --- | --- | --- |
 | Fixture (default) | `--provider fixture` | Runs a scripted fixture; no cassette, SDK, or key. |
-| Live | `--provider gemini` | Calls Gemini using explicit model settings. Needs `GEMINI_API_KEY` and the `gemini` extra. Token usage is read from `usage_metadata`, with thinking tokens counted as output, and priced from `GEMINI_PRICING`. A model missing from that table, the default included, reports a null cost. |
+| Live | `--provider gemini` | Calls Gemini using explicit model settings. Needs `GEMINI_API_KEY` and the `gemini` extra. Token usage is read from `usage_metadata`, with thinking tokens counted as output, and priced from `GEMINI_PRICING`, which lists the default `gemini-3.6-flash`. A model missing from that table reports a null cost. |
 | Live | `--provider anthropic` | Calls Claude using explicit model settings. Needs `ANTHROPIC_API_KEY` and the `anthropic` extra. Token usage is read off the response and priced, so `cost_usd` is a number. A seed is recorded and never sent, because the Messages API has none. |
 | Live | `--provider openai` | Calls an OpenAI chat model. Needs `OPENAI_API_KEY` and the `openai` extra. Priced the same way. The seed is sent, and the response's `system_fingerprint` is recorded so a seeded re-run whose backend build moved can be told apart from a real reproduction. |
 | Record | `--cassette-mode record` | `RecordingModelAdapter` wraps the selected provider and writes normalized responses. |
@@ -116,19 +116,26 @@ for an offline Gemini example and provenance.
 
 **Live call policy (#196):** every live adapter sends its SDK call through
 `LiveCaller` in `models/policy.py`. It retries transient errors (408, 409, 429,
-5xx except 501, and connection failures) with exponential backoff and jitter,
-honors a provider's `Retry-After` or Gemini's `retryDelay`, and never retries a
-permanent error (other 4xx, OpenAI's `insufficient_quota`) or anything that is
-not a provider error, such as `ProviderNotConfiguredError`. Refusals and content
-filters are rejected after the call returns and are never retried. Each
-provider is paced to a minimum spacing between requests, shared by the whole
-process. The runner hands each call its remaining time, and the policy gives up
-with outcome `deadline` before a retry or wait would pass it. The SDKs' own
-retries are off (`max_retries=0`), so every attempt is recorded: the
-`CallRecord` rides on `AgentAction.call_record` into the `model_response`
-event, or on the error into the `error` event, and cassettes keep it so a
-replay shows the same retries. `run_config.json` records the policy as
-`call_policy` (`RunConfig 0.3.0`); a suite agent config may override it.
+5xx except 501, and connection failures, a proxy failure included) with
+exponential backoff and jitter, honors a provider's `Retry-After` or Gemini's
+`retryDelay`, and never retries a permanent error (other 4xx, 501, OpenAI's
+`insufficient_quota`, and httpx's `LocalProtocolError` and
+`UnsupportedProtocol`) or anything that is not a provider error, such as
+`ProviderNotConfiguredError`. The jitter is seeded with the run's seed when the
+run has one. Refusals and content filters are rejected after the call returns
+and are never retried; the rejected answer was billed, so it is still written
+as a `model_response` with its usage, before the `error` event. Each provider
+is paced to a minimum spacing between requests, shared by the whole process.
+The runner hands each call its remaining time, and the policy gives up with
+outcome `deadline` before a retry or wait would pass it; a call the runner
+abandons at its timeout leaves its attempts on the `model_timeout` event, with
+outcome `abandoned`. The SDKs' own retries are off (`max_retries=0`), so every
+attempt is recorded: the `CallRecord` rides on `AgentAction.call_record` into
+the `model_response` event, or on the error into the `error` event, and
+cassettes keep it so a replay shows the same retries. `run_config.json` records
+the policy as `call_policy` (`RunConfig 0.3.0`); a suite agent config may
+override it field by field, and fields it leaves out keep the provider's
+default.
 
 **Build next:** decide the parallel-tool-call story (`AgentAction` grows a list
 form behind a schema bump); keep one controlled key-backed acceptance run
