@@ -1290,6 +1290,8 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     from trace_harness.runner.branch import (
         admit_before_any_run,
         load_artifact,
+        recorded_spend,
+        replacement_seeds,
         replay_batch,
         run_branch,
         validate_condition,
@@ -1308,6 +1310,7 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     artifact = load_artifact(artifact_path)
     for condition in conditions:
         validate_condition(artifact, condition)
+    replacement_seeds(spec)
     # The same check record runs, made before any spend: a sweep on a changed
     # evaluator would be refused at record after its money was gone.
     drift = _frozen_set_drift(
@@ -1319,10 +1322,15 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     )
     if drift:
         _print("frozen set:", f"DRIFTED, {len(drift)} file(s), running with --allow-drift")
-    # One guard for the whole invocation, from the plan's cap (#196). Asking it
-    # about every live condition first means a cap that cannot hold stops every
-    # live run before the first one starts.
+    # One guard for the whole invocation, from the plan's cap (#196). It starts
+    # from what earlier batches of this experiment spent, so branching one
+    # condition at a time cannot multiply the cap (#200). Asking it about every
+    # live condition first means a cap that cannot hold stops every live run
+    # before the first one starts.
     guard = BudgetGuard(spec.budget.max_cost_usd)
+    guard.spent_usd = recorded_spend(store, spec.experiment_id)
+    if guard.spent_usd:
+        _print("budget:", f"${guard.spent_usd:.6f} already spent by earlier batches of the plan")
     admit_before_any_run(guard, conditions)
 
     pairs: list[str] = []
@@ -1365,7 +1373,7 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     print()
     _print(
         "budget:",
-        f"${guard.spent_usd:.6f} of ${guard.max_cost_usd:.6f} spent on live runs",
+        f"${guard.spent_usd:.6f} of ${guard.max_cost_usd:.6f} spent on live runs of the plan",
     )
     if guard.stop_reason is not None:
         _print("stopped:", f"{guard.stop_reason}; {guard.detail}")

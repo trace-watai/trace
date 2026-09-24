@@ -163,11 +163,15 @@ its metadata names exits 2, since it would swap the two rates.
 
 ## Budget
 
-The plan's `budget.max_cost_usd` caps what one `branch` invocation spends on
-live calls, across every selected condition and seed, through the #196
-`BudgetGuard` that `run-suite` uses. The guard is built once per invocation
-and follows the same contract: it admits a run before it starts and is charged
-the run's recorded cost after it finishes, and an unknown cost never counts as
+The plan's `budget.max_cost_usd` caps what the experiment spends on live
+calls, across every condition and seed and every `branch` invocation into one
+runs dir, through the #196 `BudgetGuard` that `run-suite` uses. The guard is
+built once per invocation and starts from the `spent_usd` recorded by the
+batches of the same experiment already in the runs dir, which `branch` prints
+when it is not zero. Branching one condition at a time therefore spends the cap
+once in total. Batches of other experiments never count. The guard follows the
+`run-suite` contract: it admits a run before it starts and is charged the
+run's recorded cost after it finishes, and an unknown cost never counts as
 zero.
 
 - Before any condition runs, the guard is asked once about each live
@@ -194,6 +198,20 @@ batch, with no entries. `branch` exits as `run-suite` does without
 `Record with` line, and 0 after an exhausted cap. `max_runs` is recorded in
 the plan and not enforced.
 
+## Seed replacement
+
+A plan may list `replacement_seeds` in its `metadata`. A live seed whose run
+ends with any status other than `completed` is then replaced by the next unused
+seed from that list, and a replacement that ends incomplete is replaced in
+turn, until the list runs out. The decision reads run status alone, never the
+verdict, which is pre-registration 001's rule for seeds 5 to 9. A seed the
+budget refused is not replaced. Replacement seeds land in the same batch with
+their own seed numbers. With cassettes in `replay` mode, only the declared
+seeds are checked up front, so a replacement with no recording ends as a
+`setup_error` and is replaced in turn. The list rides in plan metadata because
+`ConditionSpec` has no field for it, and a malformed list exits 2 before any
+run.
+
 ## Harness check
 
 Pre-registration 001 requires the fixture model on the `live` arm to equal
@@ -216,5 +234,5 @@ would disagree without any harness defect.
 - A prefix recorded by the fixture adapter carries no provider state. No test
   here calls a live provider, so whether one accepts earlier turns without it
   is unexercised.
-- `max_runs` is not enforced, and the cap is per invocation, so two
-  invocations of one plan may each spend up to it.
+- `max_runs` is not enforced. The cap spans the batches in one runs dir, so
+  two runs dirs of one plan may each spend up to it.

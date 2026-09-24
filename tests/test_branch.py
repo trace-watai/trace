@@ -830,3 +830,112 @@ def test_fixture_live_arm_equals_static_replay_with_zero_divergence(tmp_path, ca
         == static.read_json(scenario, names.FINAL_STATE)
         for e in completed
     )
+
+
+# --- seed replacement and the experiment-wide cap (#200) ---
+
+
+def _fake_seeds(monkeypatch, incomplete: set[int]) -> None:
+    """Every seed completes except those named, without running anything."""
+    from trace_harness.runner.batch import BatchRunEntry
+
+    def run_seed(artifact, task, experiment, condition, fork_step, seed, store):
+        return BatchRunEntry(
+            run_id=f"run_seed_{seed}",
+            task_id=task.task_id,
+            task_path=artifact.task_fixture,
+            agent_label=condition.agent_config.label,
+            provider="fixture",
+            status="terminated" if seed in incomplete else "completed",
+            cost_usd=0.0,
+            condition=condition.name,
+            seed=seed,
+        )
+
+    monkeypatch.setattr("trace_harness.runner.branch._run_seed", run_seed)
+
+
+@pytest.mark.parametrize(
+    ("incomplete", "ran"),
+    [
+        # Seed 1 is replaced by 5, seed 3 by 6, and 5 in turn by 7.
+        ({1, 3, 5}, [0, 1, 2, 3, 4, 5, 6, 7]),
+        # Every run incomplete: the pool of five runs out and nothing else runs.
+        (set(range(10)), list(range(10))),
+        (set(), [0, 1, 2, 3, 4]),
+    ],
+)
+def test_an_incomplete_run_is_replaced_by_the_next_unused_seed(
+    tmp_path, monkeypatch, incomplete, ran
+):
+    path, artifact = _artifact(tmp_path)
+    condition = _condition("live", "live", artifact, 2, seeds=[0, 1, 2, 3, 4])
+    _, spec = _spec(tmp_path, condition)
+    spec = spec.model_copy(update={"metadata": {"replacement_seeds": [5, 6, 7, 8, 9]}})
+    _fake_seeds(monkeypatch, incomplete)
+
+    summary = run_branch(path, spec, spec.conditions[0], ArtifactStore(tmp_path / "runs")).summary
+
+    assert [e.seed for e in summary.entries] == ran
+    completed = [e.seed for e in summary.entries if e.status == "completed"]
+    assert len(completed) == min(5, 10 - len(incomplete))
+
+
+def test_a_plan_without_replacement_seeds_never_replaces(tmp_path, monkeypatch):
+    path, artifact = _artifact(tmp_path)
+    _, spec = _spec(tmp_path, _condition("live", "live", artifact, 2, seeds=[0, 1, 2]))
+    _fake_seeds(monkeypatch, {0, 1, 2})
+    summary = run_branch(path, spec, spec.conditions[0], ArtifactStore(tmp_path / "runs")).summary
+    assert [e.seed for e in summary.entries] == [0, 1, 2]
+
+
+def test_malformed_replacement_seeds_fail_before_any_run(tmp_path, capsys):
+    path, artifact = _artifact(tmp_path)
+    spec_path, spec = _spec(tmp_path, _condition("live", "live", artifact, 2, seeds=[0]))
+    raw = json.loads(spec_path.read_text())
+    raw["metadata"] = {"replacement_seeds": ["5"]}
+    spec_path.write_text(json.dumps(raw))
+    runs = tmp_path / "runs"
+    capsys.readouterr()
+    assert main(["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]) == 2
+    assert "replacement_seeds must list integer seeds" in capsys.readouterr().err
+    assert not runs.exists()
+
+
+def test_the_cap_spans_every_branch_invocation_of_the_plan(tmp_path, capsys, live_models):
+    """Branching one condition at a time cannot spend the cap once per condition."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, spec = _spec(
+        tmp_path,
+        _claude("live", "live", artifact, control_ids=[REFUND_WINDOW_CONTROL_ID]),
+        _claude("live_no_control", "live_no_control", artifact),
+        max_cost_usd=0.3,
+    )
+    runs = tmp_path / "runs"
+    # Another experiment's spend in the same runs dir never counts.
+    other = ArtifactStore(runs)
+    (template,) = (REPO_ROOT / "docs" / "acceptance" / "batches").glob("*/batch_summary.json")
+    foreign = json.loads(template.read_text())
+    foreign["metadata"] = {"experiment_id": "exp_someone_else"}
+    foreign["budget"] = {"max_cost_usd": 100.0, "spent_usd": 99.0, "not_run": []}
+    other.write_batch_summary("batch_foreign", foreign)
+
+    branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]
+    assert main([*branch, "--condition", "live"]) == 0
+    # $0.18 a run: seeds 0 and 1 reach $0.36, and seed 2 is refused.
+    assert live_models == ["claude-sonnet-5"] * 2
+    capsys.readouterr()
+
+    assert main([*branch, "--condition", "live_no_control"]) == 0
+    out = capsys.readouterr().out
+    assert "$0.360000 already spent by earlier batches of the plan" in out
+    assert live_models == ["claude-sonnet-5"] * 2
+    summaries = [
+        BatchSummary.model_validate_json(p.read_text())
+        for p in (runs / "batches").glob("*/batch_summary.json")
+    ]
+    (off,) = [s for s in summaries if s.metadata.get("condition") == "live_no_control"]
+    assert off.entries == []
+    assert off.budget.stop_reason == "budget_exhausted"
+    assert off.budget.spent_usd == 0.0
+    assert [c.seed for c in off.budget.not_run] == [0, 1, 2]

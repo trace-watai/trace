@@ -13,18 +13,26 @@ experiment id and condition name, which is what ``experiment record`` reads.
 ``static_replay`` conditions reuse the ``replay --apply-control`` path in the
 CLI, and :func:`replay_batch` records that verdict as a batch of one.
 
-The plan's ``budget.max_cost_usd`` caps what one ``branch`` invocation spends
-on live calls, across every condition and seed, through the #196
-:class:`~trace_harness.runner.batch.BudgetGuard`. :func:`admit_before_any_run`
-asks it once per live condition before anything runs, and :func:`run_branch`
-asks it before each live seed and charges it after. A seed that calls no
-provider (the fixture provider, or a cassette replay) costs nothing and is
-never refused. Each batch's ``budget`` block records what that condition spent
-and, when the guard stopped it, why.
+The plan's ``budget.max_cost_usd`` caps what the experiment spends on live
+calls, across every condition and seed, through the #196
+:class:`~trace_harness.runner.batch.BudgetGuard`. The guard starts from
+:func:`recorded_spend`, what earlier batches of the same experiment in the
+same runs dir already spent, so branching one condition at a time cannot
+multiply the cap. :func:`admit_before_any_run` asks it once per live condition
+before anything runs, and :func:`run_branch` asks it before each live seed and
+charges it after. A seed that calls no provider (the fixture provider, or a
+cassette replay) costs nothing and is never refused. Each batch's ``budget``
+block records what that condition spent and, when the guard stopped it, why.
+
+A plan may list ``replacement_seeds`` in its metadata. A live seed whose run
+ends incomplete is then replaced by the next unused seed from that list,
+decided on run status alone, which is pre-registration 001's rule for seeds 5
+to 9. A seed the budget refused is not replaced.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -80,6 +88,8 @@ logger = logging.getLogger(__name__)
 LIVE_KINDS = frozenset(
     {ConditionKind.LIVE, ConditionKind.LIVE_NO_CONTROL, ConditionKind.LIVE_SWAPPED}
 )
+#: Plan metadata key listing the seeds that replace a run ending incomplete.
+REPLACEMENT_SEEDS = "replacement_seeds"
 
 
 @dataclass
@@ -167,6 +177,32 @@ def post_fork_divergence(
     return first_step, first_step == fork_step + 1
 
 
+def replacement_seeds(experiment: ExperimentSpec) -> list[int]:
+    """The plan's replacement seeds, in order; empty when it lists none."""
+    seeds = experiment.metadata.get(REPLACEMENT_SEEDS) or []
+    if not isinstance(seeds, list) or not all(
+        isinstance(s, int) and not isinstance(s, bool) for s in seeds
+    ):
+        raise ValueError(
+            f"plan metadata {REPLACEMENT_SEEDS} must list integer seeds, got {seeds!r}"
+        )
+    return seeds
+
+
+def recorded_spend(store: ArtifactStore, experiment_id: str) -> float:
+    """What the experiment's earlier batches in this runs dir spent on live runs.
+
+    Read from each branch batch's ``budget.spent_usd``, which counts that
+    batch's live runs only, so the sum is the experiment's recorded spend.
+    """
+    total = 0.0
+    for path in sorted((store.runs_dir / names.BATCHES_DIR).glob(f"*/{names.BATCH_SUMMARY}")):
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        if (summary.get("metadata") or {}).get("experiment_id") == experiment_id:
+            total += (summary.get("budget") or {}).get("spent_usd") or 0.0
+    return round(total, 6)
+
+
 def calls_a_provider(condition: ConditionSpec) -> bool:
     """Whether a condition's runs call a live provider, and so can cost money."""
     agent = condition.agent_config
@@ -220,11 +256,14 @@ def run_branch(
     live = calls_a_provider(condition)
     model = _live_model(condition) if live else None
     spent_before, stopped_before = guard.spent_usd, guard.stop_reason is not None
+    spare = [s for s in replacement_seeds(experiment) if s not in seeds]
 
     started_at = utc_now()
     entries: list[BatchRunEntry] = []
     not_run: list[NotRunCell] = []
-    for seed in seeds:
+    queue = list(seeds)
+    while queue:
+        seed = queue.pop(0)
         if live and not guard.admit(agent.provider, model, agent.cassette):
             not_run.append(
                 NotRunCell(agent_label=agent.label, task_path=artifact.task_fixture, seed=seed)
@@ -237,6 +276,8 @@ def run_branch(
             entry = _setup_error(artifact, condition, seed, exc)
         entries.append(entry)
         guard.charge(entry.cost_usd, agent.provider, agent.cassette, run_id=entry.run_id)
+        if entry.status != "completed" and spare:
+            queue.append(spare.pop(0))
 
     budget = _budget_block(guard, spent_before, stopped_before, not_run)
     summary = _write_batch(
