@@ -213,18 +213,20 @@ The replay-only batch carries each installed control's #146 verdict in
 `metadata.control_validations` ([branch_stage.md](branch_stage.md#replay-only-conditions)),
 which is where the rule reads the static verdict and the sibling results.
 
-## Before and after #200
+## The metrics the rule reads
 
-`verdict_agreement_rate` and `sibling_failure_rate` are derived by #200, which
-also writes `repair_effectiveness.json`. Without #200, record leaves both
-metrics null and no sidecar exists, so `validate-control` returns review and
-names each missing input. The end-to-end tests stand in for #200 through one
-seam, a wrapper around `ArtifactStore.write_experiment_result`, which takes the
-same arguments on both sides of #200. It fills only the metrics record left
-null, from the recorded batches by the formulas in
-[methodology_metrics.md](methodology_metrics.md), and writes the sidecar beside
-the result. With #200 merged, #200's own numbers stand, and
-`tests/test_validate_control_needs_200.py` runs the command with no stand-in.
+`experiment record` derives `verdict_agreement_rate` and
+`sibling_failure_rate` and writes `repair_effectiveness.json` beside the
+result (#200), and `validate-control` reads all three from there. When an
+input is missing, such as a pair with fewer than five completed seeds or a B1
+entry left null, the rule returns review and names it.
+`tests/test_validate_control_needs_200.py` runs the command end to end on
+record's own numbers. The other end-to-end tests install a stand-in at one
+seam, a wrapper around `ArtifactStore.write_experiment_result`, which fills
+only the metrics record left null, so record's own numbers stand, and a test
+that states a metric instead of deriving it does so through the stand-in's
+`fixed`. Record writes its own sidecar after the result, so the sidecar the
+rule reads is always record's.
 
 ## Limits
 
