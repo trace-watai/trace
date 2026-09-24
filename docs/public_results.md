@@ -32,8 +32,13 @@ pipeline writes, `schema_version` included. Nothing is reshaped.
 
 Every artifact column is `jsonb`. The only typed columns are the natural keys,
 `runs.task_id`, and `runs.batch_id`, the one filter `RunReader` needs. Check
-constraints tie them to the JSON they came from. Each row also carries
-`content_sha256`, which the uploader uses to skip unchanged rows.
+constraints tie them to the JSON they came from, and a row whose JSON lacks
+the key is refused too. The checks compare with `is not distinct from`,
+because `->>` yields null for a missing key and a check that evaluates to null
+passes. The natural keys use the `C` collation, so `order=run_id.asc` lists
+runs in the code point order `RunReader` uses, whatever the database's default
+collation. Each row also carries `content_sha256`, which the uploader uses to
+skip unchanged rows.
 
 Today that is 15 runs (five from the `refund_v0` batch of 20 August, eight live
 Gemini runs of 13 September, and the two reference-agent runs of 23

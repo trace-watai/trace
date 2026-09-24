@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 import postgrest_fake as fake
-from pg_cluster import PgCluster, dollar_quote, find_postgres_bin
+from pg_cluster import SUPABASE_BOOTSTRAP, PgCluster, dollar_quote, find_postgres_bin
 from trace_harness.public_results import schema
 from trace_harness.public_results.postgrest import PostgrestClient, PostgrestError
 from trace_harness.public_results.upload import upload
@@ -277,6 +277,109 @@ def test_inconsistent_run_rows_are_rejected(cluster: PgCluster, db: str, change:
     done = cluster.psql(f"set role service_role;\n{upsert_sql(schema.RUNS, [row])}", database=db)
     assert not done.ok
     assert "violates check constraint" in done.stderr
+
+
+# A key missing from the JSON makes ->> yield null, and a check whose
+# expression is null passes. Every key check compares with "is not distinct
+# from", so each of these must be refused.
+MISSING_KEYS = [
+    (schema.RUNS, {"summary": {"task_id": "task_a", "batch_id": "batch_a"}}),
+    (schema.RUNS, {"summary": {"run_id": "run_a", "batch_id": "batch_a"}}),
+    (schema.RUNS, {"summary": [{"run_id": "run_a"}]}),
+    (schema.RUNS, {"run_result": {"status": "completed"}}),
+    (schema.BATCHES, {"summary": {"runs": []}}),
+    (schema.BATCHES, {"suite_report": {"rows": []}}),
+    (schema.EXPERIMENTS, {"spec": {"hypothesis": "x"}}),
+    (schema.EXPERIMENTS, {"result": {"decision": "keep"}}),
+]
+
+
+@pytest.mark.parametrize(
+    ("table", "change"),
+    MISSING_KEYS,
+    ids=[
+        "runs-summary-run_id",
+        "runs-summary-task_id",
+        "runs-summary-not-an-object",
+        "runs-result-run_id",
+        "batches-summary-batch_id",
+        "batches-report-batch_id",
+        "experiments-spec-experiment_id",
+        "experiments-result-experiment_id",
+    ],
+)
+def test_rows_whose_json_lacks_the_key_are_rejected(
+    cluster: PgCluster, db: str, table: str, change: dict
+) -> None:
+    row = sample_rows()[table][0] | change
+    done = cluster.psql(f"set role service_role;\n{upsert_sql(table, [row])}", database=db)
+    assert not done.ok, f"{table} accepted {change}"
+    assert "violates check constraint" in done.stderr
+    assert scalar(cluster, db, f"select count(*) from public.{table}") == "0"
+
+
+KEY_COLUMNS = [(table, key) for table, key in schema.PRIMARY_KEYS.items()]
+
+
+def test_every_natural_key_uses_the_c_collation(cluster: PgCluster, migrated: str) -> None:
+    pairs = ", ".join(f"('{table}', '{key}')" for table, key in KEY_COLUMNS)
+    collations = scalar(
+        cluster,
+        migrated,
+        "select string_agg(c.relname || '.' || a.attname || '=' || co.collname, ',' "
+        "order by c.relname) from pg_attribute a "
+        "join pg_class c on c.oid = a.attrelid "
+        "join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public' "
+        "join pg_collation co on co.oid = a.attcollation "
+        f"where (c.relname::text, a.attname::text) in ({pairs})",
+    )
+    assert sorted(collations.split(",")) == sorted(f"{t}.{k}=C" for t, k in KEY_COLUMNS)
+
+
+def test_runs_list_in_code_point_order_under_a_linguistic_default(cluster: PgCluster) -> None:
+    """A hosted project's database defaults to a linguistic collation.
+
+    RunReader lists runs in Python's code point order, and SupabaseRunReader
+    asks PostgREST for order=run_id.asc, so the key column has to sort the same
+    way whatever the database default is.
+    """
+    created = cluster.psql(
+        "create database results_icu template template0 "
+        "locale_provider icu icu_locale 'en-US' locale 'C';",
+        database="postgres",
+    )
+    if not created.ok:
+        pytest.skip(f"this server cannot create an ICU database: {created.stderr.strip()}")
+    boot = cluster.psql(SUPABASE_BOOTSTRAP, database="results_icu")
+    assert boot.ok, boot.stderr
+    for migration in MIGRATIONS:
+        applied = cluster.apply_file(migration, database="results_icu")
+        assert applied.ok, applied.stderr
+    run_ids = ["run_b", "run_B", "Run_a", "run-a", "run_a", "run_10", "run_9"]
+    template = sample_rows()[schema.RUNS][0]
+    rows = [
+        template
+        | {
+            "run_id": run_id,
+            "summary": template["summary"] | {"run_id": run_id},
+            "run_result": {"run_id": run_id},
+        }
+        for run_id in run_ids
+    ]
+    done = cluster.psql(
+        f"set role service_role;\n{upsert_sql(schema.RUNS, rows)}", database="results_icu"
+    )
+    assert done.ok, done.stderr
+    listed = scalar(
+        cluster, "results_icu", "select string_agg(run_id, ',' order by run_id) from public.runs"
+    )
+    linguistic = scalar(
+        cluster,
+        "results_icu",
+        "select string_agg(run_id, ',' order by run_id collate \"default\") from public.runs",
+    )
+    assert listed.split(",") == sorted(run_ids)
+    assert linguistic.split(",") != sorted(run_ids), "the database default is not linguistic"
 
 
 def test_retained_results_round_trip_through_postgres_as_anon(

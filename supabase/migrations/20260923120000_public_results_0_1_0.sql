@@ -4,9 +4,15 @@
 -- so the evidence can be browsed without cloning the repository. One row per
 -- run, per batch and per experiment. Every artifact is a jsonb column holding
 -- the harness's own JSON for it, schema_version included. Typed columns are
--- limited to the natural keys and the one filter RunReader needs
--- (runs.batch_id), so a bump to an artifact schema upstream changes row
--- contents and never the table layout.
+-- limited to the natural keys, runs.task_id and the one filter RunReader
+-- needs (runs.batch_id), so a bump to an artifact schema upstream changes
+-- row contents only and leaves the table layout as it is.
+--
+-- Check constraints tie each typed column to the JSON it was taken from. They
+-- compare with "is not distinct from", because ->> yields null for a key the
+-- JSON lacks and a check whose expression is null passes. The keys use the C
+-- collation, so ordering by them gives the code point order RunReader lists
+-- in, whatever collation the database defaults to.
 --
 -- Anonymous and signed-in clients may only read. The uploader in CI writes with
 -- the service key, whose Postgres role (service_role) bypasses row level
@@ -41,7 +47,7 @@ comment on table public.schema_versions is
 -- verifier_result, attribution_result and the three bundle artifacts are
 -- get_verifier(), get_attribution() and get_bundle(), null until produced.
 create table public.runs (
-    run_id text primary key,
+    run_id text collate "C" primary key,
     task_id text not null,
     batch_id text,
     summary jsonb not null,
@@ -55,11 +61,13 @@ create table public.runs (
     regression_artifact jsonb,
     content_sha256 text not null,
     constraint runs_summary_matches_keys check (
-        summary ->> 'run_id' = run_id
-        and summary ->> 'task_id' = task_id
+        (summary ->> 'run_id') is not distinct from run_id
+        and (summary ->> 'task_id') is not distinct from task_id
         and (summary ->> 'batch_id') is not distinct from batch_id
     ),
-    constraint runs_result_matches_key check (run_result ->> 'run_id' = run_id),
+    constraint runs_result_matches_key check (
+        (run_result ->> 'run_id') is not distinct from run_id
+    ),
     constraint runs_trace_is_array check (jsonb_typeof(trace) = 'array'),
     -- The bundle stage writes all three artifacts together, and get_bundle()
     -- returns all three or none.
@@ -79,12 +87,16 @@ comment on table public.runs is
 -- One row per retained batch. summary is get_batch_summary(), suite_report is
 -- get_suite_report().
 create table public.batches (
-    batch_id text primary key,
+    batch_id text collate "C" primary key,
     summary jsonb not null,
     suite_report jsonb not null,
     content_sha256 text not null,
-    constraint batches_summary_matches_key check (summary ->> 'batch_id' = batch_id),
-    constraint batches_report_matches_key check (suite_report ->> 'batch_id' = batch_id),
+    constraint batches_summary_matches_key check (
+        (summary ->> 'batch_id') is not distinct from batch_id
+    ),
+    constraint batches_report_matches_key check (
+        (suite_report ->> 'batch_id') is not distinct from batch_id
+    ),
     constraint batches_content_sha256_is_hex check (content_sha256 ~ '^[0-9a-f]{64}$')
 );
 
@@ -95,13 +107,15 @@ comment on table public.batches is
 -- One row per retained experiment. spec and result are the pair
 -- get_experiment() returns, result null until one has been recorded.
 create table public.experiments (
-    experiment_id text primary key,
+    experiment_id text collate "C" primary key,
     spec jsonb not null,
     result jsonb,
     content_sha256 text not null,
-    constraint experiments_spec_matches_key check (spec ->> 'experiment_id' = experiment_id),
+    constraint experiments_spec_matches_key check (
+        (spec ->> 'experiment_id') is not distinct from experiment_id
+    ),
     constraint experiments_result_matches_key check (
-        result is null or result ->> 'experiment_id' = experiment_id
+        result is null or (result ->> 'experiment_id') is not distinct from experiment_id
     ),
     constraint experiments_content_sha256_is_hex check (content_sha256 ~ '^[0-9a-f]{64}$')
 );

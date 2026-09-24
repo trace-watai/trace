@@ -254,7 +254,7 @@ PLANTED = {
 # How a key can sit in a retained file. A cassette or trace stores a model's
 # text as a JSON string, sometimes JSON inside JSON, and a URL stores it
 # percent-encoded, so the character before the key is often the letter of an
-# escape (the n of \\n, the 0 of %20) and a pattern anchored on a word
+# escape (the n of \n, the 0 of %20) and a pattern anchored on a word
 # boundary would not start there. Each shape is built with the real encoder.
 ENCODED = {
     "json newline": lambda secret: json.dumps({"text": "line one\n" + secret}),
