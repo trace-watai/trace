@@ -6,26 +6,40 @@ directory taking more than five seconds, or ``index.json`` passing fifty
 megabytes. This script takes that measurement.
 
 For each scale it builds a synthetic runs directory by copying the retained run
-directories under ``docs/acceptance`` and giving every copy a fresh run id. It
-then replays the index writes a ``run-suite`` sweep makes, in the order the
-runner makes them and through the real ``ArtifactStore`` methods::
+directories under ``docs/acceptance`` and giving every copy a fresh run id. A
+failing run's copies share one failure card, as #211 records them: the first
+copy of each bundle key holds the card, repair package and regression artifact,
+and every later copy holds ``bundle_ref.json`` naming it. The script then
+replays the index calls a ``run-suite`` sweep makes, in the order the runner
+makes them and through the real ``ArtifactStore`` methods::
 
     upsert_index_entry              # agent_runner, when the run finalizes
     enrich_index_entry_with_verifier  # pipeline, after verifier_result.json
+    bundle_lock                     # record_bundle, for a failing run only:
+        set_index_bundle_key        #   the run's key on its index entry
+        find_bundle_card            #   the card with that key, if any
     enrich_index_entry_with_batch   # BatchRunner, after the batch summary
 
-Each of those reads the whole index and rewrites it, so the total write cost of
-a sweep grows with the square of its size. Above ``--full-write-max`` runs the
+Each write reads the whole index and rewrites it, and the card lookup reads the
+index and stats every run directory, so the total cost of a sweep grows with
+the square of its size. A run's files appear during the replay when the runner
+would have written them. ``run_result.json`` appears just before the run's
+first index call, and its card or pointer just after its lookup, since
+``record_bundle`` writes those last. So each lookup sees the directory a real
+sweep would show it, a first occurrence misses and scans every card, and a
+repeat finds its card through the index. Above ``--full-write-max`` runs the
 full replay would take hours, so the total is estimated instead from the
 per-run cost measured at evenly spaced index sizes. Every scale small enough
 for a full replay also gets the estimate, which shows how close it lands.
 
 The script stops with an error instead of timing a directory it cannot vouch
-for. A replayed index must equal a fresh ``rebuild_index``, the sampled
-estimate must leave the index exactly as the full sweep left it, and before any
-listing is timed the index must hold exactly the run ids on disk. Without that
-last check a stale index would make ``RunReader.list_runs`` rebuild on every
-call, and the listing figures would silently time rebuilds.
+for. Every card lookup must find what the real bundle stage would, nothing for
+a key's first occurrence and that run for each repeat. A replayed index must
+equal a fresh ``rebuild_index``, the sampled estimate must leave the index
+exactly as the full sweep left it, and before any listing is timed the index
+must hold exactly the run ids on disk. Without that last check a stale index
+would make ``RunReader.list_runs`` rebuild on every call, and the listing
+figures would silently time rebuilds.
 
 Once the index is written, the script times listing four ways over the same
 directory: ``trace-harness list-runs`` as a subprocess, ``RunReader.list_runs``
@@ -36,15 +50,17 @@ run from a copy of ``apps/dashboard`` so its ``.next`` output never lands in
 the repository.
 
 ``--probe N`` adds a listing-only point at N runs. Probe directories hold only
-the three files the index path reads (``run_result.json``, ``run_config.json``,
-``verifier_result.json``) and their index comes from one ``rebuild_index``, so
-they locate where the thresholds trip without hours of copying and replay.
+the files the index path reads (``run_result.json``, ``run_config.json``,
+``verifier_result.json``, and a failing run's card or pointer) and their index
+comes from one ``rebuild_index``, so they locate where the thresholds trip
+without hours of copying and replay.
 
 ``--end-to-end SEEDS`` cross-checks the replay against the real thing. It runs
 the refund_v0 suite through ``BatchRunner`` SEEDS times with two fixture agent
 configs standing in for two providers, and times every index call the runner
-makes along the way. Each invocation is one batch of both configs, 64 runs,
-where the replay batches the 32 runs of one provider and seed.
+makes along the way, the bundle stage's key write and card lookup included.
+Each invocation is one batch of both configs, 64 runs, where the replay batches
+the 32 runs of one provider and seed.
 
 Everything the script writes goes into a new directory it creates under
 ``--work``, so a folder already there is never reused or removed. That
@@ -83,12 +99,20 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from trace_harness.attribution.schemas import AttributionResult
+from trace_harness.failure_bundles.generator import bundle_key
+from trace_harness.failure_bundles.schemas import (
+    BUNDLE_REF_SCHEMA_VERSION,
+    FAILURE_CARD_SCHEMA_VERSION,
+    BundleRef,
+)
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunResult
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.run_index import RUN_INDEX_SCHEMA_VERSION, RunIndex, RunIndexEntry
+from trace_harness.verifiers.base import VerifierResult
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RETAINED_ROOT = REPO_ROOT / "docs" / "acceptance"
@@ -99,8 +123,19 @@ SWEEP_PROVIDERS = 2
 SWEEP_SEEDS = 5
 LIST_RUNS_THRESHOLD_S = 5.0
 INDEX_SIZE_THRESHOLD_BYTES = 50_000_000  # "fifty megabytes", read in decimal units
-# The files the index path reads. A probe directory holds only these.
-INDEX_INPUTS = (names.RUN_RESULT, names.RUN_CONFIG, names.VERIFIER_RESULT)
+# The files the index path reads. A probe directory holds only these. The card
+# or the pointer carries a failing run's bundle key (#211).
+INDEX_INPUTS = (
+    names.RUN_RESULT,
+    names.RUN_CONFIG,
+    names.VERIFIER_RESULT,
+    names.FAILURE_CARD,
+    names.BUNDLE_REF,
+)
+# The bundle a home holds, which its pointers leave out.
+BUNDLE_FILES = (names.FAILURE_CARD, names.REPAIR_PACKAGE, names.REGRESSION_ARTIFACT)
+# The name a file waits under until the replay reaches the point the runner writes it.
+UNWRITTEN_PREFIX = ".unwritten."
 
 NODE_HOOKS = """\
 import { existsSync } from "node:fs";
@@ -152,6 +187,18 @@ class PlannedRun:
     run_id: str
     result: RunResult
     config: RunConfig
+    # A failing run's bundle key and the run holding its card, itself for the
+    # key's first occurrence. None for a run the bundle stage never sees.
+    bundle_key: str | None = None
+    home: str | None = None
+
+
+@dataclass(frozen=True)
+class TemplateBundle:
+    """A retained failing run's bundle key, and what its occurrence records."""
+
+    bundle_key: str
+    occurrence: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -193,19 +240,84 @@ def fresh_run_ids(count: int, seed: int) -> list[str]:
     ]
 
 
-def copy_run(template: Path, target: Path, run_id: str, only: tuple[str, ...] | None) -> None:
-    """Copy one run directory, rewriting its run id wherever a file carries it."""
+def template_bundles(templates: list[Path]) -> dict[Path, TemplateBundle]:
+    """The bundle key of every retained run that holds a failure card.
+
+    The retained cards predate failure card 0.5.0 and carry no key, so the key
+    is computed the way the bundle stage computes it, from the run's verifier
+    result, attribution and trace.
+    """
+    out = {}
+    for template in templates:
+        if not (template / names.FAILURE_CARD).is_file():
+            continue
+        store, run_id = ArtifactStore.for_run_path(template)
+        key = bundle_key(
+            VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT)),
+            AttributionResult.model_validate(store.read_json(run_id, names.ATTRIBUTION_RESULT)),
+            store.read_trace(run_id),
+        )
+        config = store.read_json(run_id, names.RUN_CONFIG)
+        out[template] = TemplateBundle(
+            bundle_key=key,
+            occurrence={
+                "task_id": store.read_json(run_id, names.RUN_RESULT)["task_id"],
+                "provider": config.get("provider"),
+                "model": config.get("model"),
+                "seed": config.get("seed"),
+            },
+        )
+    return out
+
+
+def copy_run(
+    template: Path,
+    target: Path,
+    run_id: str,
+    only: tuple[str, ...] | None,
+    bundle: tuple[str, str, list[dict[str, Any]]] | None = None,
+) -> None:
+    """Copy one run directory, rewriting its run id wherever a file carries it.
+
+    ``bundle`` is ``(bundle_key, home, occurrences)`` for a copy of a failing
+    run. The home gets the template's card with the key and every occurrence,
+    as the card stands at the end of a sweep. Any other copy leaves the card,
+    repair package and regression artifact out and gets ``bundle_ref.json``
+    naming the home, as #211 records a repeat.
+    """
     target.mkdir(parents=True)
     old = template.name.encode()
     new = run_id.encode()
+    pointer = bundle is not None and bundle[1] != run_id
     for source in template.iterdir():
         if only is not None and source.name not in only:
+            continue
+        if pointer and source.name in BUNDLE_FILES:
             continue
         data = source.read_bytes()
         if old in data:
             (target / source.name).write_bytes(data.replace(old, new))
         else:
             shutil.copyfile(source, target / source.name)
+    if bundle is None:
+        return
+    key, home, occurrences = bundle
+    if pointer:
+        task_id = json.loads((target / names.RUN_RESULT).read_text(encoding="utf-8"))["task_id"]
+        ref = BundleRef(
+            schema_version=BUNDLE_REF_SCHEMA_VERSION,
+            run_id=run_id,
+            task_id=task_id,
+            bundle_key=key,
+            canonical_run_id=home,
+        )
+        (target / names.BUNDLE_REF).write_text(ref.model_dump_json(indent=2) + "\n")
+    elif (target / names.FAILURE_CARD).is_file():
+        card = json.loads((target / names.FAILURE_CARD).read_text(encoding="utf-8"))
+        card.update(
+            schema_version=FAILURE_CARD_SCHEMA_VERSION, bundle_key=key, occurrences=occurrences
+        )
+        (target / names.FAILURE_CARD).write_text(json.dumps(card, indent=2) + "\n")
 
 
 def new_session_dir(work: Path) -> Path:
@@ -224,18 +336,49 @@ def build_runs_dir(
 ) -> list[str]:
     runs_dir.mkdir()  # raises FileExistsError rather than reuse a directory
     run_ids = fresh_run_ids(count, seed)
+    keys = template_bundles(templates)
+    homes: dict[str, str] = {}
+    occurrences: dict[str, list[dict[str, Any]]] = {}
     for i, run_id in enumerate(run_ids):
-        copy_run(templates[i % len(templates)], runs_dir / run_id, run_id, only)
+        bundled = keys.get(templates[i % len(templates)])
+        if bundled is not None:
+            homes.setdefault(bundled.bundle_key, run_id)
+            occurrences.setdefault(bundled.bundle_key, []).append(
+                {"run_id": run_id, **bundled.occurrence}
+            )
+    for i, run_id in enumerate(run_ids):
+        template = templates[i % len(templates)]
+        bundled = keys.get(template)
+        bundle = (
+            None
+            if bundled is None
+            else (
+                bundled.bundle_key,
+                homes[bundled.bundle_key],
+                occurrences[bundled.bundle_key],
+            )
+        )
+        copy_run(template, runs_dir / run_id, run_id, only, bundle)
     return run_ids
 
 
+def planned_bundle(store: ArtifactStore, run_id: str) -> tuple[str | None, str | None]:
+    """A copied run's bundle key and the run holding its card, as its files say."""
+    home = store.bundle_home(run_id)
+    if home is None:
+        return None, None
+    held = names.FAILURE_CARD if home == run_id else names.BUNDLE_REF
+    return store.read_json(run_id, held).get("bundle_key"), home
+
+
 def plan_batches(store: ArtifactStore, run_ids: list[str], batch_size: int) -> list[Batch]:
-    """Load each run's result and config, grouped the way run-suite batches them."""
+    """Load each run's result, config and bundle, grouped the way run-suite batches them."""
     planned = [
         PlannedRun(
-            run_id=run_id,
-            result=RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT)),
-            config=RunConfig.model_validate(store.read_json(run_id, names.RUN_CONFIG)),
+            run_id,
+            RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT)),
+            RunConfig.model_validate(store.read_json(run_id, names.RUN_CONFIG)),
+            *planned_bundle(store, run_id),
         )
         for run_id in run_ids
     ]
@@ -258,22 +401,88 @@ def batch_summary_payload(batch: Batch) -> dict[str, Any]:
 # --- write path ---
 
 
-def index_ops_for_run(store: ArtifactStore, run: PlannedRun) -> None:
+def unwritten(run: PlannedRun) -> tuple[str, ...]:
+    """The files of ``run`` the runner writes during the part of its run the replay times."""
+    if run.bundle_key is None:
+        return (names.RUN_RESULT,)
+    return (names.RUN_RESULT, names.FAILURE_CARD if run.home == run.run_id else names.BUNDLE_REF)
+
+
+def hide(store: ArtifactStore, run_id: str, name: str) -> None:
+    path = store.artifact_path(run_id, name)
+    if path.exists():
+        path.rename(path.with_name(UNWRITTEN_PREFIX + name))
+
+
+def reveal(store: ArtifactStore, run_id: str, name: str) -> None:
+    path = store.artifact_path(run_id, name)
+    waiting = path.with_name(UNWRITTEN_PREFIX + name)
+    if waiting.exists():
+        waiting.rename(path)
+
+
+def hide_runs(store: ArtifactStore, runs: list[PlannedRun]) -> None:
+    """Take the runs back to before the runner wrote their result, card or pointer."""
+    for run in runs:
+        for name in unwritten(run):
+            hide(store, run.run_id, name)
+
+
+def reveal_runs(store: ArtifactStore, runs: list[PlannedRun]) -> None:
+    for run in runs:
+        for name in unwritten(run):
+            reveal(store, run.run_id, name)
+
+
+def index_ops_for_run(store: ArtifactStore, run: PlannedRun) -> str | None:
+    """Make one run's index calls in the pipeline's order; return what the card lookup found.
+
+    A failing run's key write and lookup happen under the bundle lock, as
+    ``record_bundle`` makes them, and the lookup is unscoped, as a
+    ``run-suite`` cell's is.
+    """
     store.upsert_index_entry(RunIndexEntry.from_result(run.result, run.config))
     store.enrich_index_entry_with_verifier(run.run_id)
+    if run.bundle_key is None:
+        return None
+    with store.bundle_lock():
+        store.set_index_bundle_key(run.run_id, run.bundle_key)
+        return store.find_bundle_card(run.bundle_key)
+
+
+def timed_index_ops(store: ArtifactStore, run: PlannedRun) -> float:
+    """Time one run's index calls, with its files appearing when the runner writes them.
+
+    ``run_result.json`` appears just before the calls and the card or pointer
+    just after them. Neither rename is timed. The lookup has to find what the
+    real bundle stage finds, nothing for a key's first occurrence and the card's
+    run for a repeat, or the script stops.
+    """
+    reveal(store, run.run_id, names.RUN_RESULT)
+    start = time.perf_counter()
+    found = index_ops_for_run(store, run)
+    elapsed = time.perf_counter() - start
+    if run.bundle_key is not None:
+        expected = None if run.home == run.run_id else run.home
+        if found != expected:
+            raise RuntimeError(
+                f"the card lookup for {run.run_id} found {found!r}, where the bundle stage "
+                f"would find {expected!r}"
+            )
+    reveal_runs(store, [run])
+    return elapsed
 
 
 def replay_writes(store: ArtifactStore, batches: list[Batch]) -> dict[str, Any]:
-    """Replay a sweep's index writes from an empty index; return per-run costs."""
+    """Replay a sweep's index calls from an empty index; return per-run costs."""
     store.index_path().unlink(missing_ok=True)
     shutil.rmtree(store.runs_dir / names.BATCHES_DIR, ignore_errors=True)
+    hide_runs(store, [run for batch in batches for run in batch.runs])
     costs: list[float] = []
     for batch in batches:
         batch_costs = []
         for run in batch.runs:
-            start = time.perf_counter()
-            index_ops_for_run(store, run)
-            batch_costs.append(time.perf_counter() - start)
+            batch_costs.append(timed_index_ops(store, run))
         store.write_batch_summary(batch.batch_id, batch_summary_payload(batch))
         for i, run in enumerate(batch.runs):
             start = time.perf_counter()
@@ -297,10 +506,12 @@ def sampled_write_estimate(
     """Estimate a full replay's total from per-run costs at evenly spaced index sizes.
 
     At each sampled position k the index is set to the first k finished entries
-    (untimed), then run k's three index calls are timed. Repetitions sweep all
-    positions before repeating any, so a burst of load from elsewhere on the
-    machine lands on one pass rather than on every repetition of one point. The
-    total is the trapezoid sum of the per-position medians over the sweep.
+    and the runs before k show every file they wrote (untimed), then run k's
+    index calls are timed as :func:`timed_index_ops` times them, and its batch
+    enrichment after them. Repetitions sweep all positions before repeating any,
+    so a burst of load from elsewhere on the machine lands on one pass rather
+    than on every repetition of one point. The total is the trapezoid sum of the
+    per-position medians over the sweep.
 
     The last position is always the sweep's final run, so the index this leaves
     behind is what the real calls made from the first ``count - 1`` entries. It
@@ -310,19 +521,24 @@ def sampled_write_estimate(
     if samples < 2:
         raise ValueError("the estimate needs at least two sampled positions")
     runs = [(run, batch.batch_id) for batch in batches for run in batch.runs]
+    planned = [run for run, _ in runs]
     count = len(runs)
     positions = sorted({round(i * (count - 1) / (samples - 1)) for i in range(samples)})
     timings: dict[int, list[float]] = {k: [] for k in positions}
     for _ in range(reps):
+        hide_runs(store, planned[positions[0] :])
+        done = positions[0]
         for k in positions:
             run, batch_id = runs[k]
             # Untimed setup. The store's own writer, so the file the timed calls
             # read is byte for byte the file the runner would have written.
+            reveal_runs(store, planned[done:k])
             store._write_index(RunIndex(entries=final_entries[:k]))
+            cost = timed_index_ops(store, run)
             start = time.perf_counter()
-            index_ops_for_run(store, run)
             store.enrich_index_entry_with_batch(run.run_id, batch_id)
-            timings[k].append(time.perf_counter() - start)
+            timings[k].append(cost + time.perf_counter() - start)
+            done = k + 1
     points = [(k, statistics.median(timings[k])) for k in positions]
     # Sum of c(k) over k = 0..n-1: the trapezoid integral plus half of each end.
     total = (points[0][1] + points[-1][1]) / 2
@@ -665,7 +881,9 @@ def measure_end_to_end(seeds: int, work: Path, args: argparse.Namespace) -> dict
     This cross-checks the replay. Two fixture agent configs stand in for the two
     providers and each suite invocation stands in for one seed, so each batch
     holds both configs' runs. Only the outermost index call is timed, because
-    the enrich calls upsert inside.
+    the enrich calls upsert inside. The bundle stage's key write and card lookup
+    are timed too, the lookup counted to the run whose key was written just
+    before it, as ``record_bundle`` makes the two calls.
     """
     from trace_harness.runner.batch import BatchRunner
     from trace_harness.runner.suite import load_suite
@@ -706,8 +924,16 @@ def measure_end_to_end(seeds: int, work: Path, args: argparse.Namespace) -> dict
 
         setattr(ArtifactStore, name, timed_call)
 
+    keyed: list[str] = []
+
+    def keyed_run(run_id: str, bundle_key: str) -> str:
+        keyed.append(run_id)
+        return run_id
+
     wrap("upsert_index_entry", lambda entry: entry.run_id)
     wrap("enrich_index_entry_with_verifier", lambda run_id: run_id)
+    wrap("set_index_bundle_key", keyed_run)
+    wrap("find_bundle_card", lambda *a, **kw: keyed[-1])
     wrap("enrich_index_entry_with_batch", lambda run_id, batch_id: run_id)
     print(f"[end_to_end] {seeds} run-suite invocations of {len(suite.tasks)} tasks", flush=True)
     loadavg_start = os.getloadavg()

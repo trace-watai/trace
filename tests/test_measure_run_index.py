@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -17,6 +18,7 @@ from typing import Any
 import pytest
 
 from conftest import REPO_ROOT
+from trace_harness.run_reader import RunReader
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.run_index import RunIndex, RunIndexEntry
 
@@ -129,17 +131,108 @@ def test_build_runs_dir_refuses_an_existing_directory(mri: ModuleType, tmp_path:
 # --- A-2: replay equals rebuild, and the index matches the dirs before timing ---
 
 
-def test_a_replay_that_differs_from_rebuild_stops_the_run(
-    mri: ModuleType, cli_calls: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def upsert_only(store: ArtifactStore, run: Any) -> None:
-        store.upsert_index_entry(RunIndexEntry.from_result(run.result, run.config))
+def _lookup(store: ArtifactStore, run: Any, *, write_key: bool = True) -> str | None:
+    if run.bundle_key is None:
+        return None
+    with store.bundle_lock():
+        if write_key:
+            store.set_index_bundle_key(run.run_id, run.bundle_key)
+        return store.find_bundle_card(run.bundle_key)
 
-    monkeypatch.setattr(mri, "index_ops_for_run", upsert_only)
+
+def _without_the_verdict(store: ArtifactStore, run: Any) -> str | None:
+    store.upsert_index_entry(RunIndexEntry.from_result(run.result, run.config))
+    return _lookup(store, run)
+
+
+def _without_the_key_write(store: ArtifactStore, run: Any) -> str | None:
+    """Every lookup still finds the right card, through the card scan, but repeats keep no key."""
+    store.upsert_index_entry(RunIndexEntry.from_result(run.result, run.config))
+    store.enrich_index_entry_with_verifier(run.run_id)
+    return _lookup(store, run, write_key=False)
+
+
+@pytest.mark.parametrize("replay", [_without_the_verdict, _without_the_key_write])
+def test_a_replay_that_differs_from_rebuild_stops_the_run(
+    mri: ModuleType,
+    cli_calls: list[Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replay: Any,
+) -> None:
+    monkeypatch.setattr(mri, "index_ops_for_run", replay)
     with pytest.raises(RuntimeError, match="replayed index differs from rebuild_index"):
         mri.main(small_run(tmp_path / "work", "--scales", "retained"))
     assert [p.name for p in cli_calls] == ["empty"]  # only the floor, before the scale
     assert list((tmp_path / "work").iterdir()) == []
+
+
+# --- #211: repeat failures are pointers, and each lookup sees what a sweep would ---
+
+
+def test_copies_of_a_failing_run_share_one_card(mri: ModuleType, tmp_path: Path) -> None:
+    """The retained scale's five failing runs have three keys, so two copies are pointers."""
+    runs_dir = tmp_path / "runs"
+    templates = mri.retained_templates()
+    run_ids = mri.build_runs_dir(runs_dir, len(templates), templates, seed=1, only=None)
+    store = ArtifactStore(runs_dir)
+    homes = store.bundle_homes(run_ids)
+    assert len(homes) == 5
+    assert len(set(homes.values())) == 3
+    pointers = [run_id for run_id, home in homes.items() if home != run_id]
+    for run_id in pointers:
+        assert not store.exists(run_id, "failure_card.json")
+        assert not store.exists(run_id, "regression_artifact.json")
+    reader = RunReader(store)
+    for home in set(homes.values()):
+        card = store.read_json(home, "failure_card.json")
+        assert card["schema_version"] == "0.5.0"
+        on_card = [o["run_id"] for o in card["occurrences"]]
+        assert on_card[0] == home
+        assert sorted(on_card) == sorted(r for r, h in homes.items() if h == home)
+    for run_id in pointers:
+        assert reader.get_bundle(run_id).failure_card.run_id == homes[run_id]
+    keyed = {e.run_id: e.bundle_key for e in store.rebuild_index().entries if e.bundle_key}
+    assert sorted(keyed) == sorted(homes)
+
+
+def test_a_card_that_appears_before_its_lookup_stops_the_run(
+    mri: ModuleType, cli_calls: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first occurrence whose card is already on disk would skip the scan a real miss makes."""
+    monkeypatch.setattr(mri, "unwritten", lambda run: ("run_result.json",))
+    with pytest.raises(RuntimeError, match="where the bundle stage would find None"):
+        mri.main(small_run(tmp_path / "work", "--scales", "retained"))
+
+
+def test_a_lookup_that_misses_a_repeat_stops_the_run(
+    mri: ModuleType, cli_calls: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ArtifactStore, "find_bundle_card", lambda self, key, scope=None: None)
+    with pytest.raises(RuntimeError, match="the card lookup for run_"):
+        mri.main(small_run(tmp_path / "work", "--scales", "retained"))
+
+
+def test_the_end_to_end_row_times_the_bundle_lookups(
+    mri: ModuleType, cli_calls: list[Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each card lookup the runner makes is charged to the run whose key it looks up."""
+    lookups: list[str] = []
+    find = ArtifactStore.find_bundle_card
+
+    def slow(self: ArtifactStore, key: str, scope: Any = None) -> str | None:
+        lookups.append(key)
+        time.sleep(0.01)
+        return find(self, key, scope)
+
+    monkeypatch.setattr(ArtifactStore, "find_bundle_card", slow)
+    session = tmp_path / "session"
+    session.mkdir()
+    args = listing_args()
+    args.keep = False
+    out = mri.measure_end_to_end(1, session, args)
+    assert len(lookups) > 10
+    assert out["write_total_s"]["median"] >= 0.01 * len(lookups)
 
 
 def test_an_end_to_end_index_that_differs_from_rebuild_stops_the_run(
