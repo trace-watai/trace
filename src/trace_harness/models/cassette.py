@@ -147,13 +147,14 @@ def safe_response(
 ) -> tuple[dict, dict]:
     response = action.model_dump(mode="json", exclude=set(_NOT_IN_RESPONSE))
     _check_response(response, secret)
-    raw_usage = (action.raw or {}).get(usage_key, {})
-    usage = (
-        {k: v for k, v in raw_usage.items() if k in TOKEN_FIELDS and type(v) is int and v >= 0}
-        if isinstance(raw_usage, dict)
-        else {}
-    )
-    return response, usage
+    return response, _allowed_usage((action.raw or {}).get(usage_key))
+
+
+def _allowed_usage(raw_usage: Any) -> dict[str, int]:
+    """The allowlisted, non-negative integer token counts of a usage block."""
+    if not isinstance(raw_usage, dict):
+        return {}
+    return {k: v for k, v in raw_usage.items() if k in TOKEN_FIELDS and type(v) is int and v >= 0}
 
 
 def _action(entry: CassetteEntry) -> AgentAction:
@@ -270,6 +271,13 @@ class RecordingModelAdapter:
                 # it survives, and the live trace still shows the attempts.
                 error = CassetteError(f"recording model call failed at step {step}")
                 error.call_record = getattr(exc, "call_record", None)
+                # An answer the adapter rejected was billed. Only its token
+                # counts pass through, as they do for an accepted answer, so
+                # the recorded run is still priced.
+                rejected = getattr(exc, "raw", None)
+                if isinstance(rejected, dict):
+                    usage_key = USAGE_KEYS.get(self.config.provider, "usage_metadata")
+                    error.raw = {usage_key: _allowed_usage(rejected.get(usage_key))}
                 raise error from None
             secret = getattr(self._inner, "api_key", None)
             response, usage = safe_response(

@@ -411,4 +411,8 @@ class AnthropicModelAdapter:
         response, record = self._caller.call(
             lambda: client.messages.create(**request), classify_error
         )
-        return with_call_record(record, lambda: _normalize_response(response))
+        return with_call_record(
+            record,
+            lambda: _normalize_response(response),
+            raw=lambda: _response_to_dict(response),
+        )

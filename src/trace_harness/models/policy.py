@@ -46,7 +46,10 @@ The time budget
     recorded. An attempt already in flight when the budget runs out is still
     ended by the runner as ``model_timeout``, as before. Retry time therefore
     never runs past the budget unrecorded: the trace says either ``deadline``
-    or ``model_timeout``.
+    or ``model_timeout``. The caller keeps a running copy of its record in a
+    :class:`CallProgress` the runner hands down with the budget, so a
+    ``model_timeout`` error event still lists the attempts made before it,
+    with outcome ``abandoned``.
 
 Rate limit
     A minimum spacing between request starts, per provider, shared by the
@@ -64,6 +67,12 @@ What is recorded
     event, and a cassette stores it, so a replay shows the same record without
     calling anything. Exception messages are left out of the record, since
     provider error strings can echo request headers.
+
+    A response that arrives and is then rejected by the adapter (a refusal, a
+    content filter, an empty answer, parallel tool calls) was still billed.
+    :func:`with_call_record` puts the raw response on the error beside the
+    record, and the runner writes it as a ``model_response`` event before the
+    ``error``, so its usage is priced like any other response.
 
 SDK retries are off
     The Anthropic and OpenAI clients retry twice by default, which would hide
@@ -118,7 +127,9 @@ CONNECTION_ERROR_NAMES = frozenset(
     }
 )
 
-Outcome = Literal["ok", "permanent_error", "retries_exhausted", "deadline"]
+# "abandoned": the runner's timeout ended the call before the policy did, with
+# the last attempt still in flight. Only a model_timeout error event carries it.
+Outcome = Literal["ok", "permanent_error", "retries_exhausted", "deadline", "abandoned"]
 
 
 class CallPolicy(BaseModel):
@@ -267,17 +278,39 @@ _DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
 )
 
 
+class CallProgress:
+    """The record of a live call still under way, readable from another thread.
+
+    The runner hands one down with the call budget and reads it when it
+    abandons the call at its timeout. :class:`LiveCaller` replaces ``record``
+    with a new dict at every step, so a reader always sees one whole record:
+    the attempts sent so far, counting one still in flight, and outcome
+    ``abandoned``. None until the first request is about to go out.
+    """
+
+    def __init__(self) -> None:
+        self.record: dict[str, Any] | None = None
+
+
+_PROGRESS: contextvars.ContextVar[CallProgress | None] = contextvars.ContextVar(
+    "trace_call_progress", default=None
+)
+
+
 @contextlib.contextmanager
-def call_budget(seconds: float) -> Iterator[None]:
+def call_budget(seconds: float, progress: CallProgress | None = None) -> Iterator[None]:
     """Give model calls made inside this block ``seconds`` from now, in total.
 
     Set by the runner inside the thread that makes the call, so it is the same
-    budget ``_call_with_timeout`` enforces from outside.
+    budget ``_call_with_timeout`` enforces from outside. ``progress``, when
+    given, is where the call keeps its running record for the runner.
     """
     token = _DEADLINE.set(time.monotonic() + seconds)
+    progress_token = _PROGRESS.set(progress)
     try:
         yield
     finally:
+        _PROGRESS.reset(progress_token)
         _DEADLINE.reset(token)
 
 
@@ -372,10 +405,22 @@ class LiveCaller:
         if budget is None:
             budget = self._budget_seconds
         deadline = None if budget is None else self._clock() + budget
+        progress = _PROGRESS.get()
         failures: list[FailedAttempt] = []
         waited = 0.0
         attempt = 0
         last_error: Exception | None = None
+
+        def publish() -> None:
+            # What the trace should say if the runner abandons the call now.
+            if progress is not None:
+                progress.record = CallRecord(
+                    attempts=attempt,
+                    outcome="abandoned",
+                    rate_limit_wait_seconds=round(waited, 3),
+                    failures=list(failures),
+                ).model_dump(mode="json")
+
         while True:
             wait = self._limiter.reserve(
                 self.provider,
@@ -389,6 +434,7 @@ class LiveCaller:
                 self._sleep(wait)
                 waited += wait
             attempt += 1
+            publish()
             try:
                 value = fn()
             except Exception as exc:
@@ -414,6 +460,7 @@ class LiveCaller:
                 if deadline is not None and self._clock() + delay >= deadline:
                     raise self._give_up("deadline", attempt, failures, waited, exc) from exc
                 failures[-1] = failure.model_copy(update={"delay_seconds": delay})
+                publish()
                 self._sleep(delay)
                 continue
             record = CallRecord(
@@ -469,16 +516,25 @@ class LiveCaller:
         return ProviderCallError(message, call_record=record.model_dump(mode="json"))
 
 
-def with_call_record(record: CallRecord, normalize: Callable[[], AgentAction]) -> AgentAction:
+def with_call_record(
+    record: CallRecord,
+    normalize: Callable[[], AgentAction],
+    raw: Callable[[], dict[str, Any]] | None = None,
+) -> AgentAction:
     """Normalize a response and attach how it was obtained.
 
     A response that normalizes into an error (a refusal, a blocked or empty
-    answer) still cost a request, so the record rides on that error too.
+    answer, parallel tool calls) still cost a request, so the record rides on
+    that error, and so does the raw response from ``raw``, which carries the
+    usage it was billed for. The runner writes both as a ``model_response``
+    event before the ``error``.
     """
     recorded = record.model_dump(mode="json")
     try:
         action = normalize()
     except ModelAdapterError as exc:
         exc.call_record = recorded
+        if raw is not None and exc.raw is None:
+            exc.raw = raw()
         raise
     return action.model_copy(update={"call_record": recorded})

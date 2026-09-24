@@ -13,6 +13,7 @@ import json
 import random
 import socket
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ from typing import Any
 import pytest
 
 from conftest import VALID_TASK_PATH
-from trace_harness.models.anthropic import AnthropicModelAdapter
+from trace_harness.models.anthropic import ANTHROPIC_PRICING, AnthropicModelAdapter
 from trace_harness.models.anthropic import classify_error as anthropic_classify
 from trace_harness.models.base import (
     ActionKind,
@@ -539,6 +540,10 @@ class ScriptedEndpoint:
     def __call__(self, **request: Any) -> Any:
         self.requests.append(request)
         item = self.outcomes.pop(0)
+        if isinstance(item, threading.Event):
+            # A request that hangs until the test releases it.
+            item.wait(10)
+            raise APIConnectionError("released after the run moved on")
         if isinstance(item, BaseException):
             raise item
         return item
@@ -717,6 +722,39 @@ def test_an_openai_content_filter_is_not_retried() -> None:
 
 
 @pytest.mark.parametrize(
+    ("build", "response", "usage_key"),
+    [
+        (
+            anthropic_adapter,
+            lambda: AnthropicResponse([AnthropicText("No.")], stop_reason="refusal"),
+            "usage",
+        ),
+        (
+            openai_adapter,
+            lambda: OpenAIResponse(
+                [OpenAIChoice(OpenAIMessage(content=None), finish_reason="content_filter")]
+            ),
+            "usage",
+        ),
+        (gemini_adapter, lambda: GeminiResponse(""), "usage_metadata"),
+    ],
+    ids=["anthropic_refusal", "openai_content_filter", "gemini_empty"],
+)
+def test_a_rejected_answer_keeps_the_billed_response_on_the_error(
+    build, response, usage_key: str
+) -> None:
+    """The answer arrived and cost tokens before the adapter rejected it, so
+    the error carries the raw response and its usage, beside the record."""
+    adapter, endpoint = build([response()])
+    with pytest.raises(ModelAdapterError) as caught:
+        adapter.next_action(TRANSCRIPT, TOOLS)
+    assert len(endpoint.requests) == 1
+    assert caught.value.call_record["outcome"] == "ok"
+    assert caught.value.raw is not None
+    assert caught.value.raw[usage_key]
+
+
+@pytest.mark.parametrize(
     ("module_name", "class_name", "build"),
     [
         ("anthropic", "Anthropic", lambda: AnthropicModelAdapter(api_key="k")),
@@ -833,6 +871,82 @@ def test_a_run_whose_retries_run_out_ends_as_a_model_error_with_the_attempts(
     # A suite's override is what the run config records.
     config = store.read_json(entry.run_id, "run_config.json")
     assert config["call_policy"]["max_attempts"] == 3
+
+
+@pytest.mark.parametrize("mode", [None, "record"])
+def test_a_rejected_answer_is_in_the_trace_and_priced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str | None
+) -> None:
+    """A refusal ends the run as a model_error, and the billed answer is a
+    model_response before it, so the run's cost counts it. Recording keeps
+    only its token counts, as it does for an accepted answer."""
+    refusal = AnthropicResponse([AnthropicText("No.")], stop_reason="refusal")
+    monkeypatch.setattr(
+        "trace_harness.models.anthropic.AnthropicModelAdapter",
+        lambda **kw: anthropic_adapter([refusal])[0],
+    )
+    cassette = None
+    if mode is not None:
+        cassette = CassetteConfig(mode=mode, directory=str(tmp_path / "cassettes"))
+    store = ArtifactStore(tmp_path / "runs")
+    suite = _suite("anthropic", "claude-sonnet-5", cassette=cassette)
+    entry = BatchRunner(store).run(suite).entries[0]
+
+    assert entry.status == "error"
+    assert entry.termination_reason == "model_error"
+    [response] = _events(store, entry.run_id, "model_response")
+    [error] = _events(store, entry.run_id, "error")
+    assert response["step_id"] == error["step_id"] == 1
+    assert response["payload"]["raw"]["usage"] == refusal.usage
+    assert response["payload"]["call_record"]["outcome"] == "ok"
+    assert error["payload"]["kind"] == "model_error"
+    assert "call_record" not in error["payload"]
+    per_input, per_output = ANTHROPIC_PRICING["claude-sonnet-5"]
+    expected = (1000 * per_input + 100 * per_output) / 1_000_000
+    assert entry.cost_usd == pytest.approx(expected)
+
+
+def test_a_call_abandoned_at_the_timeout_keeps_its_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first attempt got a 503 and the second hung past the run's time.
+    The model_timeout error lists both, and the run's cost stays unknown,
+    because the hung request may still be billed."""
+    release = threading.Event()
+    built: list[Any] = []
+    monkeypatch.setattr(
+        "trace_harness.runner.pipeline.create_model_adapter",
+        _live_gemini([GenaiAPIError(503), release], built),
+    )
+    policy = CallPolicy(initial_delay_seconds=0.01, jitter=False, requests_per_minute=6000.0)
+    suite = _suite("gemini", "gemini-2.5-flash", call_policy=policy, timeout_seconds=0.5)
+    store = ArtifactStore(tmp_path / "runs")
+    try:
+        entry = BatchRunner(store).run(suite).entries[0]
+    finally:
+        release.set()
+
+    assert entry.termination_reason == "timeout"
+    assert len(built[0].requests) == 2
+    [error] = _events(store, entry.run_id, "error")
+    assert error["payload"]["kind"] == "model_timeout"
+    record = error["payload"]["call_record"]
+    assert record["outcome"] == "abandoned"
+    assert record["attempts"] == 2
+    assert [(f["status_code"], f["delay_seconds"]) for f in record["failures"]] == [(503, 0.01)]
+    assert _events(store, entry.run_id, "model_response") == []
+    assert entry.cost_usd is None
+
+
+def test_a_timeout_with_no_live_call_records_no_attempts() -> None:
+    """A fixture-style adapter makes no request, so there is nothing to list."""
+    release = threading.Event()
+    try:
+        with pytest.raises(Exception, match="did not return") as caught:
+            _call_with_timeout(lambda: release.wait(10), 0.05)
+    finally:
+        release.set()
+    assert caught.value.call_record is None
 
 
 def test_a_fixture_run_records_no_policy_and_no_call_record(tmp_path: Path) -> None:

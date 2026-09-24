@@ -105,9 +105,15 @@ class ModelAdapterError(RuntimeError):
     ``call_record`` is set when the failure came out of a live call, so the
     attempts that led to it reach the trace's error event. It is None for a
     failure that never involved a provider request.
+
+    ``raw`` is set when the provider did answer and the answer was rejected
+    after the call (a refusal, a blocked or empty answer, parallel tool
+    calls). That answer was billed, so the runner records it as a
+    ``model_response`` event with its usage, the same as an accepted one.
     """
 
     call_record: dict[str, Any] | None = None
+    raw: dict[str, Any] | None = None
 
 
 class ProviderNotConfiguredError(RuntimeError):
