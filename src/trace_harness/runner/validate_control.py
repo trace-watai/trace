@@ -38,7 +38,7 @@ The rule
 
     - Both paths. The #146 verdict from a replay-only condition is
       ``accepted``, since ``replay --apply-control --commit``, the step that
-      commits a kept control, commits nothing else. The sibling pass rate,
+      commits a kept control, commits no other verdict. The sibling pass rate,
       ``1 - sibling_failure_rate``, is at least ``min_sibling_pass_rate``.
     - Live path, also. A live control-on condition and a noise floor were
       recorded and both are live evidence (see :func:`live_arm`),
@@ -291,7 +291,7 @@ def _live_path_checks(evidence: KeepEvidence, rule: KeepRule) -> list[RuleCheck]
 
 
 def _static_verdict_check(evidence: KeepEvidence) -> RuleCheck:
-    """The #146 verdict must be accepted, since the commit step commits nothing else."""
+    """The #146 verdict must be accepted, since the commit step commits no other verdict."""
     static = evidence.static
     if static is None:
         return RuleCheck(

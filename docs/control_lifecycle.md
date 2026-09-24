@@ -128,7 +128,9 @@ and the result names it.
 
 `static_verdict` is a keep check on both paths because step 7,
 `replay --apply-control --commit`, reruns the replay and commits only a control
-it accepts. A keep that step would refuse is never recorded.
+whose #146 verdict is `accepted`. A keep is never recorded for a control that
+step would refuse on its verdict. The step also replays the proposed library
+before writing it (#147), and that gate can still refuse a kept control.
 
 The margin over the noise floor is the share of blocked control-on runs
 labeled `recovered` in `post_block_outcomes` with no blocking failure after the
@@ -167,7 +169,8 @@ Guarantees, each pinned by a test in `tests/test_keep_rule.py`,
 - A `live_required` or `unlabeled` artifact never reaches keep through static
   replay alone, whatever the other numbers say, and a fixture arm that replays
   the recording is static replay.
-- A keep is always a control `replay --apply-control --commit` accepts.
+- A keep always carries the `accepted` #146 verdict that
+  `replay --apply-control --commit` needs.
 - A missing or stale sidecar, or a null B1, is review with its reason.
 - Every threshold is the plan's. Moving any of the four that can move past the
   evidence changes the decision, and `min_sibling_pass_rate` is fixed at 1.0.
