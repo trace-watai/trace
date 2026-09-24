@@ -80,7 +80,12 @@ export interface RawFailedAttempt {
  */
 export interface RawCallRecord {
   attempts: number;
-  outcome: "ok" | "permanent_error" | "retries_exhausted" | "deadline" | "abandoned";
+  outcome:
+    | "ok"
+    | "permanent_error"
+    | "retries_exhausted"
+    | "deadline"
+    | "abandoned";
   rate_limit_wait_seconds: number;
   failures: RawFailedAttempt[];
 }
