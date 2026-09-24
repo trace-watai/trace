@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FIXTURES_DIR, MISSING_INFO_TASK_PATH, VALID_TASK_PATH, run_task_fixture
+from conftest import (
+    FAILURE_TASK_PATH,
+    FIXTURES_DIR,
+    MISSING_INFO_TASK_PATH,
+    VALID_TASK_PATH,
+    run_task_fixture,
+)
+from trace_harness.cli import main
 from trace_harness.environment.controls import (
     GUARDRAIL_REGISTRY,
     REFUND_WINDOW_CONTROL_ID,
@@ -37,8 +44,10 @@ from trace_harness.environment.state import (
 )
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models.base import ToolCall
+from trace_harness.regression.repair_validation import RepairValidation
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import EscalationExpectation
+from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers import refund_policy
 from trace_harness.verifiers.base import VerifierInput
@@ -444,3 +453,84 @@ def test_an_environment_built_from_a_task_enforces_escalation() -> None:
     blocked = env.check_final_answer("Declined.")
     assert blocked is not None
     assert blocked.blocked_by == "ctl_required_escalation_v1"
+
+
+# --- per-control validation of catalogue controls -----------------------------
+
+DAY_45_TASK_PATH = (
+    FIXTURES_DIR
+    / "tasks"
+    / "refund_task_families"
+    / "outage_evidence"
+    / "day_45_not_documented"
+    / "refund_outage_evidence_day_45_not_documented.json"
+)
+REFUND_TEMPLATE = "deterministic_pre_call_refund_guardrail"
+
+
+def _bundle(tmp_path: Path, task_path: Path) -> Path:
+    runs_dir = tmp_path / "bundle"
+    assert main(["--runs-dir", str(runs_dir), "run-pipeline", str(task_path)]) == 0
+    (run_dir,) = [p for p in runs_dir.iterdir() if p.is_dir() and p.name.startswith("run_")]
+    return run_dir / names.REGRESSION_ARTIFACT
+
+
+def _validate(tmp_path: Path, artifact: Path, *control_ids: str) -> RepairValidation:
+    replay_dir = tmp_path / "replay"
+    selection = [arg for cid in control_ids for arg in ("--control", cid)]
+    main(["--runs-dir", str(replay_dir), "replay", str(artifact), "--apply-control", *selection])
+    source_run_id = json.loads(artifact.read_text(encoding="utf-8"))["source_run_id"]
+    return RepairValidation.model_validate_json(
+        (replay_dir / source_run_id / names.REPAIR_VALIDATION).read_text(encoding="utf-8")
+    )
+
+
+def _verdicts(validation: RepairValidation, name: str) -> dict[str | None, str]:
+    return {c.control_id: c.verdict.value for c in validation.controls if c.control == name}
+
+
+def test_a_selected_control_is_the_one_validated(tmp_path) -> None:
+    """The store-credit control shares the refund template with the default one."""
+    validation = _validate(tmp_path, _bundle(tmp_path, DAY_45_TASK_PATH), "ctl_refund_policy_v2")
+    assert _verdicts(validation, REFUND_TEMPLATE) == {"ctl_refund_policy_v2": "rejected_overblocks"}
+
+
+def test_every_selected_control_for_one_prescription_gets_a_verdict(tmp_path) -> None:
+    validation = _validate(
+        tmp_path,
+        _bundle(tmp_path, DAY_45_TASK_PATH),
+        "ctl_refund_policy_v2",
+        REFUND_WINDOW_CONTROL_ID,
+    )
+    assert _verdicts(validation, REFUND_TEMPLATE) == {
+        # Store credit is outside the cash-only control's scope.
+        REFUND_WINDOW_CONTROL_ID: "rejected_failure_persists",
+        # Clears the store-credit check; the script then claims the blocked refund.
+        "ctl_refund_policy_v2": "rejected_overblocks",
+    }
+
+
+def test_a_default_replay_does_not_blame_a_control_flag_nobody_passed(tmp_path) -> None:
+    validation = _validate(tmp_path, _bundle(tmp_path, FAILURE_TASK_PATH))
+    skipped = {
+        c.control: c.reason or ""
+        for c in validation.controls
+        if (c.reason or "").startswith("not_selected")
+    }
+    assert set(skipped) == {
+        "required_escalation_enforcement",
+        "ticket_claim_grounding_check",
+        "current_policy_source_precedence",
+    }
+    for name, reason in skipped.items():
+        assert "excluded by --control" not in reason, name
+        assert "not in the default control set" in reason, name
+    assert "ctl_ticket_grounding_v1" in skipped["ticket_claim_grounding_check"]
+
+
+def test_an_explicit_selection_still_says_it_excluded_the_rest(tmp_path) -> None:
+    validation = _validate(
+        tmp_path, _bundle(tmp_path, FAILURE_TASK_PATH), "ctl_ticket_grounding_v1"
+    )
+    (reason,) = [c.reason for c in validation.controls if c.control == REFUND_TEMPLATE]
+    assert reason == "not_selected: this control was excluded by --control"

@@ -479,20 +479,9 @@ def _prescribed_controls(
     return prescribed, "repair_package"
 
 
-def _instance_for_repair_control(
-    name: str, selected_ids: set[str] | None = None
-) -> ControlInstance | None:
-    """The shipped control instance a repair control materializes as, if any.
-
-    Two catalogue controls can materialize one repair control (the cash-only
-    refund window and the combined refund policy both come from the refund
-    template), so one the caller selected wins over the first in the list.
-    """
-    matches = [c for c in control_catalogue() if c.provenance.repair_control == name]
-    for instance in matches:
-        if selected_ids and instance.control_id in selected_ids:
-            return instance
-    return matches[0] if matches else None
+def _catalogue_ids_for_repair_control(name: str) -> list[str]:
+    """Ids of the catalogue controls that materialize a repair control."""
+    return [c.control_id for c in control_catalogue() if c.provenance.repair_control == name]
 
 
 def _validate_controls(
@@ -505,100 +494,66 @@ def _validate_controls(
     task_fixture_args,
     pinned_state: dict[str, Any] | None,
     script,
+    explicit_selection: bool = False,
 ) -> RepairValidation:
     """Validate each prescribed control in isolation and return the artifact.
 
     Each materializable control is installed on its own, the pinned scenario is
     replayed, and every positive sibling is re-run. Validating one at a time is
     the whole point: a bundle verdict cannot say which control earned it.
+
+    Two catalogue controls can materialize one repair control (the cash-only
+    refund window and the combined refund policy both come from the refund
+    template). Every selected control that materializes a prescription gets its
+    own verdict, so selecting both yields two verdicts under one name.
+    ``explicit_selection`` says whether ``--control`` chose ``controls``, which
+    decides how a control left out of them is described.
     """
     batch_id = new_batch_id()
     pinned_checks = set(artifact.verifier_checks)
-    selected_ids = {c.control_id for c in controls}
     validations: list[ControlValidation] = []
 
     for name, expected_checks in prescribed.items():
-        instance = _instance_for_repair_control(name, selected_ids)
-        if instance is None:
-            validations.append(skipped_control(name))
-            print(f"  {name}: skipped (not materializable)")
-            continue
-        if instance.control_id not in selected_ids or not expected_checks:
+        instances = [c for c in controls if c.provenance.repair_control == name]
+        if not instances:
+            available = _catalogue_ids_for_repair_control(name)
+            if not available:
+                validations.append(skipped_control(name))
+                print(f"  {name}: skipped (not materializable)")
+                continue
             reason = (
                 "not_selected: this control was excluded by --control"
-                if instance.control_id not in selected_ids
-                else "no_linked_checks: the prescription names no checks to validate"
+                if explicit_selection
+                else "not_selected: not in the default control set; select "
+                f"{' or '.join(available)} with --control"
             )
             validations.append(
                 ControlValidation(control=name, verdict=ControlVerdict.SKIPPED, reason=reason)
             )
             print(f"  {name}: skipped ({reason})")
             continue
-
-        pinned = _run_fixture(
-            task_fixture_args(artifact.task_fixture),
-            store,
-            controls=[instance],
-            pinned_initial_state=pinned_state,
-            pinned_script=script,
-        )
-        pinned_merged, pinned_completed = _verify(store.run_dir(pinned.run_id))
-        _tag_batch(store, pinned.run_id, batch_id)
-        pinned_failed = {c.check_id for c in pinned_merged.failed_checks}
-        introduced = {
-            c.check_id
-            for c in pinned_merged.failed_checks
-            if c.check_id not in pinned_checks and c.blocks_release
-        }
-        originating = ReRun(
-            run_id=pinned.run_id,
-            task_id=pinned.task_id,
-            verdict=pinned_merged.verdict.value.upper(),
-            cleared_checks=sorted(expected_checks - pinned_failed) if pinned_completed else [],
-            failed_checks=sorted(pinned_failed),
-        )
-
-        sibling_reruns: list[ReRun] = []
-        failing_siblings: list[str] = []
-        incomplete_siblings: list[str] = []
-        for sibling in artifact.positive_sibling_tests:
-            sib = _run_fixture(task_fixture_args(sibling.task_fixture), store, controls=[instance])
-            sib_merged, sib_completed = _verify(store.run_dir(sib.run_id))
-            _tag_batch(store, sib.run_id, batch_id)
-            sib_failed = sorted(c.check_id for c in sib_merged.failed_checks)
-            sibling_reruns.append(
-                ReRun(
-                    run_id=sib.run_id,
-                    task_id=sib.task_id,
-                    verdict=sib_merged.verdict.value.upper(),
-                    failed_checks=sib_failed,
+        if not expected_checks:
+            reason = "no_linked_checks: the prescription names no checks to validate"
+            validations.append(
+                ControlValidation(control=name, verdict=ControlVerdict.SKIPPED, reason=reason)
+            )
+            print(f"  {name}: skipped ({reason})")
+            continue
+        for instance in instances:
+            validations.append(
+                _validate_one_control(
+                    store=store,
+                    artifact=artifact,
+                    name=name,
+                    expected_checks=expected_checks,
+                    instance=instance,
+                    pinned_checks=pinned_checks,
+                    batch_id=batch_id,
+                    task_fixture_args=task_fixture_args,
+                    pinned_state=pinned_state,
+                    script=script,
                 )
             )
-            if not sib_completed:
-                incomplete_siblings.append(sibling.test_name)
-            elif not sib_merged.passed:
-                failing_siblings.append(sibling.test_name)
-
-        verdict, reason = decide_verdict(
-            expected_checks=expected_checks,
-            pinned_failed_checks=pinned_failed,
-            pinned_introduced_blocking=introduced,
-            failing_siblings=failing_siblings,
-            pinned_completed=pinned_completed,
-            incomplete_siblings=incomplete_siblings,
-        )
-        validations.append(
-            ControlValidation(
-                control=name,
-                verdict=verdict,
-                reason=reason,
-                guardrail_ref=instance.guardrail_ref,
-                control_id=instance.control_id,
-                originating_rerun=originating,
-                sibling_reruns=sibling_reruns,
-            )
-        )
-        print(f"  {name}: {verdict.value}" + (f" ({reason})" if reason else ""))
 
     validation = RepairValidation(
         run_id=artifact.source_run_id,
@@ -609,6 +564,84 @@ def _validate_controls(
     ).rebuild_rollup()
     store.write_json(artifact.source_run_id, names.REPAIR_VALIDATION, validation)
     return validation
+
+
+def _validate_one_control(
+    *,
+    store: ArtifactStore,
+    artifact: RegressionArtifact,
+    name: str,
+    expected_checks: set[str],
+    instance: ControlInstance,
+    pinned_checks: set[str],
+    batch_id: str,
+    task_fixture_args,
+    pinned_state: dict[str, Any] | None,
+    script,
+) -> ControlValidation:
+    """Install one control, replay the pinned scenario and siblings, and judge it."""
+    pinned = _run_fixture(
+        task_fixture_args(artifact.task_fixture),
+        store,
+        controls=[instance],
+        pinned_initial_state=pinned_state,
+        pinned_script=script,
+    )
+    pinned_merged, pinned_completed = _verify(store.run_dir(pinned.run_id))
+    _tag_batch(store, pinned.run_id, batch_id)
+    pinned_failed = {c.check_id for c in pinned_merged.failed_checks}
+    introduced = {
+        c.check_id
+        for c in pinned_merged.failed_checks
+        if c.check_id not in pinned_checks and c.blocks_release
+    }
+    originating = ReRun(
+        run_id=pinned.run_id,
+        task_id=pinned.task_id,
+        verdict=pinned_merged.verdict.value.upper(),
+        cleared_checks=sorted(expected_checks - pinned_failed) if pinned_completed else [],
+        failed_checks=sorted(pinned_failed),
+    )
+
+    sibling_reruns: list[ReRun] = []
+    failing_siblings: list[str] = []
+    incomplete_siblings: list[str] = []
+    for sibling in artifact.positive_sibling_tests:
+        sib = _run_fixture(task_fixture_args(sibling.task_fixture), store, controls=[instance])
+        sib_merged, sib_completed = _verify(store.run_dir(sib.run_id))
+        _tag_batch(store, sib.run_id, batch_id)
+        sib_failed = sorted(c.check_id for c in sib_merged.failed_checks)
+        sibling_reruns.append(
+            ReRun(
+                run_id=sib.run_id,
+                task_id=sib.task_id,
+                verdict=sib_merged.verdict.value.upper(),
+                failed_checks=sib_failed,
+            )
+        )
+        if not sib_completed:
+            incomplete_siblings.append(sibling.test_name)
+        elif not sib_merged.passed:
+            failing_siblings.append(sibling.test_name)
+
+    verdict, reason = decide_verdict(
+        expected_checks=expected_checks,
+        pinned_failed_checks=pinned_failed,
+        pinned_introduced_blocking=introduced,
+        failing_siblings=failing_siblings,
+        pinned_completed=pinned_completed,
+        incomplete_siblings=incomplete_siblings,
+    )
+    print(f"  {name} [{instance.control_id}]: {verdict.value}" + (f" ({reason})" if reason else ""))
+    return ControlValidation(
+        control=name,
+        verdict=verdict,
+        reason=reason,
+        guardrail_ref=instance.guardrail_ref,
+        control_id=instance.control_id,
+        originating_rerun=originating,
+        sibling_reruns=sibling_reruns,
+    )
 
 
 def _tag_batch(store: ArtifactStore, run_id: str, batch_id: str) -> None:
@@ -934,6 +967,7 @@ def _replay_with_report(
             task_fixture_args=_fixture_args,
             pinned_state=pinned_state,
             script=script,
+            explicit_selection=bool(control_ids),
         )
         rollup = validation.rollup
         _print(
@@ -1095,7 +1129,8 @@ def _print_repair_validation(store: ArtifactStore, run_id: str) -> bool:
     print(f"\nControl validation for {run_id} ({validation.controls_source}):")
     for control in validation.controls:
         detail = f" — {control.reason}" if control.reason else ""
-        print(f"  {control.verdict.value:28} {control.control}{detail}")
+        via = f" [{control.control_id}]" if control.control_id else ""
+        print(f"  {control.verdict.value:28} {control.control}{via}{detail}")
     print(
         f"  rollup: {rollup.accepted} accepted, {rollup.rejected} rejected, "
         f"{rollup.skipped} skipped"
@@ -1459,8 +1494,8 @@ def main(argv: list[str] | None = None) -> int:
         dest="control_ids",
         metavar="CONTROL_ID",
         help=(
-            "with --apply-control: install only this control id (repeatable); "
-            "default is every reference control"
+            "with --apply-control: install only this control id from the control "
+            "catalogue (repeatable); default is the reference set"
         ),
     )
     p_replay.add_argument(
