@@ -32,9 +32,10 @@ Three more things hold before freeze.
   in the same commit, and only when its materialized `replay_mode_basis`
   records a block under `ctl_refund_window_v1`. A cell from the canonical or
   purchase_age family adds a pair and no independent family.
-- `pytest tests/test_exp_001.py` passes on the tree about to be frozen. While
-  the plan is unfrozen it re-materializes each fork point, so a moved fixture
-  or verifier shows up here, while the plan can still change.
+- `pytest tests/test_exp_001.py` passes on the tree about to be frozen. It
+  rehearses a frozen copy of the plan, and while the plan is unfrozen it
+  re-materializes each fork point, so a moved fixture or verifier shows up
+  here, while the plan can still change.
 
 Confirmed values are recorded in `needs_confirmation` in the commit that
 confirms them.
@@ -119,7 +120,9 @@ folder. It must end with `harness check: PASS`, meaning every pair agrees,
 nothing diverges, all eight metrics are non-null and the regeneration matches.
 Anything else is a harness defect, and the pre-registration stops the run
 there. Since no batch has run yet, fixing it means reverting the freeze commit
-and freezing again after the fix.
+and freezing again after the fix. Pass or fail, it writes `harness_check.json`
+beside the plan with the outcome, the plan's sha256 and frozen set, the commit
+it ran on and the rehearsal's numbers, and step 8 commits it.
 
 ```bash
 python scripts/dry_run_exp_001.py
@@ -177,9 +180,11 @@ retained. Both must print `identical`.
 scripts/regenerate_exp_001.sh
 ```
 
-**8. Commit** the retained folder, meaning `result.json`, `report.md`,
-`repair_effectiveness.json`, `runs/` and `cassettes/`. The plan does not
-change, and `git log --oneline -- "$PLAN"` still ends at the freeze commit.
+**8. Commit** the retained folder, meaning `harness_check.json`,
+`result.json`, `report.md`, `repair_effectiveness.json`, `runs/` and
+`cassettes/`. The plan does not change, and `git log --oneline -- "$PLAN"`
+still ends at the freeze commit. `tests/test_exp_001.py` then checks that the
+retained harness check passed on the committed plan's exact bytes.
 
 ## Cost against the cap
 
@@ -211,7 +216,7 @@ checks between runs, so the overshoot past the cap is at most one run.
 
 | Pre-registration rule | What happens |
 |---|---|
-| The harness check fails | Step 3 prints `FAIL` and no live run starts |
+| The harness check fails | Step 3 prints `FAIL`, `harness_check.json` records it, and no live run starts |
 | The budget cap is reached | `branch` refuses every later live seed, each batch lists them in `budget.not_run`, and the experiment is recorded as incomplete |
 | A frozen path changes | `branch` and `record` exit 2 with the changed files, and a restart needs a new pre-registration |
 | A pair ends with fewer than five completed seeds | It is left out of `verdict_agreement_rate`, and `result.metadata.verdict_agreement_pairs`, `report.md` and the `record` output name it with the reason |

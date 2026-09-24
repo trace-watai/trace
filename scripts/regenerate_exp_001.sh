@@ -50,6 +50,11 @@ import socket
 import sys
 from pathlib import Path
 
+# The CLI is imported before sockets are refused. Importing it can import ssl
+# through an HTTP client, and ssl subclasses socket.socket, which fails once
+# socket.socket is the refusing function below.
+from trace_harness.cli import main
+
 
 def no_network(*args, **kwargs):
     raise RuntimeError("regenerate_exp_001 must not reach the network")
@@ -57,8 +62,6 @@ def no_network(*args, **kwargs):
 
 socket.socket = no_network
 socket.create_connection = no_network
-
-from trace_harness.cli import main  # noqa: E402
 
 retained, runs, allow_drift = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3] == "1"
 kept = json.loads((retained / "result.json").read_text(encoding="utf-8"))

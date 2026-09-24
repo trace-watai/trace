@@ -10,18 +10,23 @@ The rehearsal runs scripts/dry_run_exp_001.py, the pre-registration's harness
 check over the whole plan with the fixture model standing in for every live
 model. It must fill all eight metrics, agree on every pair with zero
 divergence, and let scripts/regenerate_exp_001.sh reproduce result.json and the
-B1 sidecar exactly. It runs in a scratch folder and is never retained.
+B1 sidecar exactly. It runs on a frozen copy of the plan, the state runbook
+step 3 runs it in, in a scratch folder, and never touches the retained one.
 """
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -159,18 +164,53 @@ def _env() -> dict[str, str]:
     return env
 
 
-@pytest.fixture(scope="module")
-def dry_run(tmp_path_factory) -> tuple[subprocess.CompletedProcess, Path]:
-    work = tmp_path_factory.mktemp("exp_001") / "dry_run"
+class Rehearsal(NamedTuple):
+    ran: subprocess.CompletedProcess
+    retained: Path
+    plan: Path
+    experiment_dir_before: dict[str, str]
+    experiment_dir_after: dict[str, str]
+
+
+def _digests(folder: Path) -> dict[str, str]:
+    return {
+        str(path.relative_to(folder)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(folder.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _dry_run(plan: Path, work: Path, *extra: str) -> subprocess.CompletedProcess:
     script = REPO_ROOT / "scripts" / "dry_run_exp_001.py"
-    ran = subprocess.run(
-        [sys.executable, str(script), "--work", str(work)],
+    return subprocess.run(
+        [sys.executable, str(script), "--plan", str(plan), "--work", str(work), *extra],
         capture_output=True,
         text=True,
         env=_env(),
         cwd=REPO_ROOT,
     )
-    return ran, work / "retained"
+
+
+@pytest.fixture(scope="module")
+def frozen_plan(tmp_path_factory) -> Path:
+    """A frozen copy of the committed plan, which is what runbook step 3 rehearses.
+
+    Once the committed plan is frozen, this is a plain copy of it.
+    """
+    plan = tmp_path_factory.mktemp("exp_001_plan") / "experiment.json"
+    shutil.copy(EXP_DIR / "experiment.json", plan)
+    if PLAN.frozen_manifest.frozen_set is None:
+        with contextlib.chdir(REPO_ROOT), contextlib.redirect_stdout(io.StringIO()):
+            assert main(["experiment", "freeze", str(plan)]) == 0
+    return plan
+
+
+@pytest.fixture(scope="module")
+def dry_run(tmp_path_factory, frozen_plan) -> Rehearsal:
+    work = tmp_path_factory.mktemp("exp_001") / "dry_run"
+    before = _digests(EXP_DIR)
+    ran = _dry_run(frozen_plan, work)
+    return Rehearsal(ran, work / "retained", frozen_plan, before, _digests(EXP_DIR))
 
 
 def _load(retained: Path, name: str) -> dict:
@@ -178,18 +218,65 @@ def _load(retained: Path, name: str) -> dict:
 
 
 def test_the_dry_run_passes_the_harness_check(dry_run):
-    ran, retained = dry_run
+    ran = dry_run.ran
     assert ran.returncode == 0, ran.stdout[-3000:] + ran.stderr[-3000:]
     assert "harness check: PASS" in ran.stdout
     assert "result.json: identical, leaving out finished_at, report_path" in ran.stdout
     assert "repair_effectiveness.json: identical" in ran.stdout
-    # A scratch folder, never the retained one.
-    assert not (EXP_DIR / "result.json").exists()
-    assert not (EXP_DIR / "runs").exists()
+    # A scratch folder, never the retained one, whatever step 8 has committed there.
+    assert dry_run.experiment_dir_after == dry_run.experiment_dir_before
+    assert (dry_run.retained / "result.json").is_file()
+
+
+def test_the_harness_check_is_retained_beside_the_frozen_plan(dry_run):
+    """Runbook step 3 leaves harness_check.json beside the plan it rehearsed."""
+    record = json.loads((dry_run.plan.parent / "harness_check.json").read_text())
+    plan = ExperimentSpec.model_validate_json(dry_run.plan.read_text())
+    assert (record["passed"], record["problems"]) == (True, [])
+    assert record["experiment_id"] == PLAN.experiment_id
+    assert record["plan_sha256"] == hashlib.sha256(dry_run.plan.read_bytes()).hexdigest()
+    assert record["frozen_set"] == {
+        name: component.digest for name, component in plan.frozen_manifest.frozen_set.items()
+    }
+    result = _load(dry_run.retained, "result.json")
+    assert record["metrics"] == result["metrics"]
+    assert record["verdict_agreement_pairs"] == result["metadata"]["verdict_agreement_pairs"]
+    sidecar = _load(dry_run.retained, "repair_effectiveness.json")
+    assert record["repair_effectiveness"] == sidecar["entries"]
+    assert f"harness check: retained in {dry_run.plan.parent / 'harness_check.json'}" in (
+        dry_run.ran.stdout
+    )
+
+
+@pytest.mark.skipif(
+    not (EXP_DIR / "harness_check.json").exists(), reason="runbook step 3 has not run yet"
+)
+def test_the_retained_harness_check_passed_on_the_committed_plan():
+    record = json.loads((EXP_DIR / "harness_check.json").read_text())
+    assert record["passed"] is True, record["problems"]
+    plan_bytes = (EXP_DIR / "experiment.json").read_bytes()
+    assert record["plan_sha256"] == hashlib.sha256(plan_bytes).hexdigest()
+
+
+def test_an_unfrozen_plan_is_rehearsed_and_nothing_is_retained(tmp_path):
+    """Before step 2 the dry run freezes its own stand-in, and its check is a preview."""
+    raw = json.loads((EXP_DIR / "experiment.json").read_text())
+    raw["frozen_manifest"]["frozen_set"] = None
+    raw["frozen_manifest"]["fixtures_hash"] = "sha256:set-by-experiment-freeze"
+    plan = tmp_path / "plan" / "experiment.json"
+    plan.parent.mkdir()
+    plan.write_text(json.dumps(raw, indent=2) + "\n")
+
+    ran = _dry_run(plan, tmp_path / "work")
+
+    assert ran.returncode == 0, ran.stdout[-3000:] + ran.stderr[-3000:]
+    assert "harness check: PASS" in ran.stdout
+    assert "harness check: not retained, since the plan is not frozen" in ran.stdout
+    assert sorted(p.name for p in plan.parent.iterdir()) == ["experiment.json"]
 
 
 def test_the_dry_run_fills_all_eight_metrics(dry_run):
-    _, retained = dry_run
+    retained = dry_run.retained
     result = _load(retained, "result.json")
     metrics, extra = result["metrics"], result["metrics"]["extra"]
     assert result["experiment_id"] == "exp_001_replay_validity_dry_run"
@@ -223,7 +310,7 @@ def test_the_dry_run_fills_all_eight_metrics(dry_run):
 
 
 def test_the_dry_run_sidecar(dry_run):
-    _, retained = dry_run
+    retained = dry_run.retained
     sidecar = RepairEffectivenessReport.model_validate(_load(retained, "repair_effectiveness.json"))
     rows = {
         (e.control_on.condition, e.fork_step): (
@@ -265,7 +352,7 @@ def test_the_dry_run_sidecar(dry_run):
     ],
 )
 def test_regenerate_catches_an_edited_number(dry_run, tmp_path, name, edit):
-    _, retained = dry_run
+    retained = dry_run.retained
     copy = tmp_path / "retained"
     shutil.copytree(retained, copy)
     data = _load(copy, name)
@@ -282,7 +369,7 @@ def test_regenerate_catches_an_edited_number(dry_run, tmp_path, name, edit):
 
 
 def test_regenerate_ignores_only_the_timestamp_and_the_report_path(dry_run, tmp_path):
-    _, retained = dry_run
+    retained = dry_run.retained
     copy = tmp_path / "retained"
     shutil.copytree(retained, copy)
     data = _load(copy, "result.json")
@@ -308,7 +395,7 @@ def _dry_run_module():
 
 
 def test_the_harness_check_fails_a_disagreement_a_divergence_or_a_null(dry_run):
-    _, retained = dry_run
+    retained = dry_run.retained
     check = _dry_run_module().harness_check
     result = _load(retained, "result.json")
     assert check(result) == []
@@ -340,6 +427,45 @@ def test_the_stand_in_replaces_every_live_model_and_nothing_else():
         )
 
 
+def test_the_stand_in_is_written_as_record_writes_the_plan():
+    """retain_exp_001.sh compares the two, so a frozen plan's stand-in must match (r13-1).
+
+    A frozen plan is not frozen again in the rehearsal, so nothing rewrites the
+    stand-in before record reads it and writes it back through the model.
+    """
+    stand_in = _dry_run_module().stand_in(json.loads((EXP_DIR / "experiment.json").read_text()))
+    assert ExperimentSpec.model_validate(stand_in).model_dump(mode="json") == stand_in
+
+
+def test_regenerate_imports_the_cli_before_refusing_sockets(dry_run, tmp_path):
+    """An HTTP client imported with the CLI imports ssl, which needs the real socket class."""
+    copy = tmp_path / "retained"
+    shutil.copytree(dry_run.retained, copy)
+    wrapper = tmp_path / "python_importing_ssl_with_the_cli.py"
+    wrapper.write_text(
+        "import importlib.abc, sys\n"
+        "class ImportSslWithTheCli(importlib.abc.MetaPathFinder):\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'trace_harness.cli':\n"
+        "            import ssl  # noqa: F401\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, ImportSslWithTheCli())\n"
+        "sys.argv = sys.argv[1:]\n"
+        "exec(compile(sys.stdin.read(), '<stdin>', 'exec'), {'__name__': '__main__'})\n"
+    )
+    python = tmp_path / "python"
+    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{wrapper}" "$@"\n')
+    python.chmod(0o755)
+    ran = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "regenerate_exp_001.sh"), str(copy)],
+        capture_output=True,
+        text=True,
+        env={**_env(), "PYTHON": str(python)},
+    )
+    assert ran.returncode == 0, ran.stdout[-2000:] + ran.stderr[-2000:]
+    assert "result.json: identical" in ran.stdout
+
+
 def test_regenerate_says_when_nothing_is_retained(tmp_path):
     ran = subprocess.run(
         ["bash", str(REPO_ROOT / "scripts" / "regenerate_exp_001.sh"), str(tmp_path)],
@@ -352,7 +478,7 @@ def test_regenerate_says_when_nothing_is_retained(tmp_path):
 
 
 def test_retain_refuses_a_credential(dry_run, tmp_path):
-    _, retained = dry_run
+    retained = dry_run.retained
     runs = retained.parent / "runs"
     target = tmp_path / "retained"
     target.mkdir()

@@ -217,11 +217,12 @@ a newly frozen plan.
 `docs/acceptance/experiments/exp_001_replay_validity/` holds brief 001's plan,
 committed unfrozen before any condition runs, and the three fork points it
 branches from under `fork_points/`. Until its live run, the collector lists it
-as `not_recorded`. After the run the same folder gains `result.json`,
-`report.md`, `repair_effectiveness.json`, the runs dir and the cassettes, and
-`scripts/regenerate_exp_001.sh` recomputes the result and the sidecar from them
-offline. [runbook_001.md](experiments/runbook_001.md) gives the command
-sequence and the cost estimate.
+as `not_recorded`. After the run the same folder gains `harness_check.json`,
+the retained outcome of the pre-registration's harness check on the frozen
+plan, then `result.json`, `report.md`, `repair_effectiveness.json`, the runs
+dir and the cassettes. `scripts/regenerate_exp_001.sh` recomputes the result
+and the sidecar from them offline. [runbook_001.md](experiments/runbook_001.md)
+gives the command sequence and the cost estimate.
 
 ## Out of scope here
 
