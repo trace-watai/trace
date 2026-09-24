@@ -9,8 +9,8 @@ An experiment is that missing record, in two files.
 
 :class:`ExperimentSpec` is the plan, written *before* anything runs. It names
 the hypothesis, freezes what must not change while the conditions run, and
-lists the conditions themselves. Writing it first is the point: a plan composed
-after seeing the numbers is not a plan.
+lists the conditions themselves. Writing it first is the point, since a plan
+composed after seeing the numbers can be fitted to them.
 
 :class:`ExperimentResult` is what came back. It maps each condition to the batch
 that answered it, carries the metric set from the #27 memo, and records a
@@ -308,7 +308,7 @@ def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -
 
 
 def derive_metrics(
-    batch_summaries: list[Any], *, condition_names: dict[str, str] | None = None
+    batch_summaries: list[Any], *, conditions: dict[str, ConditionSpec] | None = None
 ) -> ExperimentMetrics:
     """Compute every metric the batch summaries can support today.
 
@@ -324,8 +324,8 @@ def derive_metrics(
       ``cost_recorded_k`` and ``cost_recorded_n``.
     - ``latency_ms_p50`` is the median over completed runs.
 
-    All three pool every recorded condition. ``condition_names`` maps a batch
-    id to the condition it answered, and when more than one condition is
+    All three pool every recorded condition. ``conditions`` maps a batch id to
+    the plan's condition it answered, and when more than one condition is
     recorded the failure count and the median are also given per condition in
     ``extra``, as ``verified_failure_count.<condition>`` and
     ``latency_ms_p50.<condition>``. A fixture arm's near-zero latency would
@@ -351,10 +351,11 @@ def derive_metrics(
         extra["cost_recorded_k"] = len(costs)
         extra["cost_recorded_n"] = len(entries)
 
-    names = condition_names or {}
+    answered = conditions or {}
     by_condition: dict[str, list[Any]] = {}
     for summary in summaries:
-        name = names.get(summary.batch_id, summary.batch_id)
+        condition = answered.get(summary.batch_id)
+        name = condition.name if condition is not None else summary.batch_id
         by_condition.setdefault(name, []).extend(summary.entries)
     if len(by_condition) > 1:
         for name, condition_entries in sorted(by_condition.items()):

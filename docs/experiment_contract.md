@@ -15,15 +15,15 @@ appendix by `tests/test_experiment.py`.
 
 ```
 runs/experiments/{experiment_id}/
-  experiment.json    the plan, written before anything runs
+  experiment.json    the plan, written before anything ran and copied here by the first record
   result.json        which batch answered which condition, and what was decided
   report.md          the same thing for a human
 ```
 
 **The plan comes first.** That ordering is the point. A plan composed after
-seeing the numbers is not a plan, and the whole reason to write the hypothesis
-and the frozen manifest down is that they cannot then be adjusted to fit the
-result.
+seeing the numbers can be fitted to them, and the whole reason to write the
+hypothesis and the frozen manifest down is that they cannot then be adjusted to
+fit the result.
 
 ### `experiment.json`
 
@@ -54,10 +54,11 @@ if not from the beginning.
 
 Each control id is checked when the plan loads. It must be an id
 `select_controls` accepts, the lookup `replay --control` uses and the branch
-stage (#159) installs through, and its guardrail must resolve in the
-guardrail registry with the rules its `rule_ref` names. A misspelled id therefore fails before any
-condition runs. Every entry in `fixtures/controls/library.json` was committed
-from those controls, and a test keeps each of them loadable in a plan.
+stage (#159) installs through, and its guardrail must resolve in the guardrail
+registry with the rules its `rule_ref` names. A misspelled id therefore fails
+before any condition runs. Every entry in `fixtures/controls/library.json` was
+committed from those controls, and a test keeps each of them loadable in a
+plan.
 
 | kind | what it does |
 |---|---|

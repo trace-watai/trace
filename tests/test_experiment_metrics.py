@@ -15,7 +15,12 @@ from test_experiment import _entry, _spec, _summary
 from trace_harness.cli import main
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.batch import BatchSummary
-from trace_harness.runner.experiment import ExperimentMetrics, ExperimentResult, derive_metrics
+from trace_harness.runner.experiment import (
+    ConditionKind,
+    ExperimentMetrics,
+    ExperimentResult,
+    derive_metrics,
+)
 from trace_harness.tracing.artifact_store import ArtifactStore
 
 RETAINED = REPO_ROOT / "docs" / "acceptance"
@@ -110,9 +115,12 @@ def test_each_condition_is_also_reported_on_its_own() -> None:
             _entry("l3", "fail", latency=1000.0),
         ],
     )
-    metrics = derive_metrics(
-        [replay, live], condition_names={"b_replay": "replay_only", "b_live": "live_on"}
-    )
+    plan = _spec().conditions[0]
+    arms = {
+        "b_replay": plan,
+        "b_live": plan.model_copy(update={"name": "live_on", "kind": ConditionKind.LIVE}),
+    }
+    metrics = derive_metrics([replay, live], conditions=arms)
 
     assert metrics.verified_failure_count == 4
     assert metrics.latency_ms_p50 == 900.0
@@ -124,7 +132,7 @@ def test_each_condition_is_also_reported_on_its_own() -> None:
 
 def test_one_condition_adds_no_per_condition_keys() -> None:
     summary = _summary("b", [_entry("a", "fail", latency=1.0)])
-    metrics = derive_metrics([summary], condition_names={"b": "replay_only"})
+    metrics = derive_metrics([summary], conditions={"b": _spec().conditions[0]})
     assert not [key for key in metrics.extra if "." in key]
 
 
@@ -184,3 +192,21 @@ def test_a_fresh_baseline_run_records_five_verified_failures(tmp_path, monkeypat
     assert result is not None
     assert result.metrics.verified_failure_count == 5
     assert result.metrics.extra["cost_recorded_n"] == 9
+
+
+def test_record_names_the_per_condition_metrics_after_the_plan(tmp_path) -> None:
+    runs = tmp_path / "runs"
+    store = ArtifactStore(runs)
+    store.write_batch_summary("b1", _summary("b1", [_entry("a", "fail"), _entry("b", "fail")]))
+    store.write_batch_summary("b2", _summary("b2", [_entry("c", "pass")]))
+    live = _spec().conditions[0].model_copy(update={"name": "live_on"})
+    spec = _spec(conditions=[_spec().conditions[0], live])
+    plan = tmp_path / "experiment.json"
+    plan.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
+
+    argv = ["--condition", "replay_only=b1", "--condition", "live_on=b2"]
+    assert main(["--runs-dir", str(runs), "experiment", "record", str(plan), *argv]) == 0
+    _, result = RunReader(store).get_experiment(spec.experiment_id)
+    assert result is not None
+    assert result.metrics.extra["verified_failure_count.replay_only"] == 2
+    assert result.metrics.extra["verified_failure_count.live_on"] == 0

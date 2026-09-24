@@ -1054,6 +1054,7 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         validate_condition_batches(spec, condition_batches)
     except ValueError as exc:
         raise CliInputError(str(exc)) from None
+    declared = {condition.name: condition for condition in spec.conditions}
 
     summaries = []
     for batch_id in condition_batches.values():
@@ -1074,7 +1075,7 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         condition_batches=condition_batches,
         metrics=derive_metrics(
             summaries,
-            condition_names={batch: name for name, batch in condition_batches.items()},
+            conditions={batch: declared[name] for name, batch in condition_batches.items()},
         ),
         decision=Decision(args.decision),
         decided_by=DecidedBy(args.decided_by),
