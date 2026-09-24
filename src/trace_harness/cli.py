@@ -10,6 +10,7 @@ Commands (each is one pipeline stage; ``run-pipeline`` chains them):
     trace-harness run-suite    fixtures/suites/refund_v0.json
     trace-harness collect-regressions docs/acceptance/runs
     trace-harness report-suite batch_<...>
+    trace-harness branch       <regression_artifact.json> --experiment <experiment.json>
 
 ``run-suite`` runs many tasks across agent configs in one batch, isolating
 per-run failures and writing a batch summary for dashboard metrics.
@@ -93,7 +94,7 @@ from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
-from trace_harness.tracing.events import TraceEvent, TraceEventType
+from trace_harness.tracing.events import TraceEvent, TraceEventType, utc_now
 from trace_harness.verifiers.base import (
     VerifierInput,
     VerifierResult,
@@ -1098,7 +1099,6 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     """
     from trace_harness.runner.batch import BatchSummary
     from trace_harness.runner.experiment import (
-        PRE_FROZEN_SET_SCHEMA_VERSION,
         DecidedBy,
         Decision,
         ExperimentResult,
@@ -1108,7 +1108,7 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         render_experiment_markdown,
         validate_condition_batches,
     )
-    from trace_harness.runner.frozen_set import check_frozen_set, render_changes
+    from trace_harness.runner.frozen_set import render_changes
 
     spec_path, spec = _load_experiment_plan(args.experiment_path)
 
@@ -1145,34 +1145,36 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     declared = {condition.name: condition for condition in spec.conditions}
 
     manifest = spec.frozen_manifest
-    drift = []
-    if manifest.frozen_set is None:
-        if spec.schema_version != PRE_FROZEN_SET_SCHEMA_VERSION:
-            raise CliInputError(
-                f"{spec_path} has no frozen set; run `trace-harness experiment freeze "
-                f"{spec_path}` before any condition runs"
-            )
-    else:
-        drift = check_frozen_set(
-            manifest.frozen_set,
-            Path.cwd(),
-            suite_id=manifest.suite_id,
-            labels_path=manifest.labels_path,
-        )
-        if drift and not args.allow_drift:
-            listed = "\n".join(f"  {line}" for line in render_changes(drift))
-            raise CliInputError(
-                f"the frozen set of {spec.experiment_id} changed since the plan was frozen, "
-                f"so recording is refused:\n{listed}\nRestore those files, or pass "
-                "--allow-drift to record the result as drifted with decision review."
-            )
+    drift = _frozen_set_drift(
+        spec,
+        spec_path,
+        allow_drift=args.allow_drift,
+        refused="recording is refused",
+        override="--allow-drift to record the result as drifted with decision review",
+    )
 
     summaries = []
-    for batch_id in condition_batches.values():
+    for name, batch_id in condition_batches.items():
         try:
-            summaries.append(BatchSummary.model_validate(store.read_batch_summary(batch_id)))
+            summary = BatchSummary.model_validate(store.read_batch_summary(batch_id))
         except FileNotFoundError as exc:
             raise CliInputError(str(exc)) from None
+        # A branch batch names the experiment and condition it ran. Recording
+        # it under another name would swap the arms, and with them the two
+        # divergence rates, and under another plan it answers a different
+        # question.
+        ran_for = summary.metadata.get("experiment_id")
+        if ran_for not in (None, spec.experiment_id):
+            raise CliInputError(
+                f"batch {batch_id} ran for experiment {ran_for!r} and cannot answer "
+                f"{spec.experiment_id!r}"
+            )
+        produced_for = summary.metadata.get("condition")
+        if produced_for not in (None, name):
+            raise CliInputError(
+                f"batch {batch_id} ran condition {produced_for!r} and cannot answer {name!r}"
+            )
+        summaries.append(summary)
     try:
         check_frozen_suite(
             spec,
@@ -1219,7 +1221,146 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     for metric in type(result.metrics).memo_field_names():
         value = getattr(result.metrics, metric)
         _print(f"  {metric}:", "not measured" if value is None else str(value))
+    if excluded := result.metrics.extra.get("live_fixture_batches_excluded"):
+        _print("left out:", f"{excluded} fixture batch(es) from the live metrics")
     _print("written:", str(store.experiment_dir(spec.experiment_id)))
+    return 0
+
+
+def _frozen_set_drift(
+    spec: Any, spec_path: Path, *, allow_drift: bool, refused: str, override: str
+) -> list[Any]:
+    """Recompute a plan's frozen set and refuse on drift unless allowed (#195).
+
+    A 0.1.0 plan predates the frozen set and returns no drift. A later plan
+    with no frozen set is refused, since nothing could show its evaluator held.
+    """
+    from trace_harness.runner.experiment import PRE_FROZEN_SET_SCHEMA_VERSION
+    from trace_harness.runner.frozen_set import check_frozen_set, render_changes
+
+    manifest = spec.frozen_manifest
+    if manifest.frozen_set is None:
+        if spec.schema_version != PRE_FROZEN_SET_SCHEMA_VERSION:
+            raise CliInputError(
+                f"{spec_path} has no frozen set; run `trace-harness experiment freeze "
+                f"{spec_path}` before any condition runs"
+            )
+        return []
+    drift = check_frozen_set(
+        manifest.frozen_set,
+        Path.cwd(),
+        suite_id=manifest.suite_id,
+        labels_path=manifest.labels_path,
+    )
+    if drift and not allow_drift:
+        listed = "\n".join(f"  {line}" for line in render_changes(drift))
+        raise CliInputError(
+            f"the frozen set of {spec.experiment_id} changed since the plan was frozen, "
+            f"so {refused}:\n{listed}\nRestore those files, or pass {override}."
+        )
+    return drift
+
+
+def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
+    """Run each condition of an experiment from a regression artifact (#159).
+
+    Live conditions go through ``runner.branch``. ``static_replay`` conditions
+    reuse the ``replay --apply-control`` path and record its verdict as a batch
+    of one. Every condition is checked before any of them runs.
+    """
+    from trace_harness.runner.batch import BUDGET_UNENFORCEABLE, BudgetGuard
+    from trace_harness.runner.branch import (
+        admit_before_any_run,
+        check_cassette_paths,
+        load_artifact,
+        replay_batch,
+        run_branch,
+        validate_condition,
+    )
+    from trace_harness.runner.experiment import ConditionKind
+
+    artifact_path = Path(args.artifact_path)
+    if not artifact_path.is_file():
+        raise CliInputError(f"regression artifact not found: {artifact_path}")
+    spec_path, spec = _load_experiment_plan(args.experiment)
+    conditions = [c for c in spec.conditions if args.condition in (None, c.name)]
+    if not conditions:
+        declared = sorted(c.name for c in spec.conditions)
+        raise CliInputError(f"condition {args.condition!r} is not declared; declared: {declared}")
+    artifact = load_artifact(artifact_path)
+    for condition in conditions:
+        validate_condition(artifact, condition)
+    # Recording never overwrites a cassette, so a collision found at a later
+    # seed would come after earlier seeds had spent.
+    check_cassette_paths(artifact, conditions)
+    # The same check record runs, made before any spend: a sweep on a changed
+    # evaluator would be refused at record after its money was gone.
+    drift = _frozen_set_drift(
+        spec,
+        spec_path,
+        allow_drift=args.allow_drift,
+        refused="branching is refused before any run",
+        override="--allow-drift to run anyway (record will need it too)",
+    )
+    if drift:
+        _print("frozen set:", f"DRIFTED, {len(drift)} file(s), running with --allow-drift")
+    # One guard for the whole invocation, from the plan's cap (#196). Asking it
+    # about every live condition first means a cap that cannot hold stops every
+    # live run before the first one starts.
+    guard = BudgetGuard(spec.budget.max_cost_usd)
+    admit_before_any_run(guard, conditions)
+
+    pairs: list[str] = []
+    for condition in conditions:
+        print(f"\nBranch condition: {condition.name} ({condition.kind.value})")
+        if condition.kind is ConditionKind.STATIC_REPLAY:
+            started_at = utc_now()
+            report = _replay_with_report(
+                artifact_path,
+                store,
+                apply_control=bool(condition.control_ids),
+                control_ids=condition.control_ids or None,
+            )
+            summary = replay_batch(report, spec, condition, artifact_path, store, started_at)
+        else:
+            outcome = run_branch(artifact_path, spec, condition, store, guard=guard)
+            if outcome.summary is None:
+                print(f"  skipped: {outcome.skipped}")
+                continue
+            summary = outcome.summary
+        for entry in summary.entries:
+            divergence = (
+                ""
+                if entry.diverged is None
+                else f", diverged={entry.diverged} "
+                f"(first at step {entry.first_post_fork_divergence_step})"
+            )
+            _print(
+                f"seed {entry.seed}:" if entry.seed is not None else "run:",
+                f"{entry.run_id} {entry.status} {entry.verdict}, "
+                f"post_block_outcome={entry.post_block_outcome}{divergence}",
+            )
+        budget = summary.budget
+        if budget is not None and budget.stop_reason is not None:
+            _print("stopped:", f"{budget.stop_reason}; {budget.detail}")
+            _print("not run:", f"{len(budget.not_run)} seed(s)")
+        _print("batch:", str(store.batch_summary_path(summary.batch_id)))
+        pairs.append(f"--condition {condition.name}={summary.batch_id}")
+
+    print()
+    _print(
+        "budget:",
+        f"${guard.spent_usd:.6f} of ${guard.max_cost_usd:.6f} spent on live runs",
+    )
+    if guard.stop_reason is not None:
+        _print("stopped:", f"{guard.stop_reason}; {guard.detail}")
+    # Exits as run-suite does: a cap the harness cannot enforce is a
+    # configuration problem, and an exhausted cap is a recorded early stop.
+    if guard.stop_reason == BUDGET_UNENFORCEABLE:
+        return 2
+    if pairs:
+        print("\nRecord with:")
+        print(f"  trace-harness experiment record {spec_path} " + " ".join(pairs))
     return 0
 
 
@@ -1826,6 +1967,22 @@ def main(argv: list[str] | None = None) -> int:
         "list-experiments", parents=[common], help="list recorded experiments in id order"
     )
 
+    p_branch = sub.add_parser(
+        "branch",
+        parents=[common],
+        help="continue a recorded run from each experiment condition's start step",
+    )
+    p_branch.add_argument("artifact_path", help="path to a regression_artifact.json")
+    p_branch.add_argument("--experiment", required=True, help="path to the experiment plan JSON")
+    p_branch.add_argument(
+        "--condition", default=None, metavar="NAME", help="run only this declared condition"
+    )
+    p_branch.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="run even if the plan's frozen set changed; record will need the flag too",
+    )
+
     p_suite = sub.add_parser(
         "run-suite",
         parents=[common],
@@ -1964,6 +2121,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         return _experiment_record(args, store)
     if args.command == "list-experiments":
         return _list_experiments(store)
+    if args.command == "branch":
+        return _branch(args, store)
     if args.command == "run-suite":
         return _run_suite(args, store)
     if args.command == "collect-regressions":

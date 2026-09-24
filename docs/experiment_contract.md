@@ -7,9 +7,10 @@ with a guardrail on and again with it off leaves two batch ids in the batches
 folder, with the comparison living in somebody's notes.
 
 Owner: Evaluation Systems. Schema: `trace_harness/runner/experiment.py`
-(`EXPERIMENT_SCHEMA_VERSION = 0.2.0`, which added the frozen set). Metric names
-come from [methodology_metrics.md](methodology_metrics.md) and are asserted
-against its appendix by `tests/test_experiment.py`.
+(`EXPERIMENT_SCHEMA_VERSION = 0.3.0`; 0.2.0 added the frozen set and 0.3.0
+added `continuation_script`). Metric names come from
+[methodology_metrics.md](methodology_metrics.md) and are asserted against its
+appendix by `tests/test_experiment.py`.
 
 ## Two files
 
@@ -34,7 +35,7 @@ fit the result.
 | `hypothesis` | one sentence, stated before running |
 | `frozen_manifest` | `suite_id`, `verifier_ids`, `fixtures_hash`, `labels_path`, `frozen_set` |
 | `conditions` | one per arm, names unique within the experiment |
-| `budget` | `max_runs`, `max_cost_usd` |
+| `budget` | `max_runs`, `max_cost_usd`; `branch` enforces `max_cost_usd` per invocation ([branch_stage.md](branch_stage.md#budget)), and `max_runs` is not enforced |
 
 `experiment_id` and `created_at` default when a plan is built in code, but a
 plan file must state both. A defaulted id would file every record of the same
@@ -56,7 +57,9 @@ and proves nothing about the files. The retained baseline's
 
 A condition declares its `kind`, the `agent_config` to run under, the
 `control_ids` to install, the `seeds`, and where in a recorded run to `start`
-if not from the beginning.
+if not from the beginning. `continuation_script` is optional and names a
+fixture script the branch stage plays after the start step, for the fixture
+provider only; without one the fixture provider plays the recording.
 
 Each control id is checked when the plan loads. It must be an id
 `select_controls` accepts, the lookup `replay --control` uses and the branch
@@ -95,9 +98,10 @@ nothing was checked.
 
 A change to the evaluator after its plan is frozen is refused. The plan's
 `frozen_manifest.frozen_set` holds a sha256 for every file of the evaluator,
-written once by `experiment freeze` before any condition runs. `experiment
-record` recomputes them and refuses, listing each file that changed, was added
-or was removed. The module is `trace_harness/runner/frozen_set.py`.
+written once by `experiment freeze` before any condition runs. `branch`
+recomputes them before its first run and `experiment record` recomputes them
+again, and each refuses, listing each file that changed, was added or was
+removed. The module is `trace_harness/runner/frozen_set.py`.
 
 | component | what is hashed |
 |---|---|
@@ -168,8 +172,8 @@ decision, which stops an edit of the decision alone. With nothing drifted,
 
 **Plans from 0.1.0.** A plan written under schema 0.1.0 has no frozen set and
 still loads. `record` proceeds, and the result carries both flags false, which
-reads as unchecked and never as verified. A plan at 0.2.0 without a frozen set
-is refused with a pointer to `experiment freeze`.
+reads as unchecked and never as verified. A plan at 0.2.0 or later without a
+frozen set is refused with a pointer to `experiment freeze`.
 
 **Retained experiments in CI.** `check_repo.sh` passes `--experiments
 docs/acceptance/experiments` to `collect-regressions`, which recomputes every
@@ -223,7 +227,7 @@ Every metric is nullable, and a missing one stays null. A condition set that
 never ran live cannot produce a divergence rate, and reporting that as `0.0`
 would read as a measurement that was never taken.
 
-Today `experiment record` derives three of the eight from the batch summaries,
+`experiment record` derives three of the eight from any batch summaries,
 following Part B2 of [methodology_metrics.md](methodology_metrics.md):
 
 | metric | how | null when |
@@ -240,28 +244,35 @@ pooling it twice would count its runs twice.
 
 The batch entry does not record `blocks_release`, so a failure of a
 non-blocking check counts toward `verified_failure_count` although B2 counts
-blocking failures only. The divergence rates arrive with the branch stage
-(#159) and `post_block_outcomes` with the post-block classifier (#157).
-Nothing derives `verdict_agreement_rate` or `sibling_failure_rate` yet.
+blocking failures only.
+
+The two divergence rates and `post_block_outcomes` come from the batches the
+branch stage writes, with the counts behind each rate in `extra`
+([branch_stage.md](branch_stage.md#metrics)). Nothing derives
+`verdict_agreement_rate` or `sibling_failure_rate` yet.
 
 ## Commands
 
 ```bash
 trace-harness experiment freeze <experiment.json>
+trace-harness branch <regression_artifact.json> --experiment <experiment.json> [--allow-drift]
 trace-harness experiment record <experiment.json> --condition <name>=<batch_id> ... [--allow-drift]
 trace-harness list-experiments
 ```
 
 `freeze` writes the frozen set into the plan and is the only command that
-writes a plan file. `record` reads the plan, never writes that file, checks the
-frozen set, computes what it can, and writes the result and report under
-`runs/experiments/{experiment_id}/`. The first record also stores a copy of the
-plan there, and no later record rewrites it. Recording again with a
-plan that differs from the stored copy exits 2 and writes nothing, since
-changing a plan after its numbers came in is what writing it first prevents; a
-changed plan needs a new `experiment_id`. Recording the same plan again replaces
-the result, which is how a decision is revised. Naming one condition twice, or
-passing a batch from another suite, also exits 2 before anything is written.
+writes a plan file. `branch` runs the conditions and prints the pairs `record`
+takes ([branch_stage.md](branch_stage.md)). `record` reads the plan, never
+writes that file, checks the frozen set, computes what it can, and writes the
+result and report under `runs/experiments/{experiment_id}/`. The first record
+also stores a copy of the plan there, and no later record rewrites it.
+Recording again with a plan that differs from the stored copy exits 2 and
+writes nothing, since changing a plan after its numbers came in is what
+writing it first prevents; a changed plan needs a new `experiment_id`.
+Recording the same plan again replaces the result, which is how a decision is
+revised. Naming one condition twice, passing a batch from another suite, or
+passing a branch batch that ran for another experiment or condition, also
+exits 2 before anything is written.
 
 `list-experiments` prints one line per experiment and replaces any hand-kept
 spreadsheet of them. An experiment whose files do not load, including one whose
@@ -301,5 +312,6 @@ a newly frozen plan.
 
 ## Out of scope here
 
-Running any condition, which is #159. Planner or analyst agents. Any combined
+Running a condition, which is the branch stage
+([branch_stage.md](branch_stage.md)). Planner or analyst agents. Any combined
 score.

@@ -48,10 +48,13 @@ Budget guard (#196)
     without the guard seeing it. Fixture and replay runs cost nothing and are
     never refused on price.
 
-    ``run-suite`` is the only caller on this branch. ``run-sweep`` (#198) and
-    ``branch`` do not exist yet; they are meant to build a ``BudgetGuard`` from
-    their own ``max_cost_usd`` and call ``admit`` before and ``charge`` after
-    each run, the same way ``BatchRunner.run`` does.
+    ``run-suite`` and ``branch`` drive it. ``branch`` builds one guard per
+    invocation from the experiment plan's ``budget.max_cost_usd``, shared by
+    every condition and seed, and records a budget block on each condition's
+    batch (see ``runner/branch.py``). ``run-sweep`` (#198) does not exist yet;
+    it is meant to build a ``BudgetGuard`` from its own ``max_cost_usd`` and
+    call ``admit`` before and ``charge`` after each run, the same way
+    ``BatchRunner.run`` does.
 """
 
 from __future__ import annotations
@@ -60,10 +63,11 @@ import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from trace_harness.attribution.schemas import PostBlockOutcome
 from trace_harness.environment.control_library import load_library
 from trace_harness.models import (
     estimate_cost_usd,
@@ -82,8 +86,10 @@ from trace_harness.tracing.events import TraceEvent, TraceEventType, utc_now
 
 logger = logging.getLogger(__name__)
 
-# 0.3.0: optional budget block; 0.2.0: per-entry verdict, aggregates.incomplete
-BATCH_SUMMARY_SCHEMA_VERSION = "0.3.0"
+# 0.4.0: branch-stage entry fields, summary metadata and the seed of a cell the
+# budget never ran (#159); 0.3.0: optional budget block (#196); 0.2.0: per-entry
+# verdict, aggregates.incomplete
+BATCH_SUMMARY_SCHEMA_VERSION = "0.4.0"
 
 BUDGET_EXHAUSTED = "budget_exhausted"
 BUDGET_UNENFORCEABLE = "budget_unenforceable"
@@ -116,6 +122,15 @@ class BatchRunEntry(BaseModel):
     latency_ms: float | None = None
     cost_usd: float | None = None
     error: str | None = None
+    # Filled by the branch stage (#159); None on suite entries and on files
+    # written before 0.4.0. ``diverged`` says whether the first action after
+    # the fork differed from the recording, and the step says where the run
+    # first differed at all.
+    condition: str | None = None
+    seed: int | None = None
+    first_post_fork_divergence_step: int | None = None
+    diverged: bool | None = None
+    post_block_outcome: PostBlockOutcome | None = None
 
 
 class BatchAggregates(BaseModel):
@@ -144,6 +159,8 @@ class NotRunCell(BaseModel):
 
     agent_label: str
     task_path: str
+    # The branch stage's cell is a seed (0.4.0); None on suite cells.
+    seed: int | None = None
 
 
 class BatchBudget(BaseModel):
@@ -169,17 +186,22 @@ class BatchSummary(BaseModel):
     agent_configs: list[AgentConfig]
     entries: list[BatchRunEntry]
     aggregates: BatchAggregates
-    # Present when the suite set max_cost_usd; absent in summaries before 0.3.0.
+    # Present when the suite set max_cost_usd, and on every branch batch, since
+    # an experiment plan always carries one; absent in summaries before 0.3.0.
     budget: BatchBudget | None = None
+    # Branch batches record experiment_id, condition, source_run_id and start;
+    # empty on suite batches and in summaries before 0.4.0.
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class BudgetGuard:
     """Refuses to start a run once a batch's live spend has reached its cap.
 
-    Construct one per batch from the spec's ``max_cost_usd``; None never
-    refuses. Call :meth:`admit` before each run and :meth:`charge` after it
-    with the cost its entry recorded. The charge that brings spend to the cap
-    records the stop. Once stopped, it refuses everything after, so the batch
+    Construct one per batch from the spec's ``max_cost_usd``, or one per
+    ``branch`` invocation shared by its conditions; None never refuses. Call
+    :meth:`admit` before each run and :meth:`charge` after it with the cost its
+    entry recorded. The charge that brings spend to the cap records the stop.
+    Once stopped, it refuses everything after, so the batch
     stops at that point.
     """
 
@@ -319,7 +341,7 @@ class BatchRunner:
             finished_at=finished_at,
             agent_configs=suite.agent_configs,
             entries=entries,
-            aggregates=_aggregate(entries),
+            aggregates=aggregate_entries(entries),
             budget=guard.record(not_run),
         )
         self._write_summary(summary)
@@ -332,21 +354,14 @@ class BatchRunner:
             result = run_task_pipeline(
                 task_path, config, self.store, controls=self.controls, progress=progress
             )
-            return _entry_from_pipeline(result, config, task_path, self.store.runs_dir)
+            return entry_from_pipeline(result, config, task_path, self.store.runs_dir)
         except Exception as exc:  # noqa: BLE001 — isolate the cell; the batch goes on
             logger.warning(
                 "batch cell failed (agent=%s, task=%s): %s", config.label, task_path, exc
             )
-            entry = _setup_error_entry(config, task_path, exc)
-            if progress.run_id is not None and progress.run_config is not None:
-                # The run started before the failure and may have been billed,
-                # so the entry points at it and carries what its trace records.
-                entry.run_id = progress.run_id
-                entry.model = progress.run_config.model
-                entry.cost_usd = run_cost_usd(
-                    progress.run_config, self.store.runs_dir, progress.run_id
-                )
-            return entry
+            return attach_started_run(
+                _setup_error_entry(config, task_path, exc), progress, self.store.runs_dir
+            )
 
     def _write_summary(self, summary: BatchSummary) -> Path:
         return self.store.write_batch_summary(summary.batch_id, summary)
@@ -445,7 +460,29 @@ def run_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None
     return estimate_cost_usd(config.provider, config.model, raws)
 
 
-def _entry_from_pipeline(
+def attach_started_run(
+    entry: BatchRunEntry, progress: PipelineProgress, runs_dir: Path
+) -> BatchRunEntry:
+    """Point a failed cell's ``setup_error`` entry at its run, if the run had started.
+
+    The run may have been billed before the failure, so the entry keeps the
+    run's id, the model it ran and the cost its trace records, priced by
+    :func:`run_cost_usd` like a finished cell. A failure before the run leaves
+    the entry as it is, since nothing called a provider. ``run-suite`` cells
+    and ``branch`` seeds both come through here.
+    """
+    if progress.run_id is None or progress.run_config is None:
+        return entry
+    return entry.model_copy(
+        update={
+            "run_id": progress.run_id,
+            "model": progress.run_config.model,
+            "cost_usd": run_cost_usd(progress.run_config, runs_dir, progress.run_id),
+        }
+    )
+
+
+def entry_from_pipeline(
     result: PipelineResult, config: AgentConfig, task_path: str, runs_dir: Path
 ) -> BatchRunEntry:
     run = result.run_result
@@ -487,7 +524,7 @@ def _setup_error_entry(config: AgentConfig, task_path: str, exc: Exception) -> B
     )
 
 
-def _aggregate(entries: list[BatchRunEntry]) -> BatchAggregates:
+def aggregate_entries(entries: list[BatchRunEntry]) -> BatchAggregates:
     completed = [e for e in entries if e.status == str(RunStatus.COMPLETED)]
     terminated = sum(1 for e in entries if e.status == str(RunStatus.TERMINATED))
     # Pass/fail counts consider only completed runs: an incomplete run that

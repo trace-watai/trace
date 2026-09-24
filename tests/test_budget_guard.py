@@ -316,7 +316,7 @@ def test_a_live_run_whose_pipeline_fails_after_it_is_still_charged(
     def crash(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("verifier crashed")
 
-    monkeypatch.setattr("trace_harness.runner.pipeline._verify_run", crash)
+    monkeypatch.setattr("trace_harness.runner.pipeline.verify_run", crash)
     summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(_suite(0.01))
     assert len(summary.entries) == 1
     entry = summary.entries[0]
