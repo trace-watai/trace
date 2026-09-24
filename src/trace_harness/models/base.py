@@ -92,7 +92,16 @@ class AgentAction(BaseModel):
 
 
 class ModelAdapterError(RuntimeError):
-    """Base class for adapter failures the runner should treat as model errors."""
+    """Base class for adapter failures the runner should treat as model errors.
+
+    ``raw`` is set when the provider did answer, and billed for it, but the
+    answer could not become an action (two tool calls, a truncated turn, a
+    refusal). The runner writes it as a ``model_response`` event before the
+    error, so the run's cost is priced from it like any other response. It is
+    None for a failure that got no response at all.
+    """
+
+    raw: dict[str, Any] | None = None
 
 
 class ProviderNotConfiguredError(RuntimeError):
