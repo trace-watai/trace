@@ -37,8 +37,14 @@ export interface RawCoverage {
   validated: number;
   accepted: number;
   /**
-   * `accepted` split by standing: gating when a verdict was reached against a
-   * `static_ok` artifact, advisory otherwise. Absent before 0.2.0.
+   * `accepted` split by standing. A name is gating when one of its accepted
+   * verdicts was recorded as gating and still gates against the regression
+   * artifact retained beside its validation: that artifact carries the
+   * verdict's `replay_mode` and `predicted_by`, is `static_ok`, and has a
+   * recorded basis that classifies as `static_ok`, a label predicted until
+   * #159 measures it. Advisory otherwise, including when the artifact was
+   * not retained. The two are recorded together and sum to `accepted`.
+   * Absent before 0.2.0.
    */
   accepted_gating?: number;
   accepted_advisory?: number;
@@ -53,7 +59,7 @@ export interface RawOverBlocking {
   rate: RawRatio;
   /**
    * Distinct task families among completed siblings, and how many had a
-   * failing sibling. Absent before 0.3.0.
+   * failing sibling. Recorded together, and absent or null before 0.3.0.
    */
   independent_families?: number | null;
   families_failed?: number | null;
@@ -111,10 +117,18 @@ export const ratioValue = (ratio: Ratio): number | null =>
  *
  * Those records were computed from validations that carried no replay mode,
  * and a verdict without one reads as not recorded, which is advisory. The
- * backend reads the same lines the same way. A split that does not add up to
- * `accepted` throws, as the backend rejects it.
+ * backend reads the same lines the same way. Half a split, or one that does
+ * not add up to `accepted`, throws, as the backend rejects both.
  */
 const withAcceptanceSplit = (coverage: Camelize<RawCoverage>): Coverage => {
+  if (
+    (coverage.acceptedGating == null) !==
+    (coverage.acceptedAdvisory == null)
+  ) {
+    throw new RangeError(
+      "accepted_gating and accepted_advisory are recorded together",
+    );
+  }
   const acceptedGating = coverage.acceptedGating ?? 0;
   const acceptedAdvisory = coverage.acceptedAdvisory ?? coverage.accepted;
   if (acceptedGating + acceptedAdvisory !== coverage.accepted) {
@@ -129,13 +143,19 @@ const withAcceptanceSplit = (coverage: Camelize<RawCoverage>): Coverage => {
  * Family counts as recorded, with the bound derived from them.
  *
  * A record from before 0.3.0 has no family counts. They cannot be recovered
- * from sibling totals, so they stay null and the page shows no bound.
+ * from sibling totals, so they stay null and the page shows no bound. One
+ * count without the other throws, as the backend rejects it.
  */
 const withFamilyBound = (
   overBlocking: Camelize<RawOverBlocking>,
 ): OverBlocking => {
   const independentFamilies = overBlocking.independentFamilies ?? null;
   const familiesFailed = overBlocking.familiesFailed ?? null;
+  if ((independentFamilies === null) !== (familiesFailed === null)) {
+    throw new RangeError(
+      "independent_families and families_failed are recorded together",
+    );
+  }
   const bound =
     independentFamilies === null || familiesFailed === null
       ? null

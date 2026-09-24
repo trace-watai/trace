@@ -117,6 +117,44 @@ describe("parseMetricsSnapshot", () => {
     expect(snapshot.overBlocking.upperBound95).toBeNull();
   });
 
+  it.each(["accepted_gating", "accepted_advisory"] as const)(
+    "rejects a split with only %s recorded, as the backend does",
+    (present) => {
+      const coverage = { ...raw.coverage };
+      delete coverage.accepted_gating;
+      delete coverage.accepted_advisory;
+      // Values that would sum to accepted once the other half is filled in.
+      coverage[present] = present === "accepted_gating" ? 0 : 1;
+      expect(() => parseMetricsSnapshot({ ...raw, coverage })).toThrow(
+        RangeError,
+      );
+    },
+  );
+
+  it.each(["independent_families", "families_failed"] as const)(
+    "rejects family counts with only %s recorded, as the backend does",
+    (present) => {
+      const overBlocking = { ...raw.over_blocking };
+      delete overBlocking.independent_families;
+      delete overBlocking.families_failed;
+      overBlocking[present] = present === "independent_families" ? 1 : 0;
+      expect(() =>
+        parseMetricsSnapshot({ ...raw, over_blocking: overBlocking }),
+      ).toThrow(RangeError);
+      expect(() =>
+        parseMetricsSnapshot({
+          ...raw,
+          over_blocking: {
+            ...overBlocking,
+            [present === "independent_families"
+              ? "families_failed"
+              : "independent_families"]: null,
+          },
+        }),
+      ).toThrow(RangeError);
+    },
+  );
+
   it("rejects a split that does not add up to accepted, as the backend does", () => {
     expect(() =>
       parseMetricsSnapshot({
