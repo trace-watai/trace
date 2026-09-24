@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -745,13 +745,19 @@ def _leave_previous_card(store: ArtifactStore, run_id: str, home: str) -> None:
         )
 
 
-def record_bundle(store: ArtifactStore, bundle: FailureBundle) -> RecordedBundle:
+def record_bundle(
+    store: ArtifactStore, bundle: FailureBundle, *, scope: Collection[str] | None = None
+) -> RecordedBundle:
     """Write a run's bundle, or add the run to the card that already has its key.
 
     The key is looked up with :meth:`ArtifactStore.find_bundle_card` under the
     runs directory's bundle lock, so concurrent bundle stages see each other's
     cards. Only a finished bundle is joined, a card with its repair package and
     regression artifact beside it.
+
+    ``scope`` limits which runs' cards may be joined, as described on
+    :meth:`ArtifactStore.find_bundle_card`, and always includes the run being
+    bundled. None joins a card anywhere in the runs directory.
 
     With no finished bundle for the key, the three artifacts are written to the
     run's own directory with the run as the first occurrence, exactly as before
@@ -773,10 +779,11 @@ def record_bundle(store: ArtifactStore, bundle: FailureBundle) -> RecordedBundle
     if key is None or not card.occurrences:
         raise ValueError("a failure card needs its bundle key and first occurrence to be recorded")
     occurrence = card.occurrences[0]
+    lookup_scope = None if scope is None else {*scope, run_id}
     with store.bundle_lock():
         _refuse_moving_a_shared_card(store, run_id, key)
         store.set_index_bundle_key(run_id, key)
-        canonical = store.find_bundle_card(key)
+        canonical = store.find_bundle_card(key, scope=lookup_scope)
         _leave_previous_card(store, run_id, canonical or run_id)
         if canonical is None or canonical == run_id:
             # A card this run already holds keeps the runs listed on it, even

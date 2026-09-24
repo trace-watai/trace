@@ -46,7 +46,7 @@ import json
 import os
 import tempfile
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePath
 from typing import IO, Any
@@ -79,7 +79,8 @@ BUNDLE_REF = "bundle_ref.json"
 
 # Runs-dir-level (not per-run): a derived, rebuildable index of all runs.
 RUN_INDEX = "index.json"
-# Runs-dir-level, held while the bundle stage looks a key up and writes (#211).
+# Runs-dir-level, held by every index write and while the bundle stage looks a
+# key up and writes (#211).
 BUNDLE_LOCK = ".bundle.lock"
 EXPERIMENTS_DIR = "experiments"
 EXPERIMENT_SPEC = "experiment.json"
@@ -542,8 +543,16 @@ class ArtifactStore:
             and self.exists(run_id, REGRESSION_ARTIFACT)
         )
 
-    def find_bundle_card(self, bundle_key: str) -> str | None:
+    def find_bundle_card(self, bundle_key: str, scope: Collection[str] | None = None) -> str | None:
         """The run whose directory holds the finished bundle for ``bundle_key``, or None.
+
+        ``scope`` limits the lookup to those run ids, for a caller that wants
+        one card per key within a batch or an experiment instead of the whole
+        runs directory. The branch stage, for one, can keep each condition's
+        cards apart by passing the runs of that condition. A scoped lookup
+        reads each named run's card directly, in run id order, and skips the
+        index. None, the default, searches every run in the directory as
+        follows.
 
         The index nominates candidates, tried in run id order so a duplicate
         left by an older writer resolves the same way every time, and a
@@ -559,6 +568,11 @@ class ArtifactStore:
         stage does, so that no card can appear between the scan and the
         caller's write.
         """
+        if scope is not None:
+            for run_id in sorted({safe_run_dir_name(run_id) for run_id in scope}):
+                if self.holds_finished_bundle(run_id, bundle_key):
+                    return run_id
+            return None
         index = self.read_index()
         listable = {run_id for run_id in self.list_runs() if self.exists(run_id, RUN_RESULT)}
         if {entry.run_id for entry in index.entries} != listable:
@@ -594,6 +608,22 @@ class ArtifactStore:
         if not isinstance(canonical, str):
             raise ValueError(f"{BUNDLE_REF} for run '{run_id}' names no canonical_run_id")
         return safe_run_dir_name(canonical)
+
+    def bundle_homes(self, run_ids: Iterable[str]) -> dict[str, str]:
+        """Map each bundled run in ``run_ids`` to the run whose directory holds its bundle.
+
+        Runs never bundled are left out. A caller that copies a set of runs
+        somewhere else, such as sweep retention or public results staging,
+        compares the values with its set to find the homes it would otherwise
+        leave behind, since a reproduction's card, repair package and
+        regression artifact live only in its home.
+        """
+        homes = {}
+        for run_id in run_ids:
+            home = self.bundle_home(run_id)
+            if home is not None:
+                homes[run_id] = home
+        return homes
 
     def set_index_bundle_key(self, run_id: str, bundle_key: str) -> None:
         """Record the run's bundle key on its index entry.

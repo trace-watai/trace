@@ -22,7 +22,7 @@ from trace_harness.runner.pipeline import run_task_pipeline
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
-from trace_harness.tracing.run_index import RUN_INDEX_SCHEMA_VERSION, RunIndex, RunIndexEntry
+from trace_harness.tracing.run_index import RUN_INDEX_SCHEMA_VERSION, RunIndex
 from trace_harness.verifiers.base import VerifierResult
 
 TASKS_DIR = FIXTURES_DIR / "tasks"
@@ -216,8 +216,11 @@ def test_a_card_written_before_keys_loads_and_describes_its_own_run(tmp_path):
 
     card = _card(store, run_id)
     assert (card.schema_version, card.bundle_key, card.occurrences) == ("0.4.0", None, [])
-    entry = store.read_index().entries[0].model_dump(exclude={"bundle_key"})
-    assert RunIndexEntry.model_validate(entry).bundle_key is None
+    # The index still holds the key the bundle stage wrote. A rebuild reads the
+    # key off the card, and a card from before 0.5.0 has none.
+    assert store.read_index().entries[0].bundle_key is not None
+    (entry,) = store.rebuild_index().entries
+    assert entry.bundle_key is None
 
 
 def test_an_index_written_before_keys_is_rebuilt_with_them(tmp_path):
@@ -237,6 +240,10 @@ def test_an_index_written_before_keys_is_rebuilt_with_them(tmp_path):
     assert {e.run_id: e.bundle_key for e in index.entries} == {first: key, second: key}
 
 
+def _version(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in value.split("."))
+
+
 def test_every_committed_card_and_index_still_loads():
     cards = [
         *REPO_ROOT.joinpath("docs").rglob(names.FAILURE_CARD),
@@ -244,10 +251,21 @@ def test_every_committed_card_and_index_still_loads():
     ]
     indexes = [*REPO_ROOT.joinpath("docs").rglob(names.RUN_INDEX)]
     assert len(cards) >= 6 and len(indexes) >= 3
+    versions = set()
     for path in cards:
         card = FailureCard.model_validate_json(path.read_text(encoding="utf-8"))
-        if card.schema_version < "0.5.0":
+        versions.add(_version(card.schema_version) >= (0, 5, 0))
+        if _version(card.schema_version) < (0, 5, 0):
             assert (card.bundle_key, card.occurrences) == (None, [])
+        else:
+            assert card.bundle_key is not None
+            assert card.occurrences[0].run_id == card.run_id
+    assert versions == {True, False}  # both branches above ran
+    # Every committed index predates 0.6.0 and has no bundle_key field, so
+    # loading one is a real test of reading an older index.
     for path in indexes:
-        index = RunIndex.model_validate_json(path.read_text(encoding="utf-8"))
-        assert all(entry.bundle_key is None for entry in index.entries)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert _version(raw["schema_version"]) < _version(RUN_INDEX_SCHEMA_VERSION)
+        assert not any("bundle_key" in entry for entry in raw["entries"])
+        index = RunIndex.model_validate(raw)
+        assert index.entries and all(entry.bundle_key is None for entry in index.entries)

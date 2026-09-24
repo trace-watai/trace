@@ -13,6 +13,7 @@ whether a run came from ``run-pipeline`` or ``run-suite``.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -85,8 +86,14 @@ def run_task_pipeline(
     bundle_on_fail: bool = True,
     control_library: Path | str | None = None,
     controls: list[ControlInstance] | None = None,
+    bundle_scope: Collection[str] | None = None,
 ) -> PipelineResult:
-    """Run one task under one agent config and produce all pipeline artifacts."""
+    """Run one task under one agent config and produce all pipeline artifacts.
+
+    ``bundle_scope`` limits which runs' failure cards a failing run may join
+    (see :func:`attribute_and_bundle`). None joins a card anywhere in the runs
+    directory.
+    """
     task_path = Path(task_path).resolve()
     task = load_task(task_path)
     docs = load_docs_for_task(task, task_path)
@@ -156,7 +163,7 @@ def run_task_pipeline(
 
     verifier_result = verify_run(store, run_result, task)
     if verifier_result is not None and verifier_result.has_violations and bundle_on_fail:
-        attribute_and_bundle(store, run_result.run_id, task, run_result)
+        attribute_and_bundle(store, run_result.run_id, task, run_result, scope=bundle_scope)
 
     return PipelineResult(
         task=task,
@@ -204,12 +211,20 @@ def verify_run(
 
 
 def attribute_and_bundle(
-    store: ArtifactStore, run_id: str, task: TaskSpec, run_result: RunResult
+    store: ArtifactStore,
+    run_id: str,
+    task: TaskSpec,
+    run_result: RunResult,
+    *,
+    scope: Collection[str] | None = None,
 ) -> RecordedBundle:
     """Attribute a verified failure and record its failure bundle.
 
     The bundle is written to the run's directory, or the run joins the card
     that already has its bundle key (#211); the returned record says which.
+    ``scope`` names the runs whose cards the run may join, for a caller that
+    keeps one card per key within a batch or an experiment. None searches the
+    whole runs directory.
     """
     from trace_harness.attribution.heuristic import HeuristicAttributor
     from trace_harness.failure_bundles.generator import FailureBundleGenerator, record_bundle
@@ -234,4 +249,4 @@ def attribute_and_bundle(
         agent_ref=run_config.get("agent_ref"),
         run_config=run_config,
     )
-    return record_bundle(store, bundle)
+    return record_bundle(store, bundle, scope=scope)

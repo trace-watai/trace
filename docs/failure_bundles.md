@@ -137,11 +137,41 @@ provider, model and seed from each run's `run_config.json`.
 `RunReader.get_bundle` and the dashboard serve a reproduction the card it
 joined, whose `run_id` names the first occurrence.
 
-The lookup is scoped to one runs directory, and two different tasks that fail
-the same way share a card when their runs land in the same one. Of the
-nineteen failing task fixtures, nine fall into four groups that share a key.
-Neither `refund_v0` nor `refund_bundles_v0` runs two tasks from one group, so
-every pinned suite expectation still has one card per failing task.
+By default the lookup covers one whole runs directory, and two different
+tasks that fail the same way share a card when their runs land in the same
+one. Of the nineteen failing task fixtures, nine fall into four groups that
+share a key. Neither `refund_v0` nor `refund_bundles_v0` runs two tasks from
+one group, so every pinned suite expectation still has one card per failing
+task.
+
+### Scoping the lookup
+
+`record_bundle`, `attribute_and_bundle` and `run_task_pipeline` take an
+optional scope (`bundle_scope` on the pipeline), the run ids whose cards a
+run may join. The run being bundled is always in its own scope, and a scoped
+lookup reads those runs' cards directly without the index. None, the
+default, searches the whole runs directory.
+
+The branch stage is the caller the scope is for. Its conditions continue the
+same fork with the control on, with it off and with another model, and
+without a scope a failure in one condition joins a card from another. A
+control-on run would then be served the card and regression artifact of a
+control-off run. Passing the runs of one condition keeps each condition's
+cards apart, while its seeds still share one card per key. A scope over the
+whole experiment would merge the conditions again, so one condition's runs
+is the scope to pass. The experiment's metrics count verdicts from batch
+entries and come out the same either way. A sweep whose failing cells are
+retained can pass its own cells, so that no cell points to a card outside
+the sweep.
+
+Callers that copy runs somewhere else have to keep each reproduction with
+the run holding its card. `ArtifactStore.bundle_home` names that run for one
+run and `ArtifactStore.bundle_homes` for a set, so the homes a copy would
+leave behind are the values outside the set. `RunReader.get_bundle_ref`
+returns a reproduction's pointer, and `RunReader.get_occurrences` returns
+the runs on the card covering any run. `RunReader.get_bundle` on a
+reproduction whose home is missing from the runs directory raises
+`FileNotFoundError` naming both runs.
 
 ### Bundling a run again
 

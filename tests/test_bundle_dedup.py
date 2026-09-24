@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -430,8 +431,8 @@ def test_concurrent_bundles_of_one_key_share_one_card(tmp_path):
         "from trace_harness.tracing.artifact_store import ArtifactStore\n"
         "sync, name = Path(sys.argv[2]), sys.argv[3]\n"
         "lookup = ArtifactStore.find_bundle_card\n"
-        "def rendezvous(self, key):\n"
-        "    found = lookup(self, key)\n"
+        "def rendezvous(self, key, scope=None):\n"
+        "    found = lookup(self, key, scope)\n"
         "    (sync / f'looked-{name}').touch()\n"
         "    deadline = time.monotonic() + 3\n"
         "    while len(list(sync.glob('looked-*'))) < 2 and time.monotonic() < deadline:\n"
@@ -460,6 +461,102 @@ def test_concurrent_bundles_of_one_key_share_one_card(tmp_path):
 
     (holder,) = _cards(store)
     assert sorted(o.run_id for o in _card(store, holder).occurrences) == sorted([first, second])
+
+
+# --- scoping the lookup -------------------------------------------------
+
+
+def test_a_scoped_lookup_joins_only_cards_in_its_scope(tmp_path):
+    """A caller that keeps one card per key within a batch passes its runs as the scope."""
+    store = ArtifactStore(tmp_path / "runs")
+    outside = _pipeline(FAILURE_TASK_PATH, store)
+    arm = run_task_pipeline(
+        FAILURE_TASK_PATH, AgentConfig(label="fixture"), store, bundle_scope=[]
+    ).run_result.run_id
+    repeat = run_task_pipeline(
+        FAILURE_TASK_PATH, AgentConfig(label="fixture"), store, bundle_scope=[arm]
+    ).run_result.run_id
+    key = _card(store, outside).bundle_key
+
+    assert _cards(store) == sorted([outside, arm])
+    assert [o.run_id for o in _card(store, outside).occurrences] == [outside]
+    assert [o.run_id for o in _card(store, arm).occurrences] == [arm, repeat]
+    assert store.bundle_home(repeat) == arm
+    # Unscoped, the lowest run id holding the key wins, and ids made within
+    # one second differ only by their random suffix.
+    assert store.find_bundle_card(key) == min(outside, arm)
+    assert store.find_bundle_card(key, scope=[repeat, arm]) == arm
+    assert store.find_bundle_card(key, scope=[repeat]) is None
+    with pytest.raises(ValueError):
+        store.find_bundle_card(key, scope=["../elsewhere"])
+
+
+def test_a_reproduction_bundled_into_another_scope_leaves_its_old_card(tmp_path):
+    store = ArtifactStore(tmp_path / "runs")
+    first = _pipeline(FAILURE_TASK_PATH, store)
+    second = _pipeline(FAILURE_TASK_PATH, store)
+    third = _unbundled(FAILURE_TASK_PATH, store)
+    record_bundle(store, _bundle_for(store, third), scope=[])
+    assert [o.run_id for o in _card(store, first).occurrences] == [first, second]
+
+    recorded = record_bundle(store, _bundle_for(store, second), scope=[third])
+
+    assert (recorded.canonical_run_id, recorded.occurrence_count) == (third, 2)
+    assert [o.run_id for o in _card(store, first).occurrences] == [first]
+    assert [o.run_id for o in _card(store, third).occurrences] == [third, second]
+
+
+def test_a_card_that_loses_the_lookup_refuses_to_give_up_its_reproductions(tmp_path):
+    """Two cards share a key, and the later one has runs pointing to it.
+
+    Bundled again without a scope, the later card's run would become a
+    reproduction of the earlier card and delete a bundle other runs point to,
+    so it is refused and nothing changes.
+    """
+    store = ArtifactStore(tmp_path / "runs")
+    # Ids made within one second sort by their random suffix, so order them.
+    first, later = sorted(_unbundled(FAILURE_TASK_PATH, store) for _ in range(2))
+    record_bundle(store, _bundle_for(store, first))
+    record_bundle(store, _bundle_for(store, later), scope=[])
+    pointer = _unbundled(FAILURE_TASK_PATH, store)
+    record_bundle(store, _bundle_for(store, pointer), scope=[later])
+    before = {n: store.artifact_path(later, n).read_bytes() for n in BUNDLE_FILES}
+
+    with pytest.raises(BundleKeyConflictError, match="both hold a card"):
+        record_bundle(store, _bundle_for(store, later))
+
+    assert {n: store.artifact_path(later, n).read_bytes() for n in BUNDLE_FILES} == before
+    assert store.bundle_home(pointer) == later
+    assert [o.run_id for o in _card(store, first).occurrences] == [first]
+
+
+# --- what a copy of some runs has to keep -------------------------------
+
+
+def test_the_home_api_names_what_a_copy_of_some_runs_must_keep(tmp_path):
+    store = ArtifactStore(tmp_path / "runs")
+    first = _pipeline(FAILURE_TASK_PATH, store)
+    second = _pipeline(FAILURE_TASK_PATH, store)
+    passing = _pipeline(FIXTURES_DIR / "tasks" / "refund_policy_valid_cash.json", store)
+    reader = RunReader(store)
+
+    assert store.bundle_homes([first, second, passing]) == {first: first, second: first}
+    assert reader.get_bundle_ref(first) is None
+    assert reader.get_bundle_ref(passing) is None
+    ref = reader.get_bundle_ref(second)
+    assert ref is not None and ref.canonical_run_id == first
+    assert [o.run_id for o in reader.get_occurrences(second)] == [first, second]
+    assert reader.get_occurrences(first) == reader.get_occurrences(second)
+    assert reader.get_occurrences(passing) is None
+
+    copy = ArtifactStore(tmp_path / "copy")
+    copy.runs_dir.mkdir()
+    shutil.copytree(store.run_dir(second), copy.run_dir(second))
+    left_behind = set(copy.bundle_homes([second]).values()) - {second}
+    assert left_behind == {first}
+    for read in (RunReader(copy).get_bundle, RunReader(copy).get_occurrences):
+        with pytest.raises(FileNotFoundError, match=f"reproduces the card in run .{first}."):
+            read(second)
 
 
 # --- reading and the gate -----------------------------------------------
