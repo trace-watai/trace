@@ -202,7 +202,7 @@ Each re-run also records the `task_fixture` it was built from, and
 one-sided 95% upper bound on the family failure rate. The formula and why
 it counts families are in `docs/methodology_metrics.md` (A4). Replay and
 `inspect` print it as, for example, `0 of 1 families failed, true rate
-could be up to 95.0%`.
+could be up to 95.00%`.
 
 | Verdict | Condition |
 |---|---|

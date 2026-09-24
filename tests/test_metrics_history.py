@@ -327,6 +327,12 @@ def test_over_blocking_bounds_the_family_rate(tmp_path: Path) -> None:
     assert over.upper_bound_95 == 0.7764
 
 
+def test_a_history_bound_is_rounded_up() -> None:
+    """0 of 59 families is 0.04950761; plain rounding would record 0.0495."""
+    over = OverBlocking.model_validate(_over_blocking(independent_families=59, families_failed=0))
+    assert over.upper_bound_95 == 0.0496
+
+
 def test_no_validation_reports_no_bound(tmp_path: Path) -> None:
     over = compute_over_blocking(None, root=tmp_path)
     assert (over.independent_families, over.families_failed) == (0, 0)
@@ -610,7 +616,7 @@ def test_the_collector_appends_a_snapshot_and_keeps_its_own_exit_code(
     out = capsys.readouterr().out
     assert "Metrics history:" in out
     assert "(0 gating on predicted static_ok labels, 1 advisory)" in out
-    assert "1/2 siblings failed; 1 of 1 families failed, true rate could be up to 100.0%" in out
+    assert "1/2 siblings failed; 1 of 1 families failed, true rate could be up to 100.00%" in out
 
     recorded = load_history(history)
     assert [s.commit for s in recorded] == ["abc123"]

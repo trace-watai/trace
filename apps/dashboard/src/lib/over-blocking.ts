@@ -3,8 +3,8 @@
  *
  * `clopperPearsonUpper` mirrors `clopper_pearson_upper` in
  * `src/trace_harness/metrics/bounds.py`. The page derives the bound from the
- * two family counts and ignores the serialized number, as `ratioValue` does
- * for a rate.
+ * two family counts, rounded up as the backend stores it, and ignores the
+ * serialized number, as `ratioValue` does for a rate.
  */
 
 import type { OverBlocking } from "@/types/metrics-snapshot";
@@ -63,10 +63,26 @@ export const clopperPearsonUpper = (
 };
 
 /**
+ * `value` rounded up to `places` decimals, as the backend stores a bound.
+ *
+ * Mirrors `round_up` in `src/trace_harness/metrics/bounds.py`. Rounding up
+ * keeps a stored bound from sitting below the exact one, and a value within
+ * 1e-9 of a step, in units of that step, stays on it so float noise does not
+ * add a whole step.
+ */
+export const roundUp = (value: number, places = 4): number => {
+  const scale = 10 ** places;
+  // Math.ceil(-1e-9) is -0; a bound is never negative, so zero stays +0.
+  return Math.max(0, Math.ceil(value * scale - 1e-9)) / scale;
+};
+
+/**
  * The sentence the page shows for one snapshot's over-blocking.
  *
  * A record from before family counts existed says so, since its sibling
- * totals cannot say how many independent families they covered.
+ * totals cannot say how many independent families they covered. The bound
+ * is printed with the four places it is stored to, so 0 of 58 (5.04%) and
+ * 0 of 59 (4.96%) read differently.
  */
 export const describeOverBlocking = (overBlocking: OverBlocking): string => {
   const { familiesFailed, independentFamilies, upperBound95 } = overBlocking;
@@ -76,5 +92,5 @@ export const describeOverBlocking = (overBlocking: OverBlocking): string => {
   if (upperBound95 === null) {
     return "nothing measured, no sibling family completed";
   }
-  return `${familiesFailed} of ${independentFamilies} families failed, true rate could be up to ${(upperBound95 * 100).toFixed(1)}%`;
+  return `${familiesFailed} of ${independentFamilies} families failed, true rate could be up to ${(upperBound95 * 100).toFixed(2)}%`;
 };

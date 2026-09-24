@@ -30,7 +30,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from trace_harness.environment.controls import MATERIALIZABLE_REPAIR_CONTROLS
-from trace_harness.metrics.bounds import clopper_pearson_upper
+from trace_harness.metrics.bounds import clopper_pearson_upper, round_up
 from trace_harness.regression.repair_validation import (
     ControlVerdict,
     RepairValidation,
@@ -106,10 +106,10 @@ class Coverage(BaseModel):
     artifact is retained beside the validation, carries the verdict's label,
     and its recorded basis classifies as ``static_ok``. Otherwise it is
     advisory, including when the artifact was not retained. ADR-0002 keeps a
-    replay verdict advisory until the
-    artifact carries a measured label and has the collector gate on
-    ``static_ok``; this follows the collector, and every ``static_ok`` label
-    counted here is predicted until #159 measures one.
+    replay verdict advisory until the artifact carries a measured label and
+    has the collector gate on ``static_ok``; this follows the collector, and
+    every ``static_ok`` label counted here is predicted until #159 measures
+    one.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -201,11 +201,11 @@ class OverBlocking(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def upper_bound_95(self) -> float | None:
-        """One-sided 95% Clopper-Pearson bound on the family failure rate."""
+        """One-sided 95% Clopper-Pearson bound on the family failure rate, rounded up."""
         if self.independent_families is None or self.families_failed is None:
             return None
         bound = clopper_pearson_upper(self.families_failed, self.independent_families)
-        return None if bound is None else round(bound, 4)
+        return None if bound is None else round_up(bound)
 
 
 class CostOfLearning(BaseModel):

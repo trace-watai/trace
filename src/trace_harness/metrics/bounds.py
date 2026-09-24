@@ -57,3 +57,21 @@ def clopper_pearson_upper(failures: int, trials: int, confidence: float = 0.95) 
         else:
             high = middle
     return high
+
+
+#: Decimal places a bound is stored to. Printed as a percentage with two.
+BOUND_PLACES = 4
+
+
+def round_up(value: float, places: int = BOUND_PLACES) -> float:
+    """``value`` rounded up to ``places`` decimals, for storing an upper bound.
+
+    Plain rounding can store a bound below the exact one: ``0`` of ``59`` is
+    0.04950761 and would be stored as 0.0495. A value within 1e-9 of a step,
+    in units of that step, stays on the step, so float noise does not add a
+    whole step: ``0.0051 * 10**4`` is 51.00000000000001, and a stored bound
+    read back and rounded again keeps its value. That tolerance is far
+    smaller than the bisection's own precision.
+    """
+    scale = 10**places
+    return math.ceil(value * scale - 1e-9) / scale

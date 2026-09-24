@@ -4,6 +4,7 @@ import {
   binomialCdf,
   clopperPearsonUpper,
   describeOverBlocking,
+  roundUp,
 } from "@/lib/over-blocking";
 import type { OverBlocking } from "@/types/metrics-snapshot";
 
@@ -44,6 +45,30 @@ describe("clopperPearsonUpper", () => {
   );
 });
 
+describe("roundUp", () => {
+  it.each([
+    [0, 59, 0.0496],
+    [0, 58, 0.0504],
+    [2, 3, 0.9831],
+    [0, 1, 0.95],
+    [1, 1, 1],
+  ])(
+    "stores %i of %i at %f, never below the exact bound",
+    (failures, trials, stored) => {
+      const exact = clopperPearsonUpper(failures, trials) as number;
+      expect(roundUp(exact)).toBe(stored);
+      expect(stored).toBeGreaterThanOrEqual(exact - 1e-12);
+    },
+  );
+
+  it("keeps a value that is already on a step", () => {
+    expect(roundUp(0.0051)).toBe(0.0051);
+    for (let k = 0; k <= 10_000; k += 1) {
+      expect(roundUp(k / 10_000)).toBe(k / 10_000);
+    }
+  });
+});
+
 describe("describeOverBlocking", () => {
   const base: OverBlocking = {
     siblingsRun: 1,
@@ -57,9 +82,27 @@ describe("describeOverBlocking", () => {
 
   it("states families and how high the true rate could be", () => {
     expect(describeOverBlocking(base)).toBe(
-      "0 of 1 families failed, true rate could be up to 95.0%",
+      "0 of 1 families failed, true rate could be up to 95.00%",
     );
   });
+
+  it.each([
+    [59, 0.0496, "4.96%"],
+    [58, 0.0504, "5.04%"],
+  ])(
+    "prints 0 of %i families apart from its neighbor",
+    (families, bound, printed) => {
+      expect(
+        describeOverBlocking({
+          ...base,
+          independentFamilies: families,
+          upperBound95: bound,
+        }),
+      ).toBe(
+        `0 of ${families} families failed, true rate could be up to ${printed}`,
+      );
+    },
+  );
 
   it("says when a record predates family counts", () => {
     expect(

@@ -123,7 +123,10 @@ upper_bound_95 = the p solving P(X <= k; n, p) = 0.05,  X ~ Binomial(n, p)
 This is the one-sided 95% Clopper-Pearson upper limit, found by bisection
 on the binomial CDF in `metrics/bounds.py`. `0` of `1` gives 95%, `0` of
 `40` gives 7.2%, `1` of `40` gives 11.3%, and a clean record needs `59`
-families before the bound falls under 5%. It is null when `n = 0`.
+families before the bound falls under 5%. It is null when `n = 0`. It is
+stored rounded up to four decimal places, so a stored bound never sits
+below the exact one, and printed as a percentage with two: `0` of `59` is
+4.96% and `0` of `58` is 5.04%.
 
 The bound counts families because siblings in one family share a
 template and the mechanism under test, so a control that blocks one

@@ -786,9 +786,32 @@ def test_over_blocking_counts_each_family_once() -> None:
     # purchase_age, escalation, valid; the incomplete customer_wording sibling
     # shows nothing and is left out.
     assert (summary.independent_families, summary.families_failed) == (3, 2)
-    assert summary.upper_bound_95 == round(clopper_pearson_upper(2, 3), 4)
+    assert summary.upper_bound_95 == 0.9831  # 0.98305, rounded up
     validation = RepairValidation(run_id="r", test_name="t", controls=controls)
     assert validation.rollup.over_blocking == summary
+
+
+@pytest.mark.parametrize(
+    ("trials", "stored", "printed"), [(59, 0.0496, "4.96%"), (58, 0.0504, "5.04%")]
+)
+def test_a_clean_family_bound_is_stored_rounded_up_and_printed_apart(
+    trials, stored, printed
+) -> None:
+    """0 of 59 sits just under 5% and 0 of 58 just over; both used to print 5.0%."""
+    summary = over_blocking_summary(
+        [
+            ControlValidation(
+                control="a",
+                verdict=ControlVerdict.ACCEPTED,
+                sibling_reruns=[_sibling("PASS", None, f"t{i}", f"r{i}") for i in range(trials)],
+            )
+        ]
+    )
+    assert (summary.independent_families, summary.families_failed) == (trials, 0)
+    assert summary.upper_bound_95 == stored
+    assert summary.upper_bound_95 >= clopper_pearson_upper(0, trials)
+    text = cli._over_blocking_text(0, trials, summary.upper_bound_95)
+    assert text == f"0 of {trials} families failed, true rate could be up to {printed}"
 
 
 def test_over_blocking_with_no_completed_sibling_is_not_measured() -> None:
@@ -812,6 +835,8 @@ def test_pinned_validation_evidence_bounds_one_family_at_95_percent() -> None:
     assert (blocking.siblings_run, blocking.siblings_failed) == (1, 0)
     assert (blocking.independent_families, blocking.families_failed) == (1, 0)
     assert blocking.upper_bound_95 == 0.95
+    text = cli._over_blocking_text(0, 1, blocking.upper_bound_95)
+    assert text == "0 of 1 families failed, true rate could be up to 95.00%"
 
 
 # --- whether a label can back a gating verdict ---

@@ -629,12 +629,16 @@ def _validate_controls(
 
 
 def _over_blocking_text(failed: int | None, families: int | None, upper_bound: float | None) -> str:
-    """Family over-blocking with its bound, for every place the CLI reports it."""
+    """Family over-blocking with its bound, for every place the CLI reports it.
+
+    The bound is stored rounded up to four places and printed with all of
+    them, so 0 of 58 (5.04%) and 0 of 59 (4.96%) read differently.
+    """
     if failed is None or families is None:
         return "families not recorded"
     if upper_bound is None:
         return "nothing measured, no sibling family completed"
-    return f"{failed} of {families} families failed, true rate could be up to {upper_bound:.1%}"
+    return f"{failed} of {families} families failed, true rate could be up to {upper_bound:.2%}"
 
 
 def _tag_batch(store: ArtifactStore, run_id: str, batch_id: str) -> None:

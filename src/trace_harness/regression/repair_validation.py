@@ -33,7 +33,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from trace_harness.metrics.bounds import clopper_pearson_upper
+from trace_harness.metrics.bounds import clopper_pearson_upper, round_up
 from trace_harness.regression.schemas import (
     RegressionArtifact,
     ReplayMode,
@@ -238,7 +238,8 @@ class OverBlockingSummary(BaseModel):
     test, so a control that blocks one legitimate member tends to block its
     neighbors for the same reason. Each family is therefore one trial: it
     fails when any of its siblings failed, and ``upper_bound_95`` is the
-    one-sided Clopper-Pearson 95% bound on the family failure rate. Counting
+    one-sided Clopper-Pearson 95% bound on the family failure rate, rounded
+    up to four places so it never understates the exact bound. Counting
     siblings as trials would treat correlated re-runs as independent evidence
     and shrink the bound without anything new being learned.
 
@@ -273,7 +274,7 @@ def over_blocking_summary(controls: list[ControlValidation]) -> OverBlockingSumm
         siblings_failed=sum(1 for s in siblings if s.verdict == "FAIL"),
         independent_families=len(families),
         families_failed=failed,
-        upper_bound_95=None if bound is None else round(bound, 4),
+        upper_bound_95=None if bound is None else round_up(bound),
     )
 
 

@@ -13,7 +13,7 @@
  */
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
-import { clopperPearsonUpper } from "@/lib/over-blocking";
+import { clopperPearsonUpper, roundUp } from "@/lib/over-blocking";
 
 export const METRICS_SNAPSHOT_SCHEMA_VERSION = "0.3.0";
 
@@ -58,8 +58,9 @@ export interface RawOverBlocking {
   independent_families?: number | null;
   families_failed?: number | null;
   /**
-   * One-sided 95% Clopper-Pearson bound on the family failure rate. Derived
-   * by the backend and recomputed here from the two family counts.
+   * One-sided 95% Clopper-Pearson bound on the family failure rate, rounded
+   * up to four places. Derived by the backend and recomputed here from the
+   * two family counts the same way.
    */
   upper_bound_95?: number | null;
   sources: string[];
@@ -135,14 +136,15 @@ const withFamilyBound = (
 ): OverBlocking => {
   const independentFamilies = overBlocking.independentFamilies ?? null;
   const familiesFailed = overBlocking.familiesFailed ?? null;
+  const bound =
+    independentFamilies === null || familiesFailed === null
+      ? null
+      : clopperPearsonUpper(familiesFailed, independentFamilies);
   return {
     ...overBlocking,
     independentFamilies,
     familiesFailed,
-    upperBound95:
-      independentFamilies === null || familiesFailed === null
-        ? null
-        : clopperPearsonUpper(familiesFailed, independentFamilies),
+    upperBound95: bound === null ? null : roundUp(bound),
   };
 };
 

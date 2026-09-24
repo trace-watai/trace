@@ -90,6 +90,18 @@ describe("parseMetricsSnapshot", () => {
     expect(lying.overBlocking.upperBound95).toBeCloseTo(0.95, 4);
   });
 
+  it("rounds the derived bound up as the backend stores it", () => {
+    const snapshot = parseMetricsSnapshot({
+      ...raw,
+      over_blocking: {
+        ...raw.over_blocking,
+        independent_families: 59,
+        families_failed: 0,
+      },
+    });
+    expect(snapshot.overBlocking.upperBound95).toBe(0.0496);
+  });
+
   it("reads a record from before family counts with no bound", () => {
     const overBlocking = { ...raw.over_blocking };
     delete overBlocking.independent_families;

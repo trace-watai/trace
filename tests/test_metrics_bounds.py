@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from trace_harness.metrics.bounds import binomial_cdf, clopper_pearson_upper
+from trace_harness.metrics.bounds import binomial_cdf, clopper_pearson_upper, round_up
 
 
 @pytest.mark.parametrize(
@@ -61,3 +61,25 @@ def test_binomial_cdf_edges() -> None:
     assert binomial_cdf(4, 5, 1.0) == 0.0
     assert binomial_cdf(5, 5, 1.0) == 1.0
     assert binomial_cdf(1, 2, 0.5) == pytest.approx(0.75)
+
+
+@pytest.mark.parametrize(
+    ("failures", "trials", "stored"),
+    [(0, 59, 0.0496), (0, 58, 0.0504), (2, 3, 0.9831), (0, 1, 0.95), (0, 2, 0.7764), (1, 1, 1.0)],
+)
+def test_a_stored_bound_is_rounded_up(failures: int, trials: int, stored: float) -> None:
+    """Four places, rounded up, so a stored bound never sits below the exact one.
+
+    Plain rounding stored 0.0495 for 0 of 59, under the exact 0.04950761.
+    """
+    exact = clopper_pearson_upper(failures, trials)
+    assert exact is not None
+    assert round_up(exact) == stored
+    assert stored >= exact - 1e-12
+
+
+def test_a_value_on_a_step_stays_on_it() -> None:
+    """0.0051 * 10**4 is 51.00000000000001 in floating point, which is still 0.0051."""
+    assert round_up(0.0051) == 0.0051
+    assert all(round_up(k / 10_000) == k / 10_000 for k in range(10_001))
+    assert round_up(0.95000001) == 0.9501
