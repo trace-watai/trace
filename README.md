@@ -114,10 +114,11 @@ for every contract and a sub-second offline test suite.
   control and prove that positive sibling cases are not overblocked.
 - **Attribution** — rule-based, confidence-capped; the LLM judge comes
   later and must beat this baseline.
-- **API & dashboard** — the run list, run detail, failure card and the trace
-  timeline with attribution markers all read retained runs. Repair and
-  regression panels and an API wrapper over `RunReader` remain:
-  [docs/future_api.md](docs/future_api.md),
+- **API & dashboard**: the run list, run detail, failure card and trace
+  timeline read retained runs, and the timeline marks attribution steps and
+  shows each step's failed checks. The dedicated verifier and attribution
+  views, the repair and regression panels, and an API wrapper over `RunReader`
+  remain. See [docs/future_api.md](docs/future_api.md) and
   [docs/future_dashboard.md](docs/future_dashboard.md).
 - **Replay** — pinned state, documents, normalized agent actions, verifier
   checks, controls, and positive siblings are executable. Wider task-family
@@ -134,8 +135,8 @@ future export layers, never local dependencies (see
 
 ## Team ownership
 
-Work is owned by lane, not by person. ADR-0002 made that the rule so a
-ticket is never blocked on one name being available.
+Work is owned by lanes. ADR-0002 made that the rule so a ticket is never
+blocked on one name being available.
 
 | Lane | Owns |
 |---|---|

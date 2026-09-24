@@ -1,11 +1,16 @@
 # TRACE live interface compatibility matrix
 
-Date: 2026-07-28
+Written: 2026-07-28, against `origin/main` through the PR #123 integration
+Contract matrix rechecked: 2026-09-24, against `main` through #231 (#186)
 Linear anchor: TRA-66
 Owner: Justin Lam
-Verified baseline: `origin/main` through PR #123 integration
 
-## Executive result
+The contract matrix below is kept current, and `tests/test_docs_versions.py`
+fails when one of its versions disagrees with `src/`. The executive result,
+the acceptance evidence and the release gates are the 2026-07-28 record. Later
+progress is noted beside them without rewriting them.
+
+## Executive result (2026-07-28)
 
 The previously conflicting integration stack is now merged. The task model,
 escalation flow, verifier, failure bundle, regression replay, batch runner,
@@ -24,6 +29,10 @@ Until those four items are complete, the honest product stance is:
 **integrated fixture-backed vertical slice plus live adapter; final live
 acceptance and the complete product surface are still outstanding.**
 
+Since then, #179 retained eight key-backed Gemini runs against `main` at
+`5e27410` (item 1), and #149 and #150 gave the dashboard a run list and a
+trace timeline (part of item 3).
+
 ## Contract matrix
 
 | Interface or artifact | Producer and version | Current consumers | Evidence on `main` | Status / remaining gap |
@@ -41,7 +50,7 @@ acceptance and the complete product surface are still outstanding.**
 | Regression artifact | `RegressionArtifact 0.3.0` | replay CLI, dashboard contract | Pinned state, docs, normalized agent actions, verifier checks, positive siblings, and control replay are tested. | Compatible and executable. |
 | Suite config/summary | `Suite 0.2.0`, `BatchSummary 0.2.0` | CLI, delivery reporting | Child run IDs, verdict counts, termination counts, cost coverage, and canonical artifacts are emitted and tested. | Compatible; `0.1.0` suites remain readable. Unknown live-provider cost remains `null` rather than being reported as zero. |
 | Full offline run fixture | Deterministic 11-artifact bundle | dashboard tests and offline demo | Generated from the current pipeline; all run IDs and artifact links align; regeneration is byte-for-byte deterministic. | Compatible and current. |
-| Dashboard contracts/UI | TypeScript mirrors listed above | browser UI | Format, lint, typecheck, 57 tests, and production build pass. A run list, a run detail page and a trace timeline with attribution markers and per-step verifier failures all render from retained runs. | Partial product surface. Repair package and regression artifact panels and a real backend connection remain, the last two tracked by #205. |
+| Dashboard contracts/UI | TypeScript mirrors listed above | browser UI | Format, lint, typecheck, tests, and production build pass. A run list, a run detail page and a trace timeline render from retained runs, and the timeline marks attribution steps and shows each step's failed checks. | Partial product surface. The dedicated verifier failures (#169) and attribution (#170) views, the repair package (#171) and regression artifact (#172) panels, and any backend connection remain. The dashboard reads the runs directory off disk. |
 | Gemini/live adapter | `src/trace_harness/models/gemini.py` | CLI and suite runner | Native function calling is implemented with current `google-genai`; the shut-down Gemini 2.0 default was replaced with `gemini-3.6-flash`; suite temperature, seed, and timeout reach both the persisted config and adapter; provider responses precede normalized actions in the trace; parallel calls fail explicitly. | Contract-compatible, offline-tested, and proved live. #179 retained eight key-backed runs under `docs/acceptance/live-gemini-2026-09-13/`. Retries, backoff and cost extraction remain follow-ups. |
 
 ## Integrated decisions now in force
@@ -59,9 +68,11 @@ acceptance and the complete product surface are still outstanding.**
 - A regression is not only a document: it pins the world and agent actions,
   replays the failure, applies a control, and protects positive sibling cases.
 
-## Current acceptance evidence
+## Acceptance evidence (2026-07-28)
 
-Fresh verification on the merged stack:
+Verification on the merged stack as it stood on 2026-07-28. The counts are that
+day's and have grown since. `scripts/check_repo.sh` and the dashboard gate give
+the current ones.
 
 ```text
 Repository gate:
@@ -83,7 +94,11 @@ Fixture generation:
 - two consecutive generations produced identical SHA-256 hashes
 ```
 
-## Remaining release gates and owners
+## Release gates and owners (2026-07-28)
+
+Since then, #179 retained eight key-backed Gemini runs against `main` at
+`5e27410` (see the Gemini row above). Apart from the final acceptance owner,
+which now names the TPM lane, the rows are as written on 2026-07-28.
 
 | Gate | Concrete completion condition | Primary owner | Required reviewers |
 | --- | --- | --- | --- |

@@ -166,9 +166,13 @@ Scenarios not covered by the refund fixture:
 
 `_CHECK_CATEGORY` maps 6 of the verifier's 13 check ids to 5 of the 19
 `FailureCategory` values. That map is refund-domain data and it is not part of
-the taxonomy itself. Seven check ids have no category yet, so a run failing
-only on one of them attributes with a null primary category and an ambiguity
-note rather than a guess. The gap closes as new verifiers land.
+the taxonomy itself. Seven check ids have no category yet:
+`duplicate_escalation`, `expected_refund_missing`,
+`incomplete_retrieval_coverage`, `policy_not_retrieved_before_action`,
+`unexpected_escalation`, `unexpected_refund_issued` and
+`unnecessary_escalation`. A run failing only on those attributes with
+`primary_failure_category: unknown` and an ambiguity note saying so, instead of
+a guessed category. The gap closes as the map grows.
 
 ## Versioning
 

@@ -89,8 +89,10 @@ contracts. Members are listed in `docs/team_ownership.md`.
   `ToolEnvironment` protocol, side-effect classes, event payloads. These three
   seams are where silent breakage would hurt most, so a PR touching them gets
   the whole lane as reviewers.
-- **Frontend** builds against run artifacts. Data-contract needs go to
-  evaluation systems as tickets rather than dashboard-side workarounds.
+- **Frontend** builds against run artifacts. Data-contract needs go as
+  tickets to evaluation systems for trace and artifact shape, and to
+  evaluation core for attribution semantics, rather than into dashboard-side
+  workarounds.
 - **Research and QA** audit assumptions and docs anywhere. Findings land as
   issues against the owning lane.
 

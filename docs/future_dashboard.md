@@ -1,10 +1,12 @@
 # Future: dashboard (trace replay & failure UX)
 
-**Status: run summary, failure card, run list and the trace timeline with
-attribution markers all read retained runs. Repair package and regression
-artifact panels remain.** Owned by the frontend lane. Data contracts are a
-cross-lane contract with evaluation systems, per
-[team_ownership.md](team_ownership.md).
+**Status: the run list, run summary, failure card and trace timeline read
+retained runs, and the timeline marks attribution steps and shows each step's
+failed checks. The dedicated verifier failures (#169) and attribution (#170)
+views and the repair package (#171) and regression artifact (#172) views
+remain.** Owned by the frontend lane. Data contracts are cross-lane contracts
+with evaluation systems for trace and artifact shape and with evaluation core
+for attribution semantics, per [team_ownership.md](team_ownership.md).
 
 **Current stack:** Next.js + TypeScript + Tailwind + shadcn/ui in
 `apps/dashboard/`.
@@ -27,8 +29,8 @@ JSON remain for contract tests only — they're no longer in the live app's
 render path.
 
 If a view cannot be built from the artifact files on disk, the gap is a
-data-contract conversation with Samrath, not a reason to invent
-dashboard-side state.
+data-contract conversation with the owning lane. Inventing dashboard-side state
+to cover it is the wrong fix.
 
 **Required views (the failure fixture exercises every one):**
 
@@ -36,11 +38,11 @@ dashboard-side state.
 |---|---|---|---|
 | Run summary | Live | `run_result.json` + `task_spec.json` | status vs verdict distinction and steps are visible; timing and task goal remain |
 | Trace timeline | Live (#150) | `trace.jsonl` | step-grouped events; prompts/actions/observations; retrieval results with doc **status badges** |
-| Verifier failures | Live (#150) | `verifier_result.json` | failed checks with expected/actual, severity, blocks_release, evidence drill-down to steps |
-| Attribution | Live (#150) | `attribution_result.json` | root cause vs missed recovery vs first irreversible — **distinct markers on the timeline** (steps 3 / 4 / 5 in the fixture), confidence + ambiguity notes |
+| Verifier failures | Partial (#150), view in #169 | `verifier_result.json` | failed checks with expected/actual, severity, blocks_release, evidence drill-down to steps. The timeline already shows each step's failed checks with severity and expected/actual. |
+| Attribution | Partial (#150), view in #170 | `attribution_result.json` | root cause vs missed recovery vs first irreversible as **distinct markers on the timeline** (steps 3 / 4 / 5 in the fixture), confidence + ambiguity notes. The markers are live; confidence, ambiguity notes and categories wait for #170. |
 | Failure card | Live | `failure_card.json` | the human story: summary, blast radius, symptoms |
-| Repair package | Pending (#205) | `repair_package.json` | controls with installation points + priorities |
-| Regression artifact | Pending (#205) | `regression_artifact.json` | pinned scenario, checks, replay command, positive siblings |
+| Repair package | Pending (#171) | `repair_package.json` | controls with installation points + priorities |
+| Regression artifact | Pending (#172) | `regression_artifact.json` | pinned scenario, checks, replay command, positive siblings |
 
 **UX north star:** a teammate who wasn't there opens a failed run and
 within a minute can say *what happened, where it became inevitable, and
@@ -48,6 +50,7 @@ what would prevent it*. Step ids are the cross-linking currency — every
 evidence item carries them.
 
 **Still out of scope:** auth, live polling, run comparison, and editing. The
-next integration step is building the two remaining views (repair package and
-regression artifact) on the same `run-loader.ts` seam the
-run summary and failure card already use.
+next integration step is #169, which adds a tabs shell under `/runs/[runId]`,
+links step ids to the timeline, and builds the verifier failures view. #170,
+#171 and #172 build on it, all on the same `run-loader.ts` seam the run
+summary, failure card and trace timeline already use.

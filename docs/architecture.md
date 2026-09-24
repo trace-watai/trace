@@ -57,10 +57,11 @@ The CLI (`trace_harness/cli.py`) exposes each arrow as a subcommand
 `run-suite` and `report-suite` for batches, `list-runs` and `inspect` for the
 read path, `replay` and `collect-regressions` for the regression gate,
 `controls` for the control library, and `validate-fixtures` for the task
-rubric. `trace-harness --help` is the list that
-cannot go stale. **Stages communicate only through artifacts on disk** — any
-stage can be re-run later (e.g. re-verify an old trace with a new
-verifier), and the dashboard sees exactly what the pipeline saw.
+rubric. `trace-harness --help` is the list that cannot go stale.
+
+**Stages communicate only through artifacts on disk**, so any stage can be
+re-run later (e.g. re-verify an old trace with a new verifier), and the
+dashboard sees exactly what the pipeline saw.
 
 ## Dependency rules (what keeps this modular)
 
@@ -130,5 +131,6 @@ work — note it in the PR instead. See CONTRIBUTING.md.
 No vector DB, no Docker/Kubernetes, no hosted services, no database, no
 live LLM calls in tests. Each becomes worth adding only after the thing it
 replaces demonstrably hurts. The dashboard was on this list when ADR-0001 was
-written and came off it in #149 and #150, which is why `apps/dashboard/` now
-reads retained runs directly off disk with no service behind it.
+written. #58 scaffolded `apps/dashboard/`, #119 rendered the first failure card
+from a bundled fixture, and #149 and #150 moved it onto retained runs, which it
+reads directly off disk with no service behind it.
