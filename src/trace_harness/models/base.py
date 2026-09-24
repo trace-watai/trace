@@ -105,9 +105,15 @@ class ModelAdapterError(RuntimeError):
     ``call_record`` is set when the failure came out of a live call, so the
     attempts that led to it reach the trace's error event. It is None for a
     failure that never involved a provider request.
+
+    ``raw`` is set when the adapter received a model response and then failed
+    instead of acting on it (an outside agent that forwarded a response and
+    raised, for example). The runner records it as a ``model_response`` at the
+    failing step, ahead of the error event, so the response is not lost.
     """
 
     call_record: dict[str, Any] | None = None
+    raw: dict[str, Any] | None = None
 
 
 class ProviderNotConfiguredError(RuntimeError):

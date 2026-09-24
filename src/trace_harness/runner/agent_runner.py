@@ -19,7 +19,10 @@ Failure behavior
     whatever artifacts were produced. Caught failures record an ``error``
     event and the run still finishes its bookkeeping (final state snapshot,
     ``run_finished``, ``run_result.json``); only a hard kill leaves a trace
-    truncated mid-stream. Partial evidence beats no evidence.
+    truncated mid-stream. Partial evidence beats no evidence. An adapter error
+    that carries a response the adapter received (``ModelAdapterError.raw``)
+    has it recorded as ``model_response`` at the failing step, ahead of the
+    error event.
 
 Live calls
     Retries, backoff and the per-provider rate limit live in
@@ -104,6 +107,12 @@ def _call_with_timeout(fn: Callable[[], Any], timeout: float) -> Any:
     if "error" in box:
         raise box["error"]
     return box["value"]
+
+
+def _record_unacted_response(recorder: TraceRecorder, step_id: int, exc: ModelAdapterError) -> None:
+    """Record a response the adapter received and then failed on, before its error."""
+    if exc.raw is not None:
+        recorder.record(TraceEventType.MODEL_RESPONSE, step_id=step_id, payload={"raw": exc.raw})
 
 
 class ToolEnvironment(Protocol):
@@ -319,6 +328,7 @@ class AgentRunner:
                     error_message = str(exc)
                     break
                 except ScriptExhaustedError as exc:
+                    _record_unacted_response(recorder, step_id, exc)
                     recorder.record(
                         TraceEventType.ERROR,
                         step_id=step_id,
@@ -329,6 +339,7 @@ class AgentRunner:
                     error_message = str(exc)
                     break
                 except ModelAdapterError as exc:
+                    _record_unacted_response(recorder, step_id, exc)
                     error_payload: dict[str, Any] = {"error": str(exc), "kind": "model_error"}
                     # A live call that failed after retries says so here.
                     if exc.call_record is not None:

@@ -39,8 +39,11 @@ class TargetAgent(Protocol):
 - `on_model_response(raw, reasoning=None)` forwards one model response. Call it
   once per response, before acting on it. `raw` is a JSON object describing
   the response and `reasoning` is any text the model gave for its decision.
-  The harness stores `raw` in `trace.jsonl` as given, so leave out anything you
-  would not want written to a file.
+  The harness writes `raw` to `trace.jsonl` as a JSON round trip, so leave out
+  anything you would not want written to a file. A value JSON cannot hold is
+  stored as its string form, a `raw` that is not a dict is stored as
+  `{"response": raw}`, and when several responses arrive before one move they
+  are stored together as `{"responses": [...]}`.
 - Return the final answer to the customer as a string.
 - `name` becomes the run's `model` label in `run_config.json` and the run
   index, so make it say what ran, for example `my-graph:gpt-5`.
@@ -79,7 +82,8 @@ Suite manifests that name an outside agent are Suite 0.4.0.
 `--max-steps` and `--timeout` apply as usual. `--script`, `--cassette-mode`,
 `--temperature`, and `--seed` are refused with `--agent`, because the outside
 agent owns its model and the harness would be recording settings it never
-applied.
+applied. A suite agent config with `provider: external` refuses `cassette`,
+`call_policy`, `temperature`, and `seed` for the same reason.
 
 ## What the harness guarantees
 
@@ -110,7 +114,8 @@ agents.
 - **Failures.** An exception out of `run` ends the run as `model_error` with the
   exception type and message in the trace. So does returning something other
   than a string. A `ScriptExhaustedError` from a scripted model keeps its own
-  `script_exhausted` reason.
+  `script_exhausted` reason. Model responses forwarded before the exception
+  are recorded as a `model_response` at that step, ahead of the `error` event.
 - **Regressions.** Every move is recorded as a `model_action`, so a failure's
   regression artifact pins your agent's moves and `trace-harness replay`
   reproduces the failure offline without your agent installed.
@@ -121,7 +126,8 @@ The callback is optional, and leaving it out changes what attribution can say.
 
 With it wired, every forwarded response becomes a `model_response` event at the
 step of the move that followed it, and its `reasoning` lands on that step's
-`model_action`. Attribution can then find a root cause the agent stated in its
+`model_action`. A response followed by an exception instead of a move is
+recorded at the step the exception ended. Attribution can then find a root cause the agent stated in its
 own words, such as committing to a deprecated policy document, and the verifier
 can see those citations too.
 

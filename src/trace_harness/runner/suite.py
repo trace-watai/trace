@@ -42,7 +42,9 @@ class AgentConfig(BaseModel):
     With ``provider: external`` the run drives an outside agent, and
     ``agent_ref`` names it as ``package.module:factory`` (see
     ``runner/target_agent.py``), and ``model`` optionally overrides the label
-    the agent reports for itself.
+    the agent reports for itself. The outside agent owns its model, so such a
+    config refuses ``cassette``, ``call_policy``, ``temperature`` and ``seed``,
+    as the CLI refuses the matching flags with ``--agent``.
     """
 
     label: str
@@ -74,6 +76,16 @@ class AgentConfig(BaseModel):
                 raise ValueError(
                     "provider 'external' cannot use a call_policy; the outside agent owns its "
                     "model calls, so the harness has no request to retry or pace"
+                )
+            # The CLI refuses --temperature and --seed with --agent for the same
+            # reason: run_config.json would record settings nothing applied.
+            model_settings = [
+                name for name in ("temperature", "seed") if getattr(self, name) is not None
+            ]
+            if model_settings:
+                raise ValueError(
+                    f"provider 'external' cannot set {' or '.join(model_settings)}; "
+                    "the outside agent owns its model"
                 )
         elif self.agent_ref is not None:
             raise ValueError("agent_ref is only valid with provider 'external'")
