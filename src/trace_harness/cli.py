@@ -1045,6 +1045,10 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
             raise CliInputError(f"--condition expects name=batch_id, got {pair!r}")
         if name in condition_batches:
             raise CliInputError(f"--condition names {name!r} twice; each condition has one batch")
+        if batch_id in condition_batches.values():
+            raise CliInputError(
+                f"--condition gives batch {batch_id} to two conditions; each batch answers one"
+            )
         condition_batches[name] = batch_id
     try:
         validate_condition_batches(spec, condition_batches)
@@ -1068,7 +1072,10 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     result = ExperimentResult(
         experiment_id=spec.experiment_id,
         condition_batches=condition_batches,
-        metrics=derive_metrics(summaries),
+        metrics=derive_metrics(
+            summaries,
+            condition_names={batch: name for name, batch in condition_batches.items()},
+        ),
         decision=Decision(args.decision),
         decided_by=DecidedBy(args.decided_by),
         report_path=str(store.experiment_report_path(spec.experiment_id)),

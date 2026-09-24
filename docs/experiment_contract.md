@@ -86,12 +86,30 @@ Eight, named in the memo, with no combined score. A single number would let a
 good result on one axis hide a bad one on another, and the decision is supposed
 to be made on the evidence rather than on an average of it.
 
-Every metric is nullable, and a missing one stays null rather than becoming
-zero. A condition set that never ran live cannot produce a divergence rate, and
-reporting that as `0.0` would read as a measurement that was never taken. Today
-`experiment record` derives `verified_failure_count`, `cost_usd` and
-`latency_ms_p50` from the batch summaries; the rest arrive with the branch
-stage (#159) and the post-block classifier.
+Every metric is nullable, and a missing one stays null. A condition set that
+never ran live cannot produce a divergence rate, and reporting that as `0.0`
+would read as a measurement that was never taken.
+
+Today `experiment record` derives three of the eight from the batch summaries,
+following Part B2 of [methodology_metrics.md](methodology_metrics.md):
+
+| metric | how | null when |
+|---|---|---|
+| `verified_failure_count` | completed runs whose verdict is `fail` | no completed run carries a verdict, including when no `--condition` was given |
+| `cost_usd` | sum of the costs that were recorded; `extra` carries `cost_recorded_k` (runs with a cost) and `cost_recorded_n` (runs) | no run recorded a cost |
+| `latency_ms_p50` | median latency over completed runs | no completed run recorded one |
+
+All three pool every recorded condition. When more than one condition is
+recorded, `extra` also carries `verified_failure_count.<condition>` and
+`latency_ms_p50.<condition>`, so a fixture arm's near-zero latency cannot hide
+inside a live arm's median. A batch may answer only one condition, since
+pooling it twice would count its runs twice.
+
+The batch entry does not record `blocks_release`, so a failure of a
+non-blocking check counts toward `verified_failure_count` although B2 counts
+blocking failures only. The divergence rates arrive with the branch stage
+(#159) and `post_block_outcomes` with the post-block classifier (#157).
+Nothing derives `verdict_agreement_rate` or `sibling_failure_rate` yet.
 
 ## Commands
 
@@ -119,7 +137,18 @@ a single `static_replay` condition over `refund_bundles_v0`, kept in the
 repository the way the acceptance runs are. It exists so the contract is
 demonstrated on real artifacts before the branch stage lands, and so the
 dashboard loader has something to read. Its `verified_failure_count` is 5,
-which is the suite's five bundle failures.
+which is the suite's five bundle failures, and a test derives it again from
+the retained batch summary.
+
+Only the batch summary under `docs/acceptance/batches/` was retained. The nine
+run directories it names were not, so `RunReader.get_run` and the dashboard
+cannot open them. The summary carries every per-run field the three derived
+metrics read, which is why it alone is enough to re-derive them. A fresh
+`run-suite fixtures/suites/refund_bundles_v0.json` reproduces the five failures
+under new run ids, and a test records exactly that. The result predates the
+cost coverage counts in `extra`, so its `extra` is empty; the eight named
+metrics match what `record` derives today. Neither the batch nor the
+experiment is read by the metrics history, which skips both trees.
 
 ## Out of scope here
 

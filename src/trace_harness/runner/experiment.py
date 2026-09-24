@@ -307,15 +307,35 @@ def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -
     return "\n".join(lines) + "\n"
 
 
-def derive_metrics(batch_summaries: list[Any]) -> ExperimentMetrics:
+def derive_metrics(
+    batch_summaries: list[Any], *, condition_names: dict[str, str] | None = None
+) -> ExperimentMetrics:
     """Compute every metric the batch summaries can support today.
 
-    Only four of the eight are derivable from a batch alone. The divergence
-    rates and post-block outcomes need the branch stage (#159) and the
-    post-block classifier (#157) to have produced their fields, and
-    ``verdict_agreement_rate`` needs a live arm to disagree with. Those stay
-    ``None`` rather than being filled with a placeholder, because a zero here
-    would read as a measurement.
+    Three of the eight come from a batch alone, each as Part B2 of
+    ``docs/methodology_metrics.md`` defines it:
+
+    - ``verified_failure_count`` counts completed runs whose verdict is
+      ``fail``. It is ``None`` when no completed run carries a verdict, since
+      nothing was verified. The batch entry does not record
+      ``blocks_release``, so a failure of a non-blocking check counts too.
+    - ``cost_usd`` sums the costs that were recorded, with the number of runs
+      that recorded one and the number of runs in ``extra`` as
+      ``cost_recorded_k`` and ``cost_recorded_n``.
+    - ``latency_ms_p50`` is the median over completed runs.
+
+    All three pool every recorded condition. ``condition_names`` maps a batch
+    id to the condition it answered, and when more than one condition is
+    recorded the failure count and the median are also given per condition in
+    ``extra``, as ``verified_failure_count.<condition>`` and
+    ``latency_ms_p50.<condition>``. A fixture arm's near-zero latency would
+    otherwise disappear into the pooled median.
+
+    The divergence rates and post-block outcomes need the branch stage (#159)
+    and the post-block classifier (#157) to have produced their fields, and
+    ``verdict_agreement_rate`` and ``sibling_failure_rate`` need a live arm to
+    compare against. Those stay ``None``, because a zero there would read as a
+    measurement.
     """
     from trace_harness.runner.batch import BatchSummary
 
@@ -324,16 +344,46 @@ def derive_metrics(batch_summaries: list[Any]) -> ExperimentMetrics:
         for s in batch_summaries
     ]
     entries = [e for s in summaries for e in s.entries]
+    extra: dict[str, float] = {}
 
-    verified_failures = sum(1 for e in entries if e.verdict == "fail")
     costs = [e.cost_usd for e in entries if e.cost_usd is not None]
-    latencies = sorted(e.latency_ms for e in entries if e.latency_ms is not None)
+    if entries:
+        extra["cost_recorded_k"] = len(costs)
+        extra["cost_recorded_n"] = len(entries)
+
+    names = condition_names or {}
+    by_condition: dict[str, list[Any]] = {}
+    for summary in summaries:
+        name = names.get(summary.batch_id, summary.batch_id)
+        by_condition.setdefault(name, []).extend(summary.entries)
+    if len(by_condition) > 1:
+        for name, condition_entries in sorted(by_condition.items()):
+            failures = _verified_failures(condition_entries)
+            if failures is not None:
+                extra[f"verified_failure_count.{name}"] = failures
+            latency = _completed_latency_p50(condition_entries)
+            if latency is not None:
+                extra[f"latency_ms_p50.{name}"] = latency
 
     return ExperimentMetrics(
-        verified_failure_count=verified_failures,
+        verified_failure_count=_verified_failures(entries),
         cost_usd=round(sum(costs), 6) if costs else None,
-        latency_ms_p50=_median(latencies),
+        latency_ms_p50=_completed_latency_p50(entries),
+        extra=extra,
     )
+
+
+def _verified_failures(entries: list[Any]) -> int | None:
+    """Completed runs with verdict ``fail``, or None when none was verified."""
+    verified = [e for e in entries if e.status == "completed" and e.verdict in ("pass", "fail")]
+    if not verified:
+        return None
+    return sum(1 for e in verified if e.verdict == "fail")
+
+
+def _completed_latency_p50(entries: list[Any]) -> float | None:
+    completed = [e for e in entries if e.status == "completed" and e.latency_ms is not None]
+    return _median(sorted(e.latency_ms for e in completed))
 
 
 def _median(values: list[float]) -> float | None:
