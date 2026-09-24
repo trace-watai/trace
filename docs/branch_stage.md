@@ -229,7 +229,7 @@ next unused seed from that list, and a replacement that ends incomplete is
 replaced in turn, until the list runs out. The decision reads run status alone,
 never the verdict, which is pre-registration 001's rule for seeds 5 to 9. A
 seed the budget refused is not replaced, and neither is a `setup_error`, a
-seed that failed before its run existed: that is a harness problem, and a
+seed that failed before its run existed. That is a harness problem, and a
 replacement would only spend a live seed on the same failure. Replacement
 seeds land in the same batch with their own seed numbers. With cassettes in
 `replay` mode, only the declared seeds are checked up front, so a replacement

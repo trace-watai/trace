@@ -583,9 +583,10 @@ def test_batch_summaries_written_before_the_branch_stage_still_load(version):
 
 # --- the experiment budget (#196) ---
 
-# 10k input and 10k output tokens on claude-sonnet-5 is $0.18 a run.
+# 10k input and 10k output tokens on claude-sonnet-5, priced from the adapter's
+# table, so these tests hold whatever price the table carries.
 USAGE = {"input_tokens": 10_000, "output_tokens": 10_000}
-RUN_COST = (10_000 * 3.0 + 10_000 * 15.0) / 1_000_000
+RUN_COST = sum(10_000 * price for price in ANTHROPIC_PRICING["claude-sonnet-5"]) / 1_000_000
 
 
 class _PricedClaude:
@@ -918,7 +919,7 @@ def test_the_cap_spans_every_branch_invocation_of_the_plan(tmp_path, capsys, liv
         tmp_path,
         _claude("live", "live", artifact, control_ids=[REFUND_WINDOW_CONTROL_ID]),
         _claude("live_no_control", "live_no_control", artifact),
-        max_cost_usd=0.3,
+        max_cost_usd=1.5 * RUN_COST,
     )
     runs = tmp_path / "runs"
     # Another experiment's spend in the same runs dir never counts.
@@ -931,13 +932,13 @@ def test_the_cap_spans_every_branch_invocation_of_the_plan(tmp_path, capsys, liv
 
     branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]
     assert main([*branch, "--condition", "live"]) == 0
-    # $0.18 a run: seeds 0 and 1 reach $0.36, and seed 2 is refused.
+    # A cap of one and a half runs: seeds 0 and 1 pass it, and seed 2 is refused.
     assert live_models == ["claude-sonnet-5"] * 2
     capsys.readouterr()
 
     assert main([*branch, "--condition", "live_no_control"]) == 0
     out = capsys.readouterr().out
-    assert "$0.360000 already spent by earlier runs of the plan" in out
+    assert f"${2 * RUN_COST:.6f} already spent by earlier runs of the plan" in out
     assert live_models == ["claude-sonnet-5"] * 2
     summaries = [
         BatchSummary.model_validate_json(p.read_text())

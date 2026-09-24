@@ -18,7 +18,7 @@ after that commit.
 | Value | In the plan | Basis |
 |---|---|---|
 | Cap | `budget.max_cost_usd` 50.0 | The pre-registration caps recorded `cost_usd` across all live arms at 50 US dollars |
-| Temperature | `null` in every live agent config, so none is sent and each `run_config.json` records null | "at the provider's default temperature" |
+| Temperature | `null` in every live agent config, so none is sent and each `run_config.json` records null. For claude-sonnet-5 it must stay null, since that model rejects a non-default temperature with a 400 error | "at the provider's default temperature" |
 | Live model | gemini `gemini-3.6-flash` for `live` and `live_no_control` | "Gemini (`gemini-3.6-flash`, the adapter default)" |
 | Swapped model | anthropic `claude-sonnet-5` for `live_swapped` | The pre-registration names #160's second adapter and no model, and this is that adapter's default |
 
@@ -98,8 +98,8 @@ RUNS=runs/exp_001
 mkdir -p "$RUNS"
 ```
 
-**1. Estimate the cost.** It prints each live condition's expected and ceiling
-cost and exits 1 if the ceiling passes the cap.
+**1. Estimate the cost.** It prints each live condition's expected and high
+cost and exits 1 if the high estimate passes the cap.
 
 ```bash
 python scripts/estimate_exp_001_cost.py
@@ -196,28 +196,38 @@ retained harness check passed on the committed plan's exact bytes.
 ## Cost against the cap
 
 `scripts/estimate_exp_001_cost.py` prices calls through the adapters' own
-tables (`GEMINI_PRICING` at 0.75 and 3.75 US dollars per million input and
-output tokens, `ANTHROPIC_PRICING` at 3 and 15). Token counts come from the
-retained cassette
+tables, `GEMINI_PRICING` and `ANTHROPIC_PRICING`, so a price change in code
+changes its output. Token counts come from the retained cassette
 `fixtures/cassettes/refund_policy_failure/gemini-3.6-flash/default.jsonl`,
 whose five calls send 995, 1251, 1750, 2851 and 3573 input tokens and return at
 most 690 output tokens. A call at step `s` is priced at the cassette's input for
 step `s`, growing by 1101 tokens a step past step 5, and at 690 output tokens.
 
-| Arm | Model | Expected | Ceiling |
+The numbers below are priced at 0.75 and 3.75 US dollars per million input and
+output tokens for gemini-3.6-flash, and at 2 and 10 for claude-sonnet-5. The
+Sonnet 5 price is Anthropic's published one, which assumes #229's corrected
+`ANTHROPIC_PRICING`. Before that fix lands the table says 3 and 15, and the
+script prints $0.57 and $14.10 for the swapped arm, $0.85 and $21.15 in total.
+`tests/test_exp_001.py` recomputes this table from the script at the prices
+stated here.
+
+| Arm | Model | Expected | High |
 |---|---|---|---|
 | `live` | gemini-3.6-flash | $0.14 | $3.53 |
 | `live_no_control` | gemini-3.6-flash | $0.14 | $3.53 |
-| `live_swapped` | claude-sonnet-5 | $0.57 | $14.10 |
-| Total | | $0.85 | $21.15 |
+| `live_swapped` | claude-sonnet-5 | $0.38 | $9.40 |
+| Total | | $0.66 | $16.45 |
 
 Expected assumes five seeds per condition, each making as many calls after the
-fork as the recording did. Ceiling assumes ten runs per condition, seeds 0 to 4
-and every replacement, each running to the 16 step limit. The Claude line uses
-Gemini's token counts, since no Claude run is retained. Pricing every call at
-1010 output tokens, the largest single call in the eight retained 2026-09-13
-live Gemini runs, gives $1.03 expected and $23.75 at the ceiling. The guard
-checks between runs, so the overshoot past the cap is at most one run.
+fork as the recording did. High assumes ten runs per condition, seeds 0 to 4
+and every replacement, each running to the 16 step limit. Neither is a bound,
+since a live call can return more output tokens than 690 and a live transcript
+can grow faster than the recorded one. The Claude line uses Gemini's token
+counts, since no Claude run is retained. Pricing every call at 1010 output
+tokens, the largest single call in the eight retained 2026-09-13 live Gemini
+runs (`--output-tokens 1010`), gives $0.80 expected and $18.47 high. What
+bounds the spend is the cap. The guard checks it between runs, so the overshoot
+past it is at most one run.
 
 ## Stopping rules as the tools apply them
 

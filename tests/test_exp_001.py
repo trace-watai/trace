@@ -22,6 +22,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,8 @@ from conftest import REPO_ROOT
 from trace_harness.cli import main
 from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID
 from trace_harness.models import is_priced
+from trace_harness.models.anthropic import ANTHROPIC_PRICING
+from trace_harness.models.gemini import GEMINI_PRICING
 from trace_harness.runner.branch import load_artifact, replacement_seeds, validate_condition
 from trace_harness.runner.experiment import ExperimentMetrics, ExperimentSpec
 from trace_harness.runner.repair_effectiveness import RepairEffectivenessReport
@@ -97,7 +100,8 @@ def test_seeds_models_temperature_and_budget_follow_the_preregistration():
             assert condition.control_ids == [REFUND_WINDOW_CONTROL_ID]
             continue
         assert condition.seeds == [0, 1, 2, 3, 4]
-        assert agent.temperature is None, "the provider's default temperature"
+        # The provider's default, and claude-sonnet-5 rejects any other with a 400.
+        assert agent.temperature is None
         assert is_priced(agent.provider, agent.model), "an unpriced model cannot run under a cap"
         expected = {
             "live": ("gemini", "gemini-3.6-flash", [REFUND_WINDOW_CONTROL_ID]),
@@ -500,23 +504,80 @@ def test_retain_refuses_a_credential(dry_run, tmp_path):
 # --- the cost estimate in the runbook ---
 
 
-def test_the_cost_estimate_stays_under_the_cap_by_hand():
+def _estimate_module():
     spec = importlib.util.spec_from_file_location(
         "estimate_exp_001_cost", REPO_ROOT / "scripts" / "estimate_exp_001_cost.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    result = module.estimate()
+    return module
+
+
+def test_the_cost_estimate_prices_through_the_adapter_tables():
+    """Prices are read from the tables, so this holds before and after #229 corrects them."""
+    result = _estimate_module().estimate()
     assert result["cassette_inputs"] == [995, 1251, 1750, 2851, 3573]
-    assert result["cassette_max_output"] == 690
+    assert result["cassette_max_output"] == result["output_tokens_per_call"] == 690
     rows = {r["condition"]: r for r in result["rows"]}
     assert len(rows) == 9
     # refund_policy_failure forks at 5 and the recording has 2 steps after it.
     # Step 6 sends 3573 + 1101 = 4674 input tokens and step 7 sends 5775, each
-    # answered with 690 output tokens, at $0.75 and $3.75 per million.
-    # The harness rounds a run's cost to the micro-dollar.
-    per_run = round((4674 * 0.75 + 690 * 3.75 + 5775 * 0.75 + 690 * 3.75) / 1_000_000, 6)
-    assert per_run == 0.013012
-    assert rows["live__refund_policy_failure"]["expected_usd"] == pytest.approx(5 * per_run)
-    assert result["ceiling_usd"] <= result["cap_usd"] == 50.0
-    assert (result["expected_usd"], result["ceiling_usd"]) == (0.85, 21.15)
+    # answered with 690 output tokens. The harness rounds a run's cost to the
+    # micro-dollar.
+    calls = [(4674, 690), (5775, 690)]
+    prices = {
+        "live": GEMINI_PRICING["gemini-3.6-flash"],
+        "live_no_control": GEMINI_PRICING["gemini-3.6-flash"],
+        "live_swapped": ANTHROPIC_PRICING["claude-sonnet-5"],
+    }
+    for arm, (per_input, per_output) in prices.items():
+        per_run = round(sum(i * per_input + o * per_output for i, o in calls) / 1_000_000, 6)
+        assert rows[f"{arm}__refund_policy_failure"]["expected_usd"] == pytest.approx(5 * per_run)
+    assert result["expected_usd"] == round(sum(r["expected_usd"] for r in rows.values()), 2)
+    assert result["high_usd"] == round(sum(r["high_usd"] for r in rows.values()), 2)
+    assert result["high_usd"] <= result["cap_usd"] == 50.0
+
+
+def _runbook_cost_table() -> dict[str, tuple[float, float]]:
+    text = (REPO_ROOT / "docs" / "experiments" / "runbook_001.md").read_text()
+    section = text.split("## Cost against the cap")[1].split("\n## ")[0]
+    rows = re.findall(r"^\| `?(\w+)`? \|[^|]*\| \$([\d.]+) \| \$([\d.]+) \|$", section, re.M)
+    return {arm: (float(expected), float(high)) for arm, expected, high in rows}
+
+
+def test_the_runbook_cost_table_is_the_estimate_at_the_prices_it_states(monkeypatch):
+    """The runbook prices claude-sonnet-5 at 2 and 10, #229's corrected table."""
+    monkeypatch.setitem(GEMINI_PRICING, "gemini-3.6-flash", (0.75, 3.75))
+    monkeypatch.setitem(ANTHROPIC_PRICING, "claude-sonnet-5", (2.0, 10.0))
+    module = _estimate_module()
+    result = module.estimate()
+    by_arm: dict[str, list[float]] = {}
+    for row in result["rows"]:
+        arm = row["condition"].split("__")[0]
+        totals = by_arm.setdefault(arm, [0.0, 0.0])
+        totals[0] += row["expected_usd"]
+        totals[1] += row["high_usd"]
+    expected = {arm: (round(e, 2), round(h, 2)) for arm, (e, h) in by_arm.items()}
+    expected["Total"] = (result["expected_usd"], result["high_usd"])
+    assert (
+        _runbook_cost_table()
+        == expected
+        == {
+            "live": (0.14, 3.53),
+            "live_no_control": (0.14, 3.53),
+            "live_swapped": (0.38, 9.4),
+            "Total": (0.66, 16.45),
+        }
+    )
+    runbook = (REPO_ROOT / "docs" / "experiments" / "runbook_001.md").read_text()
+    wide = module.estimate(output_tokens=1010)
+    assert (wide["expected_usd"], wide["high_usd"]) == (0.8, 18.47)
+    assert "gives $0.80 expected and $18.47 high" in runbook
+    # What the script prints until #229 corrects the table, as the runbook says.
+    monkeypatch.setitem(ANTHROPIC_PRICING, "claude-sonnet-5", (3.0, 15.0))
+    old = module.estimate()
+    swapped = [r for r in old["rows"] if r["condition"].startswith("live_swapped")]
+    assert round(sum(r["expected_usd"] for r in swapped), 2) == 0.57
+    assert round(sum(r["high_usd"] for r in swapped), 2) == 14.1
+    assert (old["expected_usd"], old["high_usd"]) == (0.85, 21.15)
+    assert "$0.57 and $14.10 for the swapped arm, $0.85 and $21.15 in total" in runbook
