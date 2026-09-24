@@ -24,6 +24,7 @@ one passing, and D one that never completed, so ``sibling_failure_rate`` is
 
 from __future__ import annotations
 
+from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID
 from trace_harness.runner.batch import BatchRunEntry, BatchSummary, aggregate_entries
 from trace_harness.runner.experiment import ConditionSpec, derive_metrics
 from trace_harness.runner.repair_effectiveness import build_repair_effectiveness
@@ -36,7 +37,8 @@ from trace_harness.runner.verdict_agreement import (
 from trace_harness.tracing.events import utc_now
 from trace_harness.verifiers.base import FailedCheck, VerifierResult
 
-CONTROL = "ctl_x"
+# A registered control, since the plan refuses any other id (#230).
+CONTROL = REFUND_WINDOW_CONTROL_ID
 GEMINI = "gemini-3.6-flash"
 CLAUDE = "claude-sonnet-5"
 VERDICTS: dict[str, VerifierResult] = {}

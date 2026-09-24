@@ -171,14 +171,18 @@ def test_a_replay_that_differs_from_rebuild_stops_the_run(
 
 
 def test_copies_of_a_failing_run_share_one_card(mri: ModuleType, tmp_path: Path) -> None:
-    """The retained scale's five failing runs have three keys, so two copies are pointers."""
+    """One copy of each retained failing run, and one card per bundle key among them.
+
+    The retained runs that fail outnumber their keys, so some copies are pointers.
+    """
     runs_dir = tmp_path / "runs"
     templates = mri.retained_templates()
+    keys = {b.bundle_key for b in mri.template_bundles(templates).values()}
     run_ids = mri.build_runs_dir(runs_dir, len(templates), templates, seed=1, only=None)
     store = ArtifactStore(runs_dir)
     homes = store.bundle_homes(run_ids)
-    assert len(homes) == 5
-    assert len(set(homes.values())) == 3
+    assert len(homes) == len(mri.template_bundles(templates)) >= 5
+    assert len(set(homes.values())) == len(keys) < len(homes)
     pointers = [run_id for run_id, home in homes.items() if home != run_id]
     for run_id in pointers:
         assert not store.exists(run_id, "failure_card.json")

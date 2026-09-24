@@ -1174,7 +1174,12 @@ def test_record_reads_the_live_metrics_from_one_real_model(tmp_path, capsys, liv
     # Claude answers where the recording answered, in other words: no divergence.
     assert result.metrics.first_post_fork_divergence_rate == 0.0
     extra = result.metrics.extra
-    assert {k: v for k, v in extra.items() if not k.startswith("latency_ms_p50.")} == {
+    # #200's verdict agreement keys are checked in tests/test_verdict_agreement.py.
+    assert {
+        k: v
+        for k, v in extra.items()
+        if not k.startswith(("latency_ms_p50.", "verdict_agreement", "pair/"))
+    } == {
         "cost_recorded_k": 4,
         "cost_recorded_n": 4,
         "verified_failure_count.check": 0,
@@ -1272,7 +1277,7 @@ def _fake_seeds(monkeypatch, incomplete: set[int]) -> None:
     """Every seed completes except those named, without running anything."""
     from trace_harness.runner.batch import BatchRunEntry
 
-    def run_seed(artifact, task, experiment, condition, fork_step, seed, store):
+    def run_seed(artifact, task, experiment, condition, fork_step, seed, store, *rest):
         return BatchRunEntry(
             run_id=f"run_seed_{seed}",
             task_id=task.task_id,
@@ -1458,10 +1463,10 @@ def test_a_seed_that_failed_before_its_run_existed_is_not_replaced(tmp_path, mon
     _, spec = _spec(tmp_path, _condition("live", "live", artifact, 2, seeds=[0, 1, 2]))
     spec = spec.model_copy(update={"metadata": {"replacement_seeds": [5, 6]}})
 
-    def fail_seed_one(artifact, task, experiment, condition, fork_step, seed, store):
+    def fail_seed_one(artifact, task, experiment, condition, fork_step, seed, store, *rest):
         if seed == 1:
             raise RuntimeError("the harness failed before the run existed")
-        return real_run_seed(artifact, task, experiment, condition, fork_step, seed, store)
+        return real_run_seed(artifact, task, experiment, condition, fork_step, seed, store, *rest)
 
     import trace_harness.runner.branch as branch_module
 
@@ -1486,7 +1491,7 @@ def test_a_setup_error_is_not_replaced_even_when_its_run_exists(tmp_path, monkey
     spec = spec.model_copy(update={"metadata": {"replacement_seeds": [5, 6]}})
     statuses = {0: "setup_error", 1: "error"}
 
-    def run_seed(artifact, task, experiment, condition, fork_step, seed, store):
+    def run_seed(artifact, task, experiment, condition, fork_step, seed, store, *rest):
         return BatchRunEntry(
             run_id=f"run_seed_{seed}",
             task_id=task.task_id,
@@ -1523,7 +1528,7 @@ def test_record_refuses_a_condition_given_twice(tmp_path, capsys):
     )
 
     assert code == 2
-    assert "--condition live is given twice" in capsys.readouterr().err
+    assert "--condition names 'live' twice" in capsys.readouterr().err
     assert not (runs / "experiments").exists()
 
 
@@ -1591,10 +1596,12 @@ def test_an_interrupted_invocation_still_counts_against_the_cap(
     runs = tmp_path / "runs"
     real_run_seed = branch_module._run_seed
 
-    def interrupted_at_seed_two(artifact, task, experiment, condition, fork_step, seed, store):
+    def interrupted_at_seed_two(
+        artifact, task, experiment, condition, fork_step, seed, store, *rest
+    ):
         if seed == 2:
             raise KeyboardInterrupt
-        return real_run_seed(artifact, task, experiment, condition, fork_step, seed, store)
+        return real_run_seed(artifact, task, experiment, condition, fork_step, seed, store, *rest)
 
     monkeypatch.setattr(branch_module, "_run_seed", interrupted_at_seed_two)
     branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]
@@ -1634,8 +1641,10 @@ def test_an_unbatched_live_run_with_no_recorded_cost_stops_the_next_invocation(
     runs = tmp_path / "runs"
     real_run_seed = branch_module._run_seed
 
-    def interrupted_after_seed_zero(artifact, task, experiment, condition, fork_step, seed, store):
-        real_run_seed(artifact, task, experiment, condition, fork_step, seed, store)
+    def interrupted_after_seed_zero(
+        artifact, task, experiment, condition, fork_step, seed, store, *rest
+    ):
+        real_run_seed(artifact, task, experiment, condition, fork_step, seed, store, *rest)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(branch_module, "_run_seed", interrupted_after_seed_zero)
