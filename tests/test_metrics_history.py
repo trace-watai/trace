@@ -26,6 +26,7 @@ from trace_harness.metrics.history import (
     latest_validation,
     load_history,
     prescribed_controls,
+    retained_artifact,
 )
 from trace_harness.regression.repair_validation import RepairValidation
 
@@ -253,6 +254,26 @@ def test_an_artifact_from_another_run_does_not_back_a_verdict(tmp_path: Path) ->
     )
     _write(run_dir / "regression_artifact.json", other.model_dump(mode="json"))
     assert build_snapshot(tmp_path, commit="c1").coverage.accepted_gating == 0
+
+
+@pytest.mark.parametrize(
+    ("run_id", "where"),
+    [("..", "."), ("", "source"), ("a\\b", "source/a\\b"), ("c:d", "source/c:d")],
+)
+def test_a_run_id_that_is_not_a_plain_name_finds_no_artifact(
+    tmp_path: Path, run_id: str, where: str
+) -> None:
+    """The artifact lookup refuses the run ids evidence promotion refuses.
+
+    ``..`` passed the old guard and walked source/.. back to the run
+    directory; an empty id read source/regression_artifact.json. Neither is a
+    run id anything writes.
+    """
+    run_dir = tmp_path / "r1"
+    validation = RepairValidation(run_id=run_id, test_name="t")
+    artifact = regression_artifact(run_id=run_id, replay_mode="static_ok", basis=static_ok_basis())
+    _write(run_dir / where / "regression_artifact.json", artifact.model_dump(mode="json"))
+    assert retained_artifact(run_dir / "repair_validation.json", validation) is None
 
 
 def test_a_split_that_does_not_sum_to_accepted_is_rejected() -> None:

@@ -283,6 +283,16 @@ def find_repair_validations(
     return found
 
 
+def _plain_run_id(run_id: str) -> bool:
+    """A single path component that names a directory, as ``promotion`` requires."""
+    return (
+        run_id not in ("", ".", "..")
+        and PurePosixPath(run_id).name == run_id
+        and "\\" not in run_id
+        and ":" not in run_id
+    )
+
+
 def retained_artifact(path: Path, validation: RepairValidation) -> RegressionArtifact | None:
     """The regression artifact a validation was run against, when it was kept with it.
 
@@ -291,9 +301,11 @@ def retained_artifact(path: Path, validation: RepairValidation) -> RegressionArt
     directory is the source's, beside ``regression_artifact.json``. A control
     library's evidence directory keeps the artifact under
     ``source/<run_id>/``, which is where ``LibraryProvenance`` points. The
-    artifact must name the same run and regression test.
+    artifact must name the same run and regression test, and the run id must
+    be a plain name by the rule evidence promotion applies before it writes
+    ``source/<run_id>/``, so ``..`` or an empty id finds nothing.
     """
-    if PurePosixPath(validation.run_id).name != validation.run_id:
+    if not _plain_run_id(validation.run_id):
         return None
     for candidate in (
         path.with_name(REGRESSION_ARTIFACT),
