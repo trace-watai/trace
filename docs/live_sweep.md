@@ -1,6 +1,7 @@
 # Live sweep
 
-The code is in `runner/sweep.py` and `runner/sweep_summary.py`, for issue #198.
+The code is in `runner/sweep.py`, `runner/sweep_summary.py` and
+`runner/sweep_retention.py`, for issue #198.
 
 A live sweep runs every task in a suite under two or more live models for
 several seeds each and records every model call to a cassette. It exists to
@@ -11,7 +12,7 @@ on failures a real model produced.
 ## Running a sweep
 
 ```sh
-trace-harness run-sweep fixtures/sweeps/refund_v0_live.json
+trace-harness run-sweep fixtures/sweeps/refund_v0_live.json --retain
 ```
 
 A sweep spec names a suite, the live providers and models, the seeds, and a
@@ -163,3 +164,45 @@ The label cannot see intent beyond these fields. Valid tasks list
 a mode its author anticipated. The label says whether the cell is the failure
 its task stages. The triage note beside each retained cell is where a person
 records anything more.
+
+## Retaining failing cells
+
+`--retain` copies every failing cell into
+`docs/acceptance/runs/live-sweep-<date>/` after the sweep, dated by the day the
+sweep started. `trace-harness retain-sweep <sweep_id>` does the same for a sweep
+that already finished, and `--to` on it, or a path after `--retain`, chooses
+another root.
+
+| Path | Contents |
+|---|---|
+| `run_<id>/` | The failing run's directory as it ran, through the regression artifact |
+| `cassettes/<task_id>/<model>/<seed>.jsonl` | That run's recorded model calls |
+| `sweep_summary.json` | The summary the sweep wrote |
+| `index.json` | The run index of the retained runs |
+| `README.md` | One triage row per cell with the checks that fired, the label, why, and a note |
+
+Nothing lands unless every check passes. The copy is assembled in a hidden
+temporary folder beside the target and renamed into place only at the end.
+
+1. Every cell is replayed from its copied cassette with the knobs its
+   `run_config.json` recorded. Replay constructs no provider and needs no key.
+   The verdict and the failed check ids have to match the live run.
+2. Every file is scanned the way the live Gemini runs of #179 were. The scan
+   searches for the values of `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` and
+   `OPENAI_API_KEY` as set when retention runs, for the shapes of Google `AIza`
+   and `AQ.` keys, of `sk-` keys and of bearer tokens, and for auth header
+   fields such as `"authorization"` and `"x-goog-api-key"`. A finding names the
+   file and the kind and never the value. The same patterns find nothing in any
+   artifact already under `docs/acceptance`, `fixtures/cassettes` or
+   `fixtures/controls/evidence`, which a test holds.
+
+A folder that already exists is never overwritten, and a sweep with no failing
+cell retains nothing.
+
+Once committed, the cells gate in two ways.
+`tests/test_sweep_retention.py::test_every_retained_sweep_cell_replays_from_its_cassette`
+replays every retained cell from its cassette on each run of the suite, and
+`collect-regressions docs/acceptance/runs` in `scripts/check_repo.sh` replays
+each failure from its regression artifact with its positive siblings, as it
+does for every other retained run. The README's note column is left as
+`Pending triage.` for a person to replace with one line on what the model did.

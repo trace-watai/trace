@@ -171,6 +171,7 @@ def test_the_cli_prints_the_summary(tmp_path, fake_providers, capsys) -> None:
     assert "3 task(s) x 2 provider(s) x 3 seed(s) = 18 cell(s)" in out
     assert "verified failures:     7 (2 natural)" in out
     assert "flipped tasks:         3 of 3" in out
+    assert "per natural failure:   $" in out
     assert len(list((tmp_path / "runs/sweeps").glob("*/sweep_summary.json"))) == 1
 
 

@@ -8,7 +8,8 @@ Commands (each is one pipeline stage; ``run-pipeline`` chains them):
     trace-harness bundle       runs/<run_id>
     trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json
     trace-harness run-suite    fixtures/suites/refund_v0.json
-    trace-harness run-sweep    fixtures/sweeps/refund_v0_live.json
+    trace-harness run-sweep    fixtures/sweeps/refund_v0_live.json --retain
+    trace-harness retain-sweep sweep_<...>
     trace-harness collect-regressions docs/acceptance/runs
     trace-harness report-suite batch_<...>
     trace-harness branch       <regression_artifact.json> --experiment <experiment.json>
@@ -1616,21 +1617,35 @@ def _run_sweep(args: argparse.Namespace, store: ArtifactStore) -> int:
             f"{c.label} · {', '.join(c.failed_check_ids)} · {c.run_id}",
         )
     print()
-    per_failure = summary.cost_per_verified_failure
     _print("flipped tasks:", f"{summary.flipped_tasks} of {summary.task_count}")
     _print("known cost:", f"${summary.cost_usd:.6f} ({summary.cost_recorded}/{summary.runs} runs)")
     _print(
         "verified failures:",
         f"{summary.verified_failures} ({summary.natural_verified_failures} natural)",
     )
-    _print("cost per failure:", "n/a" if per_failure is None else f"${per_failure:.6f}")
+    for label, cost in (
+        ("per verified failure:", summary.cost_per_verified_failure),
+        ("per natural failure:", summary.cost_per_natural_verified_failure),
+    ):
+        _print(label, "n/a" if cost is None else f"${cost:.6f}")
     budget = summary.budget
     if budget is not None and budget.stop_reason is not None:
         _print("stopped:", f"{budget.stop_reason}; {budget.detail}")
         _print("not run:", f"{len(budget.not_run)} cell(s)")
     _print("summary:", str(sweep_dir(store.runs_dir, summary.sweep_id) / SWEEP_SUMMARY))
+    if args.retain is not None:
+        _retain_sweep(store, summary.sweep_id, Path(args.retain))
     if budget is not None and budget.stop_reason == BUDGET_UNENFORCEABLE:
         return 2
+    return 0
+
+
+def _retain_sweep(store: ArtifactStore, sweep_id: str, root: Path) -> int:
+    """Retain a sweep's failing cells with their cassettes, replayed and scanned first."""
+    from trace_harness.runner.sweep_retention import retain_failing_cells
+
+    target = retain_failing_cells(store, sweep_id, root)
+    _print("retained:", "nothing failed, nothing to retain" if target is None else str(target))
     return 0
 
 
@@ -2026,6 +2041,22 @@ def main(argv: list[str] | None = None) -> int:
         help="run every suite task under each live provider for each seed, recording cassettes",
     )
     p_sweep.add_argument("sweep_path", help="path to a sweep spec JSON (fixtures/sweeps/)")
+    p_sweep.add_argument(
+        "--retain",
+        nargs="?",
+        const="docs/acceptance/runs",
+        default=None,
+        metavar="ROOT",
+        help="retain failing cells with their cassettes under ROOT/live-sweep-<date>/ "
+        "(default ROOT docs/acceptance/runs)",
+    )
+    p_retain = sub.add_parser(
+        "retain-sweep",
+        parents=[common],
+        help="retain a finished sweep's failing cells with their cassettes",
+    )
+    p_retain.add_argument("sweep_id", help="sweep id under <runs-dir>/sweeps/")
+    p_retain.add_argument("--to", default="docs/acceptance/runs", metavar="ROOT")
 
     p_report = sub.add_parser(
         "report-suite",
@@ -2150,6 +2181,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         return _run_suite(args, store)
     if args.command == "run-sweep":
         return _run_sweep(args, store)
+    if args.command == "retain-sweep":
+        return _retain_sweep(store, args.sweep_id, Path(args.to))
     if args.command == "collect-regressions":
         return _collect_regressions(args, store)
     if args.command == "report-suite":

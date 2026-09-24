@@ -83,7 +83,7 @@ class SweepProvider(BaseModel):
     @classmethod
     def _live(cls, value: str) -> str:
         if value not in LIVE_PROVIDERS:
-            raise ValueError(f"a sweep runs live providers {sorted(LIVE_PROVIDERS)}, not {value!r}")
+            raise ValueError(f"{value!r} makes no live call; a sweep runs live providers only")
         return value
 
     def agent_config(self, seed: int | None = None, cassettes: Path | None = None) -> AgentConfig:
