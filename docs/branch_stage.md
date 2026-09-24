@@ -89,18 +89,17 @@ missing recording cannot quietly shrink the sample. Cassettes live at
 `<directory>/<task_id>/<model>/<seed>.jsonl` and count steps from the first
 call after the fork.
 
-That path names no condition, and recording never overwrites a file. So
-before any condition runs, `branch` exits 2 when a seed in record mode would
-write a file that already exists, or when two selected seeds share a path and
-at least one of them records. Either would otherwise fail only after earlier
-seeds had spent. Give each condition its own `cassette.directory`. Several
+That path names no condition, and recording never overwrites a file. One
+check, `check_cassette_paths` in `runner/branch.py`, covers every seed a
+selected condition could run, its declared seeds and the plan's replacement
+seeds. Before any condition runs, `branch` exits 2 when two of those seeds
+share a path and at least one of them records, and when a recording
+condition already has a cassette for any of them, listing every such file.
+Either would otherwise fail only after earlier seeds had spent, and a
+condition branched again would spend its replacement seeds live. Give each
+condition its own `cassette.directory`. A condition is branched into its
+cassette folder once, and its first batch is the one to record. Several
 conditions may still replay one recording.
-
-In `record` mode it is the other way round. Recording never overwrites a
-cassette, so when any seed the condition could run, declared or replacement,
-already has one, `branch` exits 2 before any run and lists them. A condition
-is branched into its cassette folder once, and its first batch is the one to
-record.
 
 ## Divergence
 

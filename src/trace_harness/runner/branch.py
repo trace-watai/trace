@@ -31,15 +31,17 @@ exists and ends incomplete is then replaced by the next unused seed from that
 list, decided on run status alone, which is pre-registration 001's rule for
 seeds 5 to 9. A seed the budget refused is not replaced, and neither is a
 ``setup_error``, since that failure is the harness's own.
-Recording never overwrites a cassette, so a condition whose record-mode
-cassettes already exist for any seed it could run is refused before anything
-runs (:func:`recorded_cassettes`).
+Recording never overwrites a cassette, so :func:`check_cassette_paths` refuses,
+before anything runs, two conditions whose seeds would share a cassette while
+one records, and a recording condition whose cassettes already exist for any
+seed it could run, declared or replacement.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -326,65 +328,54 @@ def experiment_guard(
     return guard, earlier
 
 
-def recorded_cassettes(
-    artifact: RegressionArtifact, experiment: ExperimentSpec, condition: ConditionSpec
-) -> list[str]:
-    """Record-mode cassettes already on disk for any seed the condition could run.
-
-    Recording never overwrites a cassette, so such a seed would fail before its
-    run existed, and a condition already branched into its cassette folder
-    would spend its replacement seeds live. Declared and replacement seeds are
-    both checked, before anything runs.
-    """
-    agent = condition.agent_config
-    if (
-        condition.kind not in LIVE_KINDS
-        or agent.cassette is None
-        or agent.cassette.mode != "record"
-    ):
-        return []
-    seeds = _seeds(condition)
-    seeds += [s for s in replacement_seeds(experiment) if s not in seeds]
-    task_id = _load_task(artifact).task_id
-    paths = [_cassette_file(condition, task_id, seed) for seed in seeds]
-    return [str(path) for path in paths if path.is_file()]
-
-
-def check_cassette_paths(artifact: RegressionArtifact, conditions: list[ConditionSpec]) -> None:
-    """Refuse cassette recordings that would collide, before any condition runs.
+def check_cassette_paths(
+    artifact: RegressionArtifact,
+    conditions: list[ConditionSpec],
+    replacement: Sequence[int] = (),
+) -> None:
+    """Refuse cassette recordings that would collide or already exist, before any run.
 
     A cassette lives at ``<directory>/<task_id>/<model>/<seed>.jsonl``, with no
-    condition in the path, and recording never overwrites a file. Two cells (a
-    condition and a seed) that share a path while at least one of them
-    records, or a recording whose file is already on disk, would each fail
-    only after earlier cells had spent, so both raise here instead. Replaying
-    one recording from several conditions stays allowed.
+    condition in the path, and recording never overwrites a file. Every seed a
+    live condition could run is checked: its declared seeds, and the plan's
+    ``replacement`` seeds that a run ending incomplete would draw on (#200).
+
+    Two cells (a condition and a seed) that share a path while at least one of
+    them records would fail only after earlier cells had spent, so they raise
+    here. So does a recording condition with any of its cassettes already on
+    disk, which means the condition was branched into that folder before, with
+    every such cassette listed. Its seeds would otherwise end as setup errors
+    and spend its replacement seeds live. Replaying one recording from several
+    conditions stays allowed.
     """
     cells: dict[Path, list[tuple[ConditionSpec, int | None]]] = {}
+    recording: list[tuple[ConditionSpec, list[Path]]] = []
     task_id: str | None = None
     for condition in conditions:
         if condition.kind not in LIVE_KINDS or condition.agent_config.cassette is None:
             continue
         task_id = task_id or _load_task(artifact).task_id
-        for seed in _seeds(condition):
-            cells.setdefault(_cassette_file(condition, task_id, seed), []).append((condition, seed))
+        seeds = _seeds(condition)
+        seeds += [seed for seed in replacement if seed not in seeds]
+        paths = [_cassette_file(condition, task_id, seed) for seed in seeds]
+        for seed, path in zip(seeds, paths, strict=True):
+            cells.setdefault(path, []).append((condition, seed))
+        if _records(condition):
+            recording.append((condition, paths))
     for path, sharing in cells.items():
-        if not any(_records(condition) for condition, _ in sharing):
-            continue
-        named = [
-            f"condition {c.name!r} seed {'default' if seed is None else seed}"
-            for c, seed in sharing
-        ]
-        if len(sharing) > 1:
+        if len(sharing) > 1 and any(_records(condition) for condition, _ in sharing):
+            named = [
+                f"condition {c.name!r} seed {'default' if seed is None else seed}"
+                for c, seed in sharing
+            ]
             raise ValueError(
                 f"{', '.join(named[:-1])} and {named[-1]} share the cassette {path}, and "
                 "recording never overwrites one; give each condition its own cassette directory"
             )
-        if path.exists():
-            raise ValueError(
-                f"{named[0]} would record to {path}, which already exists; record into a "
-                "new cassette directory"
-            )
+    for condition, paths in recording:
+        existing = [str(path) for path in paths if path.exists()]
+        if existing:
+            raise ValueError(_already_recorded(condition, existing))
 
 
 def _records(condition: ConditionSpec) -> bool:
@@ -431,7 +422,7 @@ def run_branch(
         raise ValueError(f"{condition.kind.value} conditions run through replay, see replay_batch")
     artifact = load_artifact(artifact_path)
     fork_step = validate_condition(artifact, condition)
-    check_cassette_paths(artifact, [condition])
+    check_cassette_paths(artifact, [condition], replacement_seeds(experiment))
     task = _load_task(artifact)
     task = task.model_copy(update={"initial_state": pinned_initial_state(artifact)})
     seeds = _seeds(condition)
@@ -439,9 +430,6 @@ def run_branch(
     missing = _missing_cassettes(condition, task.task_id, seeds)
     if missing:
         return BranchResult(condition.name, skipped=f"no cassette recorded at {', '.join(missing)}")
-    existing = recorded_cassettes(artifact, experiment, condition)
-    if existing:
-        raise ValueError(already_recorded(condition, existing))
 
     if guard is None:
         guard = BudgetGuard(experiment.budget.max_cost_usd)
@@ -738,7 +726,7 @@ def _responses(store: ArtifactStore, run_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def already_recorded(condition: ConditionSpec, existing: list[str]) -> str:
+def _already_recorded(condition: ConditionSpec, existing: list[str]) -> str:
     """Why a condition with recorded cassettes is refused, with every cassette listed."""
     listed = "\n".join(f"  {path}" for path in existing)
     return (

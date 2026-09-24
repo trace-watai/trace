@@ -1372,12 +1372,10 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     from trace_harness.runner.batch import BUDGET_UNENFORCEABLE
     from trace_harness.runner.branch import (
         admit_before_any_run,
-        already_recorded,
         calls_a_provider,
         check_cassette_paths,
         experiment_guard,
         load_artifact,
-        recorded_cassettes,
         replacement_seeds,
         replay_batch,
         run_branch,
@@ -1396,16 +1394,13 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     artifact = load_artifact(artifact_path)
     for condition in conditions:
         validate_condition(artifact, condition)
-    # Recording never overwrites a cassette, so a collision found at a later
-    # seed would come after earlier seeds had spent.
-    check_cassette_paths(artifact, conditions)
-    replacement_seeds(spec)
-    # Recording never overwrites a cassette. A condition branched before would
-    # end its seeds as setup errors, so it is refused before anything runs (#200).
-    for condition in conditions:
-        existing = recorded_cassettes(artifact, spec, condition)
-        if existing:
-            raise CliInputError(already_recorded(condition, existing))
+    # Recording never overwrites a cassette, so a collision or an existing
+    # recording found at a later seed, a replacement seed included, would come
+    # after earlier seeds had spent (#159, #200).
+    try:
+        check_cassette_paths(artifact, conditions, replacement_seeds(spec))
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from None
     # The same check record runs, made before any spend: a sweep on a changed
     # evaluator would be refused at record after its money was gone.
     drift = _frozen_set_drift(

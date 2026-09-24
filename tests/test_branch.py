@@ -539,14 +539,32 @@ def test_cassette_recordings_that_would_collide_are_refused_before_any_run(
     capsys.readouterr()
     assert main([*branch, str(spec_path)]) == 2
     err = capsys.readouterr().err
-    assert "condition 'live' seed 0 would record to" in err and "which already exists" in err
+    assert "2 cassette(s) of condition 'live' already exist" in err
+    assert str(cassettes / "refund_policy_control_demo" / "gemini-3.6-flash" / "0.jsonl") in err
     assert built == [0, 1]
     assert len(list((runs / "batches").iterdir())) == 1
     # A caller that skips the CLI gets the same check per condition.
     _, spec = _spec(tmp_path, live, max_cost_usd=1.0)
-    with pytest.raises(ValueError, match="which already exists"):
+    with pytest.raises(ValueError, match="2 cassette\\(s\\) of condition 'live' already exist"):
         run_branch(path, spec, spec.conditions[0], ArtifactStore(tmp_path / "direct"))
     assert built == [0, 1]
+
+    # Replacement seeds are cells too: seeds 0 and 1 against 2 and 3 never meet,
+    # but both conditions could draw replacement seed 5 into one directory.
+    off = recording("off", "live_no_control")
+    off["seeds"] = [2, 3]
+    fresh = tmp_path / "fresh"
+    for condition in (live, off):
+        condition["agent_config"]["cassette"]["directory"] = str(fresh)
+    spec_path, _ = _spec(tmp_path, live, off, max_cost_usd=1.0)
+    raw = json.loads(spec_path.read_text())
+    raw["metadata"] = {"replacement_seeds": [5]}
+    spec_path.write_text(json.dumps(raw))
+    capsys.readouterr()
+    assert main([*branch, str(spec_path)]) == 2
+    err = capsys.readouterr().err
+    assert "condition 'live' seed 5 and condition 'off' seed 5 share the cassette" in err
+    assert (built, fresh.exists()) == ([0, 1], False)
 
 
 @pytest.mark.parametrize("missing", ["artifact", "plan"])
