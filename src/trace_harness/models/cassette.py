@@ -40,15 +40,28 @@ TOKEN_FIELDS = frozenset(
         "cached_content_token_count",
         "thoughts_token_count",
         "tool_use_prompt_token_count",
-        # Anthropic, under usage
+        # Anthropic, under usage. Cache reads and writes sit beside
+        # input_tokens and are billed at their own rates.
         "input_tokens",
         "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
         # OpenAI, under usage
         "prompt_tokens",
         "completion_tokens",
         "total_tokens",
     }
 )
+
+#: Token counts a provider nests one level down, by the key that holds them.
+#: Each one changes the price, so a recorded run is priced from the same
+#: counts as the live one: Anthropic splits cache writes by lifetime, and
+#: OpenAI counts the prompt tokens served from its cache inside
+#: ``prompt_tokens`` and prices them at a lower rate.
+NESTED_TOKEN_FIELDS: dict[str, frozenset[str]] = {
+    "cache_creation": frozenset({"ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"}),
+    "prompt_tokens_details": frozenset({"cached_tokens"}),
+}
 
 #: Where each provider's raw response keeps its token counts. Recording reads
 #: from this key and replay rebuilds it, so a recorded live run is priced from
@@ -95,7 +108,7 @@ class CassetteEntry(BaseModel):
     transcript_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     tools_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     response: dict[str, Any]
-    usage: dict[str, int] = Field(default_factory=dict)
+    usage: dict[str, int | dict[str, int]] = Field(default_factory=dict)
     call_record: CallRecord | None = None
 
     @model_serializer(mode="wrap")
@@ -150,11 +163,32 @@ def safe_response(
     return response, _allowed_usage((action.raw or {}).get(usage_key))
 
 
-def _allowed_usage(raw_usage: Any) -> dict[str, int]:
-    """The allowlisted, non-negative integer token counts of a usage block."""
+def _is_count(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _allowed_usage(raw_usage: Any) -> dict[str, Any]:
+    """The allowlisted, non-negative integer token counts of a usage block.
+
+    Top-level counts come from ``TOKEN_FIELDS`` and nested ones from
+    ``NESTED_TOKEN_FIELDS``. Anything else, and a nested block left empty, is
+    dropped.
+    """
     if not isinstance(raw_usage, dict):
         return {}
-    return {k: v for k, v in raw_usage.items() if k in TOKEN_FIELDS and type(v) is int and v >= 0}
+    allowed: dict[str, Any] = {}
+    for key, value in raw_usage.items():
+        if key in TOKEN_FIELDS and _is_count(value):
+            allowed[key] = value
+        elif key in NESTED_TOKEN_FIELDS and isinstance(value, dict):
+            inner = {
+                name: count
+                for name, count in value.items()
+                if name in NESTED_TOKEN_FIELDS[key] and _is_count(count)
+            }
+            if inner:
+                allowed[key] = inner
+    return allowed
 
 
 def _action(entry: CassetteEntry) -> AgentAction:
@@ -164,7 +198,7 @@ def _action(entry: CassetteEntry) -> AgentAction:
     if set(entry.response) != allowed:
         raise CassetteError("invalid cassette response fields")
     _check_response(entry.response)
-    if any(k not in TOKEN_FIELDS or type(v) is not int or v < 0 for k, v in entry.usage.items()):
+    if _allowed_usage(entry.usage) != entry.usage:
         raise CassetteError("invalid cassette usage fields")
     try:
         action = AgentAction.model_validate(entry.response)

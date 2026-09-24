@@ -1158,6 +1158,21 @@ def test_a_cassette_replays_the_same_retry_record_without_calling_anything(
     assert len(built) == 1
 
 
+#: Usage with every count the price tables read beyond input and output.
+ANTHROPIC_CACHED_USAGE = {
+    "input_tokens": 1000,
+    "output_tokens": 100,
+    "cache_read_input_tokens": 5000,
+    "cache_creation_input_tokens": 2000,
+    "cache_creation": {"ephemeral_5m_input_tokens": 1500, "ephemeral_1h_input_tokens": 500},
+}
+OPENAI_CACHED_USAGE = {
+    "prompt_tokens": 6000,
+    "completion_tokens": 100,
+    "prompt_tokens_details": {"cached_tokens": 5000, "audio_tokens": 0},
+}
+
+
 @pytest.mark.parametrize(
     ("provider", "model", "response"),
     [
@@ -1168,14 +1183,29 @@ def test_a_cassette_replays_the_same_retry_record_without_calling_anything(
             "gpt-5",
             lambda: OpenAIResponse([OpenAIChoice(OpenAIMessage(content="Done."))]),
         ),
+        (
+            "anthropic",
+            "claude-sonnet-5",
+            lambda: AnthropicResponse([AnthropicText("Done.")], usage=ANTHROPIC_CACHED_USAGE),
+        ),
+        (
+            "openai",
+            "gpt-5",
+            lambda: OpenAIResponse(
+                [OpenAIChoice(OpenAIMessage(content="Done."))], usage=OPENAI_CACHED_USAGE
+            ),
+        ),
     ],
+    ids=["gemini", "anthropic", "openai", "anthropic-cache", "openai-cache"],
 )
 def test_a_live_run_is_priced_for_every_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, model: str, response
 ) -> None:
     """A live run-suite entry has a numeric cost for each provider, directly and
     through a recording cassette, which keeps each provider's token counts under
-    its own key. Replaying that cassette calls nothing and costs nothing."""
+    its own key. Cache reads and writes, and OpenAI's cached prompt tokens,
+    are kept too, so the recorded run costs what the direct one did. Replaying
+    that cassette calls nothing and costs nothing."""
     classes = {
         "gemini": "trace_harness.models.gemini.GeminiModelAdapter",
         "anthropic": "trace_harness.models.anthropic.AnthropicModelAdapter",

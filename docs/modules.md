@@ -87,7 +87,7 @@ shared action contract supports them.
 | --- | --- | --- |
 | Fixture (default) | `--provider fixture` | Runs a scripted fixture; no cassette, SDK, or key. |
 | Live | `--provider gemini` | Calls Gemini using explicit model settings. Needs `GEMINI_API_KEY` and the `gemini` extra. Token usage is read from `usage_metadata`, with thinking tokens counted as output, and priced from `GEMINI_PRICING`, which lists the default `gemini-3.6-flash`. A model missing from that table reports a null cost. |
-| Live | `--provider anthropic` | Calls Claude using explicit model settings. Needs `ANTHROPIC_API_KEY` and the `anthropic` extra (1.x). Token usage, cache reads and writes included, is read off the response and priced, so a direct live run's `cost_usd` is a number. A seed is recorded, marked `seed_sent: false` in the run's metadata, and never sent, because the Messages API has none. A temperature for a model that rejects one (Sonnet 5, Opus 4.7 and later, Fable) is refused before the run starts. Thinking blocks are sent back unmodified in front of the tool call they came with. |
+| Live | `--provider anthropic` | Calls Claude using explicit model settings. Needs `ANTHROPIC_API_KEY` and the `anthropic` extra (1.x). Token usage, cache reads and writes included, is read off the response and priced, so a live run's `cost_usd` is a number, directly or through a recording cassette. A seed is recorded, marked `seed_sent: false` in the run's metadata, and never sent, because the Messages API has none. A temperature for a model that rejects one (Sonnet 5, Opus 4.7 and later, Fable) is refused before the run starts. Thinking blocks are sent back unmodified in front of the tool call they came with. |
 | Live | `--provider openai` | Calls an OpenAI chat model. Needs `OPENAI_API_KEY` and the `openai` extra (3.x). Priced the same way, with cached prompt tokens at the cached rate. The seed is sent, and the response's `system_fingerprint` is recorded so a seeded re-run whose backend build moved can be told apart from a real reproduction. A temperature for a reasoning model (the gpt-5 family, the o-series) is refused before the run starts. |
 | Record | `--cassette-mode record` | `RecordingModelAdapter` wraps the selected provider and writes normalized responses. |
 | Replay | `--cassette-mode replay` | Reads recorded responses without constructing a provider; a missing or mismatched request is an error. |
@@ -106,7 +106,9 @@ are `0.3.0` since #196; older data remains readable with cassettes disabled.
 Changing a setting or request requires a new recording. Replay never falls back
 to the network. An entry recorded from a live adapter also keeps the step's
 token counts under the provider's own usage key and its `call_record`, so the
-recorded run is priced and the replay shows the same retries. A replay itself
+recorded run is priced and the replay shows the same retries. Those counts
+include Anthropic's cache reads and writes and OpenAI's cached prompt tokens,
+so a recorded run costs what the same run made directly would. A replay itself
 calls nothing, so its `cost_usd` is exactly zero.
 
 Run traces retain fresh audit IDs and timestamps. Deterministic comparisons
