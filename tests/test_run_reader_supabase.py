@@ -360,6 +360,44 @@ def test_cli_list_runs_reads_the_hosted_results_when_selected(
     assert f"{experiments} experiment(s) in {fake.BASE_URL}" in capsys.readouterr().out
 
 
+def test_a_hosted_experiment_that_does_not_load_is_named_as_on_disk(
+    retained, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A plan without created_at loads on neither backend, and neither hides the rest."""
+    fs, rows = retained
+    server = fake.MemoryPostgrest().load(rows)
+    good = rows[schema.EXPERIMENTS][0]
+    spec = {k: v for k, v in good["spec"].items() if k != "created_at"}
+    spec["experiment_id"] = "exp_zz_broken"
+    server.tables[schema.EXPERIMENTS]["exp_zz_broken"] = {
+        **good,
+        "experiment_id": "exp_zz_broken",
+        "spec": spec,
+        "result": None,
+    }
+    hosted = supabase_reader(server)
+    assert hosted.list_experiments() == fs.list_experiments()
+    unreadable = hosted.unreadable_experiments()
+    assert list(unreadable) == ["exp_zz_broken"]
+    assert "must state created_at" in unreadable["exp_zz_broken"]
+    with pytest.raises(ValueError, match="must state created_at"):
+        hosted.get_experiment("exp_zz_broken")
+
+    original = SupabaseRunReader.from_env.__func__
+
+    def from_env_with_fake(cls, env=None, **kwargs):
+        return original(cls, env, transport=server)
+
+    monkeypatch.setattr(SupabaseRunReader, "from_env", classmethod(from_env_with_fake))
+    monkeypatch.setenv("TRACE_RUN_READER", "supabase")
+    monkeypatch.setenv("TRACE_SUPABASE_URL", fake.BASE_URL)
+    monkeypatch.setenv("TRACE_SUPABASE_ANON_KEY", fake.ANON_KEY)
+    assert main(["--runs-dir", str(tmp_path / "empty"), "list-experiments"]) == 1
+    out, err = capsys.readouterr()
+    assert "exp_zz_broken  unreadable" in out and "1 unreadable" in out
+    assert "error: exp_zz_broken:" in err
+
+
 def test_cli_reports_an_unreachable_project_without_a_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:

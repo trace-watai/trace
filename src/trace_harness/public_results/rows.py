@@ -48,6 +48,7 @@ class RetainedReader(Protocol):
     def get_batch_summary(self, batch_id: str) -> Any: ...
     def get_suite_report(self, batch_id: str) -> Any: ...
     def list_experiments(self) -> list[Any]: ...
+    def unreadable_experiments(self) -> dict[str, str]: ...
     def get_experiment(self, experiment_id: str) -> tuple[Any, Any]: ...
 
 
@@ -122,7 +123,20 @@ def batch_rows(reader: RetainedReader, batch_ids: list[str]) -> list[Row]:
 
 
 def experiment_rows(reader: RetainedReader) -> list[Row]:
-    """One row per experiment RunReader lists, oldest first by id."""
+    """One row per experiment RunReader lists, oldest first by id.
+
+    ``list_experiments`` leaves out an experiment whose files do not load, so
+    publishing would silently drop it from the hosted results, and with
+    ``--prune`` delete the row a good copy left there earlier. Any such
+    experiment is refused instead, each one named with its reason.
+    """
+    unreadable = reader.unreadable_experiments()
+    if unreadable:
+        listed = "; ".join(f"{name}: {reason}" for name, reason in sorted(unreadable.items()))
+        raise ValueError(
+            f"{len(unreadable)} retained experiment(s) do not load, and publishing would "
+            f"leave them out: {listed}"
+        )
     rows = []
     for listed in reader.list_experiments():
         spec, result = reader.get_experiment(listed.experiment_id)

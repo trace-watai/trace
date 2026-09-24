@@ -244,6 +244,24 @@ def test_main_refuses_a_reproduction_whose_card_is_not_retained(
     assert not server.requests
 
 
+def test_main_refuses_an_experiment_that_does_not_load(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Publishing would leave it out, and a prune would then delete its hosted row."""
+    root = tmp_path / "retained"
+    shutil.copytree(ACCEPTANCE / "experiments", root / "experiments")
+    plan = root / "experiments" / "exp_000_baseline" / "experiment.json"
+    data = json.loads(plan.read_text(encoding="utf-8"))
+    del data["created_at"]
+    plan.write_text(json.dumps(data), encoding="utf-8")
+    server = fake.MemoryPostgrest()
+    assert main([str(root), "--prune"], env=ENV, transport=server) == 2
+    err = capsys.readouterr().err
+    assert "1 retained experiment(s) do not load" in err
+    assert "exp_000_baseline: an experiment plan file must state created_at" in err
+    assert not server.requests
+
+
 # --- refusals -----------------------------------------------------------------
 
 

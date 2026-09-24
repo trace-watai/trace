@@ -28,7 +28,7 @@ pipeline writes, `schema_version` included. Nothing is reshaped.
 | | | `canonical_run_id` | `get_bundle(id)` for a reproduction (#211), the run whose row holds its card |
 | `batches` | `batch_id` | `summary` | `get_batch_summary(id)` |
 | | | `suite_report` | `get_suite_report(id)` |
-| `experiments` | `experiment_id` | `spec`, `result` | `list_experiments()`, `get_experiment(id)`, `result` null until recorded |
+| `experiments` | `experiment_id` | `spec`, `result` | `list_experiments()`, `unreadable_experiments()`, `get_experiment(id)`, `result` null until recorded |
 | `schema_versions` | `version` | `description`, `applied_at` | none, it records the applied SQL schema |
 
 Every artifact column is `jsonb`. The only typed columns are the natural keys,
@@ -123,7 +123,10 @@ things in order.
    `RunReader` would otherwise rebuild it on the spot.
 3. Build rows. `public_results/rows.py` turns each `RunReader` answer into a
    row with `model_dump(mode="json")`, the serialization `ArtifactStore` writes
-   with, and hashes it.
+   with, and hashes it. An experiment whose files do not load, which
+   `list_experiments()` leaves out and `unreadable_experiments()` names, stops
+   the upload with exit 2 and each such experiment named, since publishing
+   would drop it and a prune would delete the row a good copy left there.
 4. Plan. The uploader reads each table's keys and `content_sha256`, and sorts
    rows into new, changed and unchanged.
 5. Write. New and changed rows are upserted on the natural key with
