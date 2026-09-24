@@ -170,12 +170,12 @@ retained `repair_package.json`. `materializable` counts those with a
 non-null entry in `MATERIALIZABLE_REPAIR_CONTROLS`. `validated` and
 `accepted` count those appearing in a `repair_validation.json`, the
 latter restricted to `verdict == "accepted"`. `accepted_gating` counts
-accepted names with at least one accepted verdict that gates when checked
-against the regression artifact it was validated against: that artifact is
-retained beside the validation (in the same run directory, or under
-`source/<run_id>/` in a control library's evidence), carries the verdict's
-`replay_mode` and `predicted_by`, is `static_ok`, and has a recorded basis
-that classifies as `static_ok`. A verdict whose artifact was not retained
+accepted names with at least one accepted verdict that was recorded as
+gating and still gates when checked against the regression artifact it was
+validated against: that artifact is retained beside the validation (in the
+same run directory, or under `source/<run_id>/` in a control library's
+evidence), carries the verdict's `replay_mode` and `predicted_by`, is
+`static_ok`, and has a recorded basis that classifies as `static_ok`. A verdict whose artifact was not retained
 is advisory. `accepted_advisory` counts the rest, so the two always sum to
 `accepted`. A snapshot recorded at `0.1.0` has no split and reads as all
 advisory, because the validations it was computed from carried no

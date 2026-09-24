@@ -4,7 +4,6 @@ the acceptance basis each entry records under ADR-0002.
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 import shutil
@@ -612,25 +611,6 @@ def test_committed_library_entry_reads_as_advisory():
     assert COMMITTED_LIBRARY.read_bytes() == raw
 
 
-@pytest.fixture
-def classified_static_ok(monkeypatch):
-    """Widen the refund guardrail's declared coverage so the classifier itself says static_ok.
-
-    The shipped guardrail covers only unauthorized_cash_refund while issue_refund
-    can also reach unauthorized_store_credit, which is why every real artifact
-    is live_required. Covering both satisfies all four rules honestly.
-    """
-    ref = "unauthorized_cash_refund_guardrail"
-    monkeypatch.setitem(
-        GUARDRAIL_REGISTRY,
-        ref,
-        dataclasses.replace(
-            GUARDRAIL_REGISTRY[ref],
-            checks_covered=frozenset({"unauthorized_cash_refund", "unauthorized_store_credit"}),
-        ),
-    )
-
-
 def test_a_classified_static_ok_label_commits_as_gating(tmp_path, classified_static_ok, capsys):
     artifact = _bundle(tmp_path)
     labeled = json.loads(artifact.read_text())
@@ -720,11 +700,24 @@ def test_a_basis_without_a_replay_mode_cannot_be_gating(committed):
         load_library(library)
 
 
+def test_a_basis_without_a_replay_mode_cannot_name_a_predictor(committed):
+    library, _ = committed
+    _set_acceptance(library, None, "advisory", predicted_by="measured")
+    with pytest.raises(ValueError, match="records a label from measured without the replay_mode"):
+        load_library(library)
+
+
 @pytest.mark.parametrize(
     ("field", "value", "refusal"),
     [
         ("replay_mode", "static_ok", "validated as static_ok"),
         ("predicted_by", "measured", "validated on a label from measured"),
+        (
+            "label_supported",
+            False,
+            "label its basis did not support, but the artifact's recorded basis does",
+        ),
+        ("replay_mode", None, "records a predictor or a supported label without the replay_mode"),
     ],
 )
 def test_validation_label_must_match_the_artifact(committed, field, value, refusal):
@@ -784,7 +777,7 @@ def _as_written_by_main(library):
     validation = json.loads(path.read_text())
     validation["schema_version"] = "0.1.0"
     for control in validation["controls"]:
-        for key in ("replay_mode", "standing", "predicted_by"):
+        for key in ("replay_mode", "standing", "predicted_by", "label_supported"):
             control.pop(key, None)
         for rerun in [control["originating_rerun"], *control["sibling_reruns"]]:
             if rerun is not None:

@@ -7,13 +7,13 @@ repo's ``runs/`` directory is never touched by CI.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from trace_harness.environment.controls import ControlInstance
+from trace_harness.environment.controls import GUARDRAIL_REGISTRY, ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models.fixture import FixtureModelAdapter
 from trace_harness.regression.schemas import RegressionArtifact, ReplayModeBasis
@@ -82,6 +82,25 @@ def regression_artifact(
         replay_command="trace-harness run-pipeline fixtures/tasks/refund_policy_control_demo.json",
         replay_mode=replay_mode,
         replay_mode_basis=basis,
+    )
+
+
+@pytest.fixture
+def classified_static_ok(monkeypatch):
+    """Widen the refund guardrail's declared coverage so the classifier itself says static_ok.
+
+    The shipped guardrail covers only unauthorized_cash_refund while issue_refund
+    can also reach unauthorized_store_credit, which is why every real artifact
+    is live_required. Covering both satisfies all four rules honestly.
+    """
+    ref = "unauthorized_cash_refund_guardrail"
+    monkeypatch.setitem(
+        GUARDRAIL_REGISTRY,
+        ref,
+        replace(
+            GUARDRAIL_REGISTRY[ref],
+            checks_covered=frozenset({"unauthorized_cash_refund", "unauthorized_store_credit"}),
+        ),
     )
 
 

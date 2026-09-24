@@ -101,11 +101,12 @@ class Coverage(BaseModel):
     number would hide which of the three walls the work is stuck behind.
 
     An accepted name is gating when at least one of its accepted verdicts
-    gates once checked against the regression artifact it was validated
-    against (``verdict_gates``): that artifact is retained beside the
-    validation, carries the verdict's label, and its recorded basis classifies
-    as ``static_ok``. Otherwise it is advisory, including when the artifact
-    was not retained. ADR-0002 keeps a replay verdict advisory until the
+    was recorded as gating and still gates once checked against the
+    regression artifact it was validated against (``verdict_gates``): that
+    artifact is retained beside the validation, carries the verdict's label,
+    and its recorded basis classifies as ``static_ok``. Otherwise it is
+    advisory, including when the artifact was not retained. ADR-0002 keeps a
+    replay verdict advisory until the
     artifact carries a measured label and has the collector gate on
     ``static_ok``; this follows the collector, and every ``static_ok`` label
     counted here is predicted until #159 measures one.

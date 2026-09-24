@@ -27,9 +27,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from trace_harness.environment.controls import ControlInstance, resolve_control
 from trace_harness.failure_bundles.schemas import RepairPackage
 from trace_harness.regression.repair_validation import (
+    ControlValidation,
     ControlVerdict,
     RepairValidation,
     VerdictStanding,
+    basis_supports_label,
     gating_refusal,
     predictor_of,
 )
@@ -206,9 +208,11 @@ def check_acceptance(
     ``predicted_by`` and the standing the artifact supports. A gating
     acceptance therefore needs a ``static_ok`` label whose recorded basis
     classifies as ``static_ok`` (``gating_refusal``), and an advisory one
-    cannot be recorded as gating. A label that was never recorded, on the
-    verdict or on the basis, is not compared with the artifact, and a basis
-    without one can only be advisory.
+    cannot be recorded as gating. A verdict's recorded label must be the
+    artifact's, down to whether its basis supports it. A label that was never
+    recorded, on the verdict or on the basis, is not compared with the
+    artifact, and a verdict or basis without one can only be advisory and
+    cannot name a predictor.
     """
     run_id = source.run_id
     if {package.run_id, artifact.source_run_id, validation.run_id, control.provenance.run_id} != {
@@ -239,18 +243,21 @@ def check_acceptance(
         or any(r.verdict != "PASS" for r in verdict.sibling_reruns)
     ):
         raise ValueError(f"control {control.control_id!r} lacks complete accepted validation")
-    _check_replay_label(control.control_id, verdict.replay_mode, verdict.predicted_by, artifact)
+    _check_replay_label(control.control_id, verdict, artifact)
     _check_basis(control.control_id, basis, artifact)
 
 
 def _check_replay_label(
-    control_id: str,
-    replay_mode: ReplayMode | None,
-    predicted_by: ReplayModePredictor | None,
-    artifact: RegressionArtifact,
+    control_id: str, verdict: ControlValidation, artifact: RegressionArtifact
 ) -> None:
     """A verdict's recorded label must be the artifact's; an unrecorded one is not compared."""
+    replay_mode, predicted_by = verdict.replay_mode, verdict.predicted_by
     if replay_mode is None:
+        if predicted_by is not None or verdict.label_supported:
+            raise ValueError(
+                f"control {control_id!r} records a predictor or a supported label "
+                "without the replay_mode it was validated under"
+            )
         return
     if replay_mode != artifact.replay_mode:
         raise ValueError(
@@ -262,6 +269,13 @@ def _check_replay_label(
             f"control {control_id!r} was validated on a label from {predicted_by} "
             f"but the artifact's label is from {predictor_of(artifact)}"
         )
+    if verdict.label_supported != basis_supports_label(artifact):
+        recorded = "supported" if verdict.label_supported else "did not support"
+        now = "does not" if verdict.label_supported else "does"
+        raise ValueError(
+            f"control {control_id!r} was validated on a label its basis {recorded}, "
+            f"but the artifact's recorded basis {now} support it"
+        )
 
 
 def _check_basis(control_id: str, basis: AcceptanceBasis, artifact: RegressionArtifact) -> None:
@@ -270,6 +284,11 @@ def _check_basis(control_id: str, basis: AcceptanceBasis, artifact: RegressionAr
         if basis.standing != "advisory":
             raise ValueError(
                 f"control {control_id!r} records a {basis.standing} acceptance "
+                "without the replay_mode it relied on"
+            )
+        if basis.predicted_by is not None:
+            raise ValueError(
+                f"control {control_id!r} records a label from {basis.predicted_by} "
                 "without the replay_mode it relied on"
             )
         return

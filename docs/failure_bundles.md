@@ -176,24 +176,26 @@ has the collector gate control results only on `static_ok`. Every
 `static_ok` label today is predicted by the materializer's fixed rule
 (`replay_mode_basis.predicted_by`), and #159 is what measures one.
 Validation follows the collector, so it calls a verdict on a `static_ok`
-artifact gating, and every place that prints gating also says the label is
-predicted.
+artifact whose own basis supports the label gating, and every place that
+prints gating also says the label is predicted.
 
-Each verdict records the artifact's `replay_mode`, its `predicted_by`, and
-the `standing` those give it: `gating` for `static_ok` with a recorded
-basis, `advisory` otherwise. The verdict values are unchanged, so an
-advisory `accepted` still means the control held under replay, and it makes
-no claim about a live agent. The rollup splits `accepted` into
-`accepted_gating` and `accepted_advisory`. `standing` is derived on read
-from the recorded label, so editing `standing` alone changes nothing.
-Editing the label itself would change it, which is why the control library
-and the metrics check a verdict's label against the retained artifact, and
-its basis against the classification rule, before treating it as gating.
-Replay prints a warning when an artifact's `static_ok` label is not
-supported by its own basis. A `0.1.0` file, which is what `main` writes
-until this schema lands, carries no label. Its verdicts read as not
-recorded and advisory, and an unrecorded label is never compared with the
-artifact's current one.
+Each verdict records the artifact's `replay_mode`, its `predicted_by`,
+`label_supported` (whether the artifact's recorded basis classifies as its
+label), and the `standing` those give it: `gating` for a `static_ok` label
+with a recorded basis that classifies as `static_ok`, `advisory` otherwise.
+The verdict values are unchanged, so an advisory `accepted` still means the
+control held under replay, and it makes no claim about a live agent. The
+rollup splits `accepted` into `accepted_gating` and `accepted_advisory`.
+`standing` is derived on read from the recorded fields, so editing
+`standing` alone changes nothing. Editing the recorded fields would change
+it, which is why the control library and the metrics check a verdict's
+label against the retained artifact, and its basis against the
+classification rule, before treating it as gating. When an artifact's
+`static_ok` label is not supported by its own basis, as with a label set by
+hand, replay prints a warning and records the verdicts as advisory. A
+`0.1.0` file, which is what `main` writes until this schema lands, carries
+no label. Its verdicts read as not recorded and advisory, and an unrecorded
+label is never compared with the artifact's current one.
 
 Each re-run also records the `task_fixture` it was built from, and
 `rollup.over_blocking` reports sibling failures by task family with a
@@ -259,9 +261,13 @@ and the `standing` they support. The rule:
   an advisory entry as proven.
 - Loading holds a recorded basis to the retained artifact and validation. A
   basis naming a different `replay_mode` or `predicted_by`, a `gating` basis
-  the artifact does not support, and an `advisory` basis on an artifact that
-  does support gating all fail to load. A validation verdict is compared
-  with the artifact only when it recorded a `replay_mode`.
+  the artifact does not support, an `advisory` basis on an artifact that
+  does support gating, and a basis that names a predictor without a
+  `replay_mode` all fail to load. A validation verdict is compared with the
+  artifact only when it recorded a `replay_mode`, and then its
+  `predicted_by` and `label_supported` must match the artifact too. A
+  verdict with no `replay_mode` cannot record a predictor or a supported
+  label.
 
 Library schema `0.2.0` adds the field. An entry without it, which covers
 every entry written before this schema including `ctl_refund_window_v1`,

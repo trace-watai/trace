@@ -29,11 +29,14 @@ from trace_harness.regression.repair_validation import (
     ControlVerdict,
     RepairValidation,
     ReRun,
+    basis_supports_label,
     decide_verdict,
     gating_refusal,
     over_blocking_summary,
+    predictor_of,
     sibling_family,
     skipped_control,
+    standing_for,
     verdict_gates,
 )
 from trace_harness.tasks.loader import load_task
@@ -574,11 +577,13 @@ def test_fail_on_rejected_passes_when_nothing_is_rejected(tmp_path) -> None:
 # --- replay_mode standing (ADR-0002, decision 2) ---
 
 
-@pytest.mark.parametrize(
-    ("replay_mode", "standing"),
-    [("static_ok", "gating"), ("live_required", "advisory"), (None, "advisory")],
-)
-def test_every_verdict_records_the_artifact_replay_mode(tmp_path, capsys, replay_mode, standing):
+@pytest.mark.parametrize("replay_mode", ["static_ok", "live_required", None])
+def test_every_verdict_records_the_artifact_replay_mode(tmp_path, capsys, replay_mode):
+    """The demo's basis classifies as live_required, so no label on it can gate.
+
+    A static_ok label set by hand is recorded as stated, flagged, and advisory
+    in the written file itself, before the library or the metrics look at it.
+    """
     artifact = _bundle_artifact(tmp_path)
     if replay_mode is None:
         _edit_json(artifact, lambda a: a.pop("replay_mode"))
@@ -592,18 +597,37 @@ def test_every_verdict_records_the_artifact_replay_mode(tmp_path, capsys, replay
     expected_mode = replay_mode or "unlabeled"
     assert {c.replay_mode for c in validation.controls} == {expected_mode}
     assert {c.predicted_by for c in validation.controls} == {"heuristic_v1"}
-    # The demo's basis classifies as live_required, so a static_ok label on it
-    # is flagged even though the verdict records the label as stated.
+    assert {c.label_supported for c in validation.controls} == {replay_mode == "live_required"}
     out = capsys.readouterr().out
     warned = "static_ok is not supported by the artifact's own basis" in out
     assert warned == (replay_mode == "static_ok")
-    noted = "gating labels are predicted until #159 measures them" in out
-    assert noted == (standing == "gating")
-    (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
-    assert accepted.standing == standing
-    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (
-        (1, 0) if standing == "gating" else (0, 1)
+    assert "gating labels are predicted until #159 measures them" not in out
+    assert {c.standing for c in validation.controls} == {"advisory"}
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (0, 1)
+    source_run_id = json.loads(artifact.read_text())["source_run_id"]
+    written = json.loads(
+        (tmp_path / "runs_replay" / source_run_id / names.REPAIR_VALIDATION).read_text()
     )
+    assert {c["standing"] for c in written["controls"]} == {"advisory"}
+    assert written["rollup"]["accepted_gating"] == 0
+
+
+def test_a_classified_static_ok_label_validates_as_gating(tmp_path, capsys, classified_static_ok):
+    artifact = _bundle_artifact(tmp_path)
+    assert json.loads(artifact.read_text())["replay_mode"] == "static_ok"
+    capsys.readouterr()
+
+    code, validation = _replay_validation(tmp_path, artifact)
+
+    assert code == 0
+    (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
+    assert (accepted.replay_mode, accepted.predicted_by) == ("static_ok", "heuristic_v1")
+    assert accepted.label_supported
+    assert accepted.standing == "gating"
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (1, 0)
+    out = capsys.readouterr().out
+    assert "static_ok is not supported" not in out
+    assert "gating labels are predicted until #159 measures them" in out
 
 
 def test_rollup_splits_accepted_verdicts_by_standing() -> None:
@@ -613,6 +637,14 @@ def test_rollup_splits_accepted_verdicts_by_standing() -> None:
         controls=[
             ControlValidation(
                 control="a",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="static_ok",
+                predicted_by="heuristic_v1",
+                label_supported=True,
+            ),
+            # A static_ok label its own basis does not support cannot gate.
+            ControlValidation(
+                control="f",
                 verdict=ControlVerdict.ACCEPTED,
                 replay_mode="static_ok",
                 predicted_by="heuristic_v1",
@@ -626,7 +658,10 @@ def test_rollup_splits_accepted_verdicts_by_standing() -> None:
             ),
             # A static_ok label with no basis behind it cannot gate.
             ControlValidation(
-                control="e", verdict=ControlVerdict.ACCEPTED, replay_mode="static_ok"
+                control="e",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="static_ok",
+                label_supported=True,
             ),
             ControlValidation(
                 control="d",
@@ -637,7 +672,7 @@ def test_rollup_splits_accepted_verdicts_by_standing() -> None:
         ],
     )
     rollup = validation.rollup
-    assert (rollup.accepted, rollup.accepted_gating, rollup.accepted_advisory) == (4, 1, 3)
+    assert (rollup.accepted, rollup.accepted_gating, rollup.accepted_advisory) == (5, 1, 4)
 
 
 def test_a_written_standing_is_derived_again_on_read() -> None:
@@ -798,11 +833,32 @@ def test_only_a_static_ok_label_its_basis_supports_can_gate(replay_mode, basis, 
         "unsupported": static_ok_basis().model_copy(update={"rule_kind": "requirement"}),
         None: None,
     }[basis]
-    reason = gating_refusal(regression_artifact(replay_mode=replay_mode, basis=recorded))
+    artifact = regression_artifact(replay_mode=replay_mode, basis=recorded)
+    reason = gating_refusal(artifact)
     if refusal is None:
         assert reason is None
     else:
         assert refusal in reason
+    # What a verdict records about the artifact gives it the same standing.
+    standing = standing_for(
+        artifact.replay_mode, predictor_of(artifact), basis_supports_label(artifact)
+    )
+    assert standing == ("gating" if refusal is None else "advisory")
+
+
+@pytest.mark.parametrize(
+    ("replay_mode", "basis", "supported"),
+    [
+        ("static_ok", static_ok_basis(), True),
+        ("live_required", static_ok_basis(), False),
+        ("live_required", static_ok_basis().model_copy(update={"rule_kind": "requirement"}), True),
+        ("static_ok", None, False),
+        ("unlabeled", None, False),
+    ],
+)
+def test_a_label_is_supported_when_its_basis_classifies_as_it(replay_mode, basis, supported):
+    artifact = regression_artifact(replay_mode=replay_mode, basis=basis)
+    assert basis_supports_label(artifact) is supported
 
 
 def test_a_verdict_gates_only_against_an_artifact_that_backs_it() -> None:
@@ -811,10 +867,15 @@ def test_a_verdict_gates_only_against_an_artifact_that_backs_it() -> None:
         verdict=ControlVerdict.ACCEPTED,
         replay_mode="static_ok",
         predicted_by="heuristic_v1",
+        label_supported=True,
     )
     backing = regression_artifact(replay_mode="static_ok", basis=static_ok_basis())
     assert verdict.standing == "gating"
     assert verdict_gates(verdict, backing)
+    # Recorded without its basis supporting the label, it is advisory as written.
+    unsupported_verdict = verdict.model_copy(update={"label_supported": False})
+    assert unsupported_verdict.standing == "advisory"
+    assert not verdict_gates(unsupported_verdict, backing)
     assert not verdict_gates(verdict, None)
     assert not verdict_gates(verdict, regression_artifact(replay_mode="unlabeled"))
     unsupported = static_ok_basis().model_copy(update={"rule_kind": "requirement"})

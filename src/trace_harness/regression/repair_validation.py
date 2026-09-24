@@ -11,16 +11,18 @@ The orchestration that actually replays scenarios lives in ``cli.py``, which is
 where the fixture runner and verifier are already wired together.
 
 Each verdict also records the ``replay_mode`` of the artifact it was reached
-against and who produced that label (``predicted_by``). ADR-0002, decision 2:
-"A static replay verdict on a control is advisory until the artifact carries a
-measured replay-mode label." The same decision has the CI collector gate
-control results only on ``static_ok``. Every ``static_ok`` label today is
-predicted by the materializer's fixed rule; #159 is what measures one. This
-module follows the collector, so a verdict on a ``static_ok`` artifact is
-called gating, and every place that reports it says the label is predicted
-until #159 measures it. An accepted verdict on a ``live_required`` or
-``unlabeled`` artifact says the control held under replay and nothing about a
-live agent.
+against, who produced that label (``predicted_by``), and whether the
+artifact's own recorded basis supports it (``label_supported``). ADR-0002,
+decision 2: "A static replay verdict on a control is advisory until the
+artifact carries a measured replay-mode label." The same decision has the CI
+collector gate control results only on ``static_ok``. Every ``static_ok``
+label today is predicted by the materializer's fixed rule; #159 is what
+measures one. This module follows the collector, so a verdict on a
+``static_ok`` artifact whose basis supports the label is called gating, and
+every place that reports it says the label is predicted until #159 measures
+it. An accepted verdict on a ``live_required`` or ``unlabeled`` artifact, or
+on a ``static_ok`` label its basis does not support, says the control held
+under replay and nothing about a live agent.
 """
 
 from __future__ import annotations
@@ -43,8 +45,10 @@ from trace_harness.regression.schemas import (
 # that makes it gating or advisory; the rollup splits accepted verdicts the
 # same way. A 0.1.0 file records no replay_mode, which reads as not recorded
 # and advisory whatever its artifact says.
-# 0.3.0: re-runs record their task fixture, and the rollup reports
-# over-blocking by task family with a 95% upper bound.
+# 0.3.0: re-runs record their task fixture, the rollup reports over-blocking
+# by task family with a 95% upper bound, and each verdict records whether the
+# artifact's basis supports its label. A verdict without that record reads as
+# unsupported and advisory.
 REPAIR_VALIDATION_SCHEMA_VERSION = "0.3.0"
 
 #: Task families are the directories directly under this one in fixtures/tasks.
@@ -54,16 +58,21 @@ VerdictStanding = Literal["gating", "advisory"]
 
 
 def standing_for(
-    replay_mode: ReplayMode | None, predicted_by: ReplayModePredictor | None
+    replay_mode: ReplayMode | None,
+    predicted_by: ReplayModePredictor | None,
+    label_supported: bool,
 ) -> VerdictStanding:
     """Whether a verdict reached under this label can gate anything.
 
     Only ``static_ok`` gates, which is the rule the regression collector
-    applies to control results (ADR-0002, decision 2), and only when the
-    label came with a recorded basis, which ``predicted_by`` stands for. A
-    label that was never recorded (None) is advisory.
+    applies to control results (ADR-0002, decision 2). The label also has to
+    come with a recorded basis, which ``predicted_by`` stands for, and that
+    basis has to classify as the label (``label_supported``). This is
+    ``gating_refusal`` applied to what a verdict recorded about its artifact.
+    A label that was never recorded (None) is advisory.
     """
-    return "gating" if replay_mode == "static_ok" and predicted_by is not None else "advisory"
+    gates = replay_mode == "static_ok" and predicted_by is not None and label_supported
+    return "gating" if gates else "advisory"
 
 
 def predictor_of(artifact: RegressionArtifact) -> ReplayModePredictor | None:
@@ -71,19 +80,30 @@ def predictor_of(artifact: RegressionArtifact) -> ReplayModePredictor | None:
     return artifact.replay_mode_basis.predicted_by if artifact.replay_mode_basis else None
 
 
+def basis_supports_label(artifact: RegressionArtifact) -> bool:
+    """Whether the artifact's recorded basis classifies as the label it carries.
+
+    False when there is no basis. A label edited by hand after the
+    materializer classified the basis is not supported by it.
+    """
+    basis = artifact.replay_mode_basis
+    return basis is not None and classify_replay_mode(basis) == artifact.replay_mode
+
+
 def gating_refusal(artifact: RegressionArtifact) -> str | None:
     """Why an artifact's label cannot back a gating verdict, or None when it can.
 
     The label has to be ``static_ok``, it has to come with its recorded basis,
     and that basis has to classify as ``static_ok`` under the same rule the
-    materializer applied. A label edited by hand fails the last two.
+    materializer applied (``basis_supports_label``). A label edited by hand
+    fails the last two.
     """
     if artifact.replay_mode != "static_ok":
         return f"the artifact is {artifact.replay_mode}"
     if artifact.replay_mode_basis is None:
         return "the artifact's static_ok label has no recorded basis"
-    classified = classify_replay_mode(artifact.replay_mode_basis)
-    if classified != "static_ok":
+    if not basis_supports_label(artifact):
+        classified = classify_replay_mode(artifact.replay_mode_basis)
         return f"the artifact's recorded basis classifies as {classified}"
     return None
 
@@ -150,6 +170,10 @@ class ControlValidation(BaseModel):
     # Who produced that label, from the artifact's replay_mode_basis. None
     # when the artifact carried no basis or the label was not recorded.
     predicted_by: ReplayModePredictor | None = None
+    # Whether the artifact's recorded basis classifies as its label
+    # (``basis_supports_label``). False when not recorded, so a verdict
+    # written without it stays advisory.
+    label_supported: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -157,11 +181,11 @@ class ControlValidation(BaseModel):
         """Ignore a ``standing`` read back from a file and derive it again.
 
         ``standing`` is written out so a reader sees it without knowing the
-        rule, but it always follows from ``replay_mode`` and ``predicted_by``.
-        Accepting it on input would let an edited ``standing`` promote an
-        advisory verdict. Editing the label itself is caught where gating is
-        acted on: the control library and the metrics both check the label
-        against the retained artifact (``verdict_gates``).
+        rule, but it always follows from ``replay_mode``, ``predicted_by``
+        and ``label_supported``. Accepting it on input would let an edited
+        ``standing`` promote an advisory verdict. Editing those fields is
+        caught where gating is acted on: the control library and the metrics
+        both check them against the retained artifact (``verdict_gates``).
         """
         if isinstance(data, dict) and "standing" in data:
             data = {k: v for k, v in data.items() if k != "standing"}
@@ -170,15 +194,16 @@ class ControlValidation(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def standing(self) -> VerdictStanding:
-        return standing_for(self.replay_mode, self.predicted_by)
+        return standing_for(self.replay_mode, self.predicted_by, self.label_supported)
 
 
 def verdict_gates(verdict: ControlValidation, artifact: RegressionArtifact | None) -> bool:
     """Whether a verdict gates once checked against the artifact it names.
 
-    The verdict's own label is only a claim. It gates when the retained
-    artifact is present, carries the same label and predictor, and passes
-    ``gating_refusal``. Anything else is advisory.
+    The verdict's own label is only a claim. It gates when the verdict was
+    recorded as gating and the retained artifact is present, carries the same
+    label and predictor, and passes ``gating_refusal``. Anything else is
+    advisory.
     """
     return (
         artifact is not None
@@ -370,6 +395,7 @@ def skipped_control(
     *,
     replay_mode: ReplayMode | None = None,
     predicted_by: ReplayModePredictor | None = None,
+    label_supported: bool = False,
 ) -> ControlValidation:
     """A prescribed control with no registered guardrail, reported honestly."""
     return ControlValidation(
@@ -378,4 +404,5 @@ def skipped_control(
         reason="not_materializable: no registered guardrail for this control yet",
         replay_mode=replay_mode,
         predicted_by=predicted_by,
+        label_supported=label_supported,
     )

@@ -184,8 +184,9 @@ Per-control validation and the control library apply the same rule, with
 one addition: a `static_ok` label only counts as gating there when the
 artifact's own recorded basis still classifies as `static_ok`. Every verdict
 in `repair_validation.json` records the artifact's `replay_mode`, its
-`predicted_by`, and whether that makes it gating or advisory, and a library
-entry records the same basis for its acceptance. Every `static_ok` label is
+`predicted_by`, whether that basis supports the label (`label_supported`),
+and whether those make it gating or advisory, and a library entry records
+the same basis for its acceptance. Every `static_ok` label is
 predicted until #159 measures one. See
 [control validation](failure_bundles.md#control-validation) and
 [the control library](failure_bundles.md#control-library).

@@ -64,6 +64,7 @@ from trace_harness.regression.repair_validation import (
     ControlVerdict,
     RepairValidation,
     ReRun,
+    basis_supports_label,
     decide_verdict,
     describe_label,
     gating_refusal,
@@ -508,23 +509,25 @@ def _validate_controls(
     replayed, and every positive sibling is re-run. Validating one at a time is
     the whole point: a bundle verdict cannot say which control earned it.
 
-    Every verdict carries the artifact's ``replay_mode`` and ``predicted_by``,
-    so an acceptance on an artifact that is not ``static_ok`` is recorded as
-    advisory.
+    Every verdict carries the artifact's ``replay_mode``, ``predicted_by`` and
+    whether its recorded basis supports the label, so an acceptance on an
+    artifact that is not ``static_ok``, or on a ``static_ok`` label its basis
+    does not support, is recorded as advisory.
     """
     batch_id = new_batch_id()
     pinned_checks = set(artifact.verifier_checks)
     selected_ids = {c.control_id for c in controls}
-    replay_mode = artifact.replay_mode
-    predicted_by = predictor_of(artifact)
+    label: dict[str, Any] = {
+        "replay_mode": artifact.replay_mode,
+        "predicted_by": predictor_of(artifact),
+        "label_supported": basis_supports_label(artifact),
+    }
     validations: list[ControlValidation] = []
 
     for name, expected_checks in prescribed.items():
         instance = _instance_for_repair_control(name)
         if instance is None:
-            validations.append(
-                skipped_control(name, replay_mode=replay_mode, predicted_by=predicted_by)
-            )
+            validations.append(skipped_control(name, **label))
             print(f"  {name}: skipped (not materializable)")
             continue
         if instance.control_id not in selected_ids or not expected_checks:
@@ -538,8 +541,7 @@ def _validate_controls(
                     control=name,
                     verdict=ControlVerdict.SKIPPED,
                     reason=reason,
-                    replay_mode=replay_mode,
-                    predicted_by=predicted_by,
+                    **label,
                 )
             )
             print(f"  {name}: skipped ({reason})")
@@ -607,11 +609,12 @@ def _validate_controls(
             control_id=instance.control_id,
             originating_rerun=originating,
             sibling_reruns=sibling_reruns,
-            replay_mode=replay_mode,
-            predicted_by=predicted_by,
+            **label,
         )
         validations.append(result)
-        detail = reason or f"{result.standing}, {describe_label(replay_mode, predicted_by)}"
+        detail = reason or (
+            f"{result.standing}, {describe_label(result.replay_mode, result.predicted_by)}"
+        )
         print(f"  {name}: {verdict.value} ({detail})")
 
     validation = RepairValidation(
@@ -878,7 +881,7 @@ def _replay_with_report(
     if apply_control and refusal is not None:
         print(
             f"  ⚠ static_ok is not supported by the artifact's own basis ({refusal}); "
-            "the control library and the metrics treat these verdicts as advisory."
+            "these verdicts are recorded as advisory."
         )
     if apply_control and artifact.replay_mode == "live_required":
         print("  ⚠ static replay is insufficient; a live agent must continue from the block point.")

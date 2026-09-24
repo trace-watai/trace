@@ -141,10 +141,12 @@ def test_coverage_counts_each_wall_separately(tree: Path) -> None:
 def _verdict(
     control: str, replay_mode: str | None = None, verdict: str = "accepted"
 ) -> RepairValidation:
+    """A verdict as replay writes it on an artifact whose basis supports its label."""
     entry = {"control": control, "verdict": verdict}
     if replay_mode is not None:
         entry["replay_mode"] = replay_mode
         entry["predicted_by"] = "heuristic_v1"
+        entry["label_supported"] = True
     return RepairValidation.model_validate(
         {"run_id": "run_x", "test_name": "t", "controls": [entry]}
     )
@@ -216,6 +218,7 @@ def test_snapshot_checks_a_gating_verdict_against_the_retained_artifact(
                     "verdict": "accepted",
                     "replay_mode": "static_ok",
                     "predicted_by": "heuristic_v1",
+                    "label_supported": True,
                 }
             ],
         },
