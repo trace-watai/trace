@@ -304,6 +304,19 @@ dashboard; renaming a field or file breaks them — coordinate and bump
 `schema_version`. No event *interpretation* here (that's
 verifiers/attribution), no database before local JSON actually hurts.
 
+**Measured 2026-09-23, and again after #211 on 2026-09-24 (#213).** At one
+sweep plus a second domain (640 runs) `list-runs` takes 0.24 s and
+`index.json` is 371 kB, far under the 5 s and 50 MB that would justify a
+sqlite index, so the run index stays JSON. The size line is crossed near
+86,000 runs in one directory, about 270 sweeps. `list-runs` took 2.8 s at
+100,000 runs before #211, and 6.5 s in an earlier pass under heavier load. Two
+costs grow sooner. Every run rewrites the whole index three times, which cost
+631 ms per run at 16,000 runs before #211, and since #211 a failing run
+rewrites it once more and looks its bundle key up across the directory. The
+dashboard renders every run on one page. Method and numbers are in
+[measurements/run_index_scale.md](measurements/run_index_scale.md), and
+`scripts/measure_run_index.py` reproduces them.
+
 **Build next:** structured citations in model actions; parent links for
 provider responses, retries, and future sub-agent spans; storage backend
 interfaces once local JSON demonstrably hurts.
