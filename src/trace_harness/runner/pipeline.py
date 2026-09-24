@@ -225,7 +225,9 @@ def attribute_and_bundle(
         initial_state=store.read_json(run_id, names.INITIAL_STATE),
         task_fixture_path=config_metadata.get("task_fixture_path"),
         agent_ref=run_config.get("agent_ref"),
+        run_config=run_config,
     )
     store.write_json(run_id, names.FAILURE_CARD, bundle.failure_card)
     store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)
     store.write_json(run_id, names.REGRESSION_ARTIFACT, bundle.regression_artifact)
+    store.set_index_bundle_key(run_id, bundle.failure_card.bundle_key)

@@ -85,6 +85,8 @@ class RunSummary(BaseModel):
     provider: str | None = None
     model: str | None = None
     batch_id: str | None = None
+    # The failure card this run belongs to (#211); None until bundled.
+    bundle_key: str | None = None
 
     @classmethod
     def from_result(cls, result: RunResult) -> RunSummary:
@@ -116,6 +118,7 @@ class RunSummary(BaseModel):
             provider=entry.provider,
             model=entry.model,
             batch_id=entry.batch_id,
+            bundle_key=entry.bundle_key,
         )
 
 

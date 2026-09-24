@@ -390,6 +390,24 @@ class ArtifactStore:
             return
         self.upsert_index_entry(_with_verdict(existing, verifier_fields))
 
+    # --- failure bundles (#211) ---
+
+    def set_index_bundle_key(self, run_id: str, bundle_key: str) -> None:
+        """Record the run's bundle key on its index entry.
+
+        A missing entry is recovered by rebuilding the index from the run
+        directories first. A run with no ``run_result.json`` has no entry to
+        carry the key, and stays out of the index as it would anyway.
+        """
+        index = self.read_index()
+        existing = next((e for e in index.entries if e.run_id == run_id), None)
+        if existing is None:
+            index = self.rebuild_index()
+            existing = next((e for e in index.entries if e.run_id == run_id), None)
+            if existing is None:
+                return
+        self.upsert_index_entry(existing.model_copy(update={"bundle_key": bundle_key}))
+
     def enrich_index_entry_with_batch(self, run_id: str, batch_id: str) -> None:
         """Set ``batch_id`` on the run's index entry.
 
@@ -431,6 +449,9 @@ class ArtifactStore:
             batch_id = batch_memberships.get(run_id)
             if batch_id is not None:
                 entry = entry.model_copy(update={"batch_id": batch_id})
+            bundle_key = self._read_bundle_index_field(run_id)
+            if bundle_key is not None:
+                entry = entry.model_copy(update={"bundle_key": bundle_key})
             entries.append(entry)
         index = RunIndex(entries=sorted(entries, key=lambda e: e.run_id))
         self._write_index(index)
@@ -461,6 +482,24 @@ class ArtifactStore:
                 if isinstance(run_id, str):
                     memberships[run_id] = batch_id
         return memberships
+
+    def _read_json_field(self, run_id: str, name: str, field: str) -> str | None:
+        """One string field of a run artifact, or None when absent or unreadable."""
+        if not self.exists(run_id, name):
+            return None
+        try:
+            data = self.read_json(run_id, name)
+        except (FileNotFoundError, ValueError):
+            return None
+        value = data.get(field) if isinstance(data, dict) else None
+        return value if isinstance(value, str) else None
+
+    def _read_bundle_index_field(self, run_id: str) -> str | None:
+        """The run's bundle key from its card, without importing the card model.
+
+        None for unbundled runs and for cards written before failure card 0.5.0.
+        """
+        return self._read_json_field(run_id, FAILURE_CARD, "bundle_key")
 
     def _read_config_index_fields(self, run_id: str) -> tuple[str, str | None] | None:
         """Read ``(provider, model)`` from run_config.json without importing RunConfig.

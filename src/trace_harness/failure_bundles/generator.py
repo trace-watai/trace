@@ -13,20 +13,29 @@ Repair controls
     actually happened. A regression CI gate is always included — turning
     failures into permanent tests is the point of TRACE.
 
+Root-cause identity (#211)
+    Every card carries a ``bundle_key`` formed by :func:`bundle_key` and lists
+    its own run as the first of its ``occurrences``.
+
 # TODO(Samir/failure_bundles): markdown rendering of the failure card for
 # humans (the JSON is the contract; a .md view is a nice-to-have for PRs).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Mapping
 from typing import Any
 
 from pydantic import BaseModel
 
 from trace_harness.attribution.schemas import AttributionResult
 from trace_harness.environment.state import SupportState
+from trace_harness.environment.tools import ToolSideEffect
 from trace_harness.failure_bundles.schemas import (
     BlastRadius,
+    BundleOccurrence,
     ControlPriority,
     FailureCard,
     RepairControl,
@@ -398,6 +407,85 @@ CHECKS_REACHABLE_BY_TOOL = {
 }
 
 
+# --- root-cause identity (#211) ---
+
+BUNDLE_KEY_VERSION = "v1"
+# Stands in for the tool in a key's readable prefix when the run took no
+# irreversible action. The digest input records JSON null instead, so a tool
+# that happened to be named "none" could not collide with it.
+NO_IRREVERSIBLE_TOOL = "none"
+
+
+def first_irreversible_tool(trace: list[TraceEvent], attribution: AttributionResult) -> str | None:
+    """The tool the run called at its first irreversible step, or None when it had none.
+
+    The step is ``AttributionResult.first_irreversible_action_step``, the same
+    field the regression materializer pins. The attributor sets it from the
+    first ``tool_call_executed`` event whose ``side_effect`` is
+    ``external_irreversible`` and whose status is ok, and the tool is read off
+    the event at that step with the same test, so the key and the attribution
+    always mean the same step.
+    """
+    step = attribution.first_irreversible_action_step
+    if step is None:
+        return None
+    for event in trace:
+        if (
+            event.event_type is TraceEventType.TOOL_CALL_EXECUTED
+            and event.step_id == step
+            and event.payload.get("side_effect") == ToolSideEffect.EXTERNAL_IRREVERSIBLE.value
+            and event.payload.get("status") == "ok"
+        ):
+            tool = event.payload.get("tool_name")
+            return tool if isinstance(tool, str) else None
+    return None
+
+
+def bundle_key(
+    verifier_result: VerifierResult, attribution: AttributionResult, trace: list[TraceEvent]
+) -> str:
+    """The root-cause identity a failure card is deduplicated on.
+
+    Three facts form it and nothing else does. They are the failed verifier
+    check ids as a sorted set, the primary failure category from attribution,
+    and the tool at the first irreversible step (see
+    :func:`first_irreversible_tool`). Run ids, task ids, step numbers,
+    messages and evidence stay out, so two runs that failed the same way
+    share a key wherever and whenever they ran.
+
+    The key reads ``v1:<category>:<tool or none>:<digest>``. The digest is the
+    first 16 hex characters of sha256 over the canonical JSON of the three
+    facts and the version, with sorted keys and no whitespace. The prefix is
+    there for people reading an index or a card. The digest is what separates
+    two failures with the same category and tool but different checks, and
+    keys are only ever compared whole.
+    """
+    checks = sorted({check.check_id for check in verifier_result.failed_checks})
+    category = attribution.primary_failure_category.value
+    tool = first_irreversible_tool(trace, attribution)
+    canonical = json.dumps(
+        {"version": BUNDLE_KEY_VERSION, "checks": checks, "category": category, "tool": tool},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return f"{BUNDLE_KEY_VERSION}:{category}:{tool or NO_IRREVERSIBLE_TOOL}:{digest}"
+
+
+def _occurrence(
+    run_result: RunResult, task: TaskSpec, run_config: Mapping[str, Any] | None
+) -> BundleOccurrence:
+    config = run_config or {}
+    provider, model, seed = config.get("provider"), config.get("model"), config.get("seed")
+    return BundleOccurrence(
+        run_id=run_result.run_id,
+        task_id=task.task_id,
+        provider=provider if isinstance(provider, str) else None,
+        model=model if isinstance(model, str) else None,
+        seed=seed if isinstance(seed, int) and not isinstance(seed, bool) else None,
+    )
+
+
 class FailureBundleGenerator:
     """Assembles the three failure artifacts from one verified failed run."""
 
@@ -413,12 +501,24 @@ class FailureBundleGenerator:
         initial_state: dict[str, Any],
         task_fixture_path: str | None = None,
         agent_ref: str | None = None,
+        run_config: Mapping[str, Any] | None = None,
     ) -> FailureBundle:
+        """Build the run's three artifacts. Nothing is written here.
+
+        The card carries the run's bundle key and lists the run as its only
+        occurrence. ``run_config`` is the run's ``run_config.json``, read for
+        the provider, model and seed the occurrence records.
+        """
         if verifier_result.passed:
             raise ValueError("cannot generate a failure bundle from a passing run")
 
         failure_card = self._build_card(
             task, run_result, trace, verifier_result, attribution, final_state
+        ).model_copy(
+            update={
+                "bundle_key": bundle_key(verifier_result, attribution, trace),
+                "occurrences": [_occurrence(run_result, task, run_config)],
+            }
         )
         repair_package = self._build_repair_package(task, run_result, verifier_result)
         regression_artifact = materialize_regression_artifact(

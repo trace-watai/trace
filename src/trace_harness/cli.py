@@ -464,12 +464,15 @@ def _bundle(run_dir: Path) -> bool:
         initial_state=store.read_json(run_id, names.INITIAL_STATE),
         task_fixture_path=config_metadata.get("task_fixture_path"),
         agent_ref=run_config.get("agent_ref"),
+        run_config=run_config,
     )
     store.write_json(run_id, names.FAILURE_CARD, bundle.failure_card)
     store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)
     store.write_json(run_id, names.REGRESSION_ARTIFACT, bundle.regression_artifact)
+    store.set_index_bundle_key(run_id, bundle.failure_card.bundle_key)
 
     print(f"\nFailure bundle for {run_id}:")
+    _print("bundle_key:", str(bundle.failure_card.bundle_key))
     _print("failure_card:", str(store.artifact_path(run_id, names.FAILURE_CARD)))
     _print("repair_package:", str(store.artifact_path(run_id, names.REPAIR_PACKAGE)))
     _print("regression:", str(store.artifact_path(run_id, names.REGRESSION_ARTIFACT)))
