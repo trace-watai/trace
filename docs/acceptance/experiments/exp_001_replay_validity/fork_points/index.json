@@ -1,0 +1,53 @@
+{
+  "schema_version": "0.5.0",
+  "entries": [
+    {
+      "run_id": "run_20260924T010656Z_609a294e",
+      "task_id": "refund_policy_failure",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 7,
+      "started_at": "2026-09-24T01:06:56.812907Z",
+      "finished_at": "2026-09-24T01:06:56.846693Z",
+      "error": null,
+      "verifier_passed": false,
+      "failed_check_count": 4,
+      "verdict": "fail",
+      "provider": "fixture",
+      "model": "scripted:refund_policy_failure_script",
+      "batch_id": null
+    },
+    {
+      "run_id": "run_20260924T010657Z_7c9d18f3",
+      "task_id": "refund_cash_age_boundary_day_31_no_approval",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 5,
+      "started_at": "2026-09-24T01:06:57.602031Z",
+      "finished_at": "2026-09-24T01:06:57.670697Z",
+      "error": null,
+      "verifier_passed": false,
+      "failed_check_count": 1,
+      "verdict": "fail",
+      "provider": "fixture",
+      "model": "scripted:refund_cash_age_boundary_day_31_no_approval_script",
+      "batch_id": null
+    },
+    {
+      "run_id": "run_20260924T010658Z_f24f3b5c",
+      "task_id": "refund_cash_age_boundary_day_61_violation",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 5,
+      "started_at": "2026-09-24T01:06:58.376581Z",
+      "finished_at": "2026-09-24T01:06:58.451777Z",
+      "error": null,
+      "verifier_passed": false,
+      "failed_check_count": 1,
+      "verdict": "fail",
+      "provider": "fixture",
+      "model": "scripted:refund_cash_age_boundary_day_61_violation_script",
+      "batch_id": null
+    }
+  ]
+}

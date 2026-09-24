@@ -1,0 +1,19 @@
+{
+  "schema_version": "0.4.0",
+  "task_id": "refund_cash_age_boundary_day_31_no_approval",
+  "provider": "fixture",
+  "model": "scripted:refund_cash_age_boundary_day_31_no_approval_script",
+  "max_steps": 16,
+  "timeout_seconds": 120.0,
+  "temperature": null,
+  "seed": null,
+  "prompt_version": "v0",
+  "tool_mode": "native",
+  "cassette": null,
+  "call_policy": null,
+  "agent_ref": null,
+  "metadata": {
+    "task_fixture_path": "fixtures/tasks/refund_task_families/purchase_age/day_31_no_approval/refund_cash_age_boundary_day_31_no_approval.json",
+    "fixture_script_path": "fixtures/scripts/refund_cash_age_boundary_day_31_no_approval_script.json"
+  }
+}
