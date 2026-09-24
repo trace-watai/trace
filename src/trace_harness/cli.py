@@ -1111,9 +1111,18 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
             summary = store.read_batch_summary(batch_id)
         except FileNotFoundError as exc:
             raise CliInputError(str(exc)) from None
-        # A branch batch names the condition it ran. Recording it under another
-        # name would swap the arms, and with them the two divergence rates.
-        produced_for = (summary.get("metadata") or {}).get("condition")
+        # A branch batch names the experiment and condition it ran. Recording
+        # it under another name would swap the arms, and with them the two
+        # divergence rates, and under another plan it answers a different
+        # question.
+        metadata = summary.get("metadata") or {}
+        ran_for = metadata.get("experiment_id")
+        if ran_for not in (None, spec.experiment_id):
+            raise CliInputError(
+                f"batch {batch_id} ran for experiment {ran_for!r} and cannot answer "
+                f"{spec.experiment_id!r}"
+            )
+        produced_for = metadata.get("condition")
         if produced_for not in (None, name):
             raise CliInputError(
                 f"batch {batch_id} ran condition {produced_for!r} and cannot answer {name!r}"

@@ -606,6 +606,29 @@ def test_experiment_record_fills_the_three_metrics_from_branch_batches(
     assert "cannot answer" in capsys.readouterr().err
 
 
+def test_record_refuses_a_batch_another_experiment_ran(tmp_path, capsys):
+    """Same condition name, other plan: the batch answers the experiment it ran for."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, spec = _spec(tmp_path, _condition("off", "live_no_control", artifact, 2, seeds=[0]))
+    runs = tmp_path / "runs"
+    assert main(["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]) == 0
+    (batch,) = (runs / "batches").iterdir()
+    other = tmp_path / "other.json"
+    other.write_text(
+        spec.model_copy(update={"experiment_id": "exp_other"}).model_dump_json(), encoding="utf-8"
+    )
+    record = ["--runs-dir", str(runs), "experiment", "record"]
+    capsys.readouterr()
+
+    assert main([*record, str(other), "--condition", f"off={batch.name}"]) == 2
+    assert (
+        f"batch {batch.name} ran for experiment 'exp_branch_test' and cannot answer 'exp_other'"
+        in capsys.readouterr().err
+    )
+    assert not (runs / "experiments").exists()
+    assert main([*record, str(spec_path), "--condition", f"off={batch.name}"]) == 0
+
+
 def test_a_frozen_plan_records_after_branch_and_refuses_an_evaluator_edit(
     tmp_path, capsys, monkeypatch
 ):

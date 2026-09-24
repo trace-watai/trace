@@ -44,6 +44,26 @@ export interface RawStartPoint {
   step_id: number;
 }
 
+/** `CassetteConfig` in `models/cassette.py`: record or replay model calls. */
+export interface RawCassetteConfig {
+  mode: "record" | "replay";
+  directory: string;
+}
+
+/**
+ * `CallPolicy` in `models/policy.py` (#196): the retry, backoff and pacing
+ * rules a live run executes under. A null `requests_per_minute` means no
+ * pacing.
+ */
+export interface RawCallPolicy {
+  max_attempts: number;
+  initial_delay_seconds: number;
+  max_delay_seconds: number;
+  backoff_multiplier: number;
+  jitter: boolean;
+  requests_per_minute?: number | null;
+}
+
 export interface RawAgentConfig {
   label: string;
   provider: string;
@@ -53,6 +73,8 @@ export interface RawAgentConfig {
   seed?: number | null;
   max_steps: number;
   timeout_seconds: number;
+  cassette?: RawCassetteConfig | null;
+  call_policy?: RawCallPolicy | null;
 }
 
 export interface RawConditionSpec {
