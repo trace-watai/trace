@@ -256,9 +256,9 @@ trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \
 ```
 
 The extra names `openai>=3,<4` beside the SDK, because the reference imports
-openai's response types directly and openai-agents 0.22 requires openai 3. It
-installs together with the `openai` extra only where that extra's range admits
-openai 3.
+openai's response types directly and openai-agents 0.22 requires openai 3. The
+`openai` extra takes the same range since #160, so every extra installs
+together, and a test checks the ranges in `pyproject.toml` still allow it.
 
 `openai_agents_ref.py` builds an SDK `Agent` with the task's tools and runs it
 with `Runner.run` under `asyncio.run`, so the loop, the turn limit, and tool

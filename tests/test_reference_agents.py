@@ -572,13 +572,6 @@ def test_the_openai_agents_extra_names_the_openai_range_its_reference_imports():
         assert openai_range.contains(version) == sdk_openai.specifier.contains(version)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the openai extra still pins openai<2 on this branch. The #229 review widens it to "
-        "admit 3.x, and this marker comes off when that change merges"
-    ),
-)
 def test_every_extra_installs_together():
     """No two groups in pyproject.toml ask for versions of one package that cannot coexist.
 
