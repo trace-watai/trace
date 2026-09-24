@@ -1,8 +1,9 @@
 """Reference outside agent built on the OpenAI Agents SDK.
 
-An SDK ``Agent`` with the task's tools, run by ``Runner.run_sync``, so the
-tool-calling loop, turn limit, and tool dispatch are the SDK's own. Three
-pieces connect it to the harness, and any other SDK agent needs the same three.
+An SDK ``Agent`` with the task's tools, run by ``Runner.run`` under
+``asyncio.run``, so the tool-calling loop, turn limit, and tool dispatch are
+the SDK's own. Three pieces connect it to the harness, and any other SDK agent
+needs the same three.
 
 - :func:`harness_tools` turns the task's tool specs into ``FunctionTool`` objects
   whose body is the harness ``call_tool`` callback.
@@ -12,6 +13,11 @@ pieces connect it to the harness, and any other SDK agent needs the same three.
 - The final answer is ``RunResult.final_output``.
 
 SDK tracing is switched off for every run, so nothing is exported anywhere.
+
+``Runner.run_sync`` would leave its event loop open on the agent's thread, and
+with it the executor threads ``harness_tools`` calls ``call_tool`` from, until
+garbage collection. ``asyncio.run`` closes the loop and joins those threads
+before the run returns.
 
 The model here is :class:`TurnSourceModel`, whose turns come from a scripted
 source (see ``turns.py``). Swap in any SDK ``Model`` to run a real one.
@@ -294,14 +300,16 @@ class OpenAIAgentsReferenceAgent:
         hooks = None
         if self.forward_model_responses and on_model_response is not None:
             hooks = ModelResponseForwarder(on_model_response)
-        result = Runner.run_sync(
-            agent,
-            prompt.user,
-            # One model turn per tool step plus the answer, so the harness step
-            # limit is the one that binds.
-            max_turns=prompt.max_steps + 1,
-            hooks=hooks,
-            run_config=RunConfig(tracing_disabled=True),
+        result = asyncio.run(
+            Runner.run(
+                agent,
+                prompt.user,
+                # One model turn per tool step plus the answer, so the harness
+                # step limit is the one that binds.
+                max_turns=prompt.max_steps + 1,
+                hooks=hooks,
+                run_config=RunConfig(tracing_disabled=True),
+            )
         )
         return result.final_output
 

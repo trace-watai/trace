@@ -94,10 +94,16 @@ agents.
 - **Steps.** Each `call_tool` is one step and the final answer is one more,
   numbered from 1. Every event a step causes carries its step id, which is what
   verifier checks and attribution point at.
-- **Validation.** A call to an unknown tool or with arguments that do not match
-  the schema is recorded as `tool_call_validated` with `valid: false` and is
-  never executed. Your agent gets the validation error as the observation and
-  can recover.
+- **Validation.** A `call_tool` that names an unknown tool, or whose arguments
+  do not match the schema, is recorded as `tool_call_validated` with
+  `valid: false` and is never executed. Your agent gets the validation error as
+  the observation and can recover. A framework may catch an unknown tool name
+  before it ever reaches `call_tool`, and then the harness records no tool call
+  for it. Under the reference agents, LangGraph's `ToolNode` answers the model
+  with its own error and the graph goes on, and the Agents SDK raises
+  `ModelBehaviorError`, which ends the run as `model_error`. Either way the
+  forwarded model response that named the tool is still in the trace.
+  Arguments that miss the schema reach the harness under both.
 - **Controls.** Controls installed through `install_control` run at the
   pre-call seam before any handler. A blocked call returns `status: error` with
   the control's message, and the trace records the control id as `blocked_by`
@@ -193,7 +199,14 @@ Each reference module has two factories.
   drifts from it, for example because a control blocked a call the recording
   saw succeed, stops with a request mismatch at the next step.
 - `:scripted_agent` plays the task's fixture script directly and ignores what
-  the model is sent. It works for every task, with or without controls.
+  the model is sent. The script is the one the task's `metadata.fixture_script`
+  names, the same file the fixture provider plays, found by task id under
+  `fixtures/tasks/`. It works for every task, with or without controls.
+
+Both factories find the committed cassettes and task fixtures from where the
+package sits in the repository, so they run the same from any working
+directory. They need the source checkout (an editable install), since the
+fixtures are not part of the package.
 
 The cassettes use the harness model cassette format described in
 `fixtures/cassettes/README.md`, and `scripts/record_reference_cassettes.py`
@@ -243,8 +256,12 @@ trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \
 ```
 
 `openai_agents_ref.py` builds an SDK `Agent` with the task's tools and runs it
-with `Runner.run_sync`, so the loop, the turn limit, and tool dispatch are the
-SDK's own. Any SDK agent connects to the harness with the same three pieces.
+with `Runner.run` under `asyncio.run`, so the loop, the turn limit, and tool
+dispatch are the SDK's own. `Runner.run_sync` would leave its event loop open on
+the agent's thread, and with it the executor threads the tools call `call_tool`
+from, until garbage collection. `asyncio.run` closes the loop and joins them
+before the run returns. Any SDK agent connects to the harness with the same
+three pieces.
 
 - `harness_tools(tools, call_tool)` returns `FunctionTool` objects whose body
   is the harness callback. The schemas are not made strict and arguments are

@@ -7,16 +7,25 @@ reach a model or export a trace would fail the test.
 
 from __future__ import annotations
 
+import gc
 import json
+import runpy
 import socket
+import sys
+import threading
+import time
+import types
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
-from conftest import FAILURE_TASK_PATH, REPO_ROOT, VALID_TASK_PATH
+from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, REPO_ROOT, VALID_TASK_PATH
 from trace_harness.agents.turns import (
     CassetteTurns,
     ScriptedTurns,
     assistant_message,
+    fixture_script_for,
     observation_text,
     record_cassette,
 )
@@ -25,11 +34,12 @@ from trace_harness.cli import main
 from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID, reference_controls
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models.base import ActionKind, AgentAction, MessageRole, ToolCall
+from trace_harness.models.fixture import FixtureScript
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.pipeline import run_task_pipeline
-from trace_harness.runner.result import RunStatus, TerminationReason
+from trace_harness.runner.result import RunResult, RunStatus, TerminationReason
 from trace_harness.runner.suite import AgentConfig
-from trace_harness.runner.target_agent import ToolObservation, run_target_agent
+from trace_harness.runner.target_agent import TaskPrompt, ToolObservation, run_target_agent
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
@@ -55,10 +65,7 @@ def reference(request):
 
 
 @pytest.fixture(autouse=True)
-def offline_repo(monkeypatch):
-    # Cassette and script paths are repo-relative, like every CLI fixture path.
-    monkeypatch.chdir(REPO_ROOT)
-
+def offline(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("a reference agent attempted to use the network")
 
@@ -135,6 +142,100 @@ def test_committed_cassettes_are_the_scripted_recording(reference, task_path, tm
     assert fresh.read_bytes() == committed.read_bytes()
 
 
+def _prompt(task_id: str) -> TaskPrompt:
+    return TaskPrompt(task_id=task_id, system="system", user="user", max_steps=16)
+
+
+def test_scripted_turns_play_the_script_the_task_names(tmp_path):
+    """The scripted source plays metadata.fixture_script, as the fixture provider does."""
+    failure_script = FIXTURES_DIR / "scripts" / "refund_policy_failure_script.json"
+    tasks = tmp_path / "tasks" / "nested"
+    tasks.mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "any_name.json").write_bytes(failure_script.read_bytes())
+    task = json.loads(VALID_TASK_PATH.read_text(encoding="utf-8"))
+    task["metadata"]["fixture_script"] = "../../elsewhere/any_name.json"
+    (tasks / "task.json").write_text(json.dumps(task), encoding="utf-8")
+
+    found = fixture_script_for("refund_policy_valid_cash", tmp_path / "tasks")
+    assert found == (tmp_path / "elsewhere" / "any_name.json").resolve()
+    adapter = ScriptedTurns(tasks_dir=tmp_path / "tasks")(_prompt("refund_policy_valid_cash"))
+    assert adapter.script == FixtureScript.model_validate_json(failure_script.read_text())
+    with pytest.raises(FileNotFoundError, match="no task file with task_id 'nope'"):
+        fixture_script_for("nope", tmp_path / "tasks")
+
+
+@pytest.mark.parametrize("task_path", [VALID_TASK_PATH, FAILURE_TASK_PATH], ids=lambda p: p.stem)
+def test_every_committed_task_resolves_to_the_fixture_providers_script(task_path):
+    task = load_task(task_path)
+    expected = (task_path.parent / task.metadata["fixture_script"]).resolve()
+    assert fixture_script_for(task.task_id) == expected
+
+
+def test_default_fixture_paths_do_not_depend_on_the_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    adapter = ScriptedTurns()(_prompt("refund_policy_failure"))
+    assert adapter.script.task_id == "refund_policy_failure"
+    for namespace in EXTRAS:
+        assert CassetteTurns(namespace).path("refund_policy_failure").is_file()
+
+
+@pytest.mark.parametrize("factory", ["agent", "scripted_agent"])
+def test_reference_factories_run_from_any_directory(reference, factory, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    agent = getattr(reference, factory)()
+    result, _, _ = _run(agent, FAILURE_TASK_PATH, tmp_path)
+    assert result.status is RunStatus.COMPLETED, result.error
+    assert result.steps_taken == 7
+
+
+RECORD_SCRIPT = REPO_ROOT / "scripts" / "record_reference_cassettes.py"
+
+
+def test_the_record_script_exits_nonzero_when_a_recording_does_not_complete(
+    tmp_path, monkeypatch, capsys
+):
+    main_ = runpy.run_path(str(RECORD_SCRIPT))["main"]
+    stub = types.ModuleType("trace_harness.agents.langgraph_ref")
+    stub.NAMESPACE = "langgraph_ref"
+    stub.LangGraphReferenceAgent = object
+    monkeypatch.setitem(sys.modules, stub.__name__, stub)
+    outcomes = iter(
+        [
+            (RunStatus.COMPLETED, TerminationReason.FINAL_ANSWER),
+            (RunStatus.ERROR, TerminationReason.MODEL_ERROR),
+        ]
+    )
+
+    def fake_record(make_agent, task, **kwargs):
+        status, reason = next(outcomes)
+        now = datetime.now(UTC)
+        return RunResult(
+            run_id="run_x",
+            task_id=Path(task).stem,
+            status=status,
+            termination_reason=reason,
+            steps_taken=1,
+            started_at=now,
+            finished_at=now,
+        )
+
+    monkeypatch.setitem(main_.__globals__, "record_cassette", fake_record)
+    assert main_(["langgraph_ref", "--root", str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert "refund_policy_failure.json" in err
+    assert "refund_policy_valid_cash.json" not in err
+
+
+def test_recording_into_a_used_root_fails_the_record_script(reference, tmp_path, capsys):
+    main_ = runpy.run_path(str(RECORD_SCRIPT))["main"]
+    argv = [reference.NAMESPACE, "--root", str(tmp_path), str(VALID_TASK_PATH)]
+    assert main_(argv) == 0
+    # Recording never overwrites, so the second run cannot record and must say so.
+    assert main_(argv) == 1
+    assert "model_error" in capsys.readouterr().out
+
+
 TASK_PATHS = sorted(
     path
     for path in (REPO_ROOT / "fixtures" / "tasks").rglob("*.json")
@@ -163,11 +264,16 @@ def test_every_task_ends_as_it_does_under_the_fixture_provider(reference, task_p
     ]
 
 
-def test_the_agent_sends_its_model_the_runners_own_transcript(reference, tmp_path):
+@pytest.mark.parametrize(
+    ("task_path", "steps"), [(VALID_TASK_PATH, 5), (FAILURE_TASK_PATH, 7)], ids=["valid", "failure"]
+)
+def test_the_agent_sends_its_model_the_runners_own_transcript(
+    reference, task_path, steps, tmp_path
+):
     """Step for step, the model sees what the harness runner builds for a fixture model."""
     argv = [
         "run-fixture",
-        str(FAILURE_TASK_PATH),
+        str(task_path),
         "--cassette-mode",
         "record",
         "--cassette-dir",
@@ -178,9 +284,9 @@ def test_the_agent_sends_its_model_the_runners_own_transcript(reference, tmp_pat
     assert main(argv) == 0
     (native_path,) = (tmp_path / "native").rglob("*.jsonl")
     native = [json.loads(line) for line in native_path.read_text().splitlines()]
-    path = CassetteTurns(reference.NAMESPACE, root=COMMITTED).path("refund_policy_failure")
+    path = CassetteTurns(reference.NAMESPACE, root=COMMITTED).path(load_task(task_path).task_id)
     ours = [json.loads(line) for line in path.read_text().splitlines()]
-    assert len(ours) == len(native) == 7
+    assert len(ours) == len(native) == steps
     for mine, theirs in zip(ours, native, strict=True):
         assert mine["transcript_hash"] == theirs["transcript_hash"]
         assert mine["response"] == theirs["response"]
@@ -260,6 +366,82 @@ def test_harness_step_limit_binds_before_the_frameworks_own_limit(reference, tmp
     assert result.termination_reason is TerminationReason.MAX_STEPS_REACHED
     assert result.steps_taken == 3
     assert len(_events(trace, TraceEventType.TOOL_CALL_EXECUTED)) == 3
+
+
+class _Turns:
+    """A turn source that plays the given actions in order, for every task."""
+
+    label = "listed"
+
+    def __init__(self, *actions: AgentAction) -> None:
+        self.actions = actions
+
+    def __call__(self, prompt):
+        remaining = list(self.actions)
+
+        class Adapter:
+            def next_action(self, transcript, tools):
+                return remaining.pop(0)
+
+        return Adapter()
+
+
+def test_the_framework_handles_an_unknown_tool_before_the_harness_sees_it(reference, tmp_path):
+    """What the guide says each reference framework does with a tool name it was not given."""
+    unknown = AgentAction(
+        kind=ActionKind.TOOL_CALL, tool_call=ToolCall(tool_name="wire_money", arguments={})
+    )
+    answer = AgentAction(kind=ActionKind.FINAL_ANSWER, final_answer="done")
+    agent = _make(reference, _Turns(unknown, answer))
+    result, trace, _ = _run(agent, VALID_TASK_PATH, tmp_path)
+
+    # The call never reaches call_tool, so no tool event records it.
+    assert _events(trace, TraceEventType.TOOL_CALL_REQUESTED) == []
+    assert _events(trace, TraceEventType.TOOL_CALL_VALIDATED) == []
+    # The forwarded model response that made the call is still in the trace.
+    (response,) = _events(trace, TraceEventType.MODEL_RESPONSE)
+    assert response.step_id == 1
+    assert "wire_money" in json.dumps(response.payload["raw"])
+    if reference.NAMESPACE == "langgraph_ref":
+        # ToolNode answers the model with its own error and the graph goes on.
+        assert result.status is RunStatus.COMPLETED
+        assert result.steps_taken == 1
+        assert len(response.payload["raw"]["responses"]) == 2
+    else:
+        # The SDK raises, which ends the run as a model error.
+        assert result.termination_reason is TerminationReason.MODEL_ERROR
+        assert "ModelBehaviorError" in (result.error or "")
+
+
+def test_arguments_that_miss_the_schema_reach_the_harness(reference, tmp_path):
+    bad = AgentAction(
+        kind=ActionKind.TOOL_CALL,
+        tool_call=ToolCall(tool_name="issue_refund", arguments={"customer_name": "Riley Chen"}),
+    )
+    answer = AgentAction(kind=ActionKind.FINAL_ANSWER, final_answer="done")
+    result, trace, _ = _run(_make(reference, _Turns(bad, answer)), VALID_TASK_PATH, tmp_path)
+    assert result.status is RunStatus.COMPLETED
+    (validated,) = _events(trace, TraceEventType.TOOL_CALL_VALIDATED)
+    assert validated.payload["valid"] is False
+    assert _events(trace, TraceEventType.TOOL_CALL_EXECUTED) == []
+
+
+def test_a_run_leaves_no_framework_threads_behind(reference, tmp_path):
+    """Worker threads a framework starts for a run end with it, without waiting for gc."""
+    before = set(threading.enumerate())
+    gc.disable()
+    try:
+        for index in range(2):
+            result, _, _ = _run(reference.scripted_agent(), VALID_TASK_PATH, tmp_path / str(index))
+            assert result.status is RunStatus.COMPLETED
+        deadline = time.monotonic() + 5
+        left = [t for t in threading.enumerate() if t not in before]
+        while left and time.monotonic() < deadline:
+            time.sleep(0.05)
+            left = [t for t in threading.enumerate() if t not in before and t.is_alive()]
+    finally:
+        gc.enable()
+    assert [t.name for t in left] == []
 
 
 # --- each framework's message shapes map back to the harness transcript ---

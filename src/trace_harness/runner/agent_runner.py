@@ -214,6 +214,12 @@ def _observation_to_tool_message(result: ToolResult) -> Message:
     )
 
 
+# Public for code that has to rebuild this transcript shape outside the
+# runner, such as the reference agents mapping a framework's conversation back.
+action_to_assistant_message = _action_to_assistant_message
+observation_to_tool_message = _observation_to_tool_message
+
+
 class AgentRunner:
     """Runs one task with one adapter inside one environment, recording everything."""
 
