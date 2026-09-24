@@ -165,6 +165,12 @@ replay from their pinned moves, so neither SDK is needed. The one retained
 experiment, `exp_000_baseline`, is checked beside them. `tests/test_collector.py`
 runs this same collection and pins both counts.
 
+A generated run that reproduced an earlier card holds a `bundle_ref.json`
+pointer and no artifact of its own (#211). It passes the suite's coverage check
+through the artifact of the run it points to and is not collected, so each
+bundle key is replayed once. See
+[failure_bundles.md](failure_bundles.md#replay-and-the-regression-gate).
+
 Each pinned failure must reproduce and every declared positive sibling must pass.
 Both require completed runs: a partial run cannot satisfy the collector even if
 it emitted a pinned violation before stopping. The standalone `replay` command's

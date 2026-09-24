@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Collection
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -362,7 +363,13 @@ class BatchRunner:
         self._enrich_index_entries(summary)
         return summary
 
-    def run_cell(self, config: AgentConfig, task_path: str) -> BatchRunEntry:
+    def run_cell(
+        self,
+        config: AgentConfig,
+        task_path: str,
+        *,
+        bundle_scope: Collection[str] | None = None,
+    ) -> BatchRunEntry:
         """Run one task under one agent config and return its batch entry.
 
         This is the cell path of :meth:`run`, and ``run-sweep`` runs its cells
@@ -372,11 +379,20 @@ class BatchRunner:
         and the cost its trace records on that entry, so the caller's
         ``BudgetGuard.charge`` still counts a billed call. Budget admission and
         charging stay with the caller.
+
+        ``bundle_scope`` is passed to ``run_task_pipeline``: the runs whose
+        failure cards a failing run may join (#211). None, as :meth:`run`
+        passes, joins a card anywhere in the runs directory.
         """
         progress = PipelineProgress()
         try:
             result = run_task_pipeline(
-                task_path, config, self.store, controls=self.controls, progress=progress
+                task_path,
+                config,
+                self.store,
+                controls=self.controls,
+                bundle_scope=bundle_scope,
+                progress=progress,
             )
             return entry_from_pipeline(result, config, task_path, self.store.runs_dir)
         except Exception as exc:  # noqa: BLE001 — isolate the cell; the batch goes on

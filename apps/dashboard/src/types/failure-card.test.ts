@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { FAILURE_CATEGORIES } from "@/types/attribution";
@@ -12,11 +14,48 @@ import {
 import sampleArtifact from "@/fixtures/refund-failure/failure_card.json";
 
 const raw = sampleArtifact as unknown as RawFailureCard;
+const REPO = path.join(process.cwd(), "..", "..");
 
 describe("parseFailureCard on a Python-produced artifact", () => {
   it("parses the current schema version", () => {
     expect(raw.schema_version).toBe(FAILURE_CARD_SCHEMA_VERSION);
-    expect(FAILURE_CARD_SCHEMA_VERSION).toBe("0.4.0");
+    expect(FAILURE_CARD_SCHEMA_VERSION).toBe("0.5.0");
+  });
+
+  it("mirrors the backend's schema version", () => {
+    const backend = readFileSync(
+      path.join(REPO, "src", "trace_harness", "failure_bundles", "schemas.py"),
+      "utf8",
+    ).match(/^FAILURE_CARD_SCHEMA_VERSION = "([^"]+)"$/m)?.[1];
+
+    expect(FAILURE_CARD_SCHEMA_VERSION).toBe(backend);
+  });
+
+  it("carries its bundle key and lists its own run as the first occurrence", () => {
+    const card = parseFailureCard(raw);
+
+    expect(card.bundleKey).toBe(raw.bundle_key);
+    expect(card.bundleKey).toMatch(/^v1:stale_source_authority:issue_refund:/);
+    expect(card.occurrences).toEqual([
+      {
+        runId: raw.run_id,
+        taskId: raw.task_id,
+        provider: "fixture",
+        model: "scripted:refund_policy_failure_script",
+        seed: null,
+      },
+    ]);
+  });
+
+  it("reads a card written before 0.5.0 as covering its own run alone", () => {
+    const older: RawFailureCard = { ...raw, schema_version: "0.4.0" };
+    delete older.bundle_key;
+    delete older.occurrences;
+
+    const card = parseFailureCard(older);
+
+    expect(card.bundleKey).toBeNull();
+    expect(card.occurrences).toEqual([]);
   });
 
   it("camelizes structured blast radius (0.4.0 object shape)", () => {

@@ -205,8 +205,8 @@ per-batch `SuiteReport` (`report.py`).
 **Exposes:** `AgentRunner(adapter, environment, artifact_store).run(task,
 config) -> RunResult`; `build_initial_transcript` (prompt version `v0` —
 bump `RunConfig.prompt_version` when it changes); `BatchRunner(store).run(suite)
--> BatchSummary`, and `.run_cell(config, task_path) -> BatchRunEntry` for one
-cell with the batch's failure isolation; `build_suite_report(summary, store) -> SuiteReport` +
+-> BatchSummary`, and `.run_cell(config, task_path, *, bundle_scope=None) ->
+BatchRunEntry` for one cell with the batch's failure isolation; `build_suite_report(summary, store) -> SuiteReport` +
 `render_suite_report_markdown` (read-only roll-up of a finished batch's
 on-disk artifacts — checks fired, failure categories, claimed-vs-observed
 coverage; see [suite_report.md](suite_report.md)).
