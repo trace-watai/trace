@@ -41,6 +41,7 @@ from trace_harness.failure_bundles.generator import FailureBundle
 from trace_harness.failure_bundles.schemas import FailureCard, RepairPackage
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.runner.batch import BatchSummary
+from trace_harness.runner.experiment import ExperimentResult, ExperimentSpec, load_plan
 from trace_harness.runner.report import SuiteReport, build_suite_report
 from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import TaskSpec
@@ -170,6 +171,55 @@ class RunReader:
             return SuiteReport.model_validate(self.store.read_suite_report(batch_id))
         except FileNotFoundError:
             return build_suite_report(self.get_batch_summary(batch_id), self.store)
+
+    # --- experiments (#155) ---
+
+    def list_experiments(self) -> list[ExperimentSpec]:
+        """Every experiment whose files load, in id order.
+
+        An experiment whose plan or result does not load is left out here and
+        named by :meth:`unreadable_experiments`, so one bad file cannot hide
+        every other experiment.
+        """
+        specs = []
+        for experiment_id in self.store.list_experiments():
+            try:
+                spec, _ = self.get_experiment(experiment_id)
+            except (OSError, ValueError):
+                continue
+            specs.append(spec)
+        return specs
+
+    def unreadable_experiments(self) -> dict[str, str]:
+        """Experiment id to the reason its plan or result does not load."""
+        unreadable = {}
+        for experiment_id in self.store.list_experiments():
+            try:
+                self.get_experiment(experiment_id)
+            except (OSError, ValueError) as exc:
+                unreadable[experiment_id] = str(exc)
+        return unreadable
+
+    def get_experiment(self, experiment_id: str) -> tuple[ExperimentSpec, ExperimentResult | None]:
+        """The plan and, when a result has been recorded, what came back.
+
+        Both files must name the experiment whose directory holds them, so a
+        copied directory cannot pass as a second experiment.
+        """
+        spec = load_plan(self.store.read_experiment_spec(experiment_id))
+        try:
+            result = ExperimentResult.model_validate(
+                self.store.read_experiment_result(experiment_id)
+            )
+        except FileNotFoundError:
+            result = None
+        named = {spec.experiment_id, experiment_id} | ({result.experiment_id} if result else set())
+        if len(named) != 1:
+            raise ValueError(
+                f"{self.store.experiment_dir(experiment_id)} is {experiment_id!r} but its "
+                f"files name {sorted(named - {experiment_id})}"
+            )
+        return spec, result
 
     # --- single run ---
 

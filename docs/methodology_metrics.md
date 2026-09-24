@@ -34,6 +34,12 @@ Three rules apply to everything below.
   to pass.
 - **Denominators are always stated.** A rate is reported as `k / n`, not
   as a percentage alone.
+- **Retained history.** The per-commit history (A5 to A7 and the suite
+  pass rate in `metrics_history.jsonl`) reads every retained artifact in
+  the repository except those under `docs/acceptance/batches/` and
+  `docs/acceptance/experiments/`. Those trees hold one experiment's
+  evidence, and counting them as suite results would move every trend
+  line each time an experiment is retained.
 
 ## Part A. Deterministic, computable on `main` today
 

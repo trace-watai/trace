@@ -990,6 +990,146 @@ def _validate_fixtures(args: argparse.Namespace) -> int:
     return 0
 
 
+def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
+    """Record which batch answered which condition, and what was decided.
+
+    The first record of an experiment stores a copy of its plan beside the
+    result, and no later record rewrites it. Recording again with a plan that
+    differs from the stored one is refused, because changing the plan after the
+    numbers came in is exactly what writing it first is meant to prevent.
+
+    Recording cannot invent a condition: a ``--condition`` naming something the
+    spec does not declare is a usage error, because a result that describes
+    different arms than the plan is not a result for that experiment. A batch
+    that ran another suite than the plan froze is refused for the same reason.
+    Every refusal happens before anything is written.
+    """
+    from trace_harness.runner.batch import BatchSummary
+    from trace_harness.runner.experiment import (
+        DecidedBy,
+        Decision,
+        ExperimentResult,
+        check_frozen_suite,
+        derive_metrics,
+        load_plan,
+        render_experiment_markdown,
+        validate_condition_batches,
+    )
+
+    spec_path = Path(args.experiment_path)
+    if not spec_path.is_file():
+        raise CliInputError(f"experiment plan not found: {spec_path}")
+    try:
+        spec = load_plan(json.loads(spec_path.read_text(encoding="utf-8")))
+    except ValueError as exc:
+        raise CliInputError(f"{spec_path}: {exc}") from None
+
+    stored_path = store.experiment_spec_path(spec.experiment_id)
+    stored = None
+    if stored_path.is_file():
+        try:
+            stored = load_plan(store.read_experiment_spec(spec.experiment_id))
+        except ValueError as exc:
+            raise CliInputError(f"{stored_path}: {exc}") from None
+        if stored.model_dump(mode="json") != spec.model_dump(mode="json"):
+            raise CliInputError(
+                f"{stored_path} already holds a different plan for {spec.experiment_id}. "
+                "A stored plan is never rewritten: record against that plan, or give "
+                "the changed plan a new experiment_id."
+            )
+
+    condition_batches: dict[str, str] = {}
+    for pair in args.condition or []:
+        name, _, batch_id = pair.partition("=")
+        if not name or not batch_id:
+            raise CliInputError(f"--condition expects name=batch_id, got {pair!r}")
+        if name in condition_batches:
+            raise CliInputError(f"--condition names {name!r} twice; each condition has one batch")
+        if batch_id in condition_batches.values():
+            raise CliInputError(
+                f"--condition gives batch {batch_id} to two conditions; each batch answers one"
+            )
+        condition_batches[name] = batch_id
+    try:
+        validate_condition_batches(spec, condition_batches)
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from None
+    declared = {condition.name: condition for condition in spec.conditions}
+
+    summaries = []
+    for batch_id in condition_batches.values():
+        try:
+            summaries.append(BatchSummary.model_validate(store.read_batch_summary(batch_id)))
+        except FileNotFoundError as exc:
+            raise CliInputError(str(exc)) from None
+    try:
+        check_frozen_suite(
+            spec,
+            {name: s.suite_id for name, s in zip(condition_batches, summaries, strict=True)},
+        )
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from None
+
+    result = ExperimentResult(
+        experiment_id=spec.experiment_id,
+        condition_batches=condition_batches,
+        metrics=derive_metrics(
+            summaries,
+            conditions={batch: declared[name] for name, batch in condition_batches.items()},
+        ),
+        decision=Decision(args.decision),
+        decided_by=DecidedBy(args.decided_by),
+        report_path=str(store.experiment_report_path(spec.experiment_id)),
+    )
+    if stored is None:
+        store.write_experiment_spec(spec.experiment_id, spec)
+    store.write_experiment_result(
+        spec.experiment_id, result, markdown=render_experiment_markdown(spec, result)
+    )
+
+    print(f"\nExperiment recorded: {spec.experiment_id}")
+    _print("hypothesis:", spec.hypothesis)
+    _print("decision:", f"{result.decision.value} (by {result.decided_by.value})")
+    for name, batch_id in sorted(condition_batches.items()):
+        _print(f"  {name}:", batch_id)
+    for metric in type(result.metrics).memo_field_names():
+        value = getattr(result.metrics, metric)
+        _print(f"  {metric}:", "not measured" if value is None else str(value))
+    _print("written:", str(store.experiment_dir(spec.experiment_id)))
+    return 0
+
+
+def _list_experiments(store: ArtifactStore) -> int:
+    """One line per experiment, replacing any hand-kept spreadsheet of them.
+
+    An experiment whose files do not load gets an ``unreadable`` line and its
+    error on stderr, and the rest are still listed. The exit code is 1 when any
+    was unreadable, so a script reading the list can tell.
+    """
+    reader = RunReader(store)
+    experiment_ids = store.list_experiments()
+    if not experiment_ids:
+        print(f"no experiments found in {store.runs_dir}")
+        return 0
+    unreadable = 0
+    for experiment_id in experiment_ids:
+        try:
+            spec, result = reader.get_experiment(experiment_id)
+        except (OSError, ValueError) as exc:
+            unreadable += 1
+            print(f"{experiment_id}  unreadable")
+            print(f"error: {experiment_id}: {exc}", file=sys.stderr)
+            continue
+        decision = (
+            f"{result.decision.value}/{result.decided_by.value}" if result else "not recorded"
+        )
+        conditions = ", ".join(c.name for c in spec.conditions)
+        print(f"{spec.experiment_id}  {decision}  [{conditions}]  {spec.hypothesis[:60]}")
+    summary = f"\n{len(experiment_ids)} experiment(s) in {store.runs_dir}"
+    print(summary + (f", {unreadable} unreadable" if unreadable else ""))
+    return 1 if unreadable else 0
+
+
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
     """Print a one-line summary per run, newest last (chronological)."""
     reader = RunReader(store)
@@ -1498,6 +1638,29 @@ def main(argv: list[str] | None = None) -> int:
         "path", nargs="?", default="fixtures/tasks", help="directory to validate"
     )
 
+    p_exp = sub.add_parser(
+        "experiment",
+        parents=[common],
+        help="record which batch answered which condition of an experiment",
+    )
+    exp_sub = p_exp.add_subparsers(dest="experiment_command", required=True)
+    p_exp_record = exp_sub.add_parser("record", parents=[common], help="write the result file")
+    p_exp_record.add_argument("experiment_path", help="path to the experiment plan JSON")
+    p_exp_record.add_argument(
+        "--condition",
+        action="append",
+        metavar="NAME=BATCH_ID",
+        help="map a declared condition to the batch that answered it (repeatable)",
+    )
+    p_exp_record.add_argument(
+        "--decision", default="baseline", choices=["baseline", "keep", "discard", "review"]
+    )
+    p_exp_record.add_argument("--decided-by", default="human", choices=["human", "policy"])
+
+    sub.add_parser(
+        "list-experiments", parents=[common], help="list recorded experiments in id order"
+    )
+
     p_suite = sub.add_parser(
         "run-suite",
         parents=[common],
@@ -1615,6 +1778,10 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         return 1 if (args.fail_on_verifier and not (merged.passed and run_completed)) else 0
     if args.command == "validate-fixtures":
         return _validate_fixtures(args)
+    if args.command == "experiment":
+        return _experiment_record(args, store)
+    if args.command == "list-experiments":
+        return _list_experiments(store)
     if args.command == "run-suite":
         return _run_suite(args, store)
     if args.command == "collect-regressions":
