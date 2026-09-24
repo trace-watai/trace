@@ -12,6 +12,15 @@ planted sample each. And a hit is printed redacted, because CI logs on a
 public repository are public, and a plain ``grep`` would print the very line
 that holds the key.
 
+Retained files hold keys in encoded form as often as plain. A cassette or a
+trace keeps a model's text as a JSON string, sometimes JSON inside JSON, and a
+URL keeps it percent-encoded. Several patterns start on a word boundary, so
+that ``task-`` is never read as an OpenAI key, and the character in front of an
+encoded key is often a letter of the escape, the ``n`` of ``\\n`` or the ``0`` of
+``%20``. Each line is therefore matched twice, as written and after
+:func:`unescape` has decoded its JSON and percent escapes, and a key found by
+both is reported once.
+
 A match is reported by file, line and pattern name, with the first four
 characters of the match and its length. Exit codes: 0 clean, 1 a hit, 2 a path
 that does not exist (a typo must not scan nothing and pass).
@@ -22,6 +31,8 @@ from __future__ import annotations
 import os
 import re
 import sys
+import urllib.parse
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,12 +108,66 @@ def _files(target: Path) -> list[Path]:
     return found
 
 
+_JSON_ESCAPE = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|([\"\\/bfnrt]))")
+_JSON_SIMPLE = {
+    '"': '"',
+    "\\": "\\",
+    "/": "/",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
+_PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
+# Each level of JSON inside JSON doubles the backslashes, so a handful of passes
+# covers any nesting a retained file has. The cap bounds the work on a line of
+# nothing but backslashes.
+_MAX_UNESCAPE_PASSES = 8
+
+
+def _json_escape(match: re.Match[str]) -> str:
+    code, simple = match.groups()
+    return chr(int(code, 16)) if code is not None else _JSON_SIMPLE[simple]
+
+
+def unescape(text: str) -> str:
+    """``text`` with its JSON string escapes and percent escapes decoded.
+
+    One pass decodes ``\\n``, ``\\t``, ``\\"``, ``\\uXXXX`` and the other JSON
+    escapes, then ``%XX`` sequences as UTF-8. Passes repeat until nothing
+    changes, so JSON inside JSON and a JSON escape inside a URL come out plain.
+    A backslash or percent sign that starts no escape is left as it is. Pure,
+    so any caller that holds text can use it.
+    """
+    for _ in range(_MAX_UNESCAPE_PASSES):
+        decoded = _JSON_ESCAPE.sub(_json_escape, text)
+        if _PERCENT_ESCAPE.search(decoded):
+            decoded = urllib.parse.unquote(decoded, errors="replace")
+        if decoded == text:
+            break
+        text = decoded
+    return text
+
+
 def scan_text(text: str, path: str) -> list[Hit]:
+    """Every key pattern match in ``text``, reported against ``path``.
+
+    Each line is matched as written and after :func:`unescape`. A match the
+    decoded line adds beyond those of the line as written is a key hidden
+    behind an escape, and each occurrence is reported once. Pure: it reads and
+    writes nothing.
+    """
     hits = []
     for number, line in enumerate(text.splitlines(), 1):
+        decoded = unescape(line)
         for name, pattern in PATTERNS:
-            for match in pattern.finditer(line):
-                hits.append(Hit(path, number, name, _redact(match.group(0))))
+            as_written = [match.group(0) for match in pattern.finditer(line)]
+            found = list(as_written)
+            if decoded != line:
+                behind_escapes = Counter(m.group(0) for m in pattern.finditer(decoded))
+                found += list((behind_escapes - Counter(as_written)).elements())
+            hits.extend(Hit(path, number, name, _redact(match)) for match in found)
     return hits
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -250,6 +251,23 @@ PLANTED = {
 }
 
 
+# How a key can sit in a retained file. A cassette or trace stores a model's
+# text as a JSON string, sometimes JSON inside JSON, and a URL stores it
+# percent-encoded, so the character before the key is often the letter of an
+# escape (the n of \\n, the 0 of %20) and a pattern anchored on a word
+# boundary would not start there. Each shape is built with the real encoder.
+ENCODED = {
+    "json newline": lambda secret: json.dumps({"text": "line one\n" + secret}),
+    "json tab": lambda secret: json.dumps({"text": "cell\t" + secret}),
+    "json in json": lambda secret: json.dumps({"raw": json.dumps({"text": "a\n" + secret})}),
+    "json unicode": lambda secret: json.dumps({"text": "caf\u00e9\u00a0" + secret}),
+    "percent-encoded": lambda secret: "GET /v1?q=" + urllib.parse.quote("a " + secret, safe=""),
+    "percent in json": lambda secret: json.dumps(
+        {"url": "https://x.invalid/?q=" + urllib.parse.quote("a\n" + secret, safe="")}
+    ),
+}
+
+
 def test_every_pattern_has_a_planted_sample() -> None:
     assert set(PLANTED) == {name for name, _ in secret_scan.PATTERNS}
 
@@ -267,6 +285,40 @@ def test_a_planted_key_is_caught_and_never_printed(
     err = capsys.readouterr().err
     assert f"default.jsonl:2: {name}" in err
     assert secret not in err
+
+
+@pytest.mark.parametrize("shape", sorted(ENCODED))
+@pytest.mark.parametrize("name", sorted(PLANTED))
+def test_a_key_behind_an_escape_is_caught_and_never_printed(
+    name: str, shape: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret = PLANTED[name]
+    line = ENCODED[shape](secret)
+    trace = tmp_path / "run_x" / "trace.jsonl"
+    trace.parent.mkdir()
+    trace.write_text('{"step": 0}\n' + line + "\n", "utf-8")
+
+    hits = secret_scan.scan_text(trace.read_text("utf-8"), "trace.jsonl")
+    assert [(h.line, h.pattern) for h in hits if h.pattern == name] == [(2, name)], hits
+    assert secret_scan.main([str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert f"trace.jsonl:2: {name}" in err
+    assert secret not in err and line not in err
+
+
+def test_unescape_decodes_json_and_percent_escapes() -> None:
+    assert secret_scan.unescape(r"a\nb\tc\u00e9\"d\"\/") == 'a\nb\tc\u00e9"d"/'
+    assert secret_scan.unescape(r"x\\\\ny") == "x\ny"  # three levels of JSON
+    assert secret_scan.unescape("q=a%20b%2Fc%0A") == "q=a b/c\n"
+    assert secret_scan.unescape("%5Cn") == "\n"  # a JSON escape inside a URL
+    assert secret_scan.unescape(r"lone \ and 100% sure") == r"lone \ and 100% sure"
+
+
+def test_each_occurrence_is_reported_once_across_both_views() -> None:
+    for name in ("google api key", "google AQ key"):
+        secret = PLANTED[name]
+        line = json.dumps({"a": secret, "b": "x\n" + secret})
+        assert [h.pattern for h in secret_scan.scan_text(line, "f")] == [name, name]
 
 
 def test_a_clean_tree_passes_and_a_missing_path_fails(
