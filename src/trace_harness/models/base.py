@@ -105,7 +105,8 @@ class ModelAdapterError(RuntimeError):
 
 
 class ProviderNotConfiguredError(RuntimeError):
-    """A provider cannot be used because its key or SDK is missing.
+    """A provider cannot be used as configured: its key or SDK is missing, or
+    the run asks for a setting the chosen model rejects.
 
     Separate from :class:`ModelAdapterError` because it is raised at
     construction, before any run exists, so there is nothing to terminate. The

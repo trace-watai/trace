@@ -19,7 +19,7 @@ from typing import Any
 
 from trace_harness.environment.controls import ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.models import create_model_adapter, resolve_model_name
+from trace_harness.models import create_model_adapter, resolve_model_name, unsent_seed_metadata
 from trace_harness.models.cassette import RecordingModelAdapter
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
@@ -110,6 +110,7 @@ def run_task_pipeline(
     )
     if isinstance(adapter, RecordingModelAdapter):
         metadata["cassette_path"] = _repo_relative(adapter.path)
+    metadata.update(unsent_seed_metadata(agent_config.provider, agent_config.seed))
 
     config = RunConfig(
         task_id=task.task_id,

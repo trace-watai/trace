@@ -345,7 +345,11 @@ def test_the_dispatcher_routes_each_provider_to_its_own_pricer() -> None:
     openai_raws = [{"usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0}}]
     anthropic_raws = [{"usage": {"input_tokens": 1_000_000, "output_tokens": 0}}]
     assert estimate_cost_usd("openai", "gpt-5", openai_raws) == pytest.approx(1.25)
-    assert estimate_cost_usd("anthropic", "claude-sonnet-5", anthropic_raws) == pytest.approx(3.0)
+    from trace_harness.models.anthropic import ANTHROPIC_PRICING
+
+    assert estimate_cost_usd("anthropic", "claude-sonnet-5", anthropic_raws) == pytest.approx(
+        ANTHROPIC_PRICING["claude-sonnet-5"][0]
+    )
     # Each reads its own field names, so one provider's usage does not price
     # under another's table.
     assert estimate_cost_usd("openai", "gpt-5", anthropic_raws) is None
