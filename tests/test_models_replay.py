@@ -151,7 +151,17 @@ def test_configuration_drift_is_rejected(tmp_path: Path, field: str, value: obje
 
 @pytest.mark.parametrize(
     "damage",
-    ["version", "json", "trailing_json", "step", "raw", "nested_extra", "usage", "empty"],
+    [
+        "version",
+        "json",
+        "trailing_json",
+        "step",
+        "raw",
+        "nested_extra",
+        "usage",
+        "nested_usage",
+        "empty",
+    ],
 )
 def test_invalid_cassette_rejected_before_any_action(tmp_path: Path, damage: str) -> None:
     path = tmp_path / "cassette.jsonl"
@@ -168,6 +178,9 @@ def test_invalid_cassette_rejected_before_any_action(tmp_path: Path, damage: str
         data["response"]["tool_call"] = {"tool_name": "lookup", "arguments": {}, "typo": 1}
     elif damage == "usage":
         data["usage"]["total_token_count"] = True
+    elif damage == "nested_usage":
+        # Only allowlisted counts may nest, and only under their own key.
+        data["usage"]["prompt_tokens_details"] = {"cached_tokens": 1, "headers": 2}
     text = json.dumps(data) + "\n"
     if damage == "json":
         text = '{"response":'

@@ -66,7 +66,7 @@ import queue
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
@@ -85,6 +85,9 @@ from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing.artifact_store import ArtifactStore
+
+if TYPE_CHECKING:  # the pipeline imports this module, so only for typing
+    from trace_harness.runner.pipeline import PipelineProgress
 
 EXTERNAL_PROVIDER = "external"
 
@@ -430,7 +433,18 @@ def run_target_agent(
     store: ArtifactStore,
     task: TaskSpec,
     config: RunConfig,
+    progress: PipelineProgress | None = None,
 ) -> RunResult:
-    """Run ``agent`` on ``task`` through the ordinary runner and close the bridge after."""
+    """Run ``agent`` on ``task`` through the ordinary runner and close the bridge after.
+
+    ``progress``, when given, is ``run_task_pipeline``'s (#196): it gets the
+    run's id as soon as the runner made one, so a failure after that still
+    names the run.
+    """
     with TargetAgentBridge(agent, task_id=task.task_id, max_steps=config.max_steps) as bridge:
-        return AgentRunner(bridge, environment, store).run(task, config)
+        runner = AgentRunner(bridge, environment, store)
+        try:
+            return runner.run(task, config)
+        finally:
+            if progress is not None:
+                progress.run_id = runner.run_id

@@ -126,7 +126,10 @@ class ErrorPayload(_IgnoreExtra):
     error: str
     kind: str
     traceback: str | None = None
-    # On a model_error from a live call: the attempts made before giving up.
+    # From a live call: on a model_error, the attempts made before the policy
+    # gave up; on a model_timeout, the attempts made before the runner
+    # abandoned the call (outcome "abandoned"). A model_error whose answer
+    # arrived and was rejected keeps it on the model_response before it.
     call_record: dict[str, Any] | None = None
 
 

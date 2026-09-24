@@ -76,11 +76,17 @@ export interface RawFailedAttempt {
 
 /**
  * How the live call policy obtained a response or gave up (#196), mirroring
- * `CallRecord` in `src/trace_harness/models/policy.py`.
+ * `CallRecord` in `src/trace_harness/models/policy.py`. `abandoned` means the
+ * runner's timeout ended the call with an attempt still in flight.
  */
 export interface RawCallRecord {
   attempts: number;
-  outcome: "ok" | "permanent_error" | "retries_exhausted" | "deadline";
+  outcome:
+    | "ok"
+    | "permanent_error"
+    | "retries_exhausted"
+    | "deadline"
+    | "abandoned";
   rate_limit_wait_seconds: number;
   failures: RawFailedAttempt[];
 }
@@ -166,7 +172,11 @@ export interface RawErrorPayload {
   error: string;
   kind: string;
   traceback?: string | null;
-  /** On a `model_error` from a live call: the attempts made before giving up. */
+  /**
+   * From a live call: on a `model_error`, the attempts made before the policy
+   * gave up; on a `model_timeout`, the attempts made before the runner
+   * abandoned the call.
+   */
   call_record?: RawCallRecord | null;
 }
 

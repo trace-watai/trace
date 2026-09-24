@@ -57,8 +57,9 @@ class AgentConfig(BaseModel):
     timeout_seconds: float = Field(default=120.0, gt=0)
     cassette: CassetteConfig | None = None
     # Overrides the provider's default retry and rate-limit policy, for example
-    # a higher requests_per_minute on a paid tier. Ignored by runs that make no
-    # live call, and refused for provider external, which makes none.
+    # a higher requests_per_minute on a paid tier. Fields it leaves out keep the
+    # provider's default. Ignored by runs that make no live call, and refused
+    # for provider external, which makes none.
     call_policy: CallPolicy | None = None
     agent_ref: str | None = None
 

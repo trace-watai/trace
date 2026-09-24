@@ -336,3 +336,14 @@ def test_inspect_supports_partial_run_without_result(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Result: unavailable (partial run)" in out
     assert "model_prompt" in out
+
+
+@pytest.mark.parametrize("command", ["run-fixture", "run-pipeline"])
+def test_provider_help_names_every_known_provider(capsys, command):
+    """The help is how a user finds out which providers exist."""
+    from trace_harness.models import KNOWN_PROVIDERS
+
+    with pytest.raises(SystemExit):
+        main([command, "--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert f"one of {', '.join(KNOWN_PROVIDERS)}" in help_text
