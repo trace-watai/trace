@@ -29,7 +29,7 @@ result.
 
 | field | meaning |
 |---|---|
-| `experiment_id` | `exp_YYYYMMDDTHHMMSSZ_xxxxxxxx`, matching the batch id style |
+| `experiment_id` | `exp_YYYYMMDDTHHMMSSZ_xxxxxxxx` when generated, matching the batch id style; any id must be letters, digits, `_` and `-`, since it names a directory |
 | `brief_path` | the research brief this comes from, when there is one |
 | `hypothesis` | one sentence, stated before running |
 | `frozen_manifest` | `suite_id`, `verifier_ids`, `fixtures_hash` |
@@ -43,6 +43,13 @@ questions, and comparing them is void.
 A condition declares its `kind`, the `agent_config` to run under, the
 `control_ids` to install, the `seeds`, and where in a recorded run to `start`
 if not from the beginning.
+
+Each control id is checked when the plan loads. It must be an id
+`select_controls` accepts, the lookup `replay --control` uses and the branch
+stage (#159) installs through, and its guardrail must resolve in the
+guardrail registry with the rules its `rule_ref` names. A misspelled id therefore fails before any
+condition runs. Every entry in `fixtures/controls/library.json` was committed
+from those controls, and a test keeps each of them loadable in a plan.
 
 | kind | what it does |
 |---|---|

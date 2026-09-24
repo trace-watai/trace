@@ -24,15 +24,22 @@ on the evidence rather than on an average of it.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from trace_harness.environment.controls import resolve_control, select_controls
 from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.events import utc_now
 
 EXPERIMENT_SCHEMA_VERSION = "0.1.0"
+
+#: An experiment id names a directory under ``runs/experiments/``, so it must be
+#: a single path segment. Letters, digits, ``_`` and ``-`` only, which leaves no
+#: separator, no dot and no way to climb out of that directory.
+EXPERIMENT_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]*$"
 
 
 def new_experiment_id() -> str:
@@ -84,11 +91,30 @@ class ConditionSpec(BaseModel):
     name: str
     kind: ConditionKind
     agent_config: AgentConfig
-    # Control ids installed for this arm. Validated against the registry at
-    # spec load time so a typo fails before a sweep spends money.
+    # Control ids installed for this arm. Validated when the plan loads, so a
+    # typo fails before a sweep spends money.
     control_ids: list[str] = Field(default_factory=list)
     seeds: list[int] = Field(default_factory=list)
     start: StartPoint | None = None
+
+    @field_validator("control_ids")
+    @classmethod
+    def _control_ids_are_installable(cls, control_ids: list[str]) -> list[str]:
+        """Each id must name a control that can be installed.
+
+        ``select_controls`` is the lookup ``replay --control`` uses and the
+        branch stage (#159) installs through, and it raises for an unknown id.
+        Each control it returns is then resolved through the guardrail
+        registry, which raises for an unregistered ``guardrail_ref`` or a
+        ``rule_ref`` its guardrail does not read. Every entry in the control
+        library was committed from those same controls.
+        """
+        repeated = sorted({cid for cid in control_ids if control_ids.count(cid) > 1})
+        if repeated:
+            raise ValueError(f"control_ids lists {repeated} more than once")
+        for control in select_controls(control_ids):
+            resolve_control(control)
+        return control_ids
 
 
 class FrozenManifest(BaseModel):
@@ -119,13 +145,13 @@ class ExperimentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str = EXPERIMENT_SCHEMA_VERSION
-    experiment_id: str = Field(default_factory=new_experiment_id)
+    experiment_id: str = Field(default_factory=new_experiment_id, pattern=EXPERIMENT_ID_PATTERN)
     brief_path: str | None = None
     hypothesis: str
     frozen_manifest: FrozenManifest
     conditions: list[ConditionSpec] = Field(min_length=1)
     budget: Budget
-    created_at: Any = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -174,14 +200,14 @@ class ExperimentResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str = EXPERIMENT_SCHEMA_VERSION
-    experiment_id: str
+    experiment_id: str = Field(pattern=EXPERIMENT_ID_PATTERN)
     # condition name -> batch id that answered it
     condition_batches: dict[str, str] = Field(default_factory=dict)
     metrics: ExperimentMetrics = Field(default_factory=ExperimentMetrics)
     decision: Decision
     decided_by: DecidedBy
     report_path: str | None = None
-    finished_at: Any = Field(default_factory=utc_now)
+    finished_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

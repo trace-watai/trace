@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel
@@ -238,6 +238,21 @@ class ArtifactStore:
     # one of them, because it is the thing that relates several batches.
 
     def experiment_dir(self, experiment_id: str) -> Path:
+        """Refuses an id that is not one plain path segment.
+
+        Experiment ids come from hand-written plan files, so an id like
+        ``../../x`` would otherwise read or write outside the runs directory.
+        The plan model enforces the full id pattern; this is the last check
+        before a path is built.
+        """
+        segment = PurePosixPath(experiment_id)
+        if (
+            str(segment) != experiment_id
+            or len(segment.parts) != 1
+            or experiment_id in {".", ".."}
+            or "\\" in experiment_id
+        ):
+            raise ValueError(f"not a valid experiment id: {experiment_id!r}")
         return self.runs_dir / EXPERIMENTS_DIR / experiment_id
 
     def experiment_spec_path(self, experiment_id: str) -> Path:
