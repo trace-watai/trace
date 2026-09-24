@@ -71,6 +71,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from trace_harness.regression.repair_validation import ControlValidation, ControlVerdict
 from trace_harness.regression.schemas import RegressionArtifact
+from trace_harness.runner.branch import CONTROL_VALIDATIONS_KEY
 from trace_harness.runner.experiment import (
     ConditionKind,
     ConditionSpec,
@@ -87,9 +88,6 @@ from trace_harness.runner.repair_effectiveness import (
 STATIC_OK_SHORT_PATH = "static_ok_short_path"
 LIVE_PATH = "live"
 RulePath = Literal["static_ok_short_path", "live"]
-
-# The key a replay-only branch batch keeps its per-control #146 verdicts under.
-CONTROL_VALIDATIONS_KEY = "control_validations"
 
 _REJECTED = frozenset(
     {ControlVerdict.REJECTED_FAILURE_PERSISTS, ControlVerdict.REJECTED_OVERBLOCKS}

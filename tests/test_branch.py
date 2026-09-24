@@ -246,6 +246,29 @@ def test_replay_only_condition_reproduces_the_replay_verdict(tmp_path, capsys, t
         c["check_id"]
         for c in replay_store.read_json(scenario, names.VERIFIER_RESULT)["failed_checks"]
     ]
+    # The control's #146 verdict rides on the batch for validate-control (#203),
+    # and it is the verdict the replay command wrote to repair_validation.json.
+    (recorded,) = summary.metadata["control_validations"]
+    written = next(
+        c
+        for c in replay_store.read_json(artifact["source_run_id"], names.REPAIR_VALIDATION)[
+            "controls"
+        ]
+        if c["control_id"] == REFUND_WINDOW_CONTROL_ID
+    )
+    assert (recorded["control_id"], recorded["verdict"], recorded["reason"]) == (
+        written["control_id"],
+        written["verdict"],
+        written["reason"],
+    )
+    # The demo clears cleanly. refund_policy_failure's recorded answer still
+    # claims the refund after the block, while its sibling passes.
+    assert recorded["verdict"] == {"refund_policy_control_demo": "accepted"}.get(
+        task.stem, "rejected_overblocks"
+    )
+    assert [r["verdict"] for r in recorded["sibling_reruns"]] == ["PASS"] * len(
+        artifact["positive_sibling_tests"]
+    )
 
 
 class _ScriptedGemini:

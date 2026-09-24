@@ -49,6 +49,7 @@ from trace_harness.models.cassette import (
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.models.fork import ForkAdapter
 from trace_harness.models.policy import CallPolicy
+from trace_harness.regression.repair_validation import RepairValidation
 from trace_harness.regression.replay import material_action, pinned_initial_state, pinned_script
 from trace_harness.regression.report import ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
@@ -80,6 +81,9 @@ logger = logging.getLogger(__name__)
 LIVE_KINDS = frozenset(
     {ConditionKind.LIVE, ConditionKind.LIVE_NO_CONTROL, ConditionKind.LIVE_SWAPPED}
 )
+# Where a replay-only batch keeps the per-control #146 verdicts its replay
+# earned, which validate-control reads (#203).
+CONTROL_VALIDATIONS_KEY = "control_validations"
 
 
 @dataclass
@@ -252,11 +256,15 @@ def replay_batch(
     artifact_path: Path | str,
     store: ArtifactStore,
     started_at: datetime,
+    validation: RepairValidation | None = None,
 ) -> BatchSummary:
     """Record a ``static_replay`` condition's replay as a batch of one.
 
     The entry is the replayed scenario run. The replay's own verdict, the exit
     code ``replay --apply-control`` would return, goes in the batch metadata.
+    So does ``validation``, the per-control verdicts (#146) the replay earned
+    when it validated controls one at a time, cut to the controls the
+    condition installed.
     """
     artifact = load_artifact(artifact_path)
     run_id = report.scenario.run_id
@@ -271,6 +279,13 @@ def replay_batch(
         artifact.task_fixture,
         store.runs_dir,
     ).model_copy(update={"condition": condition.name, "post_block_outcome": block.outcome})
+    verdicts: dict[str, Any] = {}
+    if validation is not None:
+        verdicts[CONTROL_VALIDATIONS_KEY] = [
+            c.model_dump(mode="json")
+            for c in validation.controls
+            if c.control_id in condition.control_ids
+        ]
     # A replay calls no provider, so it spends nothing and is never refused.
     return _write_batch(
         store,
@@ -281,6 +296,7 @@ def replay_batch(
         started_at,
         budget=BatchBudget(max_cost_usd=experiment.budget.max_cost_usd, spent_usd=0.0),
         replay_exit_code=report.exit_code,
+        **verdicts,
     )
 
 

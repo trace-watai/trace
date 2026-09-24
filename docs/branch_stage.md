@@ -102,6 +102,12 @@ run becomes a batch of one whose entry carries the scenario's verdict and
 post-block outcome, and the replay's exit code goes in
 `metadata.replay_exit_code`. The divergence fields stay null.
 
+When the condition installs controls, the replay validates each one on its own
+as `replay --apply-control` does (#146), and `metadata.control_validations`
+keeps the verdict of every control the condition installed, with its reason
+and its re-runs, as `repair_validation.json` records them. `validate-control`
+(#203) reads the static verdict and the sibling results from there.
+
 ## Batches
 
 One batch per condition, at `runs/batches/{batch_id}/batch_summary.json`,

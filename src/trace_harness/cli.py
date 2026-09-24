@@ -791,6 +791,7 @@ def _replay_with_report(
     validate_individually: bool = True,
     validation_controls: list[ControlInstance] | None = None,
     replayed_run_dirs: list[Path] | None = None,
+    validations: list[RepairValidation] | None = None,
 ) -> ReplayReport:
     """Replay a regression artifact and assert the gate conditions hold.
 
@@ -830,6 +831,8 @@ def _replay_with_report(
     fixture built so that isn't a problem.
 
     Returns structured evidence and the existing command's 0/1 exit status.
+    When ``validations`` is given, the per-control validation is appended to
+    it, which is how the branch stage keeps each control's verdict (#203).
     """
     # Flag and control-id errors are usage errors: fail before any output.
     if control_ids and not apply_control:
@@ -1001,6 +1004,8 @@ def _replay_with_report(
         )
         written = store.artifact_path(artifact.source_run_id, names.REPAIR_VALIDATION)
         _print("written:", str(written))
+        if validations is not None:
+            validations.append(validation)
 
     if validation is not None:
         if validation.has_incomplete:
@@ -1296,13 +1301,23 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
         print(f"\nBranch condition: {condition.name} ({condition.kind.value})")
         if condition.kind is ConditionKind.STATIC_REPLAY:
             started_at = utc_now()
+            validations: list[RepairValidation] = []
             report = _replay_with_report(
                 artifact_path,
                 store,
                 apply_control=bool(condition.control_ids),
                 control_ids=condition.control_ids or None,
+                validations=validations,
             )
-            summary = replay_batch(report, spec, condition, artifact_path, store, started_at)
+            summary = replay_batch(
+                report,
+                spec,
+                condition,
+                artifact_path,
+                store,
+                started_at,
+                validation=validations[0] if validations else None,
+            )
         else:
             outcome = run_branch(artifact_path, spec, condition, store, guard=guard)
             if outcome.summary is None:
