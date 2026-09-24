@@ -177,14 +177,15 @@ DEPRECATED_POLICY_CITATION_RULE_KEYS = REFUND_POLICY_RULE_KEYS | {"documented_ou
 def deprecated_policy_citation_guardrail(call: ToolCall, state: SupportState) -> ToolResult | None:
     """Block a call that cites a deprecated doc and would itself break current policy.
 
-    Applies the gate of the verifier's ``deprecated_policy_treated_as_authoritative``
-    check at dispatch. A deprecated doc id in the call's arguments counts only
-    when the call would also fail a check in ``DEPRECATED_AUTHORITY_GATE``: a
-    refund the current rules do not allow, or a ticket asserting an outage the
-    order does not record. Those are decided by the refund and ticket
-    guardrails in this module, which cover exactly those checks. A correct action that
-    mentions a deprecated doc ("v2 is deprecated, using v4") goes through, as
-    the check passes it.
+    Applies the gate of the verifier's
+    ``deprecated_policy_treated_as_authoritative`` check at dispatch. A
+    deprecated doc id in the call's arguments counts only when the call would
+    also fail a check in ``DEPRECATED_AUTHORITY_GATE``: a refund the current
+    rules do not allow, or a ticket asserting an outage the order does not
+    record. The refund and ticket guardrails in this module decide that, and
+    they cover exactly those checks. A correct action that mentions a
+    deprecated doc ("v2 is deprecated, using v4") goes through, as the check
+    passes it.
 
     Applies only when a current-status doc exists, since a deprecated doc may
     be the only guidance on record. The check reads citations across the whole
