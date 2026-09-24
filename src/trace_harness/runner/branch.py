@@ -31,16 +31,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from trace_harness.attribution.post_block import classify_post_block_outcome
 from trace_harness.environment.controls import select_controls
 from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.tools import support_tool_definitions
 from trace_harness.models import (
     create_model_adapter,
     makes_live_calls,
     resolve_call_policy,
     resolve_model_name,
 )
-from trace_harness.models.base import ModelAdapter
+from trace_harness.models.base import ActionKind, ModelAdapter
 from trace_harness.models.cassette import (
     CassetteRequestConfig,
     RecordingModelAdapter,
@@ -49,7 +52,7 @@ from trace_harness.models.cassette import (
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.models.fork import ForkAdapter
 from trace_harness.models.policy import CallPolicy
-from trace_harness.regression.replay import material_action, pinned_initial_state, pinned_script
+from trace_harness.regression.replay import pinned_initial_state, pinned_script
 from trace_harness.regression.report import ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.runner.agent_runner import AgentRunner
@@ -79,6 +82,8 @@ logger = logging.getLogger(__name__)
 LIVE_KINDS = frozenset(
     {ConditionKind.LIVE, ConditionKind.LIVE_NO_CONTROL, ConditionKind.LIVE_SWAPPED}
 )
+# The environment's tools by name, for the divergence rule's free-text list.
+_TOOLS = {tool.name: tool for tool in support_tool_definitions()}
 
 
 @dataclass
@@ -99,7 +104,8 @@ def validate_condition(artifact: RegressionArtifact, condition: ConditionSpec) -
 
     The fork step is the last step the recording answers, 0 when the condition
     declares no start. Unknown control ids fail here, before a sweep spends
-    anything.
+    anything, and so does a start the agent would never act after: the
+    recording's final answer, or a ``max_steps`` that ends the run by then.
     """
     select_controls(condition.control_ids)
     if condition.kind is not ConditionKind.STATIC_REPLAY and not artifact.pinned_agent_actions:
@@ -131,7 +137,52 @@ def validate_condition(artifact: RegressionArtifact, condition: ConditionSpec) -
             f"condition {condition.name!r}: the recording has nothing after step {fork_step} "
             "to continue with"
         )
+    # A run that ends at or before the fork gives the agent no action to
+    # compare, and the divergence rate would drop it from its denominator.
+    if artifact.pinned_agent_actions[fork_step - 1].get("kind") == ActionKind.FINAL_ANSWER.value:
+        raise ValueError(
+            f"condition {condition.name!r} starts at step {fork_step}, where the recording "
+            "gives its final answer, so the run ends before the agent acts"
+        )
+    if agent.max_steps <= fork_step:
+        raise ValueError(
+            f"condition {condition.name!r}: max_steps {agent.max_steps} ends the run by step "
+            f"{fork_step}, so the agent never acts"
+        )
     return fork_step
+
+
+def compared_action(action: dict[str, Any]) -> dict[str, Any]:
+    """The part of one ``model_action`` payload the divergence rule compares.
+
+    A tool call compares by tool name and structured arguments. Arguments are
+    parsed through the tool's argument model, as the environment parses them
+    before it executes, so an argument left at its default equals the same
+    value spelled out. The arguments the tool declares free text (a refund
+    ``reason``, ticket ``title`` and ``notes``, a search ``query``) are left
+    out. A call the environment would refuse compares as given, and a tool the
+    environment does not offer compares every argument. A final answer
+    compares by kind alone, so two answers worded differently are the same
+    action. Reasoning and provider state never count.
+
+    Replay's drift notes keep comparing every field through
+    :func:`~trace_harness.regression.replay.material_action`.
+    """
+    kind = action.get("kind")
+    call = action.get("tool_call")
+    if kind != ActionKind.TOOL_CALL.value or not isinstance(call, dict):
+        return {"kind": kind}
+    name = call.get("tool_name")
+    arguments = call.get("arguments") or {}
+    tool = _TOOLS.get(name) if isinstance(name, str) else None
+    if tool is None:
+        return {"kind": kind, "tool_name": name, "arguments": arguments}
+    try:
+        arguments = tool.args_model.model_validate(arguments).model_dump(mode="json")
+    except ValidationError:
+        pass
+    structured = {k: v for k, v in arguments.items() if k not in tool.free_text_arguments}
+    return {"kind": kind, "tool_name": name, "arguments": structured}
 
 
 def post_fork_divergence(
@@ -140,19 +191,19 @@ def post_fork_divergence(
     """Where a run first left the recording after ``fork_step``, and whether its first action did.
 
     Both lists hold ``model_action`` payloads in step order, compared through
-    :func:`material_action`, so reasoning never counts as divergence. A step
-    only one side reached counts as a difference. ``diverged`` is None when
-    the run took no action after the fork, since there was nothing to compare.
+    :func:`compared_action`. A step only one side reached counts as a
+    difference. Both values are None when the run took no action after the
+    fork, since there was nothing to compare.
     """
+    if len(actual) <= fork_step:
+        return None, None
     first_step: int | None = None
     for index in range(fork_step, max(len(recorded), len(actual))):
-        before = material_action(recorded[index]) if index < len(recorded) else None
-        after = material_action(actual[index]) if index < len(actual) else None
+        before = compared_action(recorded[index]) if index < len(recorded) else None
+        after = compared_action(actual[index]) if index < len(actual) else None
         if before != after:
             first_step = index + 1
             break
-    if len(actual) <= fork_step:
-        return first_step, None
     return first_step, first_step == fork_step + 1
 
 

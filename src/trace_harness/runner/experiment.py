@@ -197,7 +197,9 @@ class ExperimentMetrics(BaseModel):
     cost_usd: float | None = None
     latency_ms_p50: float | None = None
 
-    extra: dict[str, float] = Field(default_factory=dict)
+    # A count such as the k or n behind a rate stays an integer on disk.
+    # Results written with floats before still load.
+    extra: dict[str, int | float] = Field(default_factory=dict)
 
     @classmethod
     def memo_field_names(cls) -> list[str]:
@@ -242,6 +244,10 @@ class ExperimentResult(BaseModel):
 
 class UnknownConditionError(ValueError):
     """A recorded batch names a condition the spec never declared."""
+
+
+class MixedLiveModelsError(ValueError):
+    """The batches behind the live metrics ran more than one real model."""
 
 
 def validate_condition_batches(spec: ExperimentSpec, condition_batches: dict[str, str]) -> None:
@@ -322,6 +328,14 @@ def derive_metrics(
     read without its denominator. Nothing derives ``verdict_agreement_rate``
     or ``sibling_failure_rate`` yet, so they stay ``None``, since a zero there
     would read as a measurement.
+
+    The three read one model. :class:`MixedLiveModelsError` is raised when the
+    ``live`` and ``live_no_control`` batches ran more than one real provider
+    and model, since a rate and its noise floor from different agents compare
+    nothing. Fixture batches, such as the harness check, are left out of the
+    three when a real model's batches are recorded beside them, and
+    ``extra["live_fixture_batches_excluded"]`` counts them. With no real model
+    recorded, fixture batches feed the three.
     """
     from trace_harness.runner.batch import BatchSummary
 
@@ -331,14 +345,22 @@ def derive_metrics(
     ]
     entries = [e for s in summaries for e in s.entries]
     kinds = condition_kinds or {}
+    extra: dict[str, int | float] = {}
+    excluded = _fixture_batches_beside_a_real_model(summaries, kinds)
+    if excluded:
+        extra["live_fixture_batches_excluded"] = len(excluded)
 
     def of_kind(kind: ConditionKind) -> list[Any]:
-        return [e for s in summaries if kinds.get(s.batch_id) is kind for e in s.entries]
+        return [
+            e
+            for s in summaries
+            if kinds.get(s.batch_id) is kind and s.batch_id not in excluded
+            for e in s.entries
+        ]
 
     verified_failures = sum(1 for e in entries if e.verdict == "fail")
     costs = [e.cost_usd for e in entries if e.cost_usd is not None]
     latencies = sorted(e.latency_ms for e in entries if e.latency_ms is not None)
-    extra: dict[str, float] = {}
     control_on = of_kind(ConditionKind.LIVE)
     outcomes = Counter(str(e.post_block_outcome) for e in control_on if e.post_block_outcome)
 
@@ -357,8 +379,56 @@ def derive_metrics(
     )
 
 
-def _divergence_rate(entries: list[Any], extra: dict[str, float], name: str) -> float | None:
-    """``diverged / completed`` over the completed runs the branch stage compared."""
+#: The condition kinds whose batches feed the divergence rates and outcome counts.
+_ARM_KINDS = (ConditionKind.LIVE, ConditionKind.LIVE_NO_CONTROL)
+_FIXTURE = ("fixture", None)
+
+
+def _batch_models(summary: Any) -> set[tuple[str, str | None]]:
+    """The provider and model pairs a batch ran, each default model resolved.
+
+    Fixture runs count as one pair whatever script played them.
+    """
+    from trace_harness.models import resolve_model_name
+
+    models: set[tuple[str, str | None]] = set()
+    for config in summary.agent_configs:
+        if config.provider == _FIXTURE[0]:
+            models.add(_FIXTURE)
+            continue
+        try:
+            models.add((config.provider, resolve_model_name(config.provider, config.model, None)))
+        except ValueError:
+            models.add((config.provider, config.model))
+    return models
+
+
+def _fixture_batches_beside_a_real_model(
+    summaries: list[Any], kinds: dict[str, ConditionKind]
+) -> set[str]:
+    """The fixture batch ids to leave out of the live metrics, after refusing a mix."""
+    arms = [s for s in summaries if kinds.get(s.batch_id) in _ARM_KINDS]
+    real = [s for s in arms if _batch_models(s) != {_FIXTURE}]
+    models = sorted({m for s in real for m in _batch_models(s)}, key=lambda m: (m[0], m[1] or ""))
+    if len(models) > 1:
+        named = ", ".join(p if m is None else f"{p} {m}" for p, m in models)
+        raise MixedLiveModelsError(
+            f"the live and live_no_control batches ran more than one model ({named}), so "
+            "their divergence rates would compare different agents; record one model's "
+            "batches for those conditions"
+        )
+    if not real:
+        return set()
+    return {s.batch_id for s in arms} - {s.batch_id for s in real}
+
+
+def _divergence_rate(entries: list[Any], extra: dict[str, int | float], name: str) -> float | None:
+    """``diverged / completed`` over completed runs.
+
+    A completed run that took no action after the fork has nothing to compare
+    and is left out. ``branch`` refuses the conditions that would produce one,
+    so in its batches the denominator is every completed run.
+    """
     compared = [e for e in entries if e.status == "completed" and e.diverged is not None]
     if not compared:
         return None

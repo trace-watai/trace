@@ -11,9 +11,11 @@ trace-harness branch <regression_artifact.json> --experiment <experiment.json> [
 
 Every selected condition is checked before any of them runs: its control ids
 against the registry, its start's source run against the artifact, and its
-start step against the recording. A bad condition exits 2 with nothing
-written. The command ends by printing the `--condition name=batch_id` pairs
-that `experiment record` accepts.
+start step against the recording. A start at the step where the recording
+gives its final answer, or a `max_steps` that ends the run by the start step,
+is refused as well, since the agent would never act. A bad condition exits 2
+with nothing written. The command ends by printing the
+`--condition name=batch_id` pairs that `experiment record` accepts.
 
 ## From plan to result
 
@@ -76,22 +78,52 @@ call after the fork.
 
 ## Divergence
 
-Both fields compare `model_action` payloads through `material_action` in
-`regression/replay.py`, the normalization `describe_action_drift` uses: the
-action kind, the tool call with its arguments, and the final answer text.
-Reasoning and provider state never count.
+Both fields compare the run's `model_action` payloads with the recording's,
+step by step after the start step, through `compared_action` in
+`runner/branch.py`. Pre-registration 001 defines the rate on the first
+post-fork tool call, so only the call counts:
+
+- A tool call compares by tool name and structured arguments. The arguments
+  are parsed through the tool's argument model first, as the environment
+  parses them before it executes, so an argument left at its default equals
+  the same value spelled out. A call the environment would refuse compares as
+  given, and a tool the environment does not offer compares every argument.
+- The arguments a tool declares free text are left out. The agent words them
+  itself, and a live model would word them differently on almost every run
+  while making the same call.
+- A final answer compares by kind alone. An answer where the recording made a
+  tool call is divergence, and so is a tool call where it answered. Two
+  answers worded differently are the same action.
+- Reasoning and provider state never count.
+
+Each tool declares its free-text arguments as `free_text_arguments` on its
+`ToolDefinition` in `environment/tools.py`, beside its argument model, and
+never in the schema the model sees. `tests/test_branch.py` fails when a tool
+gains a string argument that is in neither column below, and when this table
+and the code disagree. The environment is part of the frozen set, so a change
+to the list after `experiment freeze` shows up as drift.
+
+| Tool | Free text, left out | Compared |
+|---|---|---|
+| `search_docs` | `query` | `status_filter`, `top_k` |
+| `get_order` | none | `customer_name` |
+| `issue_refund` | `reason` | `customer_name`, `refund_type` |
+| `create_ticket` | `title`, `notes` | `customer_name` |
+| `escalate_case` | `reason` | `customer_name` |
 
 - `first_post_fork_divergence_step` is the first step after the start step
   where the run's action differs from the recording's, including a step only
   one of them reached. It is null when the run matched the recording to the
-  end.
+  end, and when the run took no action after the start step.
 - `diverged` records whether the first action after the start step differed,
   which is what `first_post_fork_divergence_rate` averages. It is null when
-  the run took no action after the start step.
+  the run took no action after the start step. A condition whose runs would
+  end at or before the start step is refused before anything runs, so every
+  completed branch run has a value.
 
-Final answers and free-text arguments such as a refund `reason` compare as
-text, so a live model diverges on them almost always. The noise floor exists
-to measure exactly that.
+Replay's drift notes are unchanged. `describe_action_drift` still compares the
+pinned actions with the fixture script through `material_action` in
+`regression/replay.py`, free-text arguments and answer text included.
 
 ## Replay-only conditions
 
@@ -124,13 +156,22 @@ answers and fills three metrics as Part B2 of
 | `noise_floor_divergence_rate` | The same over `live_no_control` batches |
 | `post_block_outcomes` | Count per label over `live` batches |
 
-The k and n behind each rate go in `metrics.extra` as
+The k and n behind each rate go in `metrics.extra` as integers, named
 `first_post_fork_divergence_k` and `_n`, and `noise_floor_divergence_k` and
 `_n`. Outcome counts include runs that did not complete, since `stalled`
 exists for them, and `no_block_observed` is its own key. `live_swapped`
 batches feed none of the three, because the pre-registration reports each
 live model separately. Recording a batch under a condition other than the one
 its metadata names exits 2, since it would swap the two rates.
+
+The three read one model. `record` exits 2 with nothing written when the
+`live` and `live_no_control` batches ran more than one provider and model,
+since a rate and its noise floor from different agents compare nothing. A
+model left to the provider's default counts as that default. Fixture batches,
+such as the harness check, are left out of the three when a real model's
+batches are recorded beside them, and `metrics.extra` counts them as
+`live_fixture_batches_excluded`. With no real model recorded they feed the
+three, which is how the offline tests and the harness check read them.
 
 ## Budget
 

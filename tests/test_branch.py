@@ -8,7 +8,9 @@ the ``live`` arm from each registered fork point.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import re
 import shutil
 import socket
 from pathlib import Path
@@ -18,11 +20,13 @@ import pytest
 from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, REPO_ROOT
 from trace_harness.cli import main
 from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID
+from trace_harness.environment.tools import support_tool_definitions
 from trace_harness.models.anthropic import ANTHROPIC_PRICING
 from trace_harness.models.base import ActionKind, AgentAction, ToolCall
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.models.fork import ForkAdapter
 from trace_harness.models.gemini import GeminiModelAdapter
+from trace_harness.regression.replay import describe_action_drift
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.batch import BatchSummary
 from trace_harness.runner.branch import post_fork_divergence, run_branch
@@ -141,7 +145,149 @@ def test_divergence_ignores_reasoning_and_counts_only_after_the_fork():
     )
     assert post_fork_divergence(recorded, [*recorded[:3], _action("x")], 2) == (4, False)
     assert post_fork_divergence(recorded, recorded[:3], 2) == (4, False)
-    assert post_fork_divergence(recorded, recorded[:2], 2) == (3, None)
+
+
+@pytest.mark.parametrize("taken", [2, 1, 0])
+def test_a_run_that_never_acted_after_the_fork_has_no_divergence_at_all(taken):
+    """Nothing after the fork to compare, so neither field claims a step."""
+    recorded = [_action("a"), _action("b"), _action("c"), _action("d")]
+    assert post_fork_divergence(recorded, recorded[:taken], 2) == (None, None)
+
+
+def _call(tool: str, **arguments) -> dict:
+    return {
+        "kind": "tool_call",
+        "tool_call": {"tool_name": tool, "arguments": arguments},
+        "final_answer": None,
+    }
+
+
+def _answer(text: str) -> dict:
+    return {"kind": "final_answer", "tool_call": None, "final_answer": text}
+
+
+CASH = {"customer_name": CUSTOMER, "refund_type": "cash"}
+
+
+@pytest.mark.parametrize(
+    ("recorded", "actual", "diverged"),
+    [
+        # Free-text arguments and answer text never count.
+        (
+            _call("issue_refund", **CASH, reason="outage"),
+            _call("issue_refund", **CASH, reason="goodwill"),
+            False,
+        ),
+        (
+            _call("create_ticket", customer_name=CUSTOMER, title="a", notes="b"),
+            _call("create_ticket", customer_name=CUSTOMER, title="c", notes="d"),
+            False,
+        ),
+        (
+            _call("escalate_case", customer_name=CUSTOMER, reason="a"),
+            _call("escalate_case", customer_name=CUSTOMER, reason="b"),
+            False,
+        ),
+        (
+            _call("search_docs", query="refund window"),
+            _call("search_docs", query="how long can I get a refund", top_k=5),
+            False,
+        ),
+        (_answer("No refund."), _answer("I cannot refund this order."), False),
+        # The tool, its structured arguments and the kind of action do.
+        (
+            _call("issue_refund", **CASH, reason="r"),
+            _call("issue_refund", customer_name=CUSTOMER, refund_type="store_credit", reason="r"),
+            True,
+        ),
+        (
+            _call("get_order", customer_name=CUSTOMER),
+            _call("get_order", customer_name="Someone Else"),
+            True,
+        ),
+        (
+            _call("search_docs", query="q"),
+            _call("search_docs", query="q", status_filter="current"),
+            True,
+        ),
+        (
+            _call("issue_refund", **CASH, reason="r"),
+            _call("escalate_case", customer_name=CUSTOMER, reason="r"),
+            True,
+        ),
+        (_answer("No refund."), _call("escalate_case", customer_name=CUSTOMER, reason="r"), True),
+        # An argument the tool does not take makes a different call.
+        (
+            _call("issue_refund", **CASH, reason="r"),
+            _call("issue_refund", **CASH, reason="r", amount=5),
+            True,
+        ),
+        # A tool the environment does not offer compares every argument.
+        (_call("send_email", body="a"), _call("send_email", body="b"), True),
+    ],
+)
+def test_divergence_compares_the_call_and_never_free_text(recorded, actual, diverged):
+    assert post_fork_divergence([recorded], [actual], 0) == (1 if diverged else None, diverged)
+
+
+# Each support tool's free-text arguments, as docs/branch_stage.md#divergence lists them.
+FREE_TEXT = {
+    "search_docs": {"query"},
+    "get_order": set(),
+    "issue_refund": {"reason"},
+    "create_ticket": {"title", "notes"},
+    "escalate_case": {"reason"},
+}
+# The string arguments that pick something, and so are compared.
+STRUCTURED_STRINGS = {
+    "search_docs": {"status_filter"},
+    "get_order": {"customer_name"},
+    "issue_refund": {"customer_name"},
+    "create_ticket": {"customer_name"},
+    "escalate_case": {"customer_name"},
+}
+
+
+def _is_plain_string(schema: dict) -> bool:
+    options = schema.get("anyOf", [schema])
+    return any(o.get("type") == "string" and "enum" not in o for o in options)
+
+
+def test_every_string_argument_of_every_tool_is_declared_free_text_or_not():
+    """A new tool, or a new string argument, cannot join the divergence rule unclassified."""
+    tools = support_tool_definitions()
+    assert {t.name for t in tools} == set(FREE_TEXT)
+    for tool in tools:
+        properties = tool.args_model.model_json_schema()["properties"]
+        strings = {name for name, schema in properties.items() if _is_plain_string(schema)}
+        assert tool.free_text_arguments == FREE_TEXT[tool.name], tool.name
+        assert strings - tool.free_text_arguments == STRUCTURED_STRINGS[tool.name], tool.name
+
+
+def test_the_documented_free_text_list_matches_the_tools():
+    doc = (REPO_ROOT / "docs" / "branch_stage.md").read_text(encoding="utf-8")
+    for tool in support_tool_definitions():
+        (row,) = [line for line in doc.splitlines() if line.startswith(f"| `{tool.name}` |")]
+        free, compared = (set(re.findall(r"`(\w+)`", cell)) for cell in row.split("|")[2:4])
+        assert free == tool.free_text_arguments, tool.name
+        assert compared == set(tool.args_model.model_fields) - free, tool.name
+
+
+def test_a_free_text_argument_the_tool_does_not_take_fails_at_definition():
+    (tool,) = [t for t in support_tool_definitions() if t.name == "get_order"]
+    with pytest.raises(ValueError, match="names no argument of get_order"):
+        dataclasses.replace(tool, free_text_arguments=frozenset({"reason"}))
+
+
+def test_replay_drift_notes_still_compare_free_text():
+    """Only divergence narrows; replay's drift notes are unchanged, byte for byte."""
+    pinned = [_call("issue_refund", **CASH, reason="outage"), _answer("No refund.")]
+    live = [_call("issue_refund", **CASH, reason="goodwill"), _answer("Refund issued.")]
+    call = "{'tool_name': 'issue_refund', 'arguments': {'customer_name': 'Priya Shah', 'r..."
+    assert describe_action_drift(pinned, live) == [
+        f"action 1 changed (tool_call: {call} -> {call})",
+        "action 2 changed (final_answer: 'No refund.' -> 'Refund issued.')",
+    ]
 
 
 # --- acceptance criteria ---
@@ -510,6 +656,26 @@ def test_a_bad_condition_fails_before_anything_runs(tmp_path, capsys, change, me
     assert not runs.exists()
 
 
+def test_a_start_the_agent_would_never_act_after_fails_before_anything_runs(tmp_path, capsys):
+    """A run ending at or before the fork has nothing to compare, so the rate would drop it."""
+    path, artifact = _artifact(tmp_path)
+    script = _script(tmp_path, STORE_CREDIT)
+    at_the_answer = _condition("answer", "live", artifact, 3, continuation_script=script)
+    out_of_steps = _condition("short", "live", artifact, 2, continuation_script=script)
+    out_of_steps["agent_config"]["max_steps"] = 2
+    for condition, message in (
+        (at_the_answer, "starts at step 3, where the recording gives its final answer"),
+        (out_of_steps, "max_steps 2 ends the run by step 2"),
+    ):
+        spec_path, _ = _spec(tmp_path, condition)
+        runs = tmp_path / "runs"
+        capsys.readouterr()
+        branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]
+        assert main(branch) == 2
+        assert message in capsys.readouterr().err
+        assert not runs.exists()
+
+
 @pytest.mark.parametrize("version", ["0.2.0", "0.3.0"])
 def test_batch_summaries_written_before_the_branch_stage_still_load(version):
     """The retained summary is 0.2.0; 0.3.0 is the same with #196's budget block."""
@@ -696,6 +862,48 @@ def test_a_live_seed_with_no_recorded_cost_stops_the_condition(
     assert batches["live"].budget.stop_reason == "budget_unenforceable"
     assert entry.run_id in batches["live"].budget.detail
     assert [c.seed for c in batches["live"].budget.not_run] == [1, 2]
+
+
+def _record(tmp_path: Path, spec_path: Path, batches: dict[str, BatchSummary]) -> list[str]:
+    pairs = [arg for n, b in batches.items() for arg in ("--condition", f"{n}={b.batch_id}")]
+    return ["--runs-dir", str(tmp_path / "runs"), "experiment", "record", str(spec_path), *pairs]
+
+
+def test_record_reads_the_live_metrics_from_one_real_model(tmp_path, capsys, live_models):
+    """Two models are refused; a fixture batch beside one model is left out (#159)."""
+    path, artifact = _artifact(tmp_path)
+    spec_path, spec = _spec(
+        tmp_path,
+        _claude("live", "live", artifact, control_ids=[REFUND_WINDOW_CONTROL_ID]),
+        _claude("live_no_control", "live_no_control", artifact, model="claude-haiku-4-5-20251001"),
+        _condition("check", "live", artifact, 2, control_ids=[REFUND_WINDOW_CONTROL_ID], seeds=[0]),
+        max_cost_usd=5.0,
+    )
+    code, batches = _branch(tmp_path, path, spec_path)
+    assert code == 0
+    capsys.readouterr()
+
+    two_models = {n: batches[n] for n in ("live", "live_no_control")}
+    assert main(_record(tmp_path, spec_path, two_models)) == 2
+    assert (
+        "ran more than one model (anthropic claude-haiku-4-5-20251001, anthropic claude-sonnet-5)"
+        in capsys.readouterr().err
+    )
+    assert not (tmp_path / "runs" / "experiments").exists()
+
+    beside_a_check = {n: batches[n] for n in ("live", "check")}
+    assert main(_record(tmp_path, spec_path, beside_a_check)) == 0
+    assert "1 fixture batch(es) from the live metrics" in capsys.readouterr().out
+    result = ExperimentResult.model_validate(
+        ArtifactStore(tmp_path / "runs").read_experiment_result(spec.experiment_id)
+    )
+    # Claude answers where the recording answered, in other words: no divergence.
+    assert result.metrics.first_post_fork_divergence_rate == 0.0
+    assert result.metrics.extra == {
+        "first_post_fork_divergence_k": 0,
+        "first_post_fork_divergence_n": 3,
+        "live_fixture_batches_excluded": 1,
+    }
 
 
 # --- brief 001 harness check ---

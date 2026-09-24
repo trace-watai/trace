@@ -1156,6 +1156,8 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     for metric in type(result.metrics).memo_field_names():
         value = getattr(result.metrics, metric)
         _print(f"  {metric}:", "not measured" if value is None else str(value))
+    if excluded := result.metrics.extra.get("live_fixture_batches_excluded"):
+        _print("left out:", f"{excluded} fixture batch(es) from the live metrics")
     _print("written:", str(store.experiment_dir(spec.experiment_id)))
     return 0
 
