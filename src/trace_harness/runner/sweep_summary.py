@@ -17,8 +17,11 @@ Counting
     ``blocks_release`` is true, as ``verified_failure_count`` is defined in
     ``docs/methodology_metrics.md``. Cost per verified failure divides the
     sweep's recorded cost by that count. It is null when nothing failed, and
-    null when any cell that started is missing its cost, a ``setup_error``
-    cell included, since an unknown cost is never zero.
+    null when any cell whose run started is missing its cost, since an unknown
+    cost is never zero. A ``setup_error`` cell whose pipeline raised after its
+    run began keeps the run's id and the cost its trace records, so it counts
+    here like any other run. One with no run id failed before its run existed
+    and called no provider.
 
 Labels
     Every failing cell is ``staged_trap`` or ``natural``. A cell is a staged
@@ -302,11 +305,11 @@ def summarize_sweep(
 
     costs = [entry.cost_usd for entry in all_entries if entry.cost_usd is not None]
     cost_usd = round(sum(costs), 6)
-    # A setup_error cell has no run id and no cost, and in a sweep, which loads
-    # every task and builds every adapter first, its exception most likely came
-    # during or after the run, perhaps after a billed call. So every cell that
-    # started needs a cost.
-    priced = all(e.cost_usd is not None for e in all_entries)
+    # A cell whose run started carries the run's id, a setup_error cell
+    # included (batch.attach_started_run keeps it when the pipeline raised
+    # after the run began), and needs a cost. A cell with no run id failed
+    # before its run existed and called no provider.
+    priced = all(e.cost_usd is not None for e in all_entries if e.run_id is not None)
     verified = [cell for cell in cells if cell.blocking]
     natural = [cell for cell in verified if cell.label == NATURAL]
     return SweepSummary(

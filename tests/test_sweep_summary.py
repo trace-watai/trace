@@ -312,8 +312,24 @@ def test_an_unknown_cost_is_never_divided_as_zero() -> None:
     assert unknown.cost_per_verified_failure is None
 
 
-def test_a_setup_error_leaves_cost_per_failure_unknown() -> None:
-    """A pipeline that raised during or after a billed run keeps no run id and no cost."""
+def test_a_started_setup_error_without_a_cost_leaves_cost_per_failure_unknown() -> None:
+    """A pipeline that raised after its run began keeps the run id; its cost must be known."""
+    gemini = _batch(
+        "batch_g",
+        [
+            _entry(A, 1, "fail", "g-a1"),
+            _entry(A, 2, None, "g-a2", status="setup_error", cost_usd=None),
+        ],
+    )
+    summary = _summary(batches=[ProviderBatch(GEMINI, gemini)])
+    assert summary.verified_failures == 1
+    assert summary.cost_recorded == 1
+    assert summary.cost_per_verified_failure is None
+    assert summary.cost_per_natural_verified_failure is None
+
+
+def test_a_setup_error_before_any_run_needs_no_cost() -> None:
+    """With no run id the cell never started a run, so it called no provider."""
     gemini = _batch(
         "batch_g",
         [
@@ -322,10 +338,8 @@ def test_a_setup_error_leaves_cost_per_failure_unknown() -> None:
         ],
     )
     summary = _summary(batches=[ProviderBatch(GEMINI, gemini)])
-    assert summary.verified_failures == 1
     assert summary.cost_recorded == 1
-    assert summary.cost_per_verified_failure is None
-    assert summary.cost_per_natural_verified_failure is None
+    assert summary.cost_per_verified_failure == pytest.approx(0.01)
 
 
 def test_only_a_completed_run_passes_or_fails() -> None:

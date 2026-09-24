@@ -128,12 +128,13 @@ A verified failure is a failing cell with at least one check whose
 `unnecessary_escalation`, `duplicate_escalation` or
 `deprecated_policy_treated_as_authoritative` is still a failing cell, listed and
 labeled, and it is not a verified failure. Cost per verified failure is null
-when nothing failed, and null when any cell that started has no recorded cost,
-because an unknown cost is never counted as zero. That includes a
-`setup_error` cell. A sweep loads every task and builds every adapter before
-its first cell, so a cell that still ends in `setup_error` most likely failed
-during or after its run, perhaps after a billed call, and its entry keeps no
-run id and no cost.
+when nothing failed, and null when any cell whose run started has no recorded
+cost, because an unknown cost is never counted as zero. A sweep cell runs
+through `BatchRunner.run_cell`, so a cell whose pipeline raised after its run
+began still ends as a `setup_error` entry with the run's id and the cost its
+trace records, and the sweep's budget is charged that cost like any other
+run's. A `setup_error` cell with no run id failed before its run existed and
+called no provider.
 
 ## Labels
 

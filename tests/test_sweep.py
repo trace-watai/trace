@@ -127,6 +127,47 @@ def test_sweep_and_suite_cells_take_one_public_cell_path(
     assert cells == [("fx", B)]
 
 
+def test_a_cell_that_raises_after_its_run_is_charged(
+    tmp_path, fake_providers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pipeline that raises after the run keeps the run id and the trace's cost.
+
+    Gemini's B seed 2 runs its three billed calls, then verification raises.
+    The cell ends as a setup_error, and the sweep's budget and summary still
+    count what it spent.
+    """
+    import trace_harness.runner.pipeline as pipeline
+
+    verify = pipeline.verify_run
+
+    def failing_verify(store, run_result, task):
+        config = store.read_json(run_result.run_id, "run_config.json")
+        if (config["provider"], task.task_id, config["seed"]) == (
+            "gemini",
+            "refund_policy_valid_cash",
+            2,
+        ):
+            raise RuntimeError("verifier crashed after the run")
+        return verify(store, run_result, task)
+
+    monkeypatch.setattr(pipeline, "verify_run", failing_verify)
+    summary, store = _run(tmp_path)
+
+    flash = BatchSummary.model_validate(store.read_batch_summary(summary.providers[0].batch_id))
+    [broken] = [e for e in flash.entries if e.status == "setup_error"]
+    assert (broken.task_path, broken.seed) == (B, 2)
+    assert broken.run_id is not None
+    assert (store.runs_dir / broken.run_id / "trace.jsonl").is_file()
+    three_calls = planned_cost("gemini", seeds=[2], tasks=[B])
+    assert broken.cost_usd == pytest.approx(three_calls, abs=1e-9)
+
+    cost = planned_cost("gemini") + planned_cost("openai")
+    assert summary.budget.spent_usd == pytest.approx(cost, abs=1e-6)
+    assert summary.cost_usd == pytest.approx(cost, abs=1e-6)
+    assert summary.cost_recorded == summary.runs
+    assert summary.cost_per_verified_failure == pytest.approx(cost / 7, abs=1e-6)
+
+
 def test_each_provider_writes_one_batch_tagged_with_the_sweep(tmp_path, fake_providers) -> None:
     summary, store = _run(tmp_path)
     for provider in summary.providers:
