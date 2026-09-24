@@ -15,28 +15,39 @@ The components, every path relative to the repository root:
                  ``HeuristicAttributor``, the schema it emits and the
                  validation it runs on its own output.
 ``suite``        ``fixtures/suites/{suite_id}.json``.
-``fixtures``     ``fixtures/`` without ``fixtures/controls/``. The control
-                 library is the treatment an experiment varies, and its
-                 evidence directories gain a generated ``index.json`` when
-                 re-verified, so freezing it would refuse every control
-                 experiment.
-``labels``       the plan's ``labels_path``, when it names one.
+``fixtures``     ``fixtures/``, the control library and its evidence
+                 included, apart from the ``index.json`` that re-verifying a
+                 retained evidence run writes at
+                 ``fixtures/controls/evidence/*/*/index.json``. Brief 001
+                 allows new control entries only before the first live run,
+                 and the plan is frozen before any condition runs, so a
+                 library change between freeze and record is drift.
+``labels``       the plan's ``labels_path``, a file under the repository root,
+                 when it names one.
 
 A file hash is sha256 over the file's bytes with CRLF folded to LF, keyed by
 its repo-relative POSIX path. A component digest is sha256 over the sorted
 ``path, hash`` list. Neither a checkout's line endings nor the order a
-filesystem lists a directory changes a digest. Bytecode caches and editor
-files are skipped.
+filesystem lists a directory changes a digest. ``__pycache__``, ``.pyc``,
+``.pyo``, the mypy, pytest and ruff caches and ``.DS_Store`` are skipped.
+Every other file counts, an editor's swap or backup file included. A symlink
+inside a component is refused, because ``os.walk`` does not descend a linked
+directory and its files would drop out of the hash unnoticed.
+
+The hashes catch a change to the tree between freeze and record. They do not
+make the plan or the result tamper-proof: both are plain JSON that nothing
+signs, and a consistent hand edit of both reads as a clean record.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
-from pathlib import Path, PurePosixPath
+from fnmatch import fnmatchcase
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from trace_harness.runner.suite import load_suite
 
@@ -46,7 +57,8 @@ CODE_COMPONENTS = {
     "attribution": "src/trace_harness/attribution",
 }
 FIXTURES_ROOT = "fixtures"
-FIXTURES_EXCLUDED = ("fixtures/controls",)
+# Matched one path segment at a time, as .gitignore reads the same pattern.
+FIXTURES_EXCLUDED = ("fixtures/controls/evidence/*/*/index.json",)
 
 _NOISE_DIRS = frozenset({"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"})
 _NOISE_FILES = frozenset({".DS_Store"})
@@ -63,6 +75,14 @@ class FrozenComponent(BaseModel):
     # repo-relative POSIX path -> sha256 hex, sorted by path
     files: dict[str, str]
 
+    @model_validator(mode="after")
+    def _digest_covers_the_files(self) -> FrozenComponent:
+        # Drift is found from ``files`` and fixtures_hash is checked against
+        # ``digest``, so the two have to describe the same hashes.
+        if self.digest != component_digest(self.files):
+            raise ValueError(f"the {self.path} digest {self.digest} does not match its files")
+        return self
+
 
 class FrozenFileChange(BaseModel):
     """One file that differs between a plan's frozen set and the tree."""
@@ -75,7 +95,7 @@ class FrozenFileChange(BaseModel):
 
 
 class FrozenSetError(ValueError):
-    """A path the plan has to freeze is missing, or the suite file names another suite."""
+    """The frozen set cannot be hashed from this tree, or the plan names a bad path."""
 
 
 def suite_path(suite_id: str) -> str:
@@ -95,23 +115,71 @@ def component_digest(files: dict[str, str]) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def check_labels_path(labels_path: str) -> str:
+    """``labels_path`` when it names a path under the repository root.
+
+    Relative, with ``/`` separators and no empty, ``.`` or ``..`` segment. An
+    empty path, ``.`` or ``..`` would freeze the whole tree or its parent as
+    the labels.
+    """
+    if (
+        not labels_path
+        or "\\" in labels_path
+        or PureWindowsPath(labels_path).anchor
+        or any(part in ("", ".", "..") for part in labels_path.split("/"))
+    ):
+        raise FrozenSetError(
+            "labels_path must be a relative POSIX path under the repository root, with no "
+            f"empty, '.' or '..' segment: {labels_path!r}"
+        )
+    return labels_path
+
+
+def _excluded(path: PurePosixPath, patterns: tuple[str, ...]) -> bool:
+    return any(
+        len(glob := PurePosixPath(pattern).parts) == len(path.parts)
+        and all(map(fnmatchcase, path.parts, glob))
+        for pattern in patterns
+    )
+
+
+def _refuse_symlink(root: Path, candidate: Path) -> None:
+    if candidate.is_symlink():
+        rel = candidate.relative_to(root).as_posix()
+        raise FrozenSetError(
+            f"{rel} is a symlink; the frozen set hashes regular files only, so replace it "
+            "with the files it points to or move it out of the frozen paths"
+        )
+
+
 def hash_component(root: Path, path: str, excluded: tuple[str, ...] = ()) -> FrozenComponent:
-    """Hash a file or directory under ``root``. A missing path hashes as empty."""
+    """Hash a file or directory under ``root``. A missing path hashes as empty.
+
+    ``excluded`` holds glob patterns matched one path segment at a time. A path
+    that resolves outside ``root``, or a symlink anywhere in the component, is
+    a :class:`FrozenSetError`.
+    """
+    top = root / path
+    if not top.resolve().is_relative_to(root.resolve()):
+        raise FrozenSetError(f"cannot hash {path}: it resolves outside {root.resolve()}")
+    _refuse_symlink(root, top)
     found: list[str] = []
-    if (root / path).is_file():
+    if top.is_file():
         found.append(path)
-    for directory, dirs, names in os.walk(root / path):
+    for directory, dirs, names in os.walk(top):
         here = Path(directory)
-        dirs[:] = [
-            d
-            for d in dirs
-            if d not in _NOISE_DIRS and (here / d).relative_to(root).as_posix() not in excluded
-        ]
-        found += [
-            (here / name).relative_to(root).as_posix()
+        rel = PurePosixPath(here.relative_to(root).as_posix())
+        dirs[:] = [d for d in dirs if d not in _NOISE_DIRS and not _excluded(rel / d, excluded)]
+        names = [
+            name
             for name in names
-            if name not in _NOISE_FILES and not name.endswith(_NOISE_SUFFIXES)
+            if name not in _NOISE_FILES
+            and not name.endswith(_NOISE_SUFFIXES)
+            and not _excluded(rel / name, excluded)
         ]
+        for name in [*dirs, *names]:
+            _refuse_symlink(root, here / name)
+        found += [(rel / name).as_posix() for name in names]
     files = {rel: file_sha256(root / rel) for rel in sorted(found)}
     return FrozenComponent(path=path, digest=component_digest(files), files=files)
 
@@ -119,7 +187,18 @@ def hash_component(root: Path, path: str, excluded: tuple[str, ...] = ()) -> Fro
 def compute_frozen_set(
     root: Path, *, suite_id: str, labels_path: str | None = None
 ) -> dict[str, FrozenComponent]:
-    """Every component as the tree under ``root`` stands now."""
+    """Every component as the tree under ``root`` stands now.
+
+    A ``root`` holding none of the code components is refused. It is almost
+    always the wrong working directory, and hashing it would report every
+    frozen file as removed.
+    """
+    if not any((root / path).is_dir() for path in CODE_COMPONENTS.values()):
+        raise FrozenSetError(
+            f"none of {', '.join(CODE_COMPONENTS.values())} exists under {root.resolve()}; "
+            "the frozen set is hashed from the working directory, so run from the "
+            "repository root"
+        )
     frozen = {name: hash_component(root, path) for name, path in CODE_COMPONENTS.items()}
     frozen["suite"] = hash_component(root, suite_path(suite_id))
     frozen["fixtures"] = hash_component(root, FIXTURES_ROOT, FIXTURES_EXCLUDED)
@@ -133,16 +212,18 @@ def freeze(
 ) -> dict[str, FrozenComponent]:
     """The frozen set for a new plan. Refuses paths that do not exist.
 
-    Checking recomputes with :func:`compute_frozen_set`, where a missing path
-    reads as every file removed. Freezing one would record an empty component
-    that could never drift.
+    A missing path is most often a typo or the wrong working directory.
+    Freezing it would record an empty component, which pins nothing that
+    exists at freeze time. The labels must be one file under ``root``.
     """
-    if labels_path is not None and PurePosixPath(labels_path).is_absolute():
-        raise FrozenSetError(f"labels_path must be relative to the repository root: {labels_path}")
+    if labels_path is not None:
+        check_labels_path(labels_path)
     required = [*CODE_COMPONENTS.values(), FIXTURES_ROOT, suite_path(suite_id)]
     for path in required + ([labels_path] if labels_path is not None else []):
         if not (root / path).exists():
             raise FrozenSetError(f"cannot freeze {path}: not found under {root.resolve()}")
+    if labels_path is not None and not (root / labels_path).is_file():
+        raise FrozenSetError(f"labels_path must name a file: {labels_path} is a directory")
     named = load_suite(root / suite_path(suite_id)).suite_id
     if named != suite_id:
         raise FrozenSetError(

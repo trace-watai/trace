@@ -359,6 +359,71 @@ def test_scratch_artifacts_under_the_runs_dir_are_not_recorded(tree: Path) -> No
     assert snapshot.suite_pass_rate.denominator == 10
 
 
+def test_experiment_evidence_is_never_read_as_suite_history(tree: Path) -> None:
+    """Batches and bundles retained for an experiment are not suite results (#155)."""
+    evidence = tree / "docs" / "acceptance"
+    _write(
+        evidence / "batches" / "batch_x" / "batch_summary.json",
+        {"aggregates": {"verifier_passed": 4, "verifier_failed": 5}},
+    )
+    fork = evidence / "experiments" / "exp_x" / "fork_points" / "run_f"
+    _write(fork / "repair_package.json", {"controls": [{"name": "an_experiment_only_control"}]})
+    _write(
+        fork / "repair_validation.json",
+        {
+            "run_id": "run_f",
+            "test_name": "regression_f",
+            "batch_id": "batch_29990101T000000Z_ffff",
+            "controls": [
+                {
+                    "control": MATERIAL,
+                    "verdict": "accepted",
+                    "sibling_reruns": [_rerun("rr_f", "FAIL")],
+                }
+            ],
+        },
+    )
+
+    snapshot = build_snapshot(tree, commit="c1")
+    assert (snapshot.suite_pass_rate.numerator, snapshot.suite_pass_rate.denominator) == (7, 10)
+    assert snapshot.verified_failures == 3
+    assert snapshot.coverage.prescribed == 2
+    assert snapshot.over_blocking.sources == ["evidence/repair_validation.json"]
+
+
+def test_the_working_tree_reads_the_numbers_main_recorded() -> None:
+    """Retaining experiment evidence must not move the committed history.
+
+    Compared against the record main wrote at fc9fbc7, before any experiment
+    evidence was retained, on every measure read from retained files.
+    Materializability is left out because it comes from the guardrail registry
+    in code, which later work moves on purpose.
+    """
+    (recorded,) = [
+        s
+        for s in load_history(REPO_ROOT / "docs" / "acceptance" / "metrics_history.jsonl")
+        if s.commit == "fc9fbc781930f9dd932942f5209fb14e71fc4698"
+    ]
+    now = build_snapshot(REPO_ROOT, commit="working-tree", exclude=[REPO_ROOT / "runs"])
+
+    def read_from_files(s: MetricsSnapshot) -> dict:
+        blocking, cost = s.over_blocking, s.cost_of_learning
+        return {
+            "suite_pass_rate": (s.suite_pass_rate.numerator, s.suite_pass_rate.denominator),
+            "verified_failures": s.verified_failures,
+            "coverage": (s.coverage.prescribed, s.coverage.validated, s.coverage.accepted),
+            "over_blocking": (blocking.siblings_run, blocking.siblings_failed, blocking.sources),
+            "cost_of_learning": (
+                cost.validation_runs,
+                cost.irreversible_actions,
+                cost.money_moved_usd,
+                cost.runs_not_retained,
+            ),
+        }
+
+    assert read_from_files(now) == read_from_files(recorded)
+
+
 def test_the_collector_appends_a_snapshot_and_keeps_its_own_exit_code(
     tmp_path: Path, tree: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
