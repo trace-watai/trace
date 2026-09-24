@@ -287,7 +287,8 @@ simple merge).
 
 **What belongs here:** schemas (`schemas.py`) and the rule-based MVP
 attributor (`heuristic.py`) that explain *where and why* a verified
-failure happened.
+failure happened, and the post-block classifier (`post_block.py`) that
+labels what the agent did after an installed control blocked it.
 
 **Exposes:** `HeuristicAttributor.attribute(task, trace, verifier_result,
 run_result=None) -> AttributionResult` (requires a *failed* verifier result;
