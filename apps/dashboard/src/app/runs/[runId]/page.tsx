@@ -56,7 +56,7 @@ const RunPage = async ({ params }: RunPageProps) => {
       {result.status === "malformed" ? (
         <ErrorPanel title="Malformed run data" message={result.message} />
       ) : result.bundle ? (
-        <FailureCard card={result.bundle.failureCard} />
+        <FailureCard card={result.bundle.failureCard} currentRunId={runId} />
       ) : (
         <ErrorPanel
           title="Not yet bundled"

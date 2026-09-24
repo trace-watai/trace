@@ -26,14 +26,24 @@ How the bridge works
 
     Forwarded model responses are held until the agent's next move and attached
     to it, so the runner records them as ``model_response`` at that step and
-    their reasoning lands on the step's ``model_action``. An agent that never
-    calls ``on_model_response`` still produces one ``model_action`` per move,
-    with no reasoning, which is what lets attribution degrade to nulls.
+    their reasoning lands on the step's ``model_action``. When the agent raises
+    instead of moving, they ride on the error and the runner records them at
+    the failing step, ahead of the error event. An agent that never calls
+    ``on_model_response`` still produces one ``model_action`` per move, with no
+    reasoning, which is what lets attribution degrade to nulls.
+
+    Each payload is stored as a JSON round trip of what the agent passed. A
+    value JSON cannot hold is written as its string form, a ``raw`` that is not
+    a dict is wrapped as ``{"response": raw}``, and several responses before one
+    move are stored together as ``{"responses": [...]}``.
 
 What the bridge does not do
     It cannot stop an outside agent's thread. When a run ends early (step limit,
-    timeout, a blocked answer), the next ``call_tool`` raises :class:`RunEnded`
-    and nothing further reaches the environment. Tool calls the agent issues in
+    timeout, a blocked answer), the call the agent is waiting on and every later
+    ``call_tool`` raise :class:`RunEnded`, and nothing further reaches the
+    environment. That holds even when the runner abandons a move on timeout
+    midway, because a tool call is only parked for its result under the lock
+    :meth:`TargetAgentBridge.close` takes. Tool calls the agent issues in
     parallel are serialized into consecutive steps in arrival order.
 
 Retries, time and cost (#196)
@@ -56,7 +66,7 @@ import queue
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
@@ -75,6 +85,9 @@ from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing.artifact_store import ArtifactStore
+
+if TYPE_CHECKING:  # the pipeline imports this module, so only for typing
+    from trace_harness.runner.pipeline import PipelineProgress
 
 EXTERNAL_PROVIDER = "external"
 
@@ -189,7 +202,8 @@ class TargetAgentBridge:
         self.task_id = task_id
         self.max_steps = max_steps
         self._moves: queue.Queue[Any] = queue.Queue()
-        # Guards _closed against moves posted while close() drains the queue.
+        # Guards _closed and _pending, so no call posted or parked for a result
+        # while close() drains the queue is missed by it.
         self._lock = threading.Lock()
         self._closed = False
         self._responses: list[tuple[dict[str, Any], str | None]] = []
@@ -199,13 +213,19 @@ class TargetAgentBridge:
     # --- ModelAdapter protocol (runner thread) ---
 
     def next_action(self, transcript: list[Message], tools: list[ToolSpec]) -> AgentAction:
-        if self._closed:
-            raise TargetAgentError("the target agent bridge is closed")
+        with self._lock:
+            if self._closed:
+                raise TargetAgentError("the target agent bridge is closed")
+            pending = self._pending
         if self._thread is None:
             self._start(transcript, tools)
-        elif self._pending is not None:
-            pending, self._pending = self._pending, None
-            pending.reply.put_nowait(_observation_from(transcript))
+        elif pending is not None:
+            # Answered before it is cleared, so a transcript that cannot be
+            # read leaves the call where close() still finds and releases it.
+            _answer(pending, _observation_from(transcript))
+            with self._lock:
+                if self._pending is pending:
+                    self._pending = None
         elif not self._thread.is_alive() and self._moves.empty():
             # The agent's thread posts its last move before it exits, so once
             # that move is taken nothing else will come. Asking again, as a
@@ -216,18 +236,33 @@ class TargetAgentBridge:
         move = self._moves.get()
         if move is _CLOSED:
             raise TargetAgentError("the target agent bridge is closed")
+        raw, reasoning = self._drain_responses()
         if isinstance(move, _ErrorMove):
             error = move.error
+            failure: ModelAdapterError
             if isinstance(error, ScriptExhaustedError):
                 # A scripted model underneath the agent ran out; keep the
                 # runner's distinct termination reason for that.
-                raise ScriptExhaustedError(f"target agent {self.agent.name!r}: {error}") from error
-            raise TargetAgentError(
-                f"target agent {self.agent.name!r} raised {type(error).__name__}: {error}"
-            ) from error
-        raw, reasoning = self._drain_responses()
+                failure = ScriptExhaustedError(f"target agent {self.agent.name!r}: {error}")
+            else:
+                failure = TargetAgentError(
+                    f"target agent {self.agent.name!r} raised {type(error).__name__}: {error}"
+                )
+            # Responses the agent forwarded before it raised are part of the
+            # run; the runner records them ahead of the error.
+            failure.raw = raw
+            raise failure from error
         if isinstance(move, _ToolMove):
-            self._pending = move
+            with self._lock:
+                # close() may have drained the queue after this move was
+                # taken (the runner abandons a move on timeout). Parking the
+                # call then would leave the agent waiting forever.
+                closed = self._closed
+                if not closed:
+                    self._pending = move
+            if closed:
+                _answer(move, _CLOSED)
+                raise TargetAgentError("the target agent bridge is closed")
             return AgentAction(
                 kind=ActionKind.TOOL_CALL,
                 tool_call=ToolCall(tool_name=move.tool_name, arguments=move.arguments),
@@ -256,7 +291,7 @@ class TargetAgentBridge:
             # Wakes a next_action the runner abandoned on timeout.
             self._moves.put(_CLOSED)
         for move in waiting:
-            move.reply.put_nowait(_CLOSED)
+            _answer(move, _CLOSED)
 
     def __enter__(self) -> TargetAgentBridge:
         return self
@@ -336,6 +371,18 @@ class TargetAgentBridge:
         return raw, reasoning
 
 
+def _answer(move: _ToolMove, reply: Any) -> None:
+    """Answer a waiting tool call once.
+
+    close() and a move the runner abandoned can both reach the same call.
+    The first answer is the one the agent gets and a later one is dropped.
+    """
+    try:
+        move.reply.put_nowait(reply)
+    except queue.Full:
+        pass
+
+
 def _observation_from(transcript: list[Message]) -> ToolObservation:
     """The tool result the runner appended for the previous move."""
     last = transcript[-1] if transcript else None
@@ -386,7 +433,18 @@ def run_target_agent(
     store: ArtifactStore,
     task: TaskSpec,
     config: RunConfig,
+    progress: PipelineProgress | None = None,
 ) -> RunResult:
-    """Run ``agent`` on ``task`` through the ordinary runner and close the bridge after."""
+    """Run ``agent`` on ``task`` through the ordinary runner and close the bridge after.
+
+    ``progress``, when given, is ``run_task_pipeline``'s (#196): it gets the
+    run's id as soon as the runner made one, so a failure after that still
+    names the run.
+    """
     with TargetAgentBridge(agent, task_id=task.task_id, max_steps=config.max_steps) as bridge:
-        return AgentRunner(bridge, environment, store).run(task, config)
+        runner = AgentRunner(bridge, environment, store)
+        try:
+            return runner.run(task, config)
+        finally:
+            if progress is not None:
+                progress.run_id = runner.run_id

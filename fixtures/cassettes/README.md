@@ -73,7 +73,10 @@ the recording, for example because an installed control blocked a call the
 recording saw succeed, stops with a request mismatch at that step. Use
 `:scripted_agent` for runs like that; it plays the fixture script directly.
 
-Reproduce the recording into a new directory, from the repository root.
+Reproduce the recording into a new directory. The script finds the tasks and
+their scripts from its own location, so it runs from any working directory, and
+it exits 1 when a task is not recorded to a final answer (for example because
+the directory already holds that cassette).
 
 ```sh
 python scripts/record_reference_cassettes.py langgraph_ref --root /tmp/reference-cassettes
@@ -81,8 +84,9 @@ python scripts/record_reference_cassettes.py openai_agents_ref --root /tmp/refer
 ```
 
 The reference agent tests re-record both files and require them to match the
-committed bytes. They also require the transcript fingerprint at every step to
-match the one the harness runner builds for a fixture model on the same task.
+committed bytes. For both tasks they also require the transcript fingerprint
+at every step to match the one the harness runner builds for a fixture model on
+the same task.
 The tool fingerprints match too for the Agents SDK agent, which passes the
 schemas through untouched. They differ for LangGraph, because LangChain rewrites
 the JSON schemas it binds (titles dropped, references inlined).

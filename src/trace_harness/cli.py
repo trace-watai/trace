@@ -8,6 +8,8 @@ Commands (each is one pipeline stage; ``run-pipeline`` chains them):
     trace-harness bundle       runs/<run_id>
     trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json
     trace-harness run-suite    fixtures/suites/refund_v0.json
+    trace-harness run-sweep    fixtures/sweeps/refund_v0_live.json --retain
+    trace-harness retain-sweep sweep_<...>
     trace-harness collect-regressions docs/acceptance/runs
     trace-harness report-suite batch_<...>
     trace-harness branch       <regression_artifact.json> --experiment <experiment.json>
@@ -23,11 +25,15 @@ Stages communicate only through run artifacts on disk — ``verify`` reads
 exactly what ``run-fixture`` wrote — so any stage can be re-run later, and
 the dashboard/API see the same data the pipeline used.
 
-Exit codes: 0 success; 1 verifier failed AND --fail-on-verifier was passed
-(CI gate mode); 2 usage or input errors (argparse errors, bad paths,
-malformed fixtures, missing artifacts, cassette errors, a suite budget cap that
-cannot be enforced). Without the flag a verified
-failure exits 0 — finding failures is this tool succeeding.
+Exit codes: 0 success; 1 with --fail-on-verifier (CI gate mode) when a run
+failed verification or did not complete, and for ``run-suite`` also when a run
+errored or the suite budget stopped the batch before every cell ran, and from
+``list-experiments`` when an experiment's files do not load; 2 usage or input
+errors (argparse errors, bad paths, malformed fixtures, missing artifacts,
+cassette errors, a suite budget cap that cannot be enforced, hosted public
+results that refuse or cannot be reached when TRACE_RUN_READER=supabase).
+Without the flag a verified failure exits 0, since finding failures is this
+tool succeeding.
 
 argparse over typer: subcommands this simple don't justify a dependency.
 Revisit if the CLI grows rich help/completions needs.
@@ -57,10 +63,17 @@ from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.failure_bundles.schemas import RepairPackage
 from trace_harness.metrics.history import HISTORY_PATH as DEFAULT_HISTORY_PATH
-from trace_harness.models import create_model_adapter, resolve_call_policy, resolve_model_name
+from trace_harness.models import (
+    KNOWN_PROVIDERS,
+    create_model_adapter,
+    resolve_call_policy,
+    resolve_model_name,
+    unsent_seed_metadata,
+)
 from trace_harness.models.base import ProviderNotConfiguredError
 from trace_harness.models.cassette import CassetteConfig, RecordingModelAdapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
+from trace_harness.public_results.postgrest import PostgrestError
 from trace_harness.regression.promotion import LibraryGateError, commit_controls
 from trace_harness.regression.repair_validation import (
     ControlValidation,
@@ -78,7 +91,7 @@ from trace_harness.regression.replay import (
 from trace_harness.regression.replay import pinned_script as build_pinned_script
 from trace_harness.regression.report import ReplayCaseResult, ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
-from trace_harness.run_reader import RunReader
+from trace_harness.run_readers import open_run_reader, reader_location
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.batch import new_batch_id
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
@@ -156,7 +169,10 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--provider",
         default="fixture",
-        help="model provider: 'fixture' (scripted, default) or 'gemini'",
+        help=(
+            f"model provider: one of {', '.join(KNOWN_PROVIDERS)} (default fixture, "
+            "scripted; the others are live and need their own key and SDK extra)"
+        ),
     )
     parser.add_argument(
         "--agent",
@@ -167,7 +183,10 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--model",
         default=None,
-        help="model name for real providers (e.g. gemini-3.6-flash); ignored by fixture",
+        help=(
+            "model name for live providers (e.g. gemini-3.6-flash, claude-sonnet-5, gpt-5); "
+            "ignored by fixture"
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -231,8 +250,9 @@ def _run_fixture(
     # An outside agent makes its own model calls, so its run records none.
     call_policy = resolve_call_policy(provider, None, cassette)
 
-    # The fixture provider replays a script; real providers (gemini) drive the
-    # agent live and need no script — only the fixture path is required.
+    # The fixture provider replays a script. The live providers (gemini,
+    # anthropic, openai) drive the agent live and need no script, so only the
+    # fixture path is required. An outside agent brings its own model.
     if agent is not None:
         adapter = None
         model = args.model or agent.name
@@ -264,6 +284,7 @@ def _run_fixture(
         )
         if isinstance(adapter, RecordingModelAdapter):
             metadata["cassette_path"] = _repo_relative(adapter.path)
+    metadata.update(unsent_seed_metadata(provider, seed))
 
     config = RunConfig(
         task_id=task.task_id,
@@ -433,9 +454,14 @@ def _attribute(run_dir: Path) -> bool:
 
 
 def _bundle(run_dir: Path) -> bool:
-    """Returns True if a bundle was produced (verifier had failed)."""
+    """Returns True if a bundle was produced (verifier had failed).
+
+    A run whose bundle key matches an earlier card joins that card as an
+    occurrence and gets a ``bundle_ref.json`` pointer instead of its own
+    bundle (#211). Both count as produced.
+    """
     from trace_harness.attribution.schemas import AttributionResult
-    from trace_harness.failure_bundles.generator import FailureBundleGenerator
+    from trace_harness.failure_bundles.generator import FailureBundleGenerator, record_bundle
 
     store, run_id = ArtifactStore.for_run_path(run_dir)
     task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
@@ -464,13 +490,21 @@ def _bundle(run_dir: Path) -> bool:
         initial_state=store.read_json(run_id, names.INITIAL_STATE),
         task_fixture_path=config_metadata.get("task_fixture_path"),
         agent_ref=run_config.get("agent_ref"),
+        run_config=run_config,
     )
-    store.write_json(run_id, names.FAILURE_CARD, bundle.failure_card)
-    store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)
-    store.write_json(run_id, names.REGRESSION_ARTIFACT, bundle.regression_artifact)
+    recorded = record_bundle(store, bundle)
+    home = recorded.canonical_run_id
 
-    print(f"\nFailure bundle for {run_id}:")
-    _print("failure_card:", str(store.artifact_path(run_id, names.FAILURE_CARD)))
+    if recorded.reproduction:
+        print(f"\nFailure bundle for {run_id}: reproduces the card in {home}")
+    else:
+        print(f"\nFailure bundle for {run_id}:")
+    _print("bundle_key:", recorded.bundle_key)
+    _print("failure_card:", str(store.artifact_path(home, names.FAILURE_CARD)))
+    _print("occurrences:", str(recorded.occurrence_count))
+    if recorded.reproduction:
+        _print("bundle_ref:", str(store.artifact_path(run_id, names.BUNDLE_REF)))
+        return True
     _print("repair_package:", str(store.artifact_path(run_id, names.REPAIR_PACKAGE)))
     _print("regression:", str(store.artifact_path(run_id, names.REGRESSION_ARTIFACT)))
     print(f"  controls: {', '.join(c.name for c in bundle.repair_package.controls)}")
@@ -1058,14 +1092,16 @@ def _validate_fixtures(args: argparse.Namespace) -> int:
 
 
 def _load_experiment_plan(path: str) -> tuple[Path, Any]:
-    from trace_harness.runner.experiment import ExperimentSpec
+    """Read a plan file the way every experiment command does, through load_plan."""
+    from trace_harness.runner.experiment import load_plan
 
     spec_path = Path(path)
     if not spec_path.is_file():
         raise CliInputError(f"experiment plan not found: {spec_path}")
-    return spec_path, ExperimentSpec.model_validate(
-        json.loads(spec_path.read_text(encoding="utf-8"))
-    )
+    try:
+        return spec_path, load_plan(json.loads(spec_path.read_text(encoding="utf-8")))
+    except ValueError as exc:
+        raise CliInputError(f"{spec_path}: {exc}") from None
 
 
 def _experiment_freeze(args: argparse.Namespace) -> int:
@@ -1074,11 +1110,13 @@ def _experiment_freeze(args: argparse.Namespace) -> int:
     Paths resolve against the working directory like every other CLI path, so
     this runs from the repository root. A plan that already carries a frozen
     set is refused: freezing it again after the evaluator moved would turn
-    drift into a clean record.
+    drift into a clean record. The check reads only the plan it is given, so
+    a plan whose frozen set was deleted by hand freezes again; git history of
+    the plan is the record against that.
     """
     from trace_harness.runner.experiment import EXPERIMENT_SCHEMA_VERSION, ExperimentSpec
     from trace_harness.runner.frozen_set import FrozenSetError, freeze
-    from trace_harness.tracing.artifact_store import _atomic_write_text
+    from trace_harness.tracing.artifact_store import atomic_write_text
 
     spec_path, spec = _load_experiment_plan(args.experiment_path)
     manifest = spec.frozen_manifest
@@ -1096,7 +1134,7 @@ def _experiment_freeze(args: argparse.Namespace) -> int:
     data["frozen_manifest"]["frozen_set"] = {n: c.model_dump() for n, c in frozen.items()}
     data["frozen_manifest"]["fixtures_hash"] = frozen["fixtures"].digest
     spec = ExperimentSpec.model_validate(data)
-    _atomic_write_text(spec_path, json.dumps(spec.model_dump(mode="json"), indent=2) + "\n")
+    atomic_write_text(spec_path, json.dumps(spec.model_dump(mode="json"), indent=2) + "\n")
 
     print(f"\nExperiment frozen: {spec.experiment_id}")
     for name, component in frozen.items():
@@ -1111,24 +1149,31 @@ def _experiment_freeze(args: argparse.Namespace) -> int:
 def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     """Record which batch answered which condition, and what was decided.
 
-    The plan is read, never written here. Recording cannot invent a condition:
-    a ``--condition`` naming something the spec does not declare is a usage
-    error, because a result that describes different arms than the plan is not
-    a result for that experiment.
+    The plan file itself is read, never written here. The first record of an
+    experiment stores a copy of the plan beside the result, and no later record
+    rewrites it. Recording again with a plan that differs from the stored one
+    is refused, because changing the plan after the numbers came in is exactly
+    what writing it first is meant to prevent.
+
+    Recording cannot invent a condition: a ``--condition`` naming something the
+    spec does not declare is a usage error, because a result that describes
+    different arms than the plan is not a result for that experiment. A batch
+    that ran another suite than the plan froze is refused for the same reason.
 
     Recording also recomputes the plan's frozen set (#195) and refuses, with
     the files listed, when anything differs. ``--allow-drift`` records anyway,
     marks the result drifted and forces its decision to review. A plan from
     schema 0.1.0 has no frozen set; it records, and the result says nothing
-    was checked.
+    was checked. Every refusal happens before anything is written.
     """
     from trace_harness.runner.batch import BatchSummary
     from trace_harness.runner.experiment import (
         DecidedBy,
         Decision,
         ExperimentResult,
-        UnknownConditionError,
+        check_frozen_suite,
         derive_metrics,
+        load_plan,
         render_experiment_markdown,
         validate_condition_batches,
     )
@@ -1146,22 +1191,37 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
 
     spec_path, spec = _load_experiment_plan(args.experiment_path)
 
+    stored_path = store.experiment_spec_path(spec.experiment_id)
+    stored = None
+    if stored_path.is_file():
+        try:
+            stored = load_plan(store.read_experiment_spec(spec.experiment_id))
+        except ValueError as exc:
+            raise CliInputError(f"{stored_path}: {exc}") from None
+        if stored.model_dump(mode="json") != spec.model_dump(mode="json"):
+            raise CliInputError(
+                f"{stored_path} already holds a different plan for {spec.experiment_id}. "
+                "A stored plan is never rewritten: record against that plan, or give "
+                "the changed plan a new experiment_id."
+            )
+
     condition_batches: dict[str, str] = {}
     for pair in args.condition or []:
         name, _, batch_id = pair.partition("=")
         if not name or not batch_id:
             raise CliInputError(f"--condition expects name=batch_id, got {pair!r}")
-        # A repeated name would silently keep the last batch given for it.
         if name in condition_batches:
+            raise CliInputError(f"--condition names {name!r} twice; each condition has one batch")
+        if batch_id in condition_batches.values():
             raise CliInputError(
-                f"--condition {name} is given twice ({condition_batches[name]} and {batch_id}); "
-                "each condition is answered by one batch"
+                f"--condition gives batch {batch_id} to two conditions; each batch answers one"
             )
         condition_batches[name] = batch_id
     try:
         validate_condition_batches(spec, condition_batches)
-    except UnknownConditionError as exc:
+    except ValueError as exc:
         raise CliInputError(str(exc)) from None
+    declared = {condition.name: condition for condition in spec.conditions}
 
     manifest = spec.frozen_manifest
     drift = _frozen_set_drift(
@@ -1173,20 +1233,34 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     )
 
     summaries = []
-    declared = {c.name: c for c in spec.conditions}
     for name, batch_id in condition_batches.items():
         try:
-            summary = store.read_batch_summary(batch_id)
+            summary = BatchSummary.model_validate(store.read_batch_summary(batch_id))
         except FileNotFoundError as exc:
             raise CliInputError(str(exc)) from None
-        # A branch batch names the condition it ran. Recording it under another
-        # name would swap the arms, and with them the two divergence rates.
-        produced_for = (summary.get("metadata") or {}).get("condition")
+        # A branch batch names the experiment and condition it ran. Recording
+        # it under another name would swap the arms, and with them the two
+        # divergence rates, and under another plan it answers a different
+        # question.
+        ran_for = summary.metadata.get("experiment_id")
+        if ran_for not in (None, spec.experiment_id):
+            raise CliInputError(
+                f"batch {batch_id} ran for experiment {ran_for!r} and cannot answer "
+                f"{spec.experiment_id!r}"
+            )
+        produced_for = summary.metadata.get("condition")
         if produced_for not in (None, name):
             raise CliInputError(
                 f"batch {batch_id} ran condition {produced_for!r} and cannot answer {name!r}"
             )
         summaries.append(summary)
+    try:
+        check_frozen_suite(
+            spec,
+            {name: s.suite_id for name, s in zip(condition_batches, summaries, strict=True)},
+        )
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from None
 
     # The live verdicts and B1 read each run's failed checks and their steps,
     # which a batch entry does not keep (#200).
@@ -1208,7 +1282,8 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         frozen_set_drifted=bool(drift),
         frozen_set_drift=drift,
     )
-    store.write_experiment_spec(spec.experiment_id, spec)
+    if stored is None:
+        store.write_experiment_spec(spec.experiment_id, spec)
     store.write_experiment_result(
         spec.experiment_id, result, markdown=render_experiment_markdown(spec, result, repair)
     )
@@ -1238,6 +1313,8 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         for pair in excluded:
             print(f"    {pair.kind} {pair.model} {pair.task_id} {pair.control}: {pair.excluded}")
     _print("repair effectiveness:", f"{len(repair.entries)} entr(ies) in {sidecar}")
+    if left_out := result.metrics.extra.get("live_fixture_batches_excluded"):
+        _print("left out:", f"{left_out} fixture batch(es) from the live metrics")
     _print("written:", str(store.experiment_dir(spec.experiment_id)))
     return 0
 
@@ -1297,6 +1374,7 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
         admit_before_any_run,
         already_recorded,
         calls_a_provider,
+        check_cassette_paths,
         experiment_guard,
         load_artifact,
         recorded_cassettes,
@@ -1305,13 +1383,12 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
         run_branch,
         validate_condition,
     )
-    from trace_harness.runner.experiment import ConditionKind, ExperimentSpec
+    from trace_harness.runner.experiment import ConditionKind
 
-    artifact_path, spec_path = Path(args.artifact_path), Path(args.experiment)
-    for path, what in ((artifact_path, "regression artifact"), (spec_path, "experiment plan")):
-        if not path.is_file():
-            raise CliInputError(f"{what} not found: {path}")
-    spec = ExperimentSpec.model_validate(json.loads(spec_path.read_text(encoding="utf-8")))
+    artifact_path = Path(args.artifact_path)
+    if not artifact_path.is_file():
+        raise CliInputError(f"regression artifact not found: {artifact_path}")
+    spec_path, spec = _load_experiment_plan(args.experiment)
     conditions = [c for c in spec.conditions if args.condition in (None, c.name)]
     if not conditions:
         declared = sorted(c.name for c in spec.conditions)
@@ -1319,6 +1396,9 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     artifact = load_artifact(artifact_path)
     for condition in conditions:
         validate_condition(artifact, condition)
+    # Recording never overwrites a cassette, so a collision found at a later
+    # seed would come after earlier seeds had spent.
+    check_cassette_paths(artifact, conditions)
     replacement_seeds(spec)
     # Recording never overwrites a cassette. A condition branched before would
     # end its seeds as setup errors, so it is refused before anything runs (#200).
@@ -1407,28 +1487,44 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
 
 
 def _list_experiments(store: ArtifactStore) -> int:
-    """One line per experiment, replacing any hand-kept spreadsheet of them."""
-    reader = RunReader(store)
-    specs = reader.list_experiments()
-    if not specs:
-        print(f"no experiments found in {store.runs_dir}")
+    """One line per experiment, replacing any hand-kept spreadsheet of them.
+
+    An experiment whose files do not load gets an ``unreadable`` line and its
+    error on stderr, and the rest are still listed. The exit code is 1 when any
+    was unreadable, so a script reading the list can tell. The reader is the
+    one ``TRACE_RUN_READER`` selects, so the hosted results list the same way.
+    """
+    reader = open_run_reader(store)
+    where = reader_location(reader)
+    specs = {spec.experiment_id: spec for spec in reader.list_experiments()}
+    failed = reader.unreadable_experiments()
+    experiment_ids = sorted({*specs, *failed})
+    if not experiment_ids:
+        print(f"no experiments found in {where}")
         return 0
-    for spec in specs:
-        _, result = reader.get_experiment(spec.experiment_id)
+    unreadable = 0
+    for experiment_id in experiment_ids:
+        if experiment_id in failed:
+            unreadable += 1
+            print(f"{experiment_id}  unreadable")
+            print(f"error: {experiment_id}: {failed[experiment_id]}", file=sys.stderr)
+            continue
+        spec, result = reader.get_experiment(experiment_id)
         decision = (
             f"{result.decision.value}/{result.decided_by.value}" if result else "not recorded"
         )
         conditions = ", ".join(c.name for c in spec.conditions)
         print(f"{spec.experiment_id}  {decision}  [{conditions}]  {spec.hypothesis[:60]}")
-    print(f"\n{len(specs)} experiment(s) in {store.runs_dir}")
-    return 0
+    summary = f"\n{len(experiment_ids)} experiment(s) in {where}"
+    print(summary + (f", {unreadable} unreadable" if unreadable else ""))
+    return 1 if unreadable else 0
 
 
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
     """Print a one-line summary per run, newest last (chronological)."""
-    reader = RunReader(store)
+    reader = open_run_reader(store)
     summaries = reader.list_runs_for_batch(batch_id) if batch_id else reader.list_runs()
-    where = f"batch {batch_id}" if batch_id else str(store.runs_dir)
+    where = f"batch {batch_id}" if batch_id else reader_location(reader)
     if not summaries:
         print(f"no runs found in {where}")
         return
@@ -1644,6 +1740,67 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
         return 1
     if agg.errored > 0 and any(config.cassette is not None for config in suite.agent_configs):
         return 2
+    return 0
+
+
+def _run_sweep(args: argparse.Namespace, store: ArtifactStore) -> int:
+    """Run a live sweep (#198) and print its summary."""
+    from trace_harness.runner.batch import BUDGET_UNENFORCEABLE
+    from trace_harness.runner.suite import load_suite
+    from trace_harness.runner.sweep import SWEEP_SUMMARY, load_sweep, run_sweep, sweep_dir
+
+    spec = load_sweep(args.sweep_path)
+    tasks = len(load_suite(spec.suite).tasks)
+    cells = tasks * len(spec.providers) * len(spec.seeds)
+    print(
+        f"\nRunning sweep '{spec.sweep_name}': {tasks} task(s) x {len(spec.providers)} "
+        f"provider(s) x {len(spec.seeds)} seed(s) = {cells} cell(s), "
+        f"capped at ${spec.max_cost_usd:.2f}"
+    )
+    summary = run_sweep(spec, store, spec_path=args.sweep_path)
+
+    print(f"\nSweep {summary.sweep_id} complete:")
+    for p in summary.providers:
+        _print(
+            f"{p.label} ({p.model}):",
+            f"{p.passed} passed / {p.failed} failed / {p.incomplete} incomplete / "
+            f"{p.not_run} not run · {p.flipped_tasks} flipped · ${p.cost_usd:.6f} · {p.batch_id}",
+        )
+    for c in summary.failing_cells:
+        _print(
+            f"{c.provider_label} seed {c.seed} / {c.task_id}",
+            f"{c.label} · {', '.join(c.failed_check_ids)} · {c.run_id}",
+        )
+    print()
+    _print("flipped tasks:", f"{summary.flipped_tasks} of {summary.task_count}")
+    _print("known cost:", f"${summary.cost_usd:.6f} ({summary.cost_recorded}/{summary.runs} runs)")
+    _print(
+        "verified failures:",
+        f"{summary.verified_failures} ({summary.natural_verified_failures} natural)",
+    )
+    for label, cost in (
+        ("per verified failure:", summary.cost_per_verified_failure),
+        ("per natural failure:", summary.cost_per_natural_verified_failure),
+    ):
+        _print(label, "n/a" if cost is None else f"${cost:.6f}")
+    budget = summary.budget
+    if budget is not None and budget.stop_reason is not None:
+        _print("stopped:", f"{budget.stop_reason}; {budget.detail}")
+        _print("not run:", f"{len(budget.not_run)} cell(s)")
+    _print("summary:", str(sweep_dir(store.runs_dir, summary.sweep_id) / SWEEP_SUMMARY))
+    if args.retain is not None:
+        _retain_sweep(store, summary.sweep_id, Path(args.retain))
+    if budget is not None and budget.stop_reason == BUDGET_UNENFORCEABLE:
+        return 2
+    return 0
+
+
+def _retain_sweep(store: ArtifactStore, sweep_id: str, root: Path) -> int:
+    """Retain a sweep's failing cells with their cassettes, replayed and scanned first."""
+    from trace_harness.runner.sweep_retention import retain_failing_cells
+
+    target = retain_failing_cells(store, sweep_id, root)
+    _print("retained:", "nothing failed, nothing to retain" if target is None else str(target))
     return 0
 
 
@@ -1993,7 +2150,7 @@ def main(argv: list[str] | None = None) -> int:
     p_exp_freeze.add_argument("experiment_path", help="path to the experiment plan JSON")
 
     sub.add_parser(
-        "list-experiments", parents=[common], help="list recorded experiments, oldest first"
+        "list-experiments", parents=[common], help="list recorded experiments in id order"
     )
 
     p_branch = sub.add_parser(
@@ -2032,6 +2189,29 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also write suite_report.json/.md (checks fired, failure categories, coverage gaps)",
     )
+
+    p_sweep = sub.add_parser(
+        "run-sweep",
+        parents=[common],
+        help="run every suite task under each live provider for each seed, recording cassettes",
+    )
+    p_sweep.add_argument("sweep_path", help="path to a sweep spec JSON (fixtures/sweeps/)")
+    p_sweep.add_argument(
+        "--retain",
+        nargs="?",
+        const="docs/acceptance/runs",
+        default=None,
+        metavar="ROOT",
+        help="retain failing cells with their cassettes under "
+        "ROOT/live-sweep-<date>-<suffix>/ (default ROOT docs/acceptance/runs)",
+    )
+    p_retain = sub.add_parser(
+        "retain-sweep",
+        parents=[common],
+        help="retain a finished sweep's failing cells with their cassettes",
+    )
+    p_retain.add_argument("sweep_id", help="sweep id under <runs-dir>/sweeps/")
+    p_retain.add_argument("--to", default="docs/acceptance/runs", metavar="ROOT")
 
     p_report = sub.add_parser(
         "report-suite",
@@ -2085,6 +2265,12 @@ def main(argv: list[str] | None = None) -> int:
         # A missing key or SDK is a setup problem, and the adapter's message
         # already says exactly what to do about it. Burying that under a
         # traceback helps nobody.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except PostgrestError as exc:
+        # TRACE_RUN_READER=supabase reads over HTTP. A project that cannot be
+        # reached or refuses the key is a setup problem, and the message
+        # already names the host and never the key.
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except (FileNotFoundError, KeyError, ValueError) as exc:
@@ -2154,6 +2340,10 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         return _branch(args, store)
     if args.command == "run-suite":
         return _run_suite(args, store)
+    if args.command == "run-sweep":
+        return _run_sweep(args, store)
+    if args.command == "retain-sweep":
+        return _retain_sweep(store, args.sweep_id, Path(args.to))
     if args.command == "collect-regressions":
         return _collect_regressions(args, store)
     if args.command == "report-suite":

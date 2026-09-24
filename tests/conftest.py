@@ -100,3 +100,16 @@ def missing_info_run(tmp_path: Path) -> FixtureRun:
 @pytest.fixture
 def no_refund_run(tmp_path: Path) -> FixtureRun:
     return run_task_fixture(NO_REFUND_TASK_PATH, tmp_path / "runs")
+
+
+@pytest.fixture(autouse=True)
+def _no_hosted_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test on the filesystem reader and away from any Supabase project.
+
+    The CLI loads ``.env`` without overriding variables that are already set,
+    so pinning the backend here also beats a developer's ``.env``. Tests of the
+    Supabase backend pass their own environment mapping and transport.
+    """
+    monkeypatch.setenv("TRACE_RUN_READER", "filesystem")
+    for name in ("TRACE_SUPABASE_URL", "TRACE_SUPABASE_ANON_KEY", "TRACE_SUPABASE_SERVICE_KEY"):
+        monkeypatch.setenv(name, "")
