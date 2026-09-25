@@ -1072,12 +1072,16 @@ class RefundPolicyVerifier(Verifier):
         if escalations:
             return None  # escalation exists → check passes
 
-        # Cite the final-answer step if available.
-        step_ids = [
-            e.step_id
+        # Cite the answer that closed the case. A blocked answer never reached
+        # the customer and the run went on after it, so it is cited only when
+        # no answer stood, as every attempt to close without escalating.
+        answers = [
+            e
             for e in trace
             if e.event_type is TraceEventType.FINAL_ANSWER and e.step_id is not None
         ]
+        given = [e for e in answers if not e.payload.get("blocked_by")]
+        step_ids = [e.step_id for e in given or answers]
         entry = SEVERITY_MAP["required_escalation_missing"]
         return FailedCheck(
             check_id="required_escalation_missing",

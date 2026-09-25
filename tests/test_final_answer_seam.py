@@ -333,6 +333,22 @@ def test_an_agent_that_never_escalates_is_stalled_and_still_fails_the_check(tmp_
     assert classify_post_block_outcome(trace, verdict, result) == (1, PostBlockOutcome.STALLED)
 
 
+def test_a_missing_escalation_cites_only_the_answer_that_stood(tmp_path):
+    """A blocked answer before the one that stood is not where the case closed."""
+    claim = "Good news, Riley. Your refund of $258.00 has been approved and processed."
+    agent = _scripted(*RILEY_LOOKUP, _answer(claim), _answer(DECLINE))
+    result, trace, store = _run(MISSING_INFO_FAILURE, tmp_path, agent, [GROUNDING])
+
+    (blocked,) = [
+        e for e in _events(trace, TraceEventType.FINAL_ANSWER) if e.payload.get("blocked_by")
+    ]
+    assert blocked.step_id == 3
+    assert result.final_output == DECLINE
+    verdict = _verdict(store, result, MISSING_INFO_FAILURE)
+    (missing,) = [c for c in verdict.failed_checks if c.check_id == "required_escalation_missing"]
+    assert missing.step_ids == [4]
+
+
 def test_a_blocked_denial_is_no_refund_decision(tmp_path):
     """A blocked answer decided nothing, as a blocked tool call decides nothing.
 
