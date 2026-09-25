@@ -27,9 +27,11 @@ the dashboard/API see the same data the pipeline used.
 
 Exit codes: 0 success; 1 with --fail-on-verifier (CI gate mode) when a run
 failed verification or did not complete, and for ``run-suite`` also when a run
-errored or the suite budget stopped the batch before every cell ran; 2 usage
-or input errors (argparse errors, bad paths, malformed fixtures, missing
-artifacts, cassette errors, a suite budget cap that cannot be enforced).
+errored or the suite budget stopped the batch before every cell ran, and from
+``list-experiments`` when an experiment's files do not load; 2 usage or input
+errors (argparse errors, bad paths, malformed fixtures, missing artifacts,
+cassette errors, a suite budget cap that cannot be enforced, hosted public
+results that refuse or cannot be reached when TRACE_RUN_READER=supabase).
 Without the flag a verified failure exits 0, since finding failures is this
 tool succeeding.
 
@@ -71,6 +73,7 @@ from trace_harness.models import (
 from trace_harness.models.base import ProviderNotConfiguredError
 from trace_harness.models.cassette import CassetteConfig, RecordingModelAdapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
+from trace_harness.public_results.postgrest import PostgrestError
 from trace_harness.regression.promotion import LibraryGateError, commit_controls
 from trace_harness.regression.repair_validation import (
     ControlValidation,
@@ -88,7 +91,7 @@ from trace_harness.regression.replay import (
 from trace_harness.regression.replay import pinned_script as build_pinned_script
 from trace_harness.regression.report import ReplayCaseResult, ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
-from trace_harness.run_reader import RunReader
+from trace_harness.run_readers import open_run_reader, reader_location
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.batch import new_batch_id
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
@@ -1435,37 +1438,40 @@ def _list_experiments(store: ArtifactStore) -> int:
 
     An experiment whose files do not load gets an ``unreadable`` line and its
     error on stderr, and the rest are still listed. The exit code is 1 when any
-    was unreadable, so a script reading the list can tell.
+    was unreadable, so a script reading the list can tell. The reader is the
+    one ``TRACE_RUN_READER`` selects, so the hosted results list the same way.
     """
-    reader = RunReader(store)
-    experiment_ids = store.list_experiments()
+    reader = open_run_reader(store)
+    where = reader_location(reader)
+    specs = {spec.experiment_id: spec for spec in reader.list_experiments()}
+    failed = reader.unreadable_experiments()
+    experiment_ids = sorted({*specs, *failed})
     if not experiment_ids:
-        print(f"no experiments found in {store.runs_dir}")
+        print(f"no experiments found in {where}")
         return 0
     unreadable = 0
     for experiment_id in experiment_ids:
-        try:
-            spec, result = reader.get_experiment(experiment_id)
-        except (OSError, ValueError) as exc:
+        if experiment_id in failed:
             unreadable += 1
             print(f"{experiment_id}  unreadable")
-            print(f"error: {experiment_id}: {exc}", file=sys.stderr)
+            print(f"error: {experiment_id}: {failed[experiment_id]}", file=sys.stderr)
             continue
+        spec, result = reader.get_experiment(experiment_id)
         decision = (
             f"{result.decision.value}/{result.decided_by.value}" if result else "not recorded"
         )
         conditions = ", ".join(c.name for c in spec.conditions)
         print(f"{spec.experiment_id}  {decision}  [{conditions}]  {spec.hypothesis[:60]}")
-    summary = f"\n{len(experiment_ids)} experiment(s) in {store.runs_dir}"
+    summary = f"\n{len(experiment_ids)} experiment(s) in {where}"
     print(summary + (f", {unreadable} unreadable" if unreadable else ""))
     return 1 if unreadable else 0
 
 
 def _list_runs(store: ArtifactStore, batch_id: str | None = None) -> None:
     """Print a one-line summary per run, newest last (chronological)."""
-    reader = RunReader(store)
+    reader = open_run_reader(store)
     summaries = reader.list_runs_for_batch(batch_id) if batch_id else reader.list_runs()
-    where = f"batch {batch_id}" if batch_id else str(store.runs_dir)
+    where = f"batch {batch_id}" if batch_id else reader_location(reader)
     if not summaries:
         print(f"no runs found in {where}")
         return
@@ -2206,6 +2212,12 @@ def main(argv: list[str] | None = None) -> int:
         # A missing key or SDK is a setup problem, and the adapter's message
         # already says exactly what to do about it. Burying that under a
         # traceback helps nobody.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except PostgrestError as exc:
+        # TRACE_RUN_READER=supabase reads over HTTP. A project that cannot be
+        # reached or refuses the key is a setup problem, and the message
+        # already names the host and never the key.
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except (FileNotFoundError, KeyError, ValueError) as exc:

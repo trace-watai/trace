@@ -119,9 +119,10 @@ for every contract and a sub-second offline test suite.
 - **Attribution** — rule-based, confidence-capped; the LLM judge comes
   later and must beat this baseline.
 - **API & dashboard** — the first failure card and aligned artifact contracts
-  are implemented; multi-run loading, the trace timeline, repair/regression
-  panels, and an API wrapper over `RunReader` remain:
-  [docs/future_api.md](docs/future_api.md),
+  are implemented; multi-run loading, the trace timeline, and repair/regression
+  panels remain. Retained results are hosted in Supabase for public reads, and
+  a local API wrapper over `RunReader` stays a plan:
+  [docs/public_results.md](docs/public_results.md),
   [docs/future_dashboard.md](docs/future_dashboard.md).
 - **Replay** — pinned state, documents, normalized agent actions, verifier
   checks, controls, and positive siblings are executable. Wider task-family

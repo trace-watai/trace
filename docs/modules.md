@@ -321,6 +321,26 @@ dashboard renders every run on one page. Method and numbers are in
 provider responses, retries, and future sub-agent spans; storage backend
 interfaces once local JSON demonstrably hurts.
 
+## public_results/ and run_reader_supabase.py, the hosted copy *(Evaluation Systems)*
+
+**What belongs here:** everything that puts the retained evidence under
+`docs/acceptance/` in Supabase and reads it back. `schema.py` names the tables
+from `supabase/migrations/` and versions them, `postgrest.py` is a standard
+library PostgREST client, `retained.py` stages the retained tree as one runs
+directory, `rows.py` builds rows from `RunReader` answers, `upload.py` is the
+idempotent uploader the `publish-results` CI job runs, and `secret_scan.py`
+refuses to publish a key, running the shared `trace_harness/secret_scan.py`
+over the retained tree and every cassette folder. `run_reader_supabase.py` is the read side, and
+`run_readers.py` picks a backend from `TRACE_RUN_READER`.
+
+**Rules:** the hosted set is what `RunReader` serves, and rows are built only
+from `RunReader` calls. `SupabaseRunReader` keeps every `RunReader` signature,
+which a test enforces. The filesystem reader stays the default. A table change
+is a new migration and a `RESULTS_SCHEMA_VERSION` bump, and an applied
+migration is never edited. Tests use synthesized PostgREST responses and a
+throwaway Postgres, and no test reaches a live project. See
+[public_results.md](public_results.md).
+
 ## verifiers/ — deterministic pass/fail *(Karan Gupta)*
 
 **What belongs here:** code that decides whether a finished run was

@@ -288,8 +288,13 @@ class RunReader:
 
         None when the run holds its own bundle or was never bundled. The
         pointer's ``canonical_run_id`` names the run holding the card, as
-        :meth:`ArtifactStore.bundle_home` resolves it.
+        :meth:`ArtifactStore.bundle_home` resolves it. A run that holds a card
+        of its own is its own home, so a pointer left beside that card is
+        ignored here as it is there.
         """
+        self._require_run(run_id)
+        if self.store.exists(run_id, names.FAILURE_CARD):
+            return None
         ref = self._read_optional(run_id, names.BUNDLE_REF, BundleRef)
         return ref if isinstance(ref, BundleRef) else None
 

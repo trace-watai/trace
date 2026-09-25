@@ -1,0 +1,508 @@
+"""The uploader and the key scan that runs before it.
+
+The uploader is driven against the in-memory PostgREST stand-in from
+tests/postgrest_fake.py, loaded with rows built from the real retained tree.
+Nothing opens a socket. Idempotence is checked on the stand-in here and on the
+temp Postgres cluster in test_public_results_sql.py.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import urllib.parse
+from pathlib import Path
+
+import pytest
+
+import postgrest_fake as fake
+from trace_harness.public_results import schema, secret_scan
+from trace_harness.public_results.postgrest import PostgrestClient, PostgrestError
+from trace_harness.public_results.upload import (
+    UploadError,
+    main,
+    prepare_rows,
+    request_chunks,
+    upload,
+)
+from trace_harness.secret_scan import SHAPES, files_under, readings, scan_paths, scan_text
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ACCEPTANCE = REPO_ROOT / "docs" / "acceptance"
+ENV = {"TRACE_SUPABASE_URL": fake.BASE_URL, "TRACE_SUPABASE_SERVICE_KEY": fake.SERVICE_KEY}
+# Counted from the tree, independently of the stager, so evidence retained
+# anywhere under docs/acceptance/ (inside an experiment folder too) is expected.
+RETAINED_RUNS = len(list(ACCEPTANCE.rglob("run_result.json")))
+
+
+@pytest.fixture(scope="module")
+def rows(tmp_path_factory: pytest.TempPathFactory) -> dict[str, list[dict]]:
+    return prepare_rows(ACCEPTANCE, tmp_path_factory.mktemp("upload") / "staged")
+
+
+def writer(server: fake.MemoryPostgrest) -> PostgrestClient:
+    return PostgrestClient(fake.BASE_URL, fake.SERVICE_KEY, transport=server)
+
+
+def hosted_equals(server: fake.MemoryPostgrest, rows: dict[str, list[dict]]) -> bool:
+    for table, table_rows in rows.items():
+        key = schema.PRIMARY_KEYS[table]
+        expected = {r[key]: json.loads(json.dumps(r)) for r in table_rows}
+        if server.tables[table] != expected:
+            return False
+    return True
+
+
+# --- idempotence --------------------------------------------------------------
+
+
+def test_first_upload_hosts_every_retained_row(rows) -> None:
+    server = fake.MemoryPostgrest()
+    plans = upload(writer(server), rows)
+    assert hosted_equals(server, rows)
+    assert all(len(p.inserts) == p.retained and not p.updates for p in plans)
+    assert {p.table for p in plans} == set(schema.PRIMARY_KEYS)
+
+
+def test_a_rerun_sends_no_write_and_changes_nothing(rows) -> None:
+    server = fake.MemoryPostgrest()
+    upload(writer(server), rows)
+    before, writes = server.snapshot(), len(server.writes())
+
+    plans = upload(writer(server), rows, prune=True)
+
+    assert len(server.writes()) == writes, "a rerun wrote"
+    assert server.snapshot() == before
+    assert all(p.unchanged == p.retained and not p.upserts and not p.orphans for p in plans)
+
+
+def test_rewriting_every_row_on_its_natural_key_changes_nothing(rows) -> None:
+    """If the hash check were bypassed, the upsert itself is still idempotent."""
+    server = fake.MemoryPostgrest()
+    upload(writer(server), rows)
+    before = server.snapshot()
+    client = writer(server)
+    for table, table_rows in rows.items():
+        client.upsert(table, table_rows, on_conflict=schema.PRIMARY_KEYS[table])
+    assert server.snapshot() == before
+
+
+def test_only_changed_rows_are_rewritten(rows) -> None:
+    server = fake.MemoryPostgrest()
+    upload(writer(server), rows)
+    stale_id = rows[schema.RUNS][3]["run_id"]
+    server.tables[schema.RUNS][stale_id]["content_sha256"] = "0" * 64
+    server.tables[schema.RUNS][stale_id]["summary"] = {"stale": True}
+    writes = len(server.writes())
+
+    plans = upload(writer(server), rows)
+
+    runs = next(p for p in plans if p.table == schema.RUNS)
+    assert [r["run_id"] for r in runs.updates] == [stale_id] and not runs.inserts
+    posted = server.writes()[writes:]
+    assert [(p.method, p.table, [r["run_id"] for r in p.body]) for p in posted] == [
+        ("POST", schema.RUNS, [stale_id])
+    ]
+    assert hosted_equals(server, rows)
+
+
+def test_rows_no_longer_retained_are_pruned_only_when_asked(rows) -> None:
+    server = fake.MemoryPostgrest()
+    upload(writer(server), rows)
+    ghost = rows[schema.EXPERIMENTS][0] | {"experiment_id": "exp_removed_from_main"}
+    server.tables[schema.EXPERIMENTS]["exp_removed_from_main"] = ghost
+
+    plans = upload(writer(server), rows)
+    assert next(p for p in plans if p.table == schema.EXPERIMENTS).orphans == [
+        "exp_removed_from_main"
+    ]
+    assert "exp_removed_from_main" in server.tables[schema.EXPERIMENTS]
+
+    upload(writer(server), rows, prune=True)
+    assert hosted_equals(server, rows)
+
+
+def test_prune_refuses_an_empty_retained_set(rows) -> None:
+    server = fake.MemoryPostgrest()
+    upload(writer(server), rows)
+    before, writes = server.snapshot(), len(server.writes())
+    with pytest.raises(UploadError, match="to zero rows"):
+        upload(writer(server), {table: [] for table in rows}, prune=True)
+    assert server.snapshot() == before and len(server.writes()) == writes
+
+
+@pytest.mark.parametrize("table", sorted(schema.PRIMARY_KEYS))
+@pytest.mark.parametrize("dry_run", [False, True], ids=["upload", "dry-run"])
+def test_prune_refuses_to_empty_any_one_table(rows, table: str, dry_run: bool) -> None:
+    """One kind of evidence lost in staging must not wipe its hosted table."""
+    server = fake.MemoryPostgrest()
+    upload(writer(server), rows)
+    before, writes = server.snapshot(), len(server.writes())
+    partial = rows | {table: []}
+    hosted = len(rows[table])
+
+    with pytest.raises(UploadError, match=rf"refusing to prune {table} \({hosted} hosted\)"):
+        upload(writer(server), partial, prune=True, dry_run=dry_run)
+    assert server.snapshot() == before and len(server.writes()) == writes
+
+    upload(writer(server), partial)  # Without --prune the rows stay.
+    assert server.snapshot() == before
+
+
+def test_prune_empties_a_table_only_when_allowed(rows) -> None:
+    server = fake.MemoryPostgrest()
+    upload(writer(server), rows)
+    partial = rows | {schema.EXPERIMENTS: []}
+    plans = upload(writer(server), partial, prune=True, allow_empty_prune=True)
+    assert server.tables[schema.EXPERIMENTS] == {}
+    assert hosted_equals(server, partial)
+    assert next(p for p in plans if p.table == schema.EXPERIMENTS).orphans
+    # Nothing hosted and nothing retained is no prune at all.
+    upload(writer(server), partial, prune=True)
+
+
+def test_main_refuses_a_prune_to_zero_rows_until_allowed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    server = fake.MemoryPostgrest()
+    assert main([str(ACCEPTANCE)], env=ENV, transport=server) == 0
+    only_a_run = tmp_path / "retained"
+    first = next(ACCEPTANCE.rglob("run_result.json")).parent
+    shutil.copytree(first, only_a_run / first.name)
+    capsys.readouterr()
+    writes = len(server.writes())
+
+    assert main([str(only_a_run), "--prune"], env=ENV, transport=server) == 1
+    err = capsys.readouterr().err
+    assert "refusing to prune" in err and "--allow-empty-prune" in err
+    assert len(server.writes()) == writes
+
+    assert main([str(only_a_run), "--allow-empty-prune"], env=ENV, transport=server) == 2
+    assert "--allow-empty-prune needs --prune" in capsys.readouterr().err
+    assert main([str(only_a_run), "--prune", "--allow-empty-prune"], env=ENV, transport=server) == 0
+    assert list(server.tables[schema.RUNS]) == [first.name]
+    assert not server.tables[schema.BATCHES] and not server.tables[schema.EXPERIMENTS]
+
+
+def test_dry_run_plans_without_writing(rows) -> None:
+    server = fake.MemoryPostgrest()
+    plans = upload(writer(server), rows, dry_run=True)
+    assert sum(len(p.inserts) for p in plans) == sum(len(r) for r in rows.values())
+    assert not server.writes()
+
+
+def test_request_bodies_stay_under_the_limit(rows) -> None:
+    server = fake.MemoryPostgrest()
+    bodies: list[bytes] = []
+
+    def spy(request):
+        if request.method == "POST":
+            bodies.append(request.body)
+        return server(request)
+
+    upload(
+        PostgrestClient(fake.BASE_URL, fake.SERVICE_KEY, transport=spy),
+        rows,
+        max_request_bytes=200_000,
+    )
+    assert len(bodies) > len(rows)  # The runs table needed several requests.
+    for body in bodies:
+        assert len(body) <= 200_000 or len(json.loads(body)) == 1
+    assert hosted_equals(server, rows)
+    big = rows[schema.RUNS][0]
+    assert request_chunks([big, big], max_bytes=10) == [[big], [big]]
+
+
+def test_a_card_that_changes_rewrites_its_own_row_and_no_reproduction(tmp_path: Path) -> None:
+    root = fake.retained_with_reproduction(tmp_path / "retained")
+    _, _, first = fake.reproduction_rows(root, tmp_path / "staged")
+    server = fake.MemoryPostgrest()
+    upload(writer(server), first)
+    card_path = root / "runs" / fake.CARD_RUN / "failure_card.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card["metadata"] = card["metadata"] | {"occurrences_seen": 2}
+    card_path.write_text(json.dumps(card), encoding="utf-8")
+
+    _, _, second = fake.reproduction_rows(root, tmp_path / "staged_again")
+    plans = upload(writer(server), second)
+
+    runs = next(p for p in plans if p.table == schema.RUNS)
+    assert [r["run_id"] for r in runs.updates] == [fake.CARD_RUN] and not runs.inserts
+    hosted = server.tables[schema.RUNS]
+    assert hosted[fake.CARD_RUN]["failure_card"]["metadata"]["occurrences_seen"] == 2
+    assert hosted[fake.REPRODUCTION_RUN]["failure_card"] is None
+
+
+def test_main_refuses_a_reproduction_whose_card_is_not_retained(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = fake.retained_with_reproduction(tmp_path / "retained", with_card_run=False)
+    server = fake.MemoryPostgrest()
+    assert main([str(root)], env=ENV, transport=server) == 2
+    err = capsys.readouterr().err
+    assert f"'{fake.CARD_RUN}' is not retained" in err and fake.REPRODUCTION_RUN in err
+    assert not server.requests
+
+
+def test_main_refuses_an_experiment_that_does_not_load(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Publishing would leave it out, and a prune would then delete its hosted row."""
+    root = tmp_path / "retained"
+    shutil.copytree(ACCEPTANCE / "experiments", root / "experiments")
+    plan = root / "experiments" / "exp_000_baseline" / "experiment.json"
+    data = json.loads(plan.read_text(encoding="utf-8"))
+    del data["created_at"]
+    plan.write_text(json.dumps(data), encoding="utf-8")
+    server = fake.MemoryPostgrest()
+    assert main([str(root), "--prune"], env=ENV, transport=server) == 2
+    err = capsys.readouterr().err
+    assert "1 retained experiment(s) do not load" in err
+    assert "exp_000_baseline: an experiment plan file must state created_at" in err
+    assert not server.requests
+
+
+# --- refusals -----------------------------------------------------------------
+
+
+def test_a_project_without_the_schema_version_is_refused_before_any_write(rows) -> None:
+    server = fake.MemoryPostgrest()
+    server.tables[schema.SCHEMA_VERSIONS].clear()
+    with pytest.raises(UploadError, match=r"does not have public results SQL schema 0\.1\.0"):
+        upload(writer(server), rows)
+    assert not server.writes()
+
+
+def test_the_anonymous_key_cannot_write(rows) -> None:
+    server = fake.MemoryPostgrest()
+    anon = PostgrestClient(fake.BASE_URL, fake.ANON_KEY, transport=server)
+    with pytest.raises(PostgrestError) as refused:
+        upload(anon, rows)
+    assert (refused.value.status, refused.value.code) == (401, "42501")
+    assert all(not table for name, table in server.tables.items() if name in schema.PRIMARY_KEYS)
+
+
+def test_main_publishes_then_reports_nothing_to_do(capsys: pytest.CaptureFixture[str]) -> None:
+    server = fake.MemoryPostgrest()
+    assert main([str(ACCEPTANCE), "--prune"], env=ENV, transport=server) == 0
+    first = capsys.readouterr().out
+    assert f"published to {fake.BASE_URL}" in first
+    writes = len(server.writes())
+    assert main([str(ACCEPTANCE), "--prune"], env=ENV, transport=server) == 0
+    second = capsys.readouterr().out
+    assert f"nothing to publish, {fake.BASE_URL} already matches" in second
+    runs = RETAINED_RUNS
+    assert f"runs: {runs} retained, 0 new, 0 changed, {runs} unchanged, 0 pruned" in second
+    assert len(server.writes()) == writes
+    assert fake.SERVICE_KEY not in first + second
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({}, "TRACE_SUPABASE_URL and TRACE_SUPABASE_SERVICE_KEY must be set"),
+        (ENV | {"TRACE_SUPABASE_SERVICE_KEY": fake.ANON_KEY}, "holds the anonymous key"),
+        (ENV | {"TRACE_SUPABASE_SERVICE_KEY": fake.make_jwt("anon")}, "holds the anonymous key"),
+        (ENV | {"TRACE_SUPABASE_URL": "http://x.supabase.co"}, "https://"),
+        (ENV | {"TRACE_SUPABASE_URL": "https://x.supabase.co:abc"}, "invalid port"),
+    ],
+    ids=["unset", "publishable", "legacy-anon", "plain-http", "bad-port"],
+)
+def test_main_refuses_bad_configuration_before_any_request(
+    env: dict, message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    server = fake.MemoryPostgrest()
+    assert main([str(ACCEPTANCE)], env=env, transport=server) == 2
+    assert message in capsys.readouterr().err
+    assert not server.requests
+
+
+def test_main_reports_a_refusal_with_exit_1(capsys: pytest.CaptureFixture[str]) -> None:
+    server = fake.MemoryPostgrest()
+    server.tables[schema.SCHEMA_VERSIONS].clear()
+    assert main([str(ACCEPTANCE)], env=ENV, transport=server) == 1
+    assert "Apply the migrations" in capsys.readouterr().err
+
+
+def test_offline_builds_and_dumps_without_a_request(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_network(request):  # pragma: no cover - failing is the point
+        raise AssertionError(f"offline mode sent {request.method} {request.url}")
+
+    assert (
+        main([str(ACCEPTANCE), "--offline", "--dump", str(tmp_path)], env={}, transport=no_network)
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert f"runs: {RETAINED_RUNS} rows" in out
+    dumped = json.loads((tmp_path / "runs.json").read_text(encoding="utf-8"))
+    assert len(dumped) == RETAINED_RUNS and tuple(dumped[0]) == schema.COLUMNS[schema.RUNS]
+
+
+# --- the key scan -------------------------------------------------------------
+
+# One planted sample per kind the shared scanner (trace_harness.secret_scan)
+# knows, built at run time so no key-shaped literal sits in the repository.
+PLANTED = {
+    "Google API key": "AIza" + "B" * 35,
+    "Google AQ. key": "AQ." + "Ab8RN6" * 5,
+    "Anthropic key": "sk-ant-" + "api03-" + "x" * 30,
+    "OpenAI key": "sk-" + "proj-" + "Y" * 40,
+    "Supabase secret key": "sb_" + "secret_" + "Z" * 32,
+    "Supabase access token": "sbp_" + "a1" * 20,
+    "JWT": ".".join(["eyJ" + "h" * 20, "eyJ" + "p" * 30, "s" * 43]),
+    "GitHub token": "ghp_" + "G" * 36,
+    "AWS access key id": "AKIA" + "Q" * 16,
+    "private key": "-----BEGIN " + "RSA PRIVATE KEY-----",
+    "bearer token": "Bearer " + "b" * 24,
+    "authorization header": '"Authorization": "Bearer ' + "t" * 24 + '"',
+    "API key header": '"x-goog-api-key": "' + "k" * 39 + '"',
+    "auth header field": '"x-api-key": "' + "redacted" + '"',
+}
+
+
+# How a key can sit in a retained file. A cassette or trace stores a model's
+# text as a JSON string, sometimes JSON inside JSON, and a URL stores it
+# percent-encoded, so the character before the key is often the letter of an
+# escape (the n of \n, the 0 of %20) and a pattern anchored on a word
+# boundary would not start there. Each shape is built with the real encoder.
+ENCODED = {
+    "json newline": lambda secret: json.dumps({"text": "line one\n" + secret}),
+    "json tab": lambda secret: json.dumps({"text": "cell\t" + secret}),
+    "json in json": lambda secret: json.dumps({"raw": json.dumps({"text": "a\n" + secret})}),
+    "json unicode": lambda secret: json.dumps({"text": "caf\u00e9\u00a0" + secret}),
+    "percent-encoded": lambda secret: "GET /v1?q=" + urllib.parse.quote("a " + secret, safe=""),
+    "percent in json": lambda secret: json.dumps(
+        {"url": "https://x.invalid/?q=" + urllib.parse.quote("a\n" + secret, safe="")}
+    ),
+}
+
+
+def test_every_kind_the_shared_scanner_knows_has_a_planted_sample() -> None:
+    assert set(PLANTED) == {kind for kind, _ in SHAPES}
+
+
+@pytest.mark.parametrize("name", sorted(PLANTED))
+def test_a_planted_key_is_caught_and_never_printed(
+    name: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret = PLANTED[name]
+    cassette = tmp_path / "cassettes" / "provider" / "default.jsonl"
+    cassette.parent.mkdir(parents=True)
+    cassette.write_text('{"ok": 1}\n{"request": {"note": "x ' + secret + ' y"}}\n', "utf-8")
+
+    assert secret_scan.main([str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert f"default.jsonl:2: {name}" in err
+    assert secret not in err
+
+
+@pytest.mark.parametrize("shape", sorted(ENCODED))
+@pytest.mark.parametrize("name", sorted(PLANTED))
+def test_a_key_behind_an_escape_is_caught_and_never_printed(
+    name: str, shape: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret = PLANTED[name]
+    line = ENCODED[shape](secret)
+    trace = tmp_path / "run_x" / "trace.jsonl"
+    trace.parent.mkdir()
+    trace.write_text('{"step": 0}\n' + line + "\n", "utf-8")
+
+    hits = scan_text(trace.read_text("utf-8"), "trace.jsonl")
+    assert [(h.line, h.kind) for h in hits if h.kind == name] == [(2, name)], hits
+    assert secret_scan.main([str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert f"trace.jsonl:2: {name}" in err
+    assert secret not in err and line not in err
+
+
+def test_readings_decode_json_and_percent_escapes() -> None:
+    assert readings(r"a\nb\tc\u00e9\"d\"\/")[-1] == 'a\nb\tc\u00e9"d"/'
+    assert readings(r"x\\\\ny")[-1] == "x\ny"  # Three levels of JSON.
+    assert readings("q=a%20b%2Fc%0A")[-1] == "q=a b/c\n"
+    assert readings("%5Cn")[-1] == "\n"  # A JSON escape inside a URL.
+    assert readings(r"lone \ and 100% sure") == [r"lone \ and 100% sure"]
+
+
+def test_a_key_seen_in_both_readings_is_reported_once_per_line() -> None:
+    for name in ("Google API key", "Google AQ. key"):
+        secret = PLANTED[name]
+        line = json.dumps({"a": secret, "b": "x\n" + secret})
+        assert [h.kind for h in scan_text(line, "f")] == [name]
+
+
+def test_a_clean_tree_passes_and_a_missing_path_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "trace.jsonl").write_text('{"task": "sk-", "AQ.": 1, "api_key": null}\n')
+    assert secret_scan.main([str(tmp_path)]) == 0
+    assert secret_scan.main([str(tmp_path / "typo")]) == 2
+    assert "not found" in capsys.readouterr().err
+
+
+def test_a_provider_key_value_set_in_the_environment_is_caught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A key of no known shape is still found by its value, as retention finds it."""
+    value = "plain-value-of-no-known-shape-123"
+    monkeypatch.setenv("OPENAI_API_KEY", value)
+    (tmp_path / "trace.jsonl").write_text(json.dumps({"text": "x\n" + value}) + "\n")
+    assert secret_scan.main([str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert "trace.jsonl:1: value of OPENAI_API_KEY" in err and value not in err
+
+
+def test_the_retained_tree_and_every_cassette_folder_hold_no_key() -> None:
+    targets = secret_scan.default_targets(REPO_ROOT)
+    assert ACCEPTANCE in targets
+    assert REPO_ROOT / "fixtures" / "cassettes" in targets
+    assert len(files_under(targets)) > 100
+    hits = scan_paths(targets)
+    assert hits == [], "\n".join(str(h) for h in hits)
+
+
+# --- the publish job ----------------------------------------------------------
+
+
+def _publish_job() -> str:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "integration-ci.yml").read_text("utf-8")
+    start = workflow.index("\n  publish-results:\n")
+    rest = workflow[start + 1 :]
+    following = list(re.finditer(r"^  [a-z][a-z-]*:\n", rest, re.M))[1:]
+    return rest[: following[0].start()] if following else rest
+
+
+def test_publish_job_runs_on_main_after_both_gates_and_skips_without_secrets() -> None:
+    job = _publish_job()
+    assert "    needs: [backend, dashboard]\n" in job
+    assert "    if: github.ref == 'refs/heads/main' && github.event_name == 'push'\n" in job
+    job_env = job.split("\n    env:\n", 1)[1].split("\n    steps:\n", 1)[0]
+    assert job_env.strip() == (
+        "PUBLISH: ${{ secrets.TRACE_SUPABASE_URL != '' && "
+        "secrets.TRACE_SUPABASE_SERVICE_KEY != '' }}"
+    ), "the job env may hold only the PUBLISH flag, never a secret's value"
+    steps = job.split("\n      - ")[1:]
+    assert "if: env.PUBLISH != 'true'" in steps[0], "the first step reports the skip"
+    for step in steps[1:]:
+        assert "if: env.PUBLISH == 'true'" in step, step
+    scan = next(i for i, step in enumerate(steps) if "public_results.secret_scan" in step)
+    push = next(i for i, step in enumerate(steps) if "public_results.upload" in step)
+    assert scan < push, "the key scan must run before the upload"
+    assert "public_results.upload docs/acceptance --prune" in steps[push]
+    assert "--allow-empty-prune" not in job
+    assert "stale == 'false'" in steps[push] and "stale == 'false'" in steps[scan]
+
+
+def test_only_the_upload_step_sees_the_supabase_secrets() -> None:
+    """Checkout, pip install and the key scan run without the service key in their env."""
+    steps = _publish_job().split("\n      - ")[1:]
+    reading = [i for i, step in enumerate(steps) if "${{ secrets." in step]
+    push = next(i for i, step in enumerate(steps) if "public_results.upload" in step)
+    assert reading == [push]
+    step_env = steps[push].split("\n        env:\n", 1)[1].split("\n        run:", 1)[0]
+    assert sorted(line.strip() for line in step_env.splitlines()) == [
+        "TRACE_SUPABASE_SERVICE_KEY: ${{ secrets.TRACE_SUPABASE_SERVICE_KEY }}",
+        "TRACE_SUPABASE_URL: ${{ secrets.TRACE_SUPABASE_URL }}",
+    ]

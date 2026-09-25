@@ -624,18 +624,26 @@ class ArtifactStore:
 
         That is ``run_id`` itself when it holds a failure card, the run its
         ``bundle_ref.json`` names when it reproduced an earlier card, and None
-        when it was never bundled. A pointer naming anything but a sibling run
-        directory raises ValueError.
+        when it was never bundled. A pointer that does not load, or names
+        anything but a sibling run directory, raises ValueError naming the run.
         """
         if self.exists(run_id, FAILURE_CARD):
             return run_id
         if not self.exists(run_id, BUNDLE_REF):
             return None
-        data = self.read_json(run_id, BUNDLE_REF)
+        try:
+            data = self.read_json(run_id, BUNDLE_REF)
+        except ValueError as exc:
+            raise ValueError(f"{BUNDLE_REF} for run '{run_id}' does not load: {exc}") from None
         canonical = data.get("canonical_run_id") if isinstance(data, dict) else None
         if not isinstance(canonical, str):
             raise ValueError(f"{BUNDLE_REF} for run '{run_id}' names no canonical_run_id")
-        return safe_run_dir_name(canonical)
+        try:
+            return safe_run_dir_name(canonical)
+        except ValueError as exc:
+            raise ValueError(
+                f"{BUNDLE_REF} for run '{run_id}' names no usable run: {exc}"
+            ) from None
 
     def bundle_homes(self, run_ids: Iterable[str]) -> dict[str, str]:
         """Map each bundled run in ``run_ids`` to the run whose directory holds its bundle.
