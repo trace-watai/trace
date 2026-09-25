@@ -74,9 +74,11 @@ class RegisteredGuardrail:
     # Where the environment runs it. A pre-call guardrail sees a tool call
     # before dispatch; a final-answer guardrail sees the answer before the run
     # accepts it (#193) and receives the task, since the escalation rule reads
-    # the task's posture and message. A final-answer block ends the run, so
-    # validating a final-answer control that acts is always incomplete and it
-    # can never be accepted until that seam changes.
+    # the task's posture and message. A blocked answer goes back to the agent,
+    # which answers again, so a final-answer control can be accepted when the
+    # agent has a next turn. A static replay plays a recording that ends at
+    # the blocked answer, so it runs out and the verdict is still skipped as
+    # validation_incomplete.
     seam: Literal["pre_call", "final_answer"] = "pre_call"
 
 

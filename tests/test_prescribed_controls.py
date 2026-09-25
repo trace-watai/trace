@@ -564,15 +564,19 @@ def test_an_explicit_selection_still_says_it_excluded_the_rest(tmp_path) -> None
         ),
     ],
 )
-def test_a_final_answer_control_that_acts_can_never_be_accepted(
+def test_static_replay_of_a_final_answer_control_that_acts_stays_incomplete(
     tmp_path, task_path, control_id, name
 ) -> None:
-    """A blocked final answer ends the run (#193), so the pinned replay never completes.
+    """The recording has no turn after its blocked answer, so the pinned replay runs out.
 
-    docs/failure_bundles.md says these two controls can never be accepted for
-    this reason. If the seam starts handing the block back to the agent, this
-    fails and the docs need the new verdict.
+    The runner hands a blocked answer back to the agent and asks for its next
+    move (#193). A recording ends at its final answer, so the replayed script
+    runs out, the run ends as script_exhausted, and the verdict is skipped as
+    incomplete. docs/failure_bundles.md records this verdict. An agent that
+    reads the block and acts again can be accepted, which
+    tests/test_final_answer_seam.py shows.
     """
+    replay_dir = tmp_path / "replay"
     validation = _validate(tmp_path, _bundle(tmp_path, task_path), control_id)
     (verdict,) = [c for c in validation.controls if c.control == name]
     assert verdict.control_id == control_id
@@ -580,3 +584,8 @@ def test_a_final_answer_control_that_acts_can_never_be_accepted(
     assert verdict.reason == "validation_incomplete: the pinned replay did not complete"
     assert verdict.originating_rerun is not None
     assert verdict.originating_rerun.verdict == "INCOMPLETE"
+    pinned = json.loads(
+        (replay_dir / verdict.originating_rerun.run_id / names.RUN_RESULT).read_text("utf-8")
+    )
+    assert (pinned["status"], pinned["termination_reason"]) == ("terminated", "script_exhausted")
+    assert "a control blocked its final answer" in pinned["error"]

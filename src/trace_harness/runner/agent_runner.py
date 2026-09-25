@@ -243,6 +243,22 @@ def _observation_to_tool_message(result: ToolResult) -> Message:
     )
 
 
+def _blocked_answer_message(blocked: ToolResult) -> Message:
+    """A blocked final answer back into the transcript, as the agent's observation of the block.
+
+    The block message goes in ``content`` and the structured fields in
+    ``metadata``, as for a tool observation. The role is ``user`` because no
+    tool call came before it, and a provider rejects a tool result that
+    answers no call, while every adapter sends a user message as plain text.
+    A raw hook that gives no message still leaves the agent a non-empty one.
+    """
+    return Message(
+        role=MessageRole.USER,
+        content=blocked.error or "Your final answer was blocked and was not sent.",
+        metadata={"blocked_by": blocked.blocked_by, "error": blocked.error},
+    )
+
+
 # Public for code that has to rebuild this transcript shape outside the
 # runner, such as the reference agents mapping a framework's conversation back.
 action_to_assistant_message = _action_to_assistant_message
@@ -422,8 +438,7 @@ class AgentRunner:
                     assert action.final_answer is not None
                     # A final answer never reaches the environment on its own,
                     # so a control can only act on what the agent claims if the
-                    # runner asks (#193). A block ends the run as blocked
-                    # rather than completed, because no answer was given.
+                    # runner asks (#193).
                     blocked = _check_final_answer(self.environment, action.final_answer)
                     recorder.record(
                         TraceEventType.FINAL_ANSWER,
@@ -434,11 +449,13 @@ class AgentRunner:
                         },
                     )
                     if blocked is not None:
-                        final_output = None
-                        status = RunStatus.TERMINATED
-                        termination = TerminationReason.FINAL_ANSWER_BLOCKED
-                        error_message = blocked.error
-                        break
+                        # A blocked answer was never given, so it is handled
+                        # as a blocked tool call is. The agent observes the
+                        # block and acts again on its next step, within the
+                        # same step and time limits, and the run completes
+                        # only on an answer the seam accepts.
+                        transcript.append(_blocked_answer_message(blocked))
+                        continue
                     final_output = action.final_answer
                     status = RunStatus.COMPLETED
                     termination = TerminationReason.FINAL_ANSWER

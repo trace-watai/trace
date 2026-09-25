@@ -4,7 +4,8 @@ These implement the repair controls the failure bundle generator prescribes
 (see ``failure_bundles/generator.py::_CONTROL_BUILDERS``) so a control can
 actually be demonstrated as well as described. Most are pre-execute hooks that
 see a tool call before dispatch. The two final-answer guardrails run on the
-answer before the run accepts it (#193). A caller installs one as a
+answer before the run accepts it (#193), and their message goes back to the
+agent, which answers again on its next step. A caller installs one as a
 data-defined control: a ``ControlInstance`` whose ``guardrail_ref`` names it
 in ``controls.GUARDRAIL_REGISTRY``, passed to
 ``SupportEnvironment.install_control``. The registry records the rules each

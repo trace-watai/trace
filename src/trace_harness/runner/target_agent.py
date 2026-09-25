@@ -24,6 +24,13 @@ How the bridge works
     appends to the transcript is what ``call_tool`` returns, blocked message
     included.
 
+    A blocked answer goes back to the agent as an observation too, and the
+    runner asks for the agent's next move. By then ``run`` has returned, so
+    the bridge has no move to give and raises ``ScriptExhaustedError`` at once,
+    and the run ends as ``terminated`` with ``script_exhausted``, as a fixture
+    script with no action left does. The block message never reaches the
+    outside agent, because the protocol has no way to hand it back.
+
     Forwarded model responses are held until the agent's next move and attached
     to it, so the runner records them as ``model_response`` at that step and
     their reasoning lands on the step's ``model_action``. When the agent raises
@@ -39,7 +46,7 @@ How the bridge works
 
 What the bridge does not do
     It cannot stop an outside agent's thread. When a run ends early (step limit,
-    timeout, a blocked answer), the call the agent is waiting on and every later
+    timeout), the call the agent is waiting on and every later
     ``call_tool`` raise :class:`RunEnded`, and nothing further reaches the
     environment. That holds even when the runner abandons a move on timeout
     midway, because a tool call is only parked for its result under the lock
@@ -210,6 +217,9 @@ class TargetAgentBridge:
         self._responses: list[tuple[dict[str, Any], str | None]] = []
         self._thread: threading.Thread | None = None
         self._pending: _ToolMove | None = None
+        # Set once the agent's answer has been handed to the runner. Its run()
+        # has returned by then, so it has no further turn to give.
+        self._answered = False
 
     # --- ModelAdapter protocol (runner thread) ---
 
@@ -218,6 +228,14 @@ class TargetAgentBridge:
             if self._closed:
                 raise TargetAgentError("the target agent bridge is closed")
             pending = self._pending
+        if self._answered:
+            # The runner asks again only when a control blocked the answer.
+            # run() has already returned, so the agent cannot answer again,
+            # which is the same end as a script with no action left.
+            raise ScriptExhaustedError(
+                f"target agent {self.agent.name!r} returned its final answer, a control "
+                "blocked it, and the agent has no further turn to answer again"
+            )
         if self._thread is None:
             self._start(transcript, tools)
         elif pending is not None:
@@ -275,6 +293,7 @@ class TargetAgentBridge:
                 f"target agent {self.agent.name!r} returned "
                 f"{type(move.answer).__name__} instead of a final answer string"
             )
+        self._answered = True
         return AgentAction(
             kind=ActionKind.FINAL_ANSWER, final_answer=move.answer, reasoning=reasoning, raw=raw
         )
