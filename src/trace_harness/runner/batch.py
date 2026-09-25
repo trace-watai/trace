@@ -53,6 +53,15 @@ Budget guard (#196)
     refused before it starts as ``budget_unenforceable``, like an unpriced live
     model. Without a cap it runs as any other config does.
 
+    An outside agent whose config declares ``billing: "subscription"`` (Suite
+    0.5.0) runs on a subscription plan with no per-run charge, such as the
+    Claude Code agent on a Claude login. Under a cap it is admitted without a
+    charge until the guard stops, and once the guard has stopped it is refused
+    like any live run. Its ``cost_usd`` stays null, because the harness saw no
+    charge, and is never counted as zero. What the agent's runtime reported
+    the calls would have cost over the API is recorded beside it as
+    ``notional_cost_usd`` (BatchSummary 0.5.0), which no cap counts.
+
     ``run-suite`` and ``branch`` drive it. ``branch`` builds one guard per
     invocation from the experiment plan's ``budget.max_cost_usd``, shared by
     every condition and seed, and records a budget block on each condition's
@@ -86,17 +95,21 @@ from trace_harness.models.policy import LIVE_PROVIDERS
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.pipeline import PipelineProgress, PipelineResult, run_task_pipeline
 from trace_harness.runner.result import RunStatus
-from trace_harness.runner.suite import AgentConfig, SuiteSpec
+from trace_harness.runner.suite import SUBSCRIPTION_BILLING, AgentConfig, SuiteSpec
 from trace_harness.runner.target_agent import EXTERNAL_PROVIDER
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEvent, TraceEventType, utc_now
 
 logger = logging.getLogger(__name__)
 
+# 0.5.0: per-entry notional_cost_usd for a subscription-billed outside agent;
 # 0.4.0: branch-stage entry fields, summary metadata and the seed of a cell the
 # budget never ran (#159); 0.3.0: optional budget block (#196); 0.2.0: per-entry
 # verdict, aggregates.incomplete
-BATCH_SUMMARY_SCHEMA_VERSION = "0.4.0"
+BATCH_SUMMARY_SCHEMA_VERSION = "0.5.0"
+#: The key an outside agent's forwarded response uses for the cost its own
+#: runtime reported, which the harness records and never charges.
+NOTIONAL_COST_KEY = "notional_cost_usd"
 
 BUDGET_EXHAUSTED = "budget_exhausted"
 BUDGET_UNENFORCEABLE = "budget_unenforceable"
@@ -128,6 +141,11 @@ class BatchRunEntry(BaseModel):
     severity: str | None = None
     latency_ms: float | None = None
     cost_usd: float | None = None
+    # What an outside agent's own runtime reported its model calls would cost
+    # over the API (0.5.0), such as Claude Code's total_cost_usd on a plan.
+    # Nothing was charged for it, so no total, aggregate or cap counts it.
+    # None for every other run and in files written before 0.5.0.
+    notional_cost_usd: float | None = None
     error: str | None = None
     # Filled by the branch stage (#159), and ``seed`` by a sweep (#198); None
     # on suite entries and on files written before 0.4.0. ``diverged`` says
@@ -219,20 +237,29 @@ class BudgetGuard:
         self.detail: str | None = None
 
     def admit(
-        self, provider: str, model: str | None, cassette: CassetteConfig | None = None
+        self,
+        provider: str,
+        model: str | None,
+        cassette: CassetteConfig | None = None,
+        *,
+        billing: str | None = None,
     ) -> bool:
         """Whether the next run may start. ``model`` is the resolved model name.
 
         A run that makes no live call costs nothing, so it is refused only once
         the batch has already stopped. A zero cap therefore still runs fixture
         and replay cells. An outside agent's spend is invisible to the harness,
-        so under a cap it is refused as ``budget_unenforceable``.
+        so under a cap it is refused as ``budget_unenforceable``, unless its
+        config declares ``billing="subscription"``. Such a run has no per-run
+        charge, so it is admitted without one until the guard stops.
         """
         if self.max_cost_usd is None:
             return True
         if self.stop_reason is not None:
             return False
         if provider == EXTERNAL_PROVIDER:
+            if billing == SUBSCRIPTION_BILLING:
+                return True
             self._stop(
                 BUDGET_UNENFORCEABLE,
                 "provider external runs an outside agent whose model calls the harness "
@@ -271,7 +298,9 @@ class BudgetGuard:
         spent is unknown. A run that brings the recorded spend to the cap
         stops it as ``budget_exhausted``, so the stop is on record even when no
         cell is left to refuse. A cell that failed before any run existed
-        (``run_id`` None) made no provider call and adds nothing.
+        (``run_id`` None) made no provider call and adds nothing. An outside
+        agent is never charged: under a cap only a subscription-billed one is
+        admitted, and its notional cost is no charge.
         """
         if self.max_cost_usd is None or run_id is None:
             return
@@ -341,7 +370,9 @@ class BatchRunner:
         not_run: list[NotRunCell] = []
         for config in suite.agent_configs:
             for task_path in suite.tasks:
-                if not guard.admit(config.provider, _guard_model(config), config.cassette):
+                if not guard.admit(
+                    config.provider, _guard_model(config), config.cassette, billing=config.billing
+                ):
                     not_run.append(NotRunCell(agent_label=config.label, task_path=str(task_path)))
                     continue
                 entry = self.run_cell(config, task_path)
@@ -500,6 +531,33 @@ def run_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None
     return estimate_cost_usd(config.provider, config.model, raws)
 
 
+def run_notional_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None:
+    """The cost an outside agent's runtime reported for one run, or None.
+
+    The sum of every ``notional_cost_usd`` its forwarded responses carried, as
+    the run's ``model_response`` events recorded them. None for every other
+    provider, for an agent that reported none, and when the trace cannot be
+    read. It is what the calls would have cost over the API. Nothing was
+    charged for it, so it is never a ``cost_usd``.
+    """
+    if config.provider != EXTERNAL_PROVIDER:
+        return None
+    events = _trace_events(runs_dir, run_id)
+    if events is None:
+        return None
+    reported: list[float] = []
+    for event in events:
+        if event.event_type is not TraceEventType.MODEL_RESPONSE:
+            continue
+        raw = event.payload.get("raw")
+        responses = raw.get("responses") if isinstance(raw, dict) else None
+        for response in responses if isinstance(responses, list) else [raw]:
+            value = response.get(NOTIONAL_COST_KEY) if isinstance(response, dict) else None
+            if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+                reported.append(float(value))
+    return round(sum(reported), 6) if reported else None
+
+
 def attach_started_run(
     entry: BatchRunEntry, progress: PipelineProgress, runs_dir: Path
 ) -> BatchRunEntry:
@@ -518,6 +576,9 @@ def attach_started_run(
             "run_id": progress.run_id,
             "model": progress.run_config.model,
             "cost_usd": run_cost_usd(progress.run_config, runs_dir, progress.run_id),
+            "notional_cost_usd": run_notional_cost_usd(
+                progress.run_config, runs_dir, progress.run_id
+            ),
         }
     )
 
@@ -546,6 +607,7 @@ def entry_from_pipeline(
         severity=(verifier.severity.value if verifier and verifier.severity else None),
         latency_ms=latency_ms,
         cost_usd=run_cost_usd(result.run_config, runs_dir, run.run_id),
+        notional_cost_usd=run_notional_cost_usd(result.run_config, runs_dir, run.run_id),
         error=run.error,
     )
 

@@ -26,7 +26,13 @@ from trace_harness.models.base import Message, MessageRole, ScriptExhaustedError
 from trace_harness.models.fixture import FixtureScript
 from trace_harness.models.policy import LiveCaller, default_call_policy
 from trace_harness.runner import pipeline
-from trace_harness.runner.batch import BUDGET_UNENFORCEABLE, BatchRunner, BudgetGuard
+from trace_harness.runner.batch import (
+    BUDGET_EXHAUSTED,
+    BUDGET_UNENFORCEABLE,
+    BatchRunner,
+    BatchSummary,
+    BudgetGuard,
+)
 from trace_harness.runner.config import RUN_CONFIG_SCHEMA_VERSION, RunConfig
 from trace_harness.runner.pipeline import run_task_pipeline
 from trace_harness.runner.result import RunStatus, TerminationReason
@@ -936,12 +942,15 @@ def test_an_outside_agent_cell_that_fails_after_its_run_keeps_the_run(tmp_path, 
 
 
 def test_both_schema_bumps_sit_above_the_196_versions():
-    """#196 took RunConfig and Suite 0.3.0 for call_policy and max_cost_usd."""
+    """#196 took RunConfig and Suite 0.3.0 for call_policy and max_cost_usd.
+
+    Suite 0.5.0 then added subscription billing, which RunConfig does not carry.
+    """
     assert RUN_CONFIG_SCHEMA_VERSION == "0.4.0"
-    assert SUITE_SCHEMA_VERSION == "0.4.0"
+    assert SUITE_SCHEMA_VERSION == "0.5.0"
     suite = SuiteSpec(suite_id="byoa", tasks=[str(VALID_TASK_PATH)], agent_configs=[_external()])
     written = json.loads(suite.model_dump_json())
-    assert written["schema_version"] == "0.4.0"
+    assert written["schema_version"] == "0.5.0"
     assert written["agent_configs"][0]["agent_ref"] == f"{__name__}:ScriptAgent"
     # Files written at 0.3.0, with a cap and a call policy and no outside agent, still load.
     older_suite = SuiteSpec.model_validate(
@@ -965,3 +974,102 @@ def test_both_schema_bumps_sit_above_the_196_versions():
         }
     )
     assert (older_config.agent_ref, older_config.call_policy.max_attempts) == (None, 2)
+
+
+# --- subscription billing (Suite 0.5.0, BatchSummary 0.5.0) ---
+
+
+class NotionalScriptAgent(ScriptAgent):
+    """Reports what its calls would have cost, as the Claude Code agent does."""
+
+    name = "notional-script-agent"
+    billing = "subscription"
+
+    def run(self, prompt, tools, call_tool, on_model_response=None) -> str:
+        answer = super().run(prompt, tools, call_tool, on_model_response)
+        if on_model_response is not None:
+            on_model_response({"type": "result", "notional_cost_usd": 0.25})
+        return answer
+
+
+def _subscription(**kwargs: Any) -> AgentConfig:
+    return _external(f"{__name__}:NotionalScriptAgent", billing="subscription", **kwargs)
+
+
+def test_the_guard_admits_a_subscription_billed_agent_without_a_charge():
+    guard = BudgetGuard(10.0)
+    assert guard.admit("external", "notional-script-agent", billing="subscription")
+    guard.charge(None, "external", run_id="run_x")
+    assert (guard.spent_usd, guard.stop_reason) == (0.0, None)
+    # Billed per call, the same agent is still refused, since its spend is invisible.
+    assert not guard.admit("external", "notional-script-agent")
+    assert guard.stop_reason == BUDGET_UNENFORCEABLE
+    # Once the guard has stopped, a subscription run is refused like any live run.
+    stopped = BudgetGuard(1.0)
+    stopped.stop_reason = BUDGET_EXHAUSTED
+    assert not stopped.admit("external", "notional-script-agent", billing="subscription")
+    assert BudgetGuard(None).admit("external", "x", billing="subscription")
+
+
+def test_a_capped_suite_runs_a_subscription_agent_and_records_its_notional_cost(tmp_path, capsys):
+    suite = SuiteSpec(
+        suite_id="byoa_subscription",
+        tasks=[str(VALID_TASK_PATH), str(FAILURE_TASK_PATH)],
+        agent_configs=[_subscription()],
+        max_cost_usd=1.0,
+    )
+    summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(suite)
+    assert [e.verdict for e in summary.entries] == ["pass", "fail"]
+    for entry in summary.entries:
+        # No charge was seen, so none is recorded, and the reported cost sits beside it.
+        assert (entry.cost_usd, entry.notional_cost_usd) == (None, 0.25)
+    assert summary.budget is not None
+    assert (summary.budget.spent_usd, summary.budget.stop_reason) == (0.0, None)
+    assert summary.budget.not_run == []
+    assert (summary.aggregates.cost_recorded, summary.aggregates.known_cost_usd) == (0, 0.0)
+
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(suite.model_dump_json(), encoding="utf-8")
+    assert main(["--runs-dir", str(tmp_path / "cli_runs"), "run-suite", str(suite_path)]) == 0
+    out = capsys.readouterr().out
+    assert "notional cost:" in out and "$0.500000 (2/2 runs" in out
+
+
+def test_an_agent_that_reports_no_notional_cost_records_none(tmp_path):
+    suite = SuiteSpec(
+        suite_id="byoa_subscription_silent",
+        tasks=[str(VALID_TASK_PATH)],
+        agent_configs=[_external(billing="subscription")],
+        max_cost_usd=1.0,
+    )
+    (entry,) = BatchRunner(ArtifactStore(tmp_path / "runs")).run(suite).entries
+    assert (entry.verdict, entry.cost_usd, entry.notional_cost_usd) == ("pass", None, None)
+
+
+def test_billing_is_only_for_outside_agents_and_is_written_only_when_set():
+    with pytest.raises(ValueError, match="billing is only valid with provider 'external'"):
+        AgentConfig(label="g", provider="gemini", billing="subscription")
+    with pytest.raises(ValueError):
+        _external(billing="per_call")
+    assert "billing" not in json.loads(_external().model_dump_json())
+    assert json.loads(_subscription().model_dump_json())["billing"] == "subscription"
+    # A 0.4.0 suite with an outside agent loads with no billing, as before.
+    older = SuiteSpec.model_validate(
+        {
+            "schema_version": "0.4.0",
+            "suite_id": "byoa",
+            "tasks": [str(VALID_TASK_PATH)],
+            "agent_configs": [{"label": "x", "provider": "external", "agent_ref": "m:f"}],
+        }
+    )
+    assert older.agent_configs[0].billing is None
+
+
+def test_committed_batch_summaries_load_with_no_notional_cost():
+    paths = sorted(REPO_ROOT.glob("docs/acceptance/**/batch_summary.json"))
+    assert paths
+    for path in paths:
+        summary = BatchSummary.model_validate_json(path.read_text())
+        assert summary.schema_version < "0.5.0"
+        assert all(entry.notional_cost_usd is None for entry in summary.entries)
+        assert all(config.billing is None for config in summary.agent_configs)

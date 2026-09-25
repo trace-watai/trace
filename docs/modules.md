@@ -247,7 +247,7 @@ regression artifact's recording from each experiment condition's start step
 under that condition's agent and controls, verifies, attributes and bundles
 each run the way `run_task_pipeline` does, records divergence from the
 recording and the post-block outcome per entry, and writes one batch per
-condition (`BatchSummary` 0.4.0). `experiment record` derives the divergence
+condition (`BatchSummary` 0.5.0). `experiment record` derives the divergence
 rates and outcome counts from those batches. See
 [branch_stage.md](branch_stage.md).
 
@@ -261,7 +261,11 @@ they do for every adapter. The bridge sends no provider request, so no call
 policy wraps it and `run_config.json` records `call_policy` as null. An error
 from the outside agent ends the run as `model_error` and is never retried. The
 budget guard refuses provider `external` under a cap as `budget_unenforceable`,
-since its spend is invisible, and `branch` refuses it before any run. See
+since its spend is invisible, unless its config declares
+`billing: "subscription"` (Suite 0.5.0). Such a config is admitted without a
+charge, and the cost its runtime reports is recorded as the entry's
+`notional_cost_usd` (BatchSummary 0.5.0), which no cap or total counts.
+`branch` refuses provider `external` before any run. See
 [bring_your_own_agent.md](bring_your_own_agent.md).
 
 `agents/` holds the reference outside agents, which the core package never

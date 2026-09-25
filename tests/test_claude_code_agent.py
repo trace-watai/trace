@@ -32,8 +32,10 @@ from trace_harness.agents.claude_code_ref import (
 )
 from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID, reference_controls
 from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.runner.batch import BatchRunner
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunStatus, TerminationReason
+from trace_harness.runner.suite import AgentConfig, SuiteSpec
 from trace_harness.runner.target_agent import load_target_agent, run_target_agent
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tracing import artifact_store as names
@@ -182,6 +184,8 @@ def test_model_responses_carry_reasoning_and_the_result_usage_and_cost(fake, tmp
     assert summary["usage"]["input_tokens"] == 4800
     assert summary["modelUsage"][DEFAULT_MODEL]["costUSD"] == 0.0123
     assert (summary["claude_code_version"], summary["model"]) == ("0.0.0-fake", DEFAULT_MODEL)
+    # The same figure again under the key a batch records apart from cost_usd.
+    assert summary["notional_cost_usd"] == 0.0123
 
 
 def test_the_cli_gets_no_built_in_tool_and_exactly_the_task_tools(fake, tmp_path):
@@ -293,6 +297,30 @@ def test_parallel_tool_calls_become_consecutive_steps(fake, tmp_path):
     (first,) = [e for e in _events(trace, TraceEventType.MODEL_RESPONSE) if e.step_id == 1]
     uses = [b["name"] for b in first.payload["raw"]["content"] if b["type"] == "tool_use"]
     assert sorted(uses) == ["mcp__trace__get_order", "mcp__trace__search_docs"]
+
+
+def test_a_capped_suite_runs_claude_code_on_the_plan_and_records_its_notional_cost(fake, tmp_path):
+    """Subscription billing: admitted under a cap, no charge, the CLI's cost kept apart."""
+    fake.play(script=VALID_SCRIPT, total_cost_usd=0.0123)
+    config = AgentConfig(
+        label="claude-code",
+        provider="external",
+        agent_ref="trace_harness.agents.claude_code_ref:agent",
+        billing="subscription",
+    )
+    suite = SuiteSpec(
+        suite_id="claude_code_capped",
+        tasks=[str(VALID_TASK_PATH)],
+        agent_configs=[config],
+        max_cost_usd=0.01,
+    )
+    summary = BatchRunner(ArtifactStore(tmp_path / "runs")).run(suite)
+    (entry,) = summary.entries
+    assert (entry.verdict, entry.model) == ("pass", f"{NAMESPACE}:{DEFAULT_MODEL}")
+    assert (entry.cost_usd, entry.notional_cost_usd) == (None, 0.0123)
+    # Above the cap as a notional figure, and still no stop, since nothing was charged.
+    assert summary.budget is not None
+    assert (summary.budget.spent_usd, summary.budget.stop_reason) == (0.0, None)
 
 
 # --- failures end as clear errors, and leave nothing running ---

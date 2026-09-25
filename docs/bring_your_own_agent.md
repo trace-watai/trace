@@ -80,9 +80,12 @@ trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \
 {"label": "my-graph", "provider": "external", "agent_ref": "mypackage.agents:make_agent"}
 ```
 
-with an optional `model` that overrides the agent's own label. `run_config.json`
-(RunConfig 0.4.0) records `provider: external`, the `agent_ref`, and the label.
-Suite manifests that name an outside agent are Suite 0.4.0.
+with an optional `model` that overrides the agent's own label, and an optional
+`"billing": "subscription"` for an agent whose model calls run on a
+subscription plan (see Cost below). `run_config.json` (RunConfig 0.4.0) records
+`provider: external`, the `agent_ref`, and the label. Suite 0.4.0 added outside
+agents and Suite 0.5.0 added `billing`, which is written only when set, so
+older manifests load and configs without it serialize as before.
 `--max-steps` and `--timeout` apply as usual. `--script`, `--cassette-mode`,
 `--temperature`, and `--seed` are refused with `--agent`, because the outside
 agent owns its model and the harness would be recording settings it never
@@ -178,6 +181,20 @@ empty and notes the earlier step.
   `max_cost_usd` therefore refuses your agent config before its first run as
   `budget_unenforceable`, and `run-suite` exits 2, the same as for a live model
   with no price. Without a cap the config runs like any other.
+- **Subscription billing.** When your agent's model calls count against a
+  subscription plan with no per-run charge, declare it with
+  `"billing": "subscription"` on the agent config (Suite 0.5.0). Under a cap
+  the config is then admitted without a charge, until the cap stops for
+  another reason, and once it has stopped the config is refused like any live
+  run. `cost_usd` stays null, since the harness saw no charge, and it is never
+  counted as zero. The declaration is yours to make: an agent billed per call
+  and declared this way would spend outside the cap. `billing` is refused on
+  any other provider.
+- **Notional cost.** A forwarded `raw` response may carry
+  `notional_cost_usd`, what your agent's own runtime reports its calls would
+  have cost over the API. A batch entry of your agent records the sum as
+  `notional_cost_usd` (BatchSummary 0.5.0), and `run-suite` prints it on its
+  own line. It is never a `cost_usd`, and no total, aggregate or cap counts it.
 - **Branching.** `trace-harness branch` does not run outside agents yet. A
   condition whose agent config has `provider: external` is refused before any
   run with an error that says so, and `branch` takes no `--agent` flag.
@@ -416,7 +433,20 @@ does. No test runs the real CLI.
 - `total_cost_usd` is the CLI's client-side estimate at API list prices
   ([cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking)).
   For a run on a plan it is what the same calls would have cost over the API,
-  and nothing was charged.
+  and nothing was charged. The agent forwards it a second time as
+  `notional_cost_usd`, so a batch records it apart from `cost_usd`.
+- A suite or experiment config for the agent declares
+  `"billing": "subscription"`, so a spend cap admits it without a charge. The
+  cap then binds only on the configs the harness can price.
+
+```json
+{
+  "label": "claude-code-sonnet-5",
+  "provider": "external",
+  "agent_ref": "trace_harness.agents.claude_code_ref:agent",
+  "billing": "subscription"
+}
+```
 
 ## Out of scope
 

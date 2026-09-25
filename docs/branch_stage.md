@@ -174,13 +174,15 @@ and its re-runs, as `repair_validation.json` records them. `validate-control`
 ## Batches
 
 One batch per condition, at `runs/batches/{batch_id}/batch_summary.json`,
-schema 0.4.0. Its `metadata` holds `experiment_id`, `condition`,
-`condition_kind`, `source_run_id` and `start`. Each entry gains `condition`,
+schema 0.5.0. Since 0.4.0 its `metadata` holds `experiment_id`, `condition`,
+`condition_kind`, `source_run_id` and `start`, and each entry has `condition`,
 `seed`, `first_post_fork_divergence_step`, `diverged` and
-`post_block_outcome`, and each run's index entry is tagged with the batch id,
-as `run-suite` does. Suite batches leave the new fields null, and summaries
-written before 0.4.0 load with them null and empty metadata. The dashboard
-mirror is `apps/dashboard/src/types/batch-summary.ts`.
+`post_block_outcome`. Each run's index entry is tagged with the batch id, as
+`run-suite` does. Suite batches leave the branch fields null, and summaries
+written before 0.4.0 load with them null and empty metadata. 0.5.0 added the
+entry's `notional_cost_usd`, set only for an outside agent that reports one
+([bring_your_own_agent.md](bring_your_own_agent.md#retries-time-cost-and-branching)).
+The dashboard mirror is `apps/dashboard/src/types/batch-summary.ts`.
 
 ## Metrics
 

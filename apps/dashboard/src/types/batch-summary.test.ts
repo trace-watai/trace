@@ -42,7 +42,7 @@ const asVersion = (version: string): RawBatchSummary => {
   if (version === "0.3.0") {
     return { ...raw, schema_version: version, budget };
   }
-  if (version === "0.4.0") {
+  if (version === "0.4.0" || version === "0.5.0") {
     return {
       ...raw,
       schema_version: version,
@@ -57,7 +57,19 @@ const asVersion = (version: string): RawBatchSummary => {
         diverged: false,
         first_post_fork_divergence_step: null,
         post_block_outcome: "no_block_observed" as const,
+        ...(version === "0.5.0"
+          ? { cost_usd: null, notional_cost_usd: 0.0123 }
+          : {}),
       })),
+      agent_configs:
+        version === "0.5.0"
+          ? raw.agent_configs.map((config) => ({
+              ...config,
+              provider: "external",
+              agent_ref: "trace_harness.agents.claude_code_ref:agent",
+              billing: "subscription" as const,
+            }))
+          : raw.agent_configs,
       metadata: { experiment_id: "exp_x", condition: "live" },
     };
   }
@@ -85,7 +97,7 @@ describe("parseBatchSummary", () => {
     expect(summary.entries.every((e) => e.diverged === undefined)).toBe(true);
   });
 
-  it.each(["0.1.0", "0.2.0", "0.3.0", "0.4.0"])(
+  it.each(["0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0"])(
     "reads a %s summary",
     (version) => {
       const raw = asVersion(version);
@@ -100,7 +112,13 @@ describe("parseBatchSummary", () => {
       expect(summary.budget === undefined).toBe(version < "0.3.0");
       expect(summary.metadata === undefined).toBe(version < "0.4.0");
       expect(summary.budget?.notRun[0].seed).toBe(
-        version === "0.4.0" ? 2 : undefined,
+        version >= "0.4.0" ? 2 : undefined,
+      );
+      expect(summary.entries[0].notionalCostUsd).toBe(
+        version === "0.5.0" ? 0.0123 : undefined,
+      );
+      expect(summary.agentConfigs[0].billing).toBe(
+        version === "0.5.0" ? "subscription" : undefined,
       );
     },
   );

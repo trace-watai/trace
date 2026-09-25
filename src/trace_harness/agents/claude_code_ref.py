@@ -42,6 +42,9 @@ How one run works
     made the call lands on the call's own step. The ``result`` message's
     usage, per-model usage and ``total_cost_usd`` are forwarded last, beside
     the CLI version and model, so the trace records them at the final step.
+    ``total_cost_usd`` goes out a second time as ``notional_cost_usd``, which
+    a batch records apart from ``cost_usd``: on a plan it is what the calls
+    would have cost over the API, and nothing was charged.
 
     Failures end the run as a :class:`ClaudeCodeError`, which the bridge turns
     into ``model_error``: no ``claude`` on PATH, a missing login, an error
@@ -109,6 +112,7 @@ from trace_harness.models.cassette import (
     cassette_path,
 )
 from trace_harness.runner.agent_runner import observation_to_tool_message
+from trace_harness.runner.batch import NOTIONAL_COST_KEY
 from trace_harness.runner.target_agent import (
     ModelResponseCallback,
     RunEnded,
@@ -821,6 +825,11 @@ def _result_summary(result: dict[str, Any], init: dict[str, Any]) -> dict[str, A
     )
     summary = {"type": "result", **{k: result[k] for k in keys if k in result}}
     summary.update({k: v for k, v in init.items() if v is not None})
+    cost = result.get("total_cost_usd")
+    if isinstance(cost, int | float) and not isinstance(cost, bool):
+        # On a plan this is what the calls would have cost over the API, and
+        # the harness records it apart from cost_usd (runner/batch.py).
+        summary[NOTIONAL_COST_KEY] = cost
     return summary
 
 

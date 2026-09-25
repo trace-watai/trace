@@ -84,6 +84,11 @@ export interface RawAgentConfig {
   call_policy?: RawCallPolicy | null;
   /** The outside agent, as `package.module:factory`, when provider is `external` (#210). */
   agent_ref?: string | null;
+  /**
+   * `subscription` for an outside agent whose calls count against a plan with
+   * no per-run charge (Suite 0.5.0); absent otherwise.
+   */
+  billing?: "subscription" | null;
 }
 
 export interface RawConditionSpec {

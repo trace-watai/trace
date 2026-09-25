@@ -49,6 +49,7 @@ const AGENT: Required<RawAgentConfig> = {
   cassette: CASSETTE,
   call_policy: CALL_POLICY,
   agent_ref: null,
+  billing: null,
 };
 
 describe("the agent config mirror", () => {
