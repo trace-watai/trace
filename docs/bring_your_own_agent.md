@@ -335,8 +335,11 @@ charge.
 
 Install Claude Code ([setup](https://code.claude.com/docs/en/setup)) and log in
 once in a terminal by running `claude` and `/login` with the Claude account
-whose plan should carry the runs. The agent was built against version 2.1.273.
-Nothing else is needed, since the module uses only the core package.
+whose plan should carry the runs. The agent was built against version 2.1.273
+and checked once against it on 2026-09-25: `refund_policy_valid_cash` with
+claude-sonnet-5 passed in 5 steps and about 11 seconds, and its recording
+replayed offline to the same trace. Nothing else is needed, since the module
+uses only the core package.
 
 ```sh
 trace-harness run-pipeline fixtures/tasks/refund_policy_valid_cash.json \
@@ -405,9 +408,13 @@ afterwards. The flags are described in the
   forwarded to `on_model_response`. The CLI writes one message per content
   block, so the blocks of one model response are forwarded together, with
   thinking signatures left out. Thinking, and any text written beside a tool
-  call, become the step's reasoning. A tool call waits until its `tool_use`
-  block has been read, so the response that made the call lands on the call's
-  step. The `result` message's `usage`, `modelUsage`, and `total_cost_usd` are
+  call, become the step's reasoning. The Anthropic API returns thinking
+  redacted unless Claude Code's `showThinkingSummaries` setting is on
+  ([settings](https://code.claude.com/docs/en/settings-reference)), and the
+  agent does not turn it on, so in practice a step's reasoning is the text the
+  model wrote beside its tool call, and many steps have none. A tool call
+  waits until its `tool_use` block has been read, so the response that made
+  the call lands on the call's step. The `result` message's `usage`, `modelUsage`, and `total_cost_usd` are
   forwarded last, with the CLI version, at the final step.
 - **Failures end cleanly.** No `claude` on PATH, a missing login, an error
   result, a non-zero exit, a stream line that is not JSON, a rejected usage
