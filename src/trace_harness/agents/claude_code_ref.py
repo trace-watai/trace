@@ -66,6 +66,19 @@ Offline replay
     observation, matches the recording, and a run that drifts from it stops
     with a request mismatch at that step.
 
+Continuing a recorded run
+    The agent declares ``supports_fork``, so the branch stage can hand it a
+    recorded run after its start step. The CLI has no public way to take
+    earlier assistant turns or tool results: ``--input-format stream-json``
+    carries user messages only, a ``tool_result`` needs the ``tool_use`` of an
+    assistant turn before it, and a session's history is read only from
+    Claude Code's own stored transcripts (``--resume``) or the Agent SDK's
+    session store, whose entries are opaque. So the recorded steps go into the
+    first message as text, after the customer's message: each step's tool
+    call and its arguments, then the result, marked ok or error, rendered as
+    the harness's Anthropic adapter renders a tool result, so a control's
+    block reads as its message. No session file is written.
+
 Rate limits
     A ``rate_limit_event`` whose status is ``rejected`` means the plan's usage
     limit was reached. The run is stopped at once and its error says when
@@ -98,6 +111,7 @@ from typing import Any, Literal
 
 from trace_harness.agents.turns import CASSETTE_ROOT, assistant_message, observation_text
 from trace_harness.environment.tools import ToolResult
+from trace_harness.models.anthropic import _tool_result_text as anthropic_tool_result_text
 from trace_harness.models.base import (
     ActionKind,
     AgentAction,
@@ -115,6 +129,7 @@ from trace_harness.runner.agent_runner import observation_to_tool_message
 from trace_harness.runner.batch import NOTIONAL_COST_KEY
 from trace_harness.runner.target_agent import (
     ModelResponseCallback,
+    RecordedStep,
     RunEnded,
     TaskPrompt,
     ToolCallback,
@@ -184,6 +199,7 @@ class ClaudeCodeAgent:
     """
 
     billing = "subscription"
+    supports_fork = True
 
     def __init__(
         self,
@@ -216,14 +232,13 @@ class ClaudeCodeAgent:
     # --- what the CLI is given ---
 
     def system_prompt(self, prompt: TaskPrompt) -> str:
-        return (
-            f"{prompt.system}\n\n"
-            f"Each of these tools is available to you as {TOOL_PREFIX}<name>, "
-            f"for example {TOOL_PREFIX}get_order."
-        )
+        return f"{prompt.system}\n\nEach of these tools is available to you as {TOOL_PREFIX}<name>."
 
     def first_message(self, prompt: TaskPrompt) -> str:
-        return prompt.user
+        """The task's user message, then the recorded steps when the run continues one."""
+        if not prompt.history:
+            return prompt.user
+        return f"{prompt.user}\n\n{render_history(prompt.history)}"
 
     def opening(self, prompt: TaskPrompt) -> list[Message]:
         """The conversation the CLI starts from, in the harness transcript shape."""
@@ -749,6 +764,30 @@ class _Session:
 
 
 # --- helpers ---
+
+
+def render_history(history: tuple[RecordedStep, ...]) -> str:
+    """The recorded steps of a run the agent continues, as the text of its first message.
+
+    A result is shown as the harness's Anthropic adapter sends a tool result:
+    the error text when there is one, which is a control's block message when
+    a control blocked the call, and otherwise the result as sorted JSON.
+    """
+    last = history[-1].step
+    lines = [
+        f"This conversation was recorded up to step {last}. You already made the tool "
+        "calls below, in this order, and each result is what the tool returned. "
+        f"Continue from step {last + 1}."
+    ]
+    for step in history:
+        arguments = json.dumps(step.arguments, sort_keys=True, ensure_ascii=False)
+        observation = step.observation
+        shown = anthropic_tool_result_text(observation.result, observation.error)
+        lines.append(
+            f"Step {step.step}: {step.tool_name} {arguments}\n"
+            f"Result ({observation.status}): {shown}"
+        )
+    return "\n\n".join(lines)
 
 
 def _tool_message(observation: ToolObservation) -> Message:

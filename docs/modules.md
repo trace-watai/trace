@@ -265,7 +265,9 @@ since its spend is invisible, unless its config declares
 `billing: "subscription"` (Suite 0.5.0). Such a config is admitted without a
 charge, and the cost its runtime reports is recorded as the entry's
 `notional_cost_usd` (BatchSummary 0.5.0), which no cap or total counts.
-`branch` refuses provider `external` before any run. See
+`branch` runs an outside agent that declares `supports_fork` after a
+condition's start step, with the recorded steps in `TaskPrompt.history`, and
+refuses any other outside agent before any run. See
 [bring_your_own_agent.md](bring_your_own_agent.md).
 
 `agents/` holds the reference outside agents, which the core package never

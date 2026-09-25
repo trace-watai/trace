@@ -23,9 +23,11 @@ from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID, referen
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.environment.tools import ToolResult
 from trace_harness.models.base import Message, MessageRole, ScriptExhaustedError
-from trace_harness.models.fixture import FixtureScript
+from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
+from trace_harness.models.fork import ForkAdapter
 from trace_harness.models.policy import LiveCaller, default_call_policy
 from trace_harness.runner import pipeline
+from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.batch import (
     BUDGET_EXHAUSTED,
     BUDGET_UNENFORCEABLE,
@@ -51,7 +53,9 @@ from trace_harness.runner.target_agent import (
     TaskPrompt,
     ToolObservation,
     load_target_agent,
+    recorded_history,
     run_target_agent,
+    supports_fork,
 )
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tracing import artifact_store as names
@@ -1073,3 +1077,90 @@ def test_committed_batch_summaries_load_with_no_notional_cost():
         assert summary.schema_version < "0.5.0"
         assert all(entry.notional_cost_usd is None for entry in summary.entries)
         assert all(config.billing is None for config in summary.agent_configs)
+
+
+# --- continuing a recorded run (#159 with #210) ---
+
+
+class ForkingAgent:
+    """Takes over the failure recording after its blocked refund and escalates."""
+
+    name = "forking-agent"
+    supports_fork = True
+
+    def __init__(self) -> None:
+        self.prompt: TaskPrompt | None = None
+
+    def run(self, prompt, tools, call_tool, on_model_response=None) -> str:
+        self.prompt = prompt
+        customer = prompt.history[-1].arguments["customer_name"]
+        if on_model_response is not None:
+            on_model_response({"turn": "escalate"}, reasoning="The refund was blocked.")
+        call_tool("escalate_case", {"customer_name": customer, "reason": "refund blocked"})
+        return "I have escalated your refund request."
+
+
+def _fork(agent: TargetAgent, tmp_path: Path, switch_at_step: int = 5):
+    task = load_task(FAILURE_TASK_PATH)
+    environment = SupportEnvironment.from_task(
+        task, docs=load_docs_for_task(task, FAILURE_TASK_PATH)
+    )
+    for control in reference_controls():
+        environment.install_control(control)
+    prefix = FixtureModelAdapter.from_file(SCRIPTS_DIR / "refund_policy_failure_script.json")
+    store = ArtifactStore(tmp_path / "runs")
+    config = RunConfig(task_id=task.task_id, provider="external", model=agent.name)
+    with TargetAgentBridge(agent, task_id=task.task_id, max_steps=16) as bridge:
+        adapter = ForkAdapter(prefix, bridge, switch_at_step=switch_at_step)
+        result = AgentRunner(adapter, environment, store).run(task, config)
+    return result, store.read_trace(result.run_id)
+
+
+def test_an_agent_that_can_fork_gets_the_recorded_steps_and_continues(tmp_path):
+    agent = ForkingAgent()
+    result, trace = _fork(agent, tmp_path)
+
+    assert (result.status, result.steps_taken) == (RunStatus.COMPLETED, 7)
+    assert agent.prompt is not None
+    history = agent.prompt.history
+    script = FixtureScript.model_validate_json(
+        (SCRIPTS_DIR / "refund_policy_failure_script.json").read_text(encoding="utf-8")
+    )
+    assert [(h.step, h.tool_name, h.arguments) for h in history] == [
+        (n, a.tool_call.tool_name, a.tool_call.arguments)
+        for n, a in enumerate(script.actions[:5], start=1)
+    ]
+    observed = {e.step_id: e.payload for e in _events(trace, TraceEventType.TOOL_OBSERVATION)}
+    for step in history:
+        assert step.observation.status == observed[step.step]["status"]
+        assert step.observation.error == observed[step.step]["error"]
+    # The block the recording's refund met is in the history, message and all.
+    assert history[-1].observation.status == "error"
+    assert history[-1].observation.error.startswith("blocked by refund policy guardrail")
+    assert observed[5]["blocked_by"] == REFUND_WINDOW_CONTROL_ID
+    assert history[2].observation.result == observed[3]["result"]
+    actions = {e.step_id: e.payload for e in _events(trace, TraceEventType.MODEL_ACTION)}
+    assert actions[6]["tool_call"]["tool_name"] == "escalate_case"
+    assert actions[6]["reasoning"] == "The refund was blocked."
+    assert actions[7]["final_answer"] == "I have escalated your refund request."
+
+
+def test_an_agent_that_cannot_fork_never_starts_on_a_recorded_run(tmp_path):
+    agent = ScriptAgent()
+    result, trace = _fork(agent, tmp_path)
+    assert result.termination_reason is TerminationReason.MODEL_ERROR
+    assert "cannot continue a recorded run" in (result.error or "")
+    assert agent.prompt is None
+    assert [e.step_id for e in _events(trace, TraceEventType.TOOL_CALL_EXECUTED)] == [1, 2, 3, 4, 5]
+
+
+def test_a_fork_after_a_final_answer_is_refused():
+    transcript = [
+        Message(role=MessageRole.ASSISTANT, content="done", metadata={"kind": "final_answer"}),
+        Message(role=MessageRole.TOOL, content="", metadata={"tool_name": "x", "status": "ok"}),
+    ]
+    with pytest.raises(TargetAgentError, match="only after its tool calls"):
+        recorded_history(transcript)
+    with pytest.raises(TargetAgentError, match="without its tool observation"):
+        recorded_history(transcript[:1])
+    assert not supports_fork(ScriptAgent()) and supports_fork(ForkingAgent())

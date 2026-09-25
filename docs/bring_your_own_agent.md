@@ -195,9 +195,20 @@ empty and notes the earlier step.
   have cost over the API. A batch entry of your agent records the sum as
   `notional_cost_usd` (BatchSummary 0.5.0), and `run-suite` prints it on its
   own line. It is never a `cost_usd`, and no total, aggregate or cap counts it.
-- **Branching.** `trace-harness branch` does not run outside agents yet. A
-  condition whose agent config has `provider: external` is refused before any
-  run with an error that says so, and `branch` takes no `--agent` flag.
+- **Branching.** `trace-harness branch` continues a recorded run from a
+  condition's start step, and an outside agent can take over there when it
+  declares `supports_fork = True`. The recording's steps are replayed through
+  the start step as for any condition, and your agent's first move comes after
+  them. `prompt.history` then holds those steps in order, each a
+  `RecordedStep` with its `step`, `tool_name`, `arguments`, and the
+  `observation` it got, a control's block message included, and `max_steps`
+  still counts them. How your agent hands them to its model is up to it. A
+  condition whose outside agent cannot be imported, or does not declare
+  `supports_fork`, is refused before any run, and `branch` takes no `--agent`
+  flag. Every seed of an outside agent is live to the plan's cap, so a config
+  billed per call is refused as `budget_unenforceable`, and one declaring
+  subscription billing is admitted without a charge. The harness cannot send
+  your agent a seed, so its runs record the seed with `seed_sent: false`.
 
 ## Reference agents
 
@@ -417,6 +428,39 @@ afterwards. The flags are described in the
 `tests/test_claude_code_agent.py` checks each of these with a fake `claude` on
 PATH (`tests/fake_claude_cli.py`) that starts the MCP server the way the CLI
 does. No test runs the real CLI.
+
+### Continuing a recorded run
+
+The agent declares `supports_fork`, so `branch` can hand it a recorded run
+after the condition's start step. It continues by giving the CLI a rendered
+transcript of the recorded prefix in its first message, after the task's user
+message. The CLI offers no public way to take earlier assistant turns or tool
+results.
+
+- `--input-format stream-json` takes user messages only
+  ([streaming input](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode),
+  and `SDKUserMessage` in the
+  [TypeScript reference](https://code.claude.com/docs/en/agent-sdk/typescript)).
+  A `tool_result` block in a user message has to answer the `tool_use` block of
+  an assistant turn before it, and no input message can carry that turn.
+- A session's history is loaded only by `--resume` or `--continue` from
+  Claude Code's own stored transcripts
+  ([headless mode](https://code.claude.com/docs/en/headless#continue-conversations)),
+  or through the Agent SDK's session store, whose entries the documentation
+  calls opaque ([session storage](https://code.claude.com/docs/en/agent-sdk/session-storage)).
+  Writing either would depend on Claude Code's internal format, and the agent
+  writes no session file.
+
+The rendered prefix starts with one line saying the conversation was recorded
+up to step k, that the calls below were already made in this order with the
+results the tools returned, and to continue from step k + 1. Each step follows
+as `Step n: <tool> <arguments as sorted JSON>`, then `Result (ok)` or
+`Result (error)` with the result rendered exactly as the harness's Anthropic
+adapter renders a tool result: the error text when there is one, which for a
+blocked call is the control's message, and otherwise the result as sorted
+JSON. The recorded reasoning is left out, since that adapter does not send it
+either. The rendered text is part of the first message, so a recording of a
+continued run replays only for the same prefix.
 
 ### Rate limits and your plan
 

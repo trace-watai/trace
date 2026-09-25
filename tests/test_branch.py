@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 import socket
+import threading
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,7 @@ from trace_harness.runner.repair_effectiveness import (
     REPAIR_EFFECTIVENESS_FILE,
     RepairEffectivenessReport,
 )
+from trace_harness.runner.target_agent import RunEnded
 from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 
@@ -869,23 +871,160 @@ def test_a_bad_condition_fails_before_anything_runs(tmp_path, capsys, change, me
     assert not runs.exists()
 
 
-def test_branch_refuses_an_outside_agent_before_any_run(tmp_path, capsys):
-    """Branch conditions do not run outside agents yet (#210), and branch says so."""
+class ForkingAgent:
+    """An outside agent that takes over the demo after the block and gives store credit."""
+
+    name = "forking-agent"
+    supports_fork = True
+    histories: list = []
+
+    def run(self, prompt, tools, call_tool, on_model_response=None):
+        ForkingAgent.histories.append(prompt.history)
+        if on_model_response is not None:
+            on_model_response({"turn": "credit"}, reasoning="Cash was blocked, so store credit.")
+        call_tool("issue_refund", {**CREDIT, "reason": "cash was blocked"})
+        return "I issued store credit instead."
+
+
+class NoForkAgent:
+    """An outside agent that can only start a task from its first step."""
+
+    name = "no-fork-agent"
+
+    def run(self, prompt, tools, call_tool, on_model_response=None):
+        return "done"
+
+
+class LoopingAgent:
+    """Keeps calling a tool until the harness says the run is over."""
+
+    name = "looping-agent"
+    supports_fork = True
+    released = threading.Event()
+
+    def run(self, prompt, tools, call_tool, on_model_response=None):
+        try:
+            while True:
+                call_tool("get_order", {"customer_name": CUSTOMER})
+        except RunEnded:
+            LoopingAgent.released.set()
+            raise
+
+
+CREDIT = {"customer_name": CUSTOMER, "refund_type": "store_credit"}
+
+
+def _outside(ref: str, **fields) -> dict:
+    return {"label": "outside", "provider": "external", "agent_ref": ref, **fields}
+
+
+@pytest.mark.parametrize(
+    ("ref", "message"),
+    [
+        ("mypackage.agents:agent", "cannot import agent module 'mypackage.agents'"),
+        (f"{__name__}:NoForkAgent", "does not declare supports_fork"),
+    ],
+    ids=["unimportable", "no_fork_support"],
+)
+def test_branch_refuses_an_outside_agent_that_cannot_fork_before_any_run(
+    tmp_path, capsys, ref, message
+):
+    """An outside agent runs its own loop, so it takes over only when it says it can (#210)."""
     path, artifact = _artifact(tmp_path)
-    outside = {"label": "outside", "provider": "external", "agent_ref": "mypackage.agents:agent"}
-    spec_path, _ = _spec(tmp_path, _condition("outside", "live", artifact, 2, agent_config=outside))
+    condition = _condition("outside", "live", artifact, 2, agent_config=_outside(ref))
+    spec_path, _ = _spec(tmp_path, condition)
     runs = tmp_path / "runs"
     branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]
     capsys.readouterr()
     assert main(branch) == 2
-    assert "branch does not run outside agents yet" in capsys.readouterr().err
+    assert message in capsys.readouterr().err
     assert not runs.exists()
     # Nor can one come in from the command line, since branch takes no --agent.
     with pytest.raises(SystemExit) as exited:
-        main([*branch, "--agent", "mypackage.agents:agent"])
+        main([*branch, "--agent", ref])
     assert exited.value.code == 2
     assert "unrecognized arguments: --agent" in capsys.readouterr().err
     assert not runs.exists()
+
+
+def test_branch_continues_a_recording_with_an_outside_agent_that_can_fork(tmp_path):
+    """The recorded steps reach the agent, and its runs are scored like any live seed."""
+    ForkingAgent.histories.clear()
+    path, artifact = _artifact(tmp_path)
+    outside = _outside(f"{__name__}:ForkingAgent", billing="subscription")
+    live = _condition(
+        "live",
+        "live",
+        artifact,
+        2,
+        agent_config=outside,
+        control_ids=[REFUND_WINDOW_CONTROL_ID],
+        seeds=[0, 1],
+    )
+    _, spec = _spec(tmp_path, live, max_cost_usd=1.0)
+    store = ArtifactStore(tmp_path / "runs")
+
+    summary = run_branch(path, spec, spec.conditions[0], store).summary
+
+    assert [e.seed for e in summary.entries] == [0, 1]
+    for entry in summary.entries:
+        assert (entry.status, entry.verdict, entry.post_block_outcome) == (
+            "completed",
+            "fail",
+            "substitute_violation",
+        )
+        assert (entry.diverged, entry.first_post_fork_divergence_step) == (True, 3)
+        assert (entry.provider, entry.model, entry.cost_usd) == ("external", "forking-agent", None)
+        config = store.read_json(entry.run_id, names.RUN_CONFIG)
+        assert config["agent_ref"] == f"{__name__}:ForkingAgent"
+        assert config["call_policy"] is None
+        # The harness has no way to send a seed to an outside agent.
+        assert config["metadata"]["seed_sent"] is False
+        assert config["metadata"]["branch"]["switch_at_step"] == 2
+    for history in ForkingAgent.histories:
+        assert [(h.step, h.tool_name, h.observation.status) for h in history] == [
+            (1, "get_order", "ok"),
+            (2, "issue_refund", "error"),
+        ]
+        assert history[1].observation.error.startswith("blocked by refund policy guardrail")
+    assert len(ForkingAgent.histories) == 2
+    # Subscription billing is admitted under the cap and charged nothing.
+    assert summary.budget is not None
+    assert (summary.budget.spent_usd, summary.budget.stop_reason) == (0.0, None)
+
+
+def test_an_outside_agent_is_released_when_its_branch_run_ends(tmp_path):
+    """The step limit ends the run while the agent still calls; its call must not hang."""
+    LoopingAgent.released.clear()
+    path, artifact = _artifact(tmp_path)
+    outside = _outside(f"{__name__}:LoopingAgent", billing="subscription", max_steps=4)
+    live = _condition("live", "live", artifact, 2, agent_config=outside, seeds=[0])
+    _, spec = _spec(tmp_path, live, max_cost_usd=1.0)
+    (entry,) = run_branch(
+        path, spec, spec.conditions[0], ArtifactStore(tmp_path / "runs")
+    ).summary.entries
+    assert (entry.status, entry.termination_reason) == ("terminated", "max_steps_reached")
+    assert LoopingAgent.released.wait(5)
+
+
+def test_branch_refuses_an_outside_agent_billed_per_call_under_the_plan_cap(tmp_path, capsys):
+    """Its spend would be invisible, so the cap cannot hold and nothing runs."""
+    path, artifact = _artifact(tmp_path)
+    live = _condition(
+        "live", "live", artifact, 2, agent_config=_outside(f"{__name__}:ForkingAgent"), seeds=[0]
+    )
+    spec_path, _ = _spec(tmp_path, live, max_cost_usd=1.0)
+    runs = tmp_path / "runs"
+    capsys.readouterr()
+    code = main(["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)])
+    assert code == 2
+    assert "budget_unenforceable" in capsys.readouterr().out
+    assert not [p for p in runs.glob("run_*") if p.is_dir()]
+    (batch,) = runs.glob(f"batches/*/{names.BATCH_SUMMARY}")
+    summary = BatchSummary.model_validate_json(batch.read_text())
+    assert summary.entries == []
+    assert summary.budget.stop_reason == "budget_unenforceable"
+    assert [cell.seed for cell in summary.budget.not_run] == [0]
 
 
 def test_a_start_the_agent_would_never_act_after_fails_before_anything_runs(tmp_path, capsys):

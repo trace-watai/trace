@@ -26,6 +26,13 @@ fixture provider, or a cassette replay) costs nothing and is never refused.
 Each batch's ``budget`` block records what that condition spent and, when the
 guard stopped it, why.
 
+A condition may name an outside agent (provider ``external``, #210) that
+declares ``supports_fork``. It takes over after the start step through the
+bridge, which gives it the recorded steps as ``TaskPrompt.history``. Its model
+calls are its own, so every seed of it is live to the guard: a config billed
+per call is refused before any run as ``budget_unenforceable``, and one that
+declares ``billing: "subscription"`` is admitted without a charge.
+
 A plan may list ``replacement_seeds`` in its metadata. A live seed whose run
 exists and ends incomplete is then replaced by the next unused seed from that
 list, decided on run status alone, which is pre-registration 001's rule for
@@ -97,7 +104,12 @@ from trace_harness.runner.pipeline import (
     verify_run,
 )
 from trace_harness.runner.result import RunResult, RunStatus
-from trace_harness.runner.target_agent import EXTERNAL_PROVIDER
+from trace_harness.runner.target_agent import (
+    EXTERNAL_PROVIDER,
+    TargetAgentBridge,
+    load_target_agent,
+    supports_fork,
+)
 from trace_harness.tasks.loader import load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
@@ -150,22 +162,26 @@ def validate_condition(artifact: RegressionArtifact, condition: ConditionSpec) -
     declares no start. Unknown control ids fail here, before a sweep spends
     anything, and so does a start the agent would never act after: the
     recording's final answer, or a ``max_steps`` that ends the run by then. An
-    outside agent (provider ``external``), which branch does not run, fails
-    here too.
+    outside agent (provider ``external``) that cannot be loaded, or that does
+    not declare ``supports_fork``, fails here too.
     """
     select_controls(condition.control_ids)
     if condition.kind is not ConditionKind.STATIC_REPLAY and not artifact.pinned_agent_actions:
         raise ValueError("the artifact pins no agent actions, so there is nothing to fork")
     agent = condition.agent_config
     if agent.provider == EXTERNAL_PROVIDER:
-        # The fork adapter hands the continuation to a model adapter at the
-        # start step. An outside agent has its own loop and cannot be started
-        # mid-run from a recorded prefix, so branching one is not supported (#210).
-        raise ValueError(
-            f"condition {condition.name!r}: branch does not run outside agents yet "
-            f"(provider 'external', agent_ref {agent.agent_ref!r}); use a fixture or "
-            "live provider for the condition"
-        )
+        assert agent.agent_ref is not None  # AgentConfig enforces this
+        try:
+            outside = load_target_agent(agent.agent_ref)
+        except ValueError as exc:
+            raise ValueError(f"condition {condition.name!r}: {exc}") from None
+        # An outside agent runs its own loop, so it can take over a recorded
+        # run only when it says it can start from the recorded steps (#210).
+        if not supports_fork(outside):
+            raise ValueError(
+                f"condition {condition.name!r}: outside agent {agent.agent_ref!r} does not "
+                "declare supports_fork, so it cannot continue a recorded run"
+            )
     if agent.provider == "fixture" and agent.cassette is not None:
         raise ValueError(f"condition {condition.name!r}: a fixture continuation takes no cassette")
     script = condition.continuation_script
@@ -390,9 +406,15 @@ def _records(condition: ConditionSpec) -> bool:
 
 
 def calls_a_provider(condition: ConditionSpec) -> bool:
-    """Whether a condition's runs call a live provider, and so can cost money."""
+    """Whether a condition's runs call a live model, and so can cost money.
+
+    An outside agent makes its own model calls, which the harness never sees,
+    so it counts as live, and the guard decides on its billing.
+    """
     agent = condition.agent_config
-    return condition.kind in LIVE_KINDS and makes_live_calls(agent.provider, agent.cassette)
+    if condition.kind not in LIVE_KINDS:
+        return False
+    return agent.provider == EXTERNAL_PROVIDER or makes_live_calls(agent.provider, agent.cassette)
 
 
 def admit_before_any_run(guard: BudgetGuard, conditions: list[ConditionSpec]) -> None:
@@ -405,7 +427,9 @@ def admit_before_any_run(guard: BudgetGuard, conditions: list[ConditionSpec]) ->
     for condition in conditions:
         if calls_a_provider(condition):
             agent = condition.agent_config
-            guard.admit(agent.provider, _live_model(condition), agent.cassette)
+            guard.admit(
+                agent.provider, _live_model(condition), agent.cassette, billing=agent.billing
+            )
 
 
 def run_branch(
@@ -451,7 +475,7 @@ def run_branch(
     queue = list(seeds)
     while queue:
         seed = queue.pop(0)
-        if live and not guard.admit(agent.provider, model, agent.cassette):
+        if live and not guard.admit(agent.provider, model, agent.cassette, billing=agent.billing):
             not_run.append(
                 NotRunCell(agent_label=agent.label, task_path=artifact.task_fixture, seed=seed)
             )
@@ -570,6 +594,7 @@ def _run_seed(
     )
     prefix = FixtureModelAdapter(pinned_script(artifact, task.task_id))
     adapter = ForkAdapter(prefix, continuation, switch_at_step=fork_step)
+    external = agent.provider == EXTERNAL_PROVIDER
 
     metadata: dict[str, Any] = {
         "task_fixture_path": artifact.task_fixture,
@@ -587,8 +612,11 @@ def _run_seed(
     if isinstance(continuation, RecordingModelAdapter):
         metadata["cassette_path"] = str(continuation.path)
     # A seed the provider has no parameter for is recorded and marked unsent,
-    # as run_task_pipeline does (#160).
+    # as run_task_pipeline does (#160). The harness has no way to send one to
+    # an outside agent, so its seeds only number the repeated runs.
     metadata.update(unsent_seed_metadata(agent.provider, seed))
+    if external and seed is not None:
+        metadata["seed_sent"] = False
     config = RunConfig(
         task_id=task.task_id,
         provider=agent.provider,
@@ -600,6 +628,7 @@ def _run_seed(
         prompt_version=agent.prompt_version or PROMPT_VERSION,
         cassette=agent.cassette,
         call_policy=call_policy,
+        agent_ref=agent.agent_ref,
         metadata=metadata,
     )
     runner = AgentRunner(adapter, environment, store)
@@ -608,6 +637,9 @@ def _run_seed(
         run = runner.run(task, config)
     finally:
         progress.run_id = runner.run_id
+        if isinstance(continuation, TargetAgentBridge):
+            # Releases an outside agent still waiting on a tool result.
+            continuation.close()
     return _scored_entry(
         artifact, task, condition, config, fork_step, seed, run, store, bundle_scope
     )
@@ -662,8 +694,23 @@ def _continuation(
     seed: int | None,
     call_policy: CallPolicy | None = None,
 ) -> tuple[ModelAdapter, str]:
-    """The adapter that answers after the fork, and the model name to record."""
+    """The adapter that answers after the fork, and the model name to record.
+
+    An outside agent answers through a fresh bridge, whose first move comes
+    after the recorded steps. Its model label is the config's ``model`` or the
+    agent's own name, as ``run_task_pipeline`` records it.
+    """
     agent = condition.agent_config
+    if agent.provider == EXTERNAL_PROVIDER:
+        assert agent.agent_ref is not None  # AgentConfig enforces this
+        outside = load_target_agent(agent.agent_ref)
+        bridge = TargetAgentBridge(
+            outside,
+            task_id=task_id,
+            max_steps=agent.max_steps,
+            timeout_seconds=agent.timeout_seconds,
+        )
+        return bridge, agent.model or outside.name
     if agent.provider == "fixture":
         if condition.continuation_script:
             script_path = Path(condition.continuation_script)
@@ -711,9 +758,15 @@ def _budget_block(
     )
 
 
-def _live_model(condition: ConditionSpec) -> str:
-    """The model a live condition runs, resolved as the adapter resolves it."""
+def _live_model(condition: ConditionSpec) -> str | None:
+    """The model a live condition runs, resolved as the adapter resolves it.
+
+    An outside agent owns its model, and the guard never prices one, so its
+    config's own label stands in.
+    """
     agent = condition.agent_config
+    if agent.provider == EXTERNAL_PROVIDER:
+        return agent.model
     return resolve_model_name(agent.provider, agent.model, None)
 
 

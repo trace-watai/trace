@@ -15,7 +15,7 @@ stdin and stdout (https://modelcontextprotocol.io/specification/2025-06-18/basic
 Tool calls are answered on their own threads, so calls the CLI makes in parallel
 reach the harness together and the bridge takes them in arrival order.
 
-Usage (by the CLI, never by hand)::
+The CLI starts it as::
 
     python claude_code_mcp.py <relay socket path>
 """

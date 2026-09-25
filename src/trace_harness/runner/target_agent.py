@@ -46,6 +46,18 @@ What the bridge does not do
     :meth:`TargetAgentBridge.close` takes. Tool calls the agent issues in
     parallel are serialized into consecutive steps in arrival order.
 
+Continuing a recorded run
+    The branch stage (#159) replays a recording through a start step and hands
+    every later step to the condition's agent through ``ForkAdapter``. An
+    outside agent can take those steps when it declares ``supports_fork =
+    True``. The bridge's first move then comes after the recorded ones, and
+    :class:`TaskPrompt` carries them as ``history``: each recorded step's tool
+    call and the observation it got, a block included, in order. How the agent
+    gives them to its model is its own business, since frameworks differ in
+    what history they accept. An agent that does not declare it cannot take
+    over a recorded run, and the bridge ends such a run as ``model_error``
+    before the agent starts.
+
 Retries, time and cost (#196)
     The bridge sends no provider request, so the live call policy in
     ``models/policy.py`` never wraps it and ``run_config.json`` records a null
@@ -92,27 +104,6 @@ if TYPE_CHECKING:  # the pipeline imports this module, so only for typing
 EXTERNAL_PROVIDER = "external"
 
 
-class TaskPrompt(BaseModel):
-    """What an outside agent is asked to do, in the words the harness uses for every agent.
-
-    ``system`` and ``user`` are the two messages ``build_initial_transcript``
-    builds for the harness's own adapters. ``max_steps`` is the harness step
-    limit, so an agent can size its own recursion or turn limit above it and
-    let the harness limit be the one that binds. ``timeout_seconds`` is the
-    run's time limit, None when the harness gave none. The harness cannot stop
-    an agent's thread, so an agent that starts processes of its own can stop
-    them by it once the run is over.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    task_id: str
-    system: str
-    user: str
-    max_steps: int
-    timeout_seconds: float | None = None
-
-
 class ToolObservation(BaseModel):
     """What one tool call returned, as the outside agent sees it.
 
@@ -127,6 +118,47 @@ class ToolObservation(BaseModel):
     status: str
     result: Any = None
     error: str | None = None
+
+
+class RecordedStep(BaseModel):
+    """One step of a recorded run that an outside agent continues from.
+
+    ``observation`` is what the tool returned at that step, exactly as the
+    harness's own adapters see it, with a control's block message in ``error``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    step: int
+    tool_name: str
+    arguments: dict[str, Any]
+    observation: ToolObservation
+
+
+class TaskPrompt(BaseModel):
+    """What an outside agent is asked to do, in the words the harness uses for every agent.
+
+    ``system`` and ``user`` are the two messages ``build_initial_transcript``
+    builds for the harness's own adapters. ``max_steps`` is the harness step
+    limit, so an agent can size its own recursion or turn limit above it and
+    let the harness limit be the one that binds. ``timeout_seconds`` is the
+    run's time limit, None when the harness gave none. The harness cannot stop
+    an agent's thread, so an agent that starts processes of its own can stop
+    them by it once the run is over.
+
+    ``history`` is empty unless the agent continues a recorded run, as the
+    module docstring describes. It then holds the recorded steps before the
+    agent's first move, and ``max_steps`` still counts them.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    task_id: str
+    system: str
+    user: str
+    max_steps: int
+    timeout_seconds: float | None = None
+    history: tuple[RecordedStep, ...] = ()
 
 
 ToolCallback = Callable[[str, dict[str, Any]], ToolObservation]
@@ -144,6 +176,10 @@ class TargetAgent(Protocol):
     (for example ``my-graph:gpt-5``). ``run`` drives the agent to a final
     answer, calling ``call_tool`` for every tool call and, when it can,
     ``on_model_response`` once per model response before acting on it.
+
+    An agent that can continue a recorded run from ``prompt.history`` also
+    sets ``supports_fork = True``. It is optional and read with
+    :func:`supports_fork`.
     """
 
     name: str
@@ -347,12 +383,22 @@ class TargetAgentBridge:
             or transcript[1].role is not MessageRole.USER
         ):
             raise TargetAgentError("expected the runner's system and user messages first")
+        history: tuple[RecordedStep, ...] = ()
+        if len(transcript) > 2:
+            # ForkAdapter replayed a recording before this first move (#159).
+            if not supports_fork(self.agent):
+                raise TargetAgentError(
+                    f"target agent {self.agent.name!r} cannot continue a recorded run, since "
+                    "it does not declare supports_fork"
+                )
+            history = recorded_history(transcript[2:])
         prompt = TaskPrompt(
             task_id=self.task_id,
             system=transcript[0].content,
             user=transcript[1].content,
             max_steps=self.max_steps,
             timeout_seconds=self.timeout_seconds,
+            history=history,
         )
         self._thread = threading.Thread(
             target=self._run_agent,
@@ -382,6 +428,39 @@ class TargetAgentBridge:
         raw = responses[0][0] if len(responses) == 1 else {"responses": [r for r, _ in responses]}
         reasoning = "\n\n".join(text for _, text in responses if text) or None
         return raw, reasoning
+
+
+def supports_fork(agent: object) -> bool:
+    """Whether an outside agent declares it can continue a recorded run."""
+    return getattr(agent, "supports_fork", False) is True
+
+
+def recorded_history(messages: list[Message]) -> tuple[RecordedStep, ...]:
+    """The recorded steps a transcript holds after its system and user messages.
+
+    Each step is an assistant message carrying a tool call followed by the
+    tool observation the runner appended for it, as ``ForkAdapter`` leaves
+    them. Anything else, such as a final answer, cannot precede a fork.
+    """
+    if len(messages) % 2:
+        raise TargetAgentError("a recorded step ends without its tool observation")
+    steps: list[RecordedStep] = []
+    for index in range(0, len(messages), 2):
+        move, observed = messages[index], messages[index + 1]
+        call = move.metadata.get("tool_call") if move.role is MessageRole.ASSISTANT else None
+        if not isinstance(call, dict) or observed.role is not MessageRole.TOOL:
+            raise TargetAgentError(
+                "a recorded run can be continued only after its tool calls and their observations"
+            )
+        steps.append(
+            RecordedStep(
+                step=index // 2 + 1,
+                tool_name=str(call.get("tool_name", "")),
+                arguments=dict(call.get("arguments") or {}),
+                observation=_observation_from([observed]),
+            )
+        )
+    return tuple(steps)
 
 
 def _answer(move: _ToolMove, reply: Any) -> None:
