@@ -98,7 +98,10 @@ class TaskPrompt(BaseModel):
     ``system`` and ``user`` are the two messages ``build_initial_transcript``
     builds for the harness's own adapters. ``max_steps`` is the harness step
     limit, so an agent can size its own recursion or turn limit above it and
-    let the harness limit be the one that binds.
+    let the harness limit be the one that binds. ``timeout_seconds`` is the
+    run's time limit, None when the harness gave none. The harness cannot stop
+    an agent's thread, so an agent that starts processes of its own can stop
+    them by it once the run is over.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -107,6 +110,7 @@ class TaskPrompt(BaseModel):
     system: str
     user: str
     max_steps: int
+    timeout_seconds: float | None = None
 
 
 class ToolObservation(BaseModel):
@@ -197,10 +201,18 @@ class TargetAgentBridge:
 
     name = EXTERNAL_PROVIDER
 
-    def __init__(self, agent: TargetAgent, *, task_id: str, max_steps: int) -> None:
+    def __init__(
+        self,
+        agent: TargetAgent,
+        *,
+        task_id: str,
+        max_steps: int,
+        timeout_seconds: float | None = None,
+    ) -> None:
         self.agent = agent
         self.task_id = task_id
         self.max_steps = max_steps
+        self.timeout_seconds = timeout_seconds
         self._moves: queue.Queue[Any] = queue.Queue()
         # Guards _closed and _pending, so no call posted or parked for a result
         # while close() drains the queue is missed by it.
@@ -340,6 +352,7 @@ class TargetAgentBridge:
             system=transcript[0].content,
             user=transcript[1].content,
             max_steps=self.max_steps,
+            timeout_seconds=self.timeout_seconds,
         )
         self._thread = threading.Thread(
             target=self._run_agent,
@@ -441,7 +454,12 @@ def run_target_agent(
     run's id as soon as the runner made one, so a failure after that still
     names the run.
     """
-    with TargetAgentBridge(agent, task_id=task.task_id, max_steps=config.max_steps) as bridge:
+    with TargetAgentBridge(
+        agent,
+        task_id=task.task_id,
+        max_steps=config.max_steps,
+        timeout_seconds=config.timeout_seconds,
+    ) as bridge:
         runner = AgentRunner(bridge, environment, store)
         try:
             return runner.run(task, config)

@@ -264,6 +264,15 @@ budget guard refuses provider `external` under a cap as `budget_unenforceable`,
 since its spend is invisible, and `branch` refuses it before any run. See
 [bring_your_own_agent.md](bring_your_own_agent.md).
 
+`agents/` holds the reference outside agents, which the core package never
+imports. `langgraph_ref.py` and `openai_agents_ref.py` run a framework loop over
+a scripted model, each behind its extra. `claude_code_ref.py` runs the task
+through the local Claude Code CLI with no built-in tool, giving it the task's
+tools through `claude_code_mcp.py`, a standard-library MCP server that relays
+every call to `call_tool`. It records to and replays from harness model
+cassettes. See
+[bring_your_own_agent.md](bring_your_own_agent.md#claude-code).
+
 `collector.py` exposes `collect_regressions(path, store, suite_path=...,
 experiments_path=...)` and `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
 completed failure reproduction and positive siblings. Control validation gates

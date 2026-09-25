@@ -26,10 +26,14 @@ class TargetAgent(Protocol):
     ) -> str: ...
 ```
 
-- `prompt` carries `task_id`, `system`, `user`, and `max_steps`. The system and
-  user text are exactly what the harness gives its own model adapters.
-  `max_steps` is the harness step limit, so set your framework's own recursion
-  or turn limit above it and let the harness limit be the one that binds.
+- `prompt` carries `task_id`, `system`, `user`, `max_steps`, and
+  `timeout_seconds`. The system and user text are exactly what the harness
+  gives its own model adapters. `max_steps` is the harness step limit, so set
+  your framework's own recursion or turn limit above it and let the harness
+  limit be the one that binds. `timeout_seconds` is the run's time limit, or
+  null when there is none. The harness cannot stop your agent's thread, so an
+  agent that starts processes of its own can use it to stop them once the run
+  is over.
 - `tools` lists the task's tools as `ToolSpec` objects, each with a name, a
   description, and a JSON schema for its arguments.
 - `call_tool(name, arguments)` runs one tool call inside the harness and blocks
@@ -184,12 +188,13 @@ Working examples ship under `src/trace_harness/agents/`, each behind its own
 extra. The core package never imports them, and their tests skip when the
 extra is not installed.
 
-The model underneath every reference agent is scripted. Its turns come from
-the task's fixture script, either directly or through a cassette recorded from
-that script, so a reference run shows the outside-agent path working end to end
-and says nothing about how a live model behaves. The agent's `name`, and so the
-`model` field of every run it produces, says which source was used, for example
-`langgraph_ref:cassette:scripted`.
+The model underneath the LangGraph and Agents SDK references is scripted. Its
+turns come from the task's fixture script, either directly or through a
+cassette recorded from that script, so a run of either shows the outside-agent
+path working end to end and says nothing about how a live model behaves. The
+agent's `name`, and so the `model` field of every run it produces, says which
+source was used, for example `langgraph_ref:cassette:scripted`. The Claude Code
+agent runs a live model and has [its own section](#claude-code).
 
 Each reference module has two factories.
 
@@ -288,6 +293,130 @@ items. `output_items` keeps it in the turn's reasoning item, in the
 `encrypted_content` field the SDK replays unchanged, and `transcript_of` puts
 it back on the harness turn for the next request. The LangGraph reference
 carries it in the message's `additional_kwargs`.
+
+## Claude Code
+
+`trace_harness.agents.claude_code_ref` runs the task through the local Claude
+Code CLI. Claude Code's own agent loop drives the model, and the harness keeps
+the environment, the controls, the trace, and the verifier as it does for any
+outside agent. The CLI's model calls run on the Claude plan it is logged in
+with, so a run counts against that plan's usage and carries no per-token
+charge.
+
+### Setup
+
+Install Claude Code ([setup](https://code.claude.com/docs/en/setup)) and log in
+once in a terminal by running `claude` and `/login` with the Claude account
+whose plan should carry the runs. The agent was built against version 2.1.273.
+Nothing else is needed, since the module uses only the core package.
+
+```sh
+trace-harness run-pipeline fixtures/tasks/refund_policy_valid_cash.json \
+  --agent trace_harness.agents.claude_code_ref:agent
+```
+
+`:agent` runs `claude-sonnet-5`, and the run's `model` field is
+`claude_code_ref:claude-sonnet-5`. Another model, or a recording, takes a small
+factory of your own.
+
+```python
+from pathlib import Path
+
+from trace_harness.agents.claude_code_ref import ClaudeCodeAgent, ClaudeCodeCassette
+
+
+def recording_agent():
+    return ClaudeCodeAgent(
+        "claude-sonnet-5",
+        cassette=ClaudeCodeCassette(Path("/tmp/claude-code-cassettes"), "record"),
+    )
+```
+
+The agent never logs in and never answers a prompt of the CLI. A CLI that is
+not logged in ends the run with an error saying so.
+
+### What it guarantees
+
+Each run starts `claude -p` in a fresh temporary directory, which is removed
+afterwards. The flags are described in the
+[CLI reference](https://code.claude.com/docs/en/cli-reference) and
+[headless mode](https://code.claude.com/docs/en/headless).
+
+- **Only the task's tools.** `--tools ""` removes every built-in tool. The only
+  tool source is a small MCP server in the package
+  (`agents/claude_code_mcp.py`), loaded through `--mcp-config` with
+  `--strict-mcp-config`, which lists exactly the task's tools. The CLI names
+  them `mcp__trace__<tool>`. Tool search is turned off, so no search tool is
+  added. The run's `system/init` message must list exactly those tools, or the
+  run ends before any tool call.
+- **Every call goes through the harness.** The MCP server relays each call over
+  a Unix socket to the agent, which runs it through `call_tool`. Validation,
+  controls, `blocked_by`, the step and time limits, and the trace work
+  unchanged. A blocked call reaches the CLI as the control's message, as an
+  MCP tool result with `isError` set.
+- **Nothing waits on a person.** Only the task's tools are allowed, under
+  `--permission-mode dontAsk` and `--permission-prompts none`, so anything
+  that would prompt is denied.
+- **Nothing else shapes the run.** `--setting-sources ""` loads no user,
+  project, or local settings, so no hooks, permission rules, or CLAUDE.md
+  files apply. Auto memory and claude.ai connectors are off, and
+  `--no-session-persistence` saves no session.
+- **The prompt is the harness's.** `--system-prompt` is the task's system
+  prompt with one line added that says how the CLI names the tools. The task's
+  user message is the first message, sent on stdin.
+- **The plan pays.** The CLI's environment has no `ANTHROPIC_API_KEY` or
+  `ANTHROPIC_AUTH_TOKEN`, which would otherwise take precedence over the
+  login ([environment variables](https://code.claude.com/docs/en/env-vars)),
+  and no variable that marks a nested Claude Code session. The `system/init`
+  message must report `apiKeySource` as `none`, or the run ends before any
+  tool call.
+- **The model asked for.** The `system/init` message and every model response
+  must name the model the agent was given. A fallback to another model ends
+  the run.
+- **Reasoning reaches attribution.** Every assistant message in the stream is
+  forwarded to `on_model_response`. The CLI writes one message per content
+  block, so the blocks of one model response are forwarded together, with
+  thinking signatures left out. Thinking, and any text written beside a tool
+  call, become the step's reasoning. A tool call waits until its `tool_use`
+  block has been read, so the response that made the call lands on the call's
+  step. The `result` message's `usage`, `modelUsage`, and `total_cost_usd` are
+  forwarded last, with the CLI version, at the final step.
+- **Failures end cleanly.** No `claude` on PATH, a missing login, an error
+  result, a non-zero exit, a stream line that is not JSON, a rejected usage
+  limit, and a run past its time limit each end the run as `model_error` with
+  a message that says which. The CLI runs in its own process group, which is
+  stopped with the MCP server inside it when the run ends, when the harness
+  run ended first (the next tool call gets `RunEnded`, or the run's time limit
+  plus 5 seconds passes), and when the interpreter exits.
+- **Offline replay.** With a `ClaudeCodeCassette` in `record` mode, every move
+  is written to a harness model cassette at
+  `<root>/claude_code_ref/<task_id>/<model>/default.jsonl`, with the responses
+  forwarded for it. In `replay` mode no CLI starts. Each move is served from
+  the cassette after the conversation so far is checked against the
+  recording, so a replay forwards the same responses and makes the same calls,
+  and a run that drifts from the recording stops with a request mismatch.
+  Recording never overwrites a cassette.
+
+`tests/test_claude_code_agent.py` checks each of these with a fake `claude` on
+PATH (`tests/fake_claude_cli.py`) that starts the MCP server the way the CLI
+does. No test runs the real CLI.
+
+### Rate limits and your plan
+
+- A run uses the usage limits of the plan the CLI is logged in with, the same
+  limits that claude.ai and every other Claude Code session draw on
+  ([costs](https://code.claude.com/docs/en/costs)).
+- When the CLI reports a `rate_limit_event` with status `rejected`, the plan's
+  limit is reached. The agent stops the CLI at once and the run ends as
+  `model_error`, with the time the limit resets. Under `branch` that run is
+  incomplete, so a seed replacement is spent on it.
+- With usage credits turned on, use past the plan's limit is charged to those
+  credits, and the harness cannot see that charge. Turn them off if the plan
+  alone should carry the runs.
+- `total_cost_usd` is the CLI's client-side estimate at API list prices
+  ([cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking)).
+  For a run on a plan it is what the same calls would have cost over the API,
+  and nothing was charged.
 
 ## Out of scope
 

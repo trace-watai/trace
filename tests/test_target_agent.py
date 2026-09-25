@@ -164,7 +164,7 @@ def test_every_task_runs_through_the_bridge_as_the_fixture_provider_does(task_pa
 
 def test_the_agent_gets_the_runners_prompt_and_tools(tmp_path):
     agent = ScriptAgent()
-    result, trace, _ = _run(agent, VALID_TASK_PATH, tmp_path, max_steps=9)
+    result, trace, _ = _run(agent, VALID_TASK_PATH, tmp_path, max_steps=9, timeout_seconds=42)
     first_prompt = _events(trace, TraceEventType.MODEL_PROMPT)[0].payload["new_messages"]
     assert agent.prompt is not None
     assert (agent.prompt.system, agent.prompt.user) == (
@@ -173,6 +173,8 @@ def test_the_agent_gets_the_runners_prompt_and_tools(tmp_path):
     )
     assert agent.prompt.task_id == "refund_policy_valid_cash"
     assert agent.prompt.max_steps == 9
+    # The run's time limit, so an agent can stop what it started once the run is over.
+    assert agent.prompt.timeout_seconds == 42
     assert result.status is RunStatus.COMPLETED
 
 
