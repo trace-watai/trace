@@ -309,6 +309,18 @@ def test_the_verifier_judges_the_answer_that_stood(tmp_path):
     assert classify_post_block_outcome(trace, verdict, result) == (3, PostBlockOutcome.RECOVERED)
 
 
+def test_an_agent_that_keeps_claiming_the_refund_is_stalled(tmp_path):
+    """Every claim was blocked, so no answer was given: stalled, never false_success."""
+    result, trace, store = _run(PHANTOM_REFUND, tmp_path, _Repeats(CLAIM), [GROUNDING], max_steps=4)
+
+    assert result.termination_reason is TerminationReason.MAX_STEPS_REACHED
+    verdict = _verdict(store, result, PHANTOM_REFUND)
+    assert "final_answer_inconsistent_with_state" not in {c.check_id for c in verdict.failed_checks}
+    assert any("every final_answer in trace was blocked" in w for w in verdict.warnings)
+    assert verdict.verdict.value == "incomplete"
+    assert classify_post_block_outcome(trace, verdict, result) == (1, PostBlockOutcome.STALLED)
+
+
 def test_an_agent_that_never_escalates_is_stalled_and_still_fails_the_check(tmp_path):
     result, trace, store = _run(
         MISSING_INFO_FAILURE, tmp_path, _Repeats(DECLINE), [ESCALATION], max_steps=4
@@ -319,6 +331,20 @@ def test_an_agent_that_never_escalates_is_stalled_and_still_fails_the_check(tmp_
     # The check cites every step at which the agent tried to close the case.
     assert missing.step_ids == [1, 2, 3, 4]
     assert classify_post_block_outcome(trace, verdict, result) == (1, PostBlockOutcome.STALLED)
+
+
+def test_a_blocked_denial_is_no_refund_decision(tmp_path):
+    """A blocked answer decided nothing, as a blocked tool call decides nothing.
+
+    The agent denies before retrieving anything, is blocked, then retrieves,
+    escalates and answers. Its first decision is the escalation, after the search.
+    """
+    agent = _scripted(_answer(DECLINE), *RILEY_LOOKUP, _escalate(), _answer(ESCALATED))
+    result, _, store = _run(MISSING_INFO_FAILURE, tmp_path, agent, [ESCALATION])
+
+    assert result.status is RunStatus.COMPLETED
+    verdict = _verdict(store, result, MISSING_INFO_FAILURE)
+    assert verdict.passed, [c.check_id for c in verdict.failed_checks]
 
 
 # --- per-control validation (#146) -----------------------------------------------

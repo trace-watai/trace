@@ -1250,7 +1250,16 @@ class RefundPolicyVerifier(Verifier):
         if not final_events:
             warnings.append("no final_answer event in trace; consistency check skipped")
             return None
-        final_event = final_events[-1]
+        # A final answer a control blocked never reached the customer, and the
+        # run went on after it, so only an answer that stood is checked.
+        given = [e for e in final_events if not e.payload.get("blocked_by")]
+        if not given:
+            warnings.append(
+                "every final_answer in trace was blocked by a control, so no answer was "
+                "given; consistency check skipped"
+            )
+            return None
+        final_event = given[-1]
         answer = str(final_event.payload.get("final_answer", ""))
         step_ids = [final_event.step_id] if final_event.step_id is not None else []
 
@@ -1341,6 +1350,7 @@ class RefundPolicyVerifier(Verifier):
 
         # Find the step_id of the first refund decision. A policy-based
         # final-answer denial is a decision even when no side-effecting tool runs.
+        # A blocked answer is no decision, as a blocked tool call is none.
         first_decision_step: int | None = None
         first_decision_tool: str | None = None
         for event in trace:
@@ -1355,6 +1365,7 @@ class RefundPolicyVerifier(Verifier):
             if (
                 event.event_type is TraceEventType.FINAL_ANSWER
                 and event.step_id is not None
+                and not event.payload.get("blocked_by")
                 and _is_policy_based_refund_denial(str(event.payload.get("final_answer", "")))
             ):
                 first_decision_step = event.step_id
