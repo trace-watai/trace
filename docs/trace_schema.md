@@ -70,8 +70,21 @@ never counts a blocked irreversible call as the first irreversible action
 **Final answer blocks (0.5.0):** a final answer never reaches the
 environment, so the runner asks the installed controls before accepting it
 (#193). `final_answer` carries `blocked_by` with the blocking control's
-`control_id`, or `null` when the answer stood. A blocked answer ends the run
-as terminated with `final_answer_blocked`, since no answer was given.
+`control_id`, or `null` when the answer stood. A blocked answer was never
+given, and the runner handles it as it handles a blocked tool call. The
+block message goes back to the agent as a `user` message, which the next
+step's `model_prompt` records, and the run goes on under the same step and
+time limits. A trace can therefore hold several `final_answer` events. Each
+one a control blocked carries `blocked_by`, and a run completes only on one
+that carries `null`, which is then the last in the trace. An agent that
+never gives an accepted answer ends the run at the step or time limit, or as
+`script_exhausted` when a script or an outside agent has no turn left, and
+the run has no answer. A raw `register_final_answer_hook` block that sets no
+`blocked_by` reads as an answer that stood, so controls enter through
+`install_control`, which always sets it. The payload did not change, so
+`TRACE_SCHEMA_VERSION` stays `0.5.0`. A run written before the runner went
+on after a block ends at its blocked answer as `terminated` with
+`final_answer_blocked`, and still reads that way.
 
 Each event type has a Pydantic payload model in
 `trace_harness.tracing.payloads`. `TraceEvent.payload` remains the lossless raw

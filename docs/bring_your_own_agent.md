@@ -115,8 +115,11 @@ agents.
   pre-call seam before any handler. A blocked call returns `status: error` with
   the control's message, and the trace records the control id as `blocked_by`
   on both `tool_call_executed` and `tool_observation`. Final-answer controls run
-  on the answer you return, and a blocked answer ends the run as
-  `final_answer_blocked`.
+  on the answer you return. The harness hands a blocked answer back and asks
+  for the agent's next move, as it does for every agent, but `run` has already
+  returned, so your agent has no turn to answer again. The run ends as
+  `terminated` with `script_exhausted`, with the answer in the trace under
+  `blocked_by`, and the block message never reaches your agent.
 - **Limits.** The step limit and the timeout are enforced by the harness. When
   a run ends early, the call your agent is waiting on and every later
   `call_tool` raise `RunEnded`. The harness cannot stop your agent's thread,
