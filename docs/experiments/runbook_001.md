@@ -17,15 +17,19 @@ after that commit.
 
 | Value | In the plan | Basis |
 |---|---|---|
-| Cap | `budget.max_cost_usd` 50.0 | The pre-registration caps recorded `cost_usd` across all live arms at 50 US dollars |
-| Temperature | `null` in every live agent config, so none is sent and each `run_config.json` records null. For claude-sonnet-5 it must stay null, since that model rejects a non-default temperature with a 400 error | "at the provider's default temperature" |
+| Cap | `budget.max_cost_usd` 50.0 | The pre-registration caps recorded `cost_usd` across all live arms at 50 US dollars. The swapped arm records none, so the Gemini arms are what the cap binds |
+| Temperature | `null` in every live agent config, so none is sent and each `run_config.json` records null. The swapped arm's outside agent takes none, and Claude Code sends its own request settings | "at the provider's default temperature" |
 | Live model | gemini `gemini-3.6-flash` for `live` and `live_no_control` | "Gemini (`gemini-3.6-flash`, the adapter default)" |
-| Swapped model | anthropic `claude-sonnet-5` for `live_swapped` | The pre-registration names #160's second adapter and no model, and this is that adapter's default |
+| Swapped model | `claude-sonnet-5` through the Claude Code CLI (`trace_harness.agents.claude_code_ref:agent`, `billing: subscription`) for `live_swapped` | The 2026-09-25 amendment to the pre-registration, which replaces #160's API adapter with Claude Code on a Claude plan and waits on Sarp's approval |
 
 Three more things hold before freeze.
 
-- #160 is on main before the first live run. Otherwise `live_swapped` drops
-  out of step 4 and is reported as not run, with no substitute model.
+- The 2026-09-25 amendment is approved and on main before the first live run.
+  Otherwise `live_swapped` keeps the pre-registration's wording, and the plan
+  changes back to #160's API adapter before freeze.
+- `claude` is installed on the machine that runs step 4 and logged in with the
+  Claude account whose plan carries the swapped arm
+  ([bring_your_own_agent.md](../bring_your_own_agent.md#claude-code)).
 - The #198 slot in `metadata.amendment_slots` is filled or stays empty. A
   natural failing cell joins only through a dated amendment appended to the
   pre-registration, with its fork point and four conditions added to the plan
@@ -88,8 +92,12 @@ fixture's control-on continuation fails after the fork on every seed.
 ## Commands
 
 From the repository root, with the package installed. Only step 4 calls a
-provider. It needs `GEMINI_API_KEY` and `ANTHROPIC_API_KEY` in the
-environment, and neither ever enters the repository.
+provider. It needs `GEMINI_API_KEY` in the environment, which never enters the
+repository, and a logged-in `claude` on PATH for the swapped arm. The swapped
+arm needs no `ANTHROPIC_API_KEY`, and the Claude Code agent removes it from the
+CLI's environment, so the plan carries the runs. Run step 4 from a plain
+terminal. The agent also removes the variables that mark a nested Claude Code
+session, such as `CLAUDECODE`, from the CLI's environment.
 
 ```bash
 PLAN=docs/acceptance/experiments/exp_001_replay_validity/experiment.json
@@ -144,13 +152,25 @@ done
 
 - Each invocation checks the frozen set before any run and exits 2 on drift.
 - The cap spans every invocation into `$RUNS`, and `branch` prints what the
-  earlier runs spent. The swapped arm runs last, so a cap reached late costs
-  it first.
+  earlier runs spent. The swapped arm runs last and spends nothing against the
+  cap, but once the cap has stopped, its seeds are refused like any live seed.
+- The swapped arm runs on the Claude plan the CLI is logged in with, which
+  claude.ai and every other Claude Code session draw on too. Check the plan's
+  usage before its three invocations. When the plan's limit is reached the
+  agent stops the CLI and the seed ends incomplete, so a replacement seed is
+  spent on it, and a pair can end insufficient. If that happens, stop, and
+  report the affected conditions as the pre-registration's rules decide.
+  Leave usage credits off, since use past the plan's limit would then be
+  charged where the harness cannot see it.
+- The swapped arm is branched once like every condition. It records no
+  cassettes, so nothing refuses a second branch of it mechanically, and a
+  second batch of it is not recorded.
 - A seed whose run ends incomplete is replaced from seeds 5 to 9 inside the
   same invocation. A `setup_error`, where the harness failed around the run,
   is not replaced.
-- Live runs record cassettes under the experiment folder, one folder per arm.
-  Recording never overwrites a cassette, so a condition is branched once.
+- The Gemini arms record cassettes under the experiment folder, one folder
+  per arm. Recording never overwrites a cassette, so a condition is branched
+  once.
   Branching it again exits 2 before any run and lists the cassettes that
   already exist, and the first batch is the one to record.
 - An interrupted invocation writes no batch for the condition it was in, but
@@ -210,23 +230,33 @@ Anthropic's published one, which #229 put in the table.
 `tests/test_exp_001.py` recomputes this table from the script and checks that
 the tables still hold the prices stated here.
 
-| Arm | Model | Expected | High |
-|---|---|---|---|
-| `live` | gemini-3.6-flash | $0.14 | $3.53 |
-| `live_no_control` | gemini-3.6-flash | $0.14 | $3.53 |
-| `live_swapped` | claude-sonnet-5 | $0.38 | $9.40 |
-| Total | | $0.66 | $16.45 |
+| Arm | Model | Billing | Expected | High |
+|---|---|---|---|---|
+| `live` | gemini-3.6-flash | API, charged against the cap | $0.14 | $3.53 |
+| `live_no_control` | gemini-3.6-flash | API, charged against the cap | $0.14 | $3.53 |
+| Total against the cap | | | $0.28 | $7.05 |
+| `live_swapped` | claude-sonnet-5 through Claude Code | Claude plan, notional | $0.38 | $9.40 |
+
+The swapped arm runs on a Claude plan (the 2026-09-25 amendment), so it has no
+per-run charge and records no `cost_usd`, and the cap binds on the Gemini arms
+alone. Its line is what the same calls would cost over the API at list prices.
+Each of its runs records the CLI's own estimate of that as `notional_cost_usd`,
+which the cap never counts. The one Claude Code run made so far, of
+`refund_policy_valid_cash` from its first step on 2026-09-25, took 5 steps and
+reported $0.0254, including a Claude Haiku call the CLI made for itself. What
+the swapped arm uses up is the plan's usage, which step 4 says to check.
 
 Expected assumes five seeds per condition, each making as many calls after the
 fork as the recording did. High assumes ten runs per condition, seeds 0 to 4
 and every replacement, each running to the 16 step limit. Neither is a bound,
 since a live call can return more output tokens than 690 and a live transcript
 can grow faster than the recorded one. The Claude line uses Gemini's token
-counts, since no Claude run is retained. Pricing every call at 1010 output
-tokens, the largest single call in the eight retained 2026-09-13 live Gemini
-runs (`--output-tokens 1010`), gives $0.80 expected and $18.47 high. What
-bounds the spend is the cap. The guard checks it between runs, so the overshoot
-past it is at most one run.
+counts, since no Claude run of a fork point is retained. Pricing every call at
+1010 output tokens, the largest single call in the eight retained 2026-09-13
+live Gemini runs (`--output-tokens 1010`), gives $0.34 expected and $7.92 high
+against the cap, and $0.46 and $10.55 notional. What bounds the spend is the
+cap. The guard checks it between runs, so the overshoot past it is at most one
+run.
 
 ## Stopping rules as the tools apply them
 
@@ -249,9 +279,11 @@ past it is at most one run.
 - **Per-model rates.** The pre-registration rates each live model on its own.
   The headline `verdict_agreement_rate` is the `live` arm's Gemini rate, and
   the swapped model's rate is in `metrics.extra` under
-  `verdict_agreement_rate/live_swapped/claude-sonnet-5`.
+  `verdict_agreement_rate/live_swapped/claude_code_ref:claude-sonnet-5`.
 - **`live_swapped`.** #200 lists it as a condition to run. The
-  pre-registration runs it only if #160 is on main before the first live run.
+  pre-registration runs it with #160's API adapter if that is on main before
+  the first live run, and its 2026-09-25 amendment runs it through Claude Code
+  on a Claude plan instead.
 - **Harness check.** #200 does not name it. The pre-registration runs it
   first, and step 3 is it.
 - **B1.** #200 asks for B1 per artifact and control. The sidecar has one entry
@@ -276,7 +308,12 @@ past it is at most one run.
   state, and no test calls a live provider from such a prefix
   ([branch_stage.md](../branch_stage.md#limits)). If a provider rejects the
   prefix, every seed of that condition ends incomplete, the replacement pool
-  runs out, and the pair is insufficient.
+  runs out, and the pair is insufficient. The swapped arm gets the prefix as
+  text in its first message, so it has no provider state to reject.
+- The swapped arm reaches its model through Claude Code, whose loop, tool
+  naming and message handling are its own. Its runs measure that agent with
+  claude-sonnet-5 underneath, and its rate is reported under
+  `verdict_agreement_rate/live_swapped/claude_code_ref:claude-sonnet-5`.
 - The metrics history job scans `docs/acceptance` recursively and leaves out
   `docs/acceptance/batches` and `docs/acceptance/experiments`
   (`EXPERIMENT_EVIDENCE` in `metrics/history.py`, decision D4). Once step 8

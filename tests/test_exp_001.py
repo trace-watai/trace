@@ -37,9 +37,11 @@ from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID
 from trace_harness.models import is_priced
 from trace_harness.models.anthropic import ANTHROPIC_PRICING
 from trace_harness.models.gemini import GEMINI_PRICING
+from trace_harness.runner.batch import BudgetGuard
 from trace_harness.runner.branch import load_artifact, replacement_seeds, validate_condition
 from trace_harness.runner.experiment import ExperimentMetrics, ExperimentSpec
 from trace_harness.runner.repair_effectiveness import RepairEffectivenessReport
+from trace_harness.runner.target_agent import load_target_agent
 
 EXP_DIR = REPO_ROOT / "docs" / "acceptance" / "experiments" / "exp_001_replay_validity"
 PLAN = ExperimentSpec.model_validate_json((EXP_DIR / "experiment.json").read_text())
@@ -100,13 +102,32 @@ def test_seeds_models_temperature_and_budget_follow_the_preregistration():
             assert condition.control_ids == [REFUND_WINDOW_CONTROL_ID]
             continue
         assert condition.seeds == [0, 1, 2, 3, 4]
-        # The provider's default, and claude-sonnet-5 rejects any other with a 400.
+        # The provider's default; nothing is sent.
         assert agent.temperature is None
+        if condition.kind.value == "live_swapped":
+            # The 2026-09-25 amendment: claude-sonnet-5 through Claude Code on a
+            # Claude plan, admitted under the cap without a charge.
+            outside = load_target_agent(agent.agent_ref)
+            assert (agent.provider, agent.agent_ref, agent.billing) == (
+                "external",
+                "trace_harness.agents.claude_code_ref:agent",
+                "subscription",
+            )
+            assert (outside.model, outside.billing, outside.supports_fork) == (
+                "claude-sonnet-5",
+                "subscription",
+                True,
+            )
+            assert (agent.model, agent.cassette) == (None, None)
+            assert condition.control_ids == [REFUND_WINDOW_CONTROL_ID]
+            assert BudgetGuard(PLAN.budget.max_cost_usd).admit(
+                agent.provider, agent.model, billing=agent.billing
+            )
+            continue
         assert is_priced(agent.provider, agent.model), "an unpriced model cannot run under a cap"
         expected = {
             "live": ("gemini", "gemini-3.6-flash", [REFUND_WINDOW_CONTROL_ID]),
             "live_no_control": ("gemini", "gemini-3.6-flash", []),
-            "live_swapped": ("anthropic", "claude-sonnet-5", [REFUND_WINDOW_CONTROL_ID]),
         }[condition.kind.value]
         assert (agent.provider, agent.model, condition.control_ids) == expected
         # Record mode, one folder per arm, since cassette paths do not name the arm.
@@ -115,7 +136,7 @@ def test_seeds_models_temperature_and_budget_follow_the_preregistration():
             EXP_DIR.relative_to(REPO_ROOT) / "cassettes" / condition.kind.value
         )
         cassette_dirs.add(agent.cassette.directory)
-    assert len(cassette_dirs) == 3
+    assert len(cassette_dirs) == 2
 
 
 def test_every_condition_is_one_branch_accepts():
@@ -527,8 +548,10 @@ def test_the_cost_estimate_prices_through_the_adapter_tables():
     result = _estimate_module().estimate()
     assert result["cassette_inputs"] == [995, 1251, 1750, 2851, 3573]
     assert result["cassette_max_output"] == result["output_tokens_per_call"] == 690
-    rows = {r["condition"]: r for r in result["rows"]}
+    rows = {r["condition"]: r for r in result["rows"] + result["notional_rows"]}
     assert len(rows) == 9
+    # The swapped arm runs on a Claude plan, so it is notional and outside the cap's total.
+    assert {r["condition"].split("__")[0] for r in result["notional_rows"]} == {"live_swapped"}
     # refund_policy_failure forks at 5 and the recording has 2 steps after it.
     # Step 6 sends 3573 + 1101 = 4674 input tokens and step 7 sends 5775, each
     # answered with 690 output tokens. The harness rounds a run's cost to the
@@ -542,44 +565,59 @@ def test_the_cost_estimate_prices_through_the_adapter_tables():
     for arm, (per_input, per_output) in prices.items():
         per_run = round(sum(i * per_input + o * per_output for i, o in calls) / 1_000_000, 6)
         assert rows[f"{arm}__refund_policy_failure"]["expected_usd"] == pytest.approx(5 * per_run)
-    assert result["expected_usd"] == round(sum(r["expected_usd"] for r in rows.values()), 2)
-    assert result["high_usd"] == round(sum(r["high_usd"] for r in rows.values()), 2)
+    charged = result["rows"]
+    assert result["expected_usd"] == round(sum(r["expected_usd"] for r in charged), 2)
+    assert result["high_usd"] == round(sum(r["high_usd"] for r in charged), 2)
     assert result["high_usd"] <= result["cap_usd"] == 50.0
+    notional = result["notional_rows"]
+    assert result["notional_high_usd"] == round(sum(r["high_usd"] for r in notional), 2)
 
 
 def _runbook_cost_table() -> dict[str, tuple[float, float]]:
     text = (REPO_ROOT / "docs" / "experiments" / "runbook_001.md").read_text()
     section = text.split("## Cost against the cap")[1].split("\n## ")[0]
-    rows = re.findall(r"^\| `?(\w+)`? \|[^|]*\| \$([\d.]+) \| \$([\d.]+) \|$", section, re.M)
+    rows = re.findall(
+        r"^\| `?([\w ]+?)`? \|[^|]*\|[^|]*\| \$([\d.]+) \| \$([\d.]+) \|$", section, re.M
+    )
     return {arm: (float(expected), float(high)) for arm, expected, high in rows}
 
 
 def test_the_runbook_cost_table_is_the_estimate_at_the_prices_it_states():
-    """The runbook's prices are the adapter tables', claude-sonnet-5 at 2 and 10."""
+    """The runbook's prices are the adapter tables', claude-sonnet-5 at 2 and 10.
+
+    The swapped arm runs on a Claude plan after the 2026-09-25 amendment, so its
+    line is notional and the total against the cap is the Gemini arms'.
+    """
     assert GEMINI_PRICING["gemini-3.6-flash"] == (0.75, 3.75)
     assert ANTHROPIC_PRICING["claude-sonnet-5"] == (2.0, 10.0)
     module = _estimate_module()
     result = module.estimate()
     by_arm: dict[str, list[float]] = {}
-    for row in result["rows"]:
+    for row in result["rows"] + result["notional_rows"]:
         arm = row["condition"].split("__")[0]
         totals = by_arm.setdefault(arm, [0.0, 0.0])
         totals[0] += row["expected_usd"]
         totals[1] += row["high_usd"]
     expected = {arm: (round(e, 2), round(h, 2)) for arm, (e, h) in by_arm.items()}
-    expected["Total"] = (result["expected_usd"], result["high_usd"])
+    expected["Total against the cap"] = (result["expected_usd"], result["high_usd"])
+    assert (result["notional_expected_usd"], result["notional_high_usd"]) == expected[
+        "live_swapped"
+    ]
     assert (
         _runbook_cost_table()
         == expected
         == {
             "live": (0.14, 3.53),
             "live_no_control": (0.14, 3.53),
+            "Total against the cap": (0.28, 7.05),
             "live_swapped": (0.38, 9.4),
-            "Total": (0.66, 16.45),
         }
     )
-    runbook = (REPO_ROOT / "docs" / "experiments" / "runbook_001.md").read_text()
+    # Whitespace is folded, so the wrapping of the runbook's lines does not matter.
+    runbook = " ".join((REPO_ROOT / "docs" / "experiments" / "runbook_001.md").read_text().split())
     wide = module.estimate(output_tokens=1010)
-    assert (wide["expected_usd"], wide["high_usd"]) == (0.8, 18.47)
-    assert "gives $0.80 expected and $18.47 high" in runbook
+    assert (wide["expected_usd"], wide["high_usd"]) == (0.34, 7.92)
+    assert (wide["notional_expected_usd"], wide["notional_high_usd"]) == (0.46, 10.55)
+    assert "gives $0.34 expected and $7.92 high against the cap" in runbook
+    assert "and $0.46 and $10.55 notional" in runbook
     assert "at 2 and 10 for claude-sonnet-5" in runbook
