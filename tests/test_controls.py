@@ -218,7 +218,9 @@ def test_every_prescribed_repair_control_has_a_materializability_entry() -> None
     assert guardrail_ref_for_repair_control("current_policy_source_precedence") == (
         "deprecated_policy_citation_guardrail"
     )
-    # Still unbuilt after #194: detection controls and the CI gate.
+    # Still unbuilt after #194: the CI gate, the detection-only expected-action
+    # contract, and the escalation-discipline and retrieval-before-action
+    # pre-dispatch controls.
     for name in (
         "regression_test_ci_gate",
         "expected_action_contract_check",

@@ -492,6 +492,8 @@ def _validation_plan(
     first catalogue control that would (reported as not selected) or None
     (reported as not materializable).
     """
+    # A control named twice is validated once.
+    controls = list({c.control_id: c for c in controls}.values())
     plan: list[tuple[str, set[str], ControlInstance | None]] = []
     for name, expected_checks in prescribed.items():
         selected = [c for c in controls if c.provenance.repair_control == name]

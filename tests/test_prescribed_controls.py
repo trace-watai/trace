@@ -510,6 +510,18 @@ def test_every_selected_control_for_one_prescription_gets_a_verdict(tmp_path) ->
     }
 
 
+def test_a_control_named_twice_gets_one_verdict(tmp_path) -> None:
+    validation = _validate(
+        tmp_path,
+        _bundle(tmp_path, DAY_45_TASK_PATH),
+        "ctl_refund_policy_v2",
+        "ctl_refund_policy_v2",
+    )
+    assert [c.control_id for c in validation.controls if c.control == REFUND_TEMPLATE] == [
+        "ctl_refund_policy_v2"
+    ]
+
+
 def test_a_default_replay_does_not_blame_a_control_flag_nobody_passed(tmp_path) -> None:
     validation = _validate(tmp_path, _bundle(tmp_path, FAILURE_TASK_PATH))
     skipped = {
