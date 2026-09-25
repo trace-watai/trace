@@ -430,7 +430,9 @@ afterwards. The flags are described in the
   the cassette after the conversation so far is checked against the
   recording, so a replay forwards the same responses and makes the same calls,
   and a run that drifts from the recording stops with a request mismatch.
-  Recording never overwrites a cassette.
+  The forwarded responses include the result message, so a replayed run
+  reports the recorded run's `total_cost_usd` and `notional_cost_usd`, though
+  nothing ran. Recording never overwrites a cassette.
 
 `tests/test_claude_code_agent.py` checks each of these with a fake `claude` on
 PATH (`tests/fake_claude_cli.py`) that starts the MCP server the way the CLI
