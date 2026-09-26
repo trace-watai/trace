@@ -22,6 +22,7 @@ from trace_harness.models.cassette import (
 )
 from trace_harness.models.fixture import FixtureModelAdapter
 from trace_harness.models.gemini import GeminiModelAdapter
+from trace_harness.models.policy import default_call_policy
 from trace_harness.runner.batch import BatchRunner
 from trace_harness.runner.pipeline import run_task_pipeline
 from trace_harness.runner.suite import AgentConfig, load_suite
@@ -150,7 +151,17 @@ def test_configuration_drift_is_rejected(tmp_path: Path, field: str, value: obje
 
 @pytest.mark.parametrize(
     "damage",
-    ["version", "json", "trailing_json", "step", "raw", "nested_extra", "usage", "empty"],
+    [
+        "version",
+        "json",
+        "trailing_json",
+        "step",
+        "raw",
+        "nested_extra",
+        "usage",
+        "nested_usage",
+        "empty",
+    ],
 )
 def test_invalid_cassette_rejected_before_any_action(tmp_path: Path, damage: str) -> None:
     path = tmp_path / "cassette.jsonl"
@@ -167,6 +178,9 @@ def test_invalid_cassette_rejected_before_any_action(tmp_path: Path, damage: str
         data["response"]["tool_call"] = {"tool_name": "lookup", "arguments": {}, "typo": 1}
     elif damage == "usage":
         data["usage"]["total_token_count"] = True
+    elif damage == "nested_usage":
+        # Only allowlisted counts may nest, and only under their own key.
+        data["usage"]["prompt_tokens_details"] = {"cached_tokens": 1, "headers": 2}
     text = json.dumps(data) + "\n"
     if damage == "json":
         text = '{"response":'
@@ -306,9 +320,13 @@ def test_retained_import_is_reproducible_and_never_overwrites(tmp_path: Path) ->
 def test_cli_records_and_replays_same_knobs_without_keys(tmp_path, monkeypatch) -> None:
     captured = {}
 
-    def stub_init(self, model, *, temperature, seed, timeout_seconds):
+    def stub_init(self, model, *, temperature, seed, timeout_seconds, call_policy):
         captured.update(
-            model=model, temperature=temperature, seed=seed, timeout_seconds=timeout_seconds
+            model=model,
+            temperature=temperature,
+            seed=seed,
+            timeout_seconds=timeout_seconds,
+            call_policy=call_policy.model_dump(mode="json"),
         )
 
     monkeypatch.setattr(GeminiModelAdapter, "__init__", stub_init)
@@ -334,6 +352,8 @@ def test_cli_records_and_replays_same_knobs_without_keys(tmp_path, monkeypatch) 
         "temperature": 0.25,
         "seed": 9,
         "timeout_seconds": 17.0,
+        # Recording calls the provider, so it runs under the default policy.
+        "call_policy": default_call_policy("gemini").model_dump(mode="json"),
     }
     saved = json.loads(next(runs.glob("*/run_config.json")).read_text())
     assert {key: saved[key] for key in captured} == captured

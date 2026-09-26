@@ -48,9 +48,15 @@ Where Anthropic differs from Gemini, and what that costs
     turn that hits it, or the context window, is truncated and becomes a model
     error with the billed response kept in the trace.
 
-Out of scope, the same as the Gemini adapter: retries, backoff, rate limiting,
-streaming. Parallel tool calls are switched off on the request with
-``disable_parallel_tool_use``, and a response carrying two anyway is an error.
+Retries, backoff and the rate limit come from the shared policy in
+``models/policy.py`` (#196). The SDK's own two default retries are switched off
+with ``max_retries=0``, so every attempt is one the policy made and recorded.
+Anthropic's 529 overloaded is a 5xx and is retried like one.
+
+Parallel tool calls are switched off on the request with
+``disable_parallel_tool_use``, and a response carrying two anyway is an error
+that keeps the billed response. Streaming is out of scope, the same as the
+Gemini adapter.
 """
 
 from __future__ import annotations
@@ -68,6 +74,14 @@ from trace_harness.models.base import (
     ProviderNotConfiguredError,
     ToolCall,
     ToolSpec,
+)
+from trace_harness.models.policy import (
+    CallPolicy,
+    ErrorVerdict,
+    LiveCaller,
+    build_live_caller,
+    classify_provider_error,
+    with_call_record,
 )
 
 if TYPE_CHECKING:  # typing only, the runtime import happens in the constructor
@@ -149,6 +163,11 @@ _THINKING_BLOCK_FIELDS = {
     "thinking": ("type", "thinking", "signature"),
     "redacted_thinking": ("type", "data"),
 }
+
+
+#: The SDK error base this adapter has always mapped to a model error. A
+#: status-less error under it is still the provider's, and permanent.
+_SDK_ERROR_NAMES = frozenset({"APIError"})
 
 
 class AnthropicNotConfiguredError(ProviderNotConfiguredError):
@@ -408,11 +427,13 @@ def _response_to_dict(response: Any) -> dict[str, Any]:
 def extract_usage(raw: dict[str, Any]) -> tuple[int, int] | None:
     """Read (input_tokens, output_tokens) out of a recorded raw response.
 
-    Returns None when the response carries no usage, which is what a fixture or
-    a cassette replay looks like. None and ``(0, 0)`` mean different things, so
-    an absent usage block never becomes a zero cost. ``input_tokens`` excludes
-    tokens read from or written to the prompt cache; see
-    :func:`extract_cache_usage`.
+    Returns None when the response carries no usage, which is what a fixture
+    action and an entry from a cassette recorded before #196 look like. None
+    and ``(0, 0)`` mean different things, so an absent usage block never
+    becomes a zero cost. A newer recording rebuilds the counts on replay, and
+    the batch still prices a replayed run at exactly zero without reading them.
+    ``input_tokens`` excludes tokens read from or written to the prompt cache;
+    see :func:`extract_cache_usage`.
     """
     usage = raw.get("usage")
     if not isinstance(usage, dict):
@@ -483,6 +504,11 @@ def estimate_cost_usd(model: str, raws: list[dict[str, Any]]) -> float | None:
     return round(total, 6)
 
 
+def classify_error(exc: Exception) -> ErrorVerdict | None:
+    """Anthropic's errors under the shared rules in ``models/policy.py``."""
+    return classify_provider_error(exc, sdk_error_names=_SDK_ERROR_NAMES)
+
+
 def _import_sdk() -> Any:
     """The ``anthropic`` module, or the configuration error that says to install it."""
     try:
@@ -514,6 +540,8 @@ class AnthropicModelAdapter:
         seed: int | None = None,
         timeout_seconds: float = 120.0,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        call_policy: CallPolicy | None = None,
+        caller: LiveCaller | None = None,
     ):
         self.model = model or DEFAULT_ANTHROPIC_MODEL
         check_sampling(self.model, temperature)
@@ -523,6 +551,11 @@ class AnthropicModelAdapter:
         self.seed = seed
         self.timeout_seconds = timeout_seconds
         self.max_tokens = max_tokens
+        # The seed still seeds the retry jitter, which never leaves the harness.
+        self._caller = caller or build_live_caller(
+            self.name, call_policy, seed=seed, timeout_seconds=timeout_seconds
+        )
+        self.call_policy = self._caller.policy
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not self.api_key:
             raise AnthropicNotConfiguredError(
@@ -545,6 +578,8 @@ class AnthropicModelAdapter:
                 # Seconds here, unlike Gemini's milliseconds. Complements the
                 # runner's between-call timeout rather than replacing it.
                 timeout=self.timeout_seconds,
+                # The policy owns retries, so each attempt is recorded.
+                max_retries=0,
             )
         return self._client_obj
 
@@ -573,9 +608,11 @@ class AnthropicModelAdapter:
         client = self._client()
         system, messages = _transcript_to_messages(transcript)
         request = self._request(system, messages, _tools_to_definitions(tools))
-        try:
-            response = client.messages.create(**request)
-        except self._sdk.APIError as exc:
-            # Map provider errors to the runner's clean model_error termination.
-            raise ModelAdapterError(f"Anthropic API call failed: {exc}") from exc
-        return _normalize_response(response)
+        # A provider error the policy gives up on is a ProviderCallError, the
+        # runner's clean model_error termination, with the attempts attached.
+        # A billed answer that cannot become an action leaves _normalize_response
+        # as a ModelAdapterError carrying the raw response.
+        response, record = self._caller.call(
+            lambda: client.messages.create(**request), classify_error
+        )
+        return with_call_record(record, lambda: _normalize_response(response))

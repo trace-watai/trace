@@ -18,7 +18,9 @@ python -m trace_harness.cli run-pipeline fixtures/tasks/refund_policy_failure.js
 ```
 
 Recording requires the selected provider's credentials; replay never constructs
-the provider. Use a new directory for a different recording: existing files are
+the provider. A live recording runs under the call policy (retries, backoff,
+rate limit), and each entry keeps that step's `call_record`, so the replay
+shows the same attempts and delays without sleeping or calling anything. Use a new directory for a different recording: existing files are
 never overwritten. Missing files, exhausted recordings, unknown schema versions,
 and request/configuration mismatches are errors. A run interrupted while recording
 may leave a partial cassette; it is not evidence of a completed run.

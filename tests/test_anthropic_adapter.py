@@ -568,7 +568,8 @@ def test_the_dispatcher_prices_anthropic_and_leaves_other_providers_null() -> No
     assert estimate_cost_usd("anthropic", "claude-sonnet-5", raws) == pytest.approx(
         ANTHROPIC_PRICING["claude-sonnet-5"][0]
     )
-    # Gemini has no price table yet, so its runs keep reporting null.
+    # Gemini reads usage_metadata, so Anthropic's usage field does not price
+    # under Gemini's table.
     assert estimate_cost_usd("gemini", "gemini-3.6-flash", raws) is None
 
 
@@ -701,7 +702,8 @@ def test_the_request_carries_the_model_max_tokens_system_and_tools(sdk: FakeSDK)
     assert request["max_tokens"] == DEFAULT_MAX_TOKENS
     assert request["system"] == "You are an agent."
     assert request["tools"] == _tools_to_definitions(TOOLS)
-    assert sdk.client_kwargs == {"api_key": "test-key-not-used", "timeout": 30.0}
+    # The call policy owns retries (#196), so the SDK's own are off.
+    assert sdk.client_kwargs == {"api_key": "test-key-not-used", "timeout": 30.0, "max_retries": 0}
 
 
 def test_parallel_tool_use_is_switched_off_whenever_tools_are_sent(sdk: FakeSDK) -> None:

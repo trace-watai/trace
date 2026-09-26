@@ -19,8 +19,21 @@ from typing import Any
 import pytest
 
 
-class FakeSDKError(Exception):
-    """What the fake SDK raises, standing in for anthropic.APIError / openai.OpenAIError."""
+class APIError(Exception):
+    """Named after ``anthropic.APIError``, the base the call policy knows by name."""
+
+
+class OpenAIError(Exception):
+    """Named after ``openai.OpenAIError``, the base the call policy knows by name."""
+
+
+class FakeSDKError(APIError, OpenAIError):
+    """What either fake SDK raises, standing in for an SDK error with no status.
+
+    The shared call policy (#196) recognizes a provider's own error by the
+    class name of the SDK's base, so this carries both names. With no status
+    it is permanent: one attempt, then a model error.
+    """
 
 
 @dataclass
@@ -62,7 +75,7 @@ def install_anthropic(monkeypatch: pytest.MonkeyPatch) -> FakeSDK:
         sdk.client_kwargs.update(kwargs)
         return SimpleNamespace(messages=SimpleNamespace(create=sdk.endpoint))
 
-    module = SimpleNamespace(Anthropic=client, APIError=FakeSDKError)
+    module = SimpleNamespace(Anthropic=client, APIError=APIError)
     monkeypatch.setitem(sys.modules, "anthropic", module)
     return sdk
 
@@ -76,7 +89,7 @@ def install_openai(monkeypatch: pytest.MonkeyPatch) -> FakeSDK:
             chat=SimpleNamespace(completions=SimpleNamespace(create=sdk.endpoint))
         )
 
-    module = SimpleNamespace(OpenAI=client, OpenAIError=FakeSDKError)
+    module = SimpleNamespace(OpenAI=client, OpenAIError=OpenAIError)
     monkeypatch.setitem(sys.modules, "openai", module)
     return sdk
 

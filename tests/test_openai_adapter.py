@@ -489,7 +489,8 @@ def test_the_request_carries_the_model_messages_and_tools(sdk: FakeSDK) -> None:
     assert request["model"] == "gpt-5"
     assert request["messages"] == _transcript_to_messages(TRANSCRIPT)
     assert request["tools"] == _tools_to_definitions(TOOLS)
-    assert sdk.client_kwargs == {"api_key": "test-key-not-used", "timeout": 30.0}
+    # The call policy owns retries (#196), so the SDK's own are off.
+    assert sdk.client_kwargs == {"api_key": "test-key-not-used", "timeout": 30.0, "max_retries": 0}
 
 
 def test_the_seed_is_sent(sdk: FakeSDK) -> None:

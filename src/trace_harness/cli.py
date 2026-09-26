@@ -21,10 +21,13 @@ Stages communicate only through run artifacts on disk — ``verify`` reads
 exactly what ``run-fixture`` wrote — so any stage can be re-run later, and
 the dashboard/API see the same data the pipeline used.
 
-Exit codes: 0 success; 1 verifier failed AND --fail-on-verifier was passed
-(CI gate mode); 2 usage or input errors (argparse errors, bad paths,
-malformed fixtures, missing artifacts, cassette errors). Without the flag a verified
-failure exits 0 — finding failures is this tool succeeding.
+Exit codes: 0 success; 1 with --fail-on-verifier (CI gate mode) when a run
+failed verification or did not complete, and for ``run-suite`` also when a run
+errored or the suite budget stopped the batch before every cell ran; 2 usage
+or input errors (argparse errors, bad paths, malformed fixtures, missing
+artifacts, cassette errors, a suite budget cap that cannot be enforced).
+Without the flag a verified failure exits 0, since finding failures is this
+tool succeeding.
 
 argparse over typer: subcommands this simple don't justify a dependency.
 Revisit if the CLI grows rich help/completions needs.
@@ -57,6 +60,7 @@ from trace_harness.metrics.history import HISTORY_PATH as DEFAULT_HISTORY_PATH
 from trace_harness.models import (
     KNOWN_PROVIDERS,
     create_model_adapter,
+    resolve_call_policy,
     resolve_model_name,
     unsent_seed_metadata,
 )
@@ -220,6 +224,8 @@ def _run_fixture(
     )
     temperature = getattr(args, "temperature", None)
     seed = getattr(args, "seed", None)
+    # A single live run uses the provider's default policy; suites can override it.
+    call_policy = resolve_call_policy(args.provider, None, cassette)
 
     # The fixture provider replays a script. The live providers (gemini,
     # anthropic, openai) drive the agent live and need no script, so only the
@@ -248,6 +254,7 @@ def _run_fixture(
             cassette=cassette,
             task_id=task.task_id,
             prompt_version=PROMPT_VERSION,
+            call_policy=call_policy,
         )
         if isinstance(adapter, RecordingModelAdapter):
             metadata["cassette_path"] = _repo_relative(adapter.path)
@@ -262,6 +269,7 @@ def _run_fixture(
         temperature=temperature,
         seed=seed,
         cassette=cassette,
+        call_policy=call_policy,
         metadata=metadata,
     )
     runner = AgentRunner(adapter, environment, store)
@@ -1168,7 +1176,7 @@ def _inspect_run(run_dir: Path, step_filter: int | None, as_json: bool) -> None:
 
 def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
     """Run a task suite (batch) and print + persist a batch summary."""
-    from trace_harness.runner.batch import BatchRunner, summary_path
+    from trace_harness.runner.batch import BUDGET_UNENFORCEABLE, BatchRunner, summary_path
     from trace_harness.runner.suite import load_suite
 
     suite = load_suite(Path(args.suite_path))
@@ -1199,13 +1207,28 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
     _print("passed / failed:", f"{agg.verifier_passed} / {agg.verifier_failed}")
     _print("errored:", str(agg.errored))
     _print("known cost:", f"${agg.known_cost_usd:.6f} ({agg.cost_recorded}/{agg.total} runs)")
+    budget = summary.budget
+    if budget is not None:
+        _print(
+            "budget:",
+            f"${budget.spent_usd:.6f} of ${budget.max_cost_usd:.6f} spent on live runs",
+        )
+        if budget.stop_reason is not None:
+            _print("stopped:", f"{budget.stop_reason}; {budget.detail}")
+            _print("not run:", f"{len(budget.not_run)} cell(s)")
     _print("pass_rate:", "n/a" if agg.pass_rate is None else f"{agg.pass_rate:.0%}")
     _print("summary:", str(summary_path(store.runs_dir, summary.batch_id)))
 
     if getattr(args, "report", False):
         _write_and_print_suite_report(store, summary.batch_id, print_full=False)
 
-    if args.fail_on_verifier and (agg.verifier_failed > 0 or agg.terminated > 0 or agg.errored > 0):
+    # A cap the harness cannot enforce is a configuration problem, like a bad path.
+    if budget is not None and budget.stop_reason == BUDGET_UNENFORCEABLE:
+        return 2
+    stopped_early = budget is not None and bool(budget.not_run)
+    if args.fail_on_verifier and (
+        agg.verifier_failed > 0 or agg.terminated > 0 or agg.errored > 0 or stopped_early
+    ):
         return 1
     if agg.errored > 0 and any(config.cassette is not None for config in suite.agent_configs):
         return 2
@@ -1522,7 +1545,10 @@ def main(argv: list[str] | None = None) -> int:
     p_suite.add_argument(
         "--fail-on-verifier",
         action="store_true",
-        help="exit 1 if any run failed verification or errored (CI gate mode)",
+        help=(
+            "exit 1 if any run failed verification or errored, or the budget stopped the "
+            "batch early (CI gate mode)"
+        ),
     )
     p_suite.add_argument(
         "--report",
