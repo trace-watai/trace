@@ -7,7 +7,9 @@ them across time, so every claim about direction was an impression.
 
 Each measure is read out of artifacts that already exist rather than
 recomputed. Over-blocking comes from #146's ``repair_validation.json``, so the
-number in a snapshot is the same number the validation gate acted on. Cost of
+number in a snapshot is the same number the validation gate acted on, and its
+family counts and upper bound come from the same function that writes that
+file's rollup. Cost of
 learning is summed from those validations' re-run directories, counting
 irreversible tool calls and the money their final state shows moved.
 
@@ -22,22 +24,32 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from trace_harness.environment.controls import MATERIALIZABLE_REPAIR_CONTROLS
-from trace_harness.regression.repair_validation import ControlVerdict, RepairValidation
+from trace_harness.metrics.bounds import clopper_pearson_upper, round_up
+from trace_harness.regression.repair_validation import (
+    ControlVerdict,
+    RepairValidation,
+    over_blocking_summary,
+    verdict_gates,
+)
+from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.tracing.artifact_store import (
     FINAL_STATE,
+    REGRESSION_ARTIFACT,
     REPAIR_PACKAGE,
     REPAIR_VALIDATION,
     TRACE,
 )
 from trace_harness.tracing.events import utc_now
 
-METRICS_SNAPSHOT_SCHEMA_VERSION = "0.1.0"
+# 0.2.0: coverage splits accepted controls into gating and advisory.
+# 0.3.0: over-blocking adds task-family counts and a 95% upper bound.
+METRICS_SNAPSHOT_SCHEMA_VERSION = "0.3.0"
 
 #: Default history file. One JSON object per line, appended, never rewritten.
 HISTORY_PATH = Path("docs/acceptance/metrics_history.jsonl")
@@ -87,6 +99,17 @@ class Coverage(BaseModel):
     registered guardrail, so they can never be installed, and a name that can
     be installed still has to survive validation. Reporting only the last
     number would hide which of the three walls the work is stuck behind.
+
+    An accepted name is gating when at least one of its accepted verdicts
+    was recorded as gating and still gates once checked against the
+    regression artifact it was validated against (``verdict_gates``): that
+    artifact is retained beside the validation, carries the verdict's label,
+    and its recorded basis classifies as ``static_ok``. Otherwise it is
+    advisory, including when the artifact was not retained. ADR-0002 keeps a
+    replay verdict advisory until the artifact carries a measured label and
+    has the collector gate on ``static_ok``; this follows the collector, and
+    every ``static_ok`` label counted here is predicted until #159 measures
+    one.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -95,10 +118,36 @@ class Coverage(BaseModel):
     materializable: int = Field(ge=0)
     validated: int = Field(ge=0)
     accepted: int = Field(ge=0)
+    accepted_gating: int = Field(ge=0)
+    accepted_advisory: int = Field(ge=0)
     accepted_over_prescribed: Ratio
     materializable_over_prescribed: Ratio
     #: Prescribed names with no entry in the materializability map at all.
     unmapped_controls: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def split_unrecorded_acceptance(cls, data: Any) -> Any:
+        """Read a 0.1.0 record, which has no gating and advisory split.
+
+        Validations written before the split did not record a replay_mode, and
+        such a verdict reads as not recorded, which is advisory. The record
+        was computed from those validations, so every accepted name in it is
+        advisory under the same rule that reads the validations themselves.
+        """
+        if (
+            isinstance(data, dict)
+            and "accepted_gating" not in data
+            and "accepted_advisory" not in data
+        ):
+            data = {**data, "accepted_gating": 0, "accepted_advisory": data.get("accepted")}
+        return data
+
+    @model_validator(mode="after")
+    def split_sums_to_accepted(self) -> Coverage:
+        if self.accepted_gating + self.accepted_advisory != self.accepted:
+            raise ValueError("gating and advisory acceptances must sum to accepted")
+        return self
 
 
 class OverBlocking(BaseModel):
@@ -106,6 +155,11 @@ class OverBlocking(BaseModel):
 
     Read from the validation artifacts rather than recomputed, so a snapshot
     cannot disagree with the gate that let the control through.
+
+    ``rate`` counts siblings. The bound counts task families, because
+    siblings in one family share a template and mechanism and are not
+    independent draws (see ``OverBlockingSummary``). ``0 / 1`` families gives
+    a bound of 95%, which is what one clean sibling actually establishes.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -113,8 +167,45 @@ class OverBlocking(BaseModel):
     siblings_run: int = Field(ge=0)
     siblings_failed: int = Field(ge=0)
     rate: Ratio
+    #: Distinct task families among completed siblings, and how many had a
+    #: failing sibling. None on records written before 0.3.0.
+    independent_families: int | None = Field(default=None, ge=0)
+    families_failed: int | None = Field(default=None, ge=0)
     #: Validation artifacts the counts came from, relative to the runs root.
     sources: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_serialized_bound(cls, data: Any) -> Any:
+        """Ignore an ``upper_bound_95`` read back from a history line.
+
+        Derived from the family counts on every read, for the reason
+        ``Ratio`` drops ``value``.
+        """
+        if isinstance(data, dict) and "upper_bound_95" in data:
+            data = {k: v for k, v in data.items() if k != "upper_bound_95"}
+        return data
+
+    @model_validator(mode="after")
+    def families_are_consistent(self) -> OverBlocking:
+        if (self.independent_families is None) != (self.families_failed is None):
+            raise ValueError("independent_families and families_failed are recorded together")
+        if (
+            self.families_failed is not None
+            and self.independent_families is not None
+            and self.families_failed > self.independent_families
+        ):
+            raise ValueError("families_failed cannot exceed independent_families")
+        return self
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def upper_bound_95(self) -> float | None:
+        """One-sided 95% Clopper-Pearson bound on the family failure rate, rounded up."""
+        if self.independent_families is None or self.families_failed is None:
+            return None
+        bound = clopper_pearson_upper(self.families_failed, self.independent_families)
+        return None if bound is None else round_up(bound)
 
 
 class CostOfLearning(BaseModel):
@@ -140,7 +231,7 @@ class MetricsSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["0.1.0"] = METRICS_SNAPSHOT_SCHEMA_VERSION
+    schema_version: Literal["0.1.0", "0.2.0", "0.3.0"] = METRICS_SNAPSHOT_SCHEMA_VERSION
     commit: str = Field(min_length=1)
     recorded_at: datetime = Field(default_factory=utc_now)
     coverage: Coverage
@@ -192,6 +283,47 @@ def find_repair_validations(
     return found
 
 
+def _plain_run_id(run_id: str) -> bool:
+    """A single path component that names a directory, as ``promotion`` requires."""
+    return (
+        run_id not in ("", ".", "..")
+        and PurePosixPath(run_id).name == run_id
+        and "\\" not in run_id
+        and ":" not in run_id
+    )
+
+
+def retained_artifact(path: Path, validation: RepairValidation) -> RegressionArtifact | None:
+    """The regression artifact a validation was run against, when it was kept with it.
+
+    Looks where the two writers put it. ``replay --apply-control`` writes
+    ``repair_validation.json`` into the source run's directory when its runs
+    directory is the source's, beside ``regression_artifact.json``. A control
+    library's evidence directory keeps the artifact under
+    ``source/<run_id>/``, which is where ``LibraryProvenance`` points. The
+    artifact must name the same run and regression test, and the run id must
+    be a plain name by the rule evidence promotion applies before it writes
+    ``source/<run_id>/``, so ``..`` or an empty id finds nothing.
+    """
+    if not _plain_run_id(validation.run_id):
+        return None
+    for candidate in (
+        path.with_name(REGRESSION_ARTIFACT),
+        path.parent / "source" / validation.run_id / REGRESSION_ARTIFACT,
+    ):
+        raw = _read_json(candidate)
+        if raw is None:
+            continue
+        try:
+            artifact = RegressionArtifact.model_validate(raw)
+        except Exception:
+            continue
+        same_run = artifact.source_run_id == validation.run_id
+        if same_run and artifact.test_name == validation.test_name:
+            return artifact
+    return None
+
+
 def prescribed_controls(root: Path, *, exclude: Sequence[Path] = ()) -> set[str]:
     """Control names every retained repair package asked for."""
     names: set[str] = set()
@@ -208,19 +340,37 @@ def prescribed_controls(root: Path, *, exclude: Sequence[Path] = ()) -> set[str]
     return names
 
 
-def compute_coverage(prescribed: set[str], validations: list[RepairValidation]) -> Coverage:
-    """Prescribed names narrowed to those that can exist and did survive."""
+def compute_coverage(
+    prescribed: set[str],
+    validations: Sequence[RepairValidation],
+    artifacts: Sequence[RegressionArtifact | None] | None = None,
+) -> Coverage:
+    """Prescribed names narrowed to those that can exist and did survive.
+
+    ``artifacts[i]`` is the artifact ``validations[i]`` was run against, or
+    None when it was not retained. Without them no verdict is gating.
+    """
     materializable = {n for n in prescribed if MATERIALIZABLE_REPAIR_CONTROLS.get(n)}
     validated = {c.control for v in validations for c in v.controls} & prescribed
-    accepted = {
-        c.control for v in validations for c in v.controls if c.verdict is ControlVerdict.ACCEPTED
-    } & prescribed
+    against = list(artifacts) if artifacts is not None else [None] * len(validations)
+    if len(against) != len(validations):
+        raise ValueError("one artifact slot per validation")
+    verdicts = [
+        (c, artifact)
+        for v, artifact in zip(validations, against, strict=True)
+        for c in v.controls
+        if c.verdict is ControlVerdict.ACCEPTED and c.control in prescribed
+    ]
+    accepted = {c.control for c, _ in verdicts}
+    gating = {c.control for c, artifact in verdicts if verdict_gates(c, artifact)}
     total = len(prescribed)
     return Coverage(
         prescribed=total,
         materializable=len(materializable),
         validated=len(validated),
         accepted=len(accepted),
+        accepted_gating=len(gating),
+        accepted_advisory=len(accepted - gating),
         accepted_over_prescribed=Ratio(numerator=len(accepted), denominator=total),
         materializable_over_prescribed=Ratio(numerator=len(materializable), denominator=total),
         unmapped_controls=sorted(prescribed - set(MATERIALIZABLE_REPAIR_CONTROLS)),
@@ -254,15 +404,20 @@ def compute_over_blocking(
     """
     if validation is None:
         return OverBlocking(
-            siblings_run=0, siblings_failed=0, rate=Ratio(numerator=0, denominator=0)
+            siblings_run=0,
+            siblings_failed=0,
+            rate=Ratio(numerator=0, denominator=0),
+            independent_families=0,
+            families_failed=0,
         )
     path, report = validation
-    siblings = [s for c in report.controls for s in c.sibling_reruns]
-    failed = sum(1 for s in siblings if s.verdict == "FAIL")
+    summary = over_blocking_summary(report.controls)
     return OverBlocking(
-        siblings_run=len(siblings),
-        siblings_failed=failed,
-        rate=Ratio(numerator=failed, denominator=len(siblings)),
+        siblings_run=summary.siblings_run,
+        siblings_failed=summary.siblings_failed,
+        rate=Ratio(numerator=summary.siblings_failed, denominator=summary.siblings_run),
+        independent_families=summary.independent_families,
+        families_failed=summary.families_failed,
         sources=[_relative(path, root)],
     )
 
@@ -385,6 +540,7 @@ def build_snapshot(root: Path, *, commit: str, exclude: Sequence[Path] = ()) -> 
     root = root.resolve()
     pairs = find_repair_validations(root, exclude=exclude)
     validations = [v for _, v in pairs]
+    artifacts = [retained_artifact(path, v) for path, v in pairs]
     latest = latest_validation(pairs)
     rate, failures = suite_pass_rate(root, exclude=exclude)
     return MetricsSnapshot(
@@ -392,7 +548,9 @@ def build_snapshot(root: Path, *, commit: str, exclude: Sequence[Path] = ()) -> 
         # Coverage reads every retained validation, because the question it
         # answers is what the library has accepted overall. The other two read
         # only the latest, because they are properties of one validation run.
-        coverage=compute_coverage(prescribed_controls(root, exclude=exclude), validations),
+        coverage=compute_coverage(
+            prescribed_controls(root, exclude=exclude), validations, artifacts
+        ),
         over_blocking=compute_over_blocking(latest, root=root),
         cost_of_learning=compute_cost_of_learning(latest[1] if latest else None, root=root),
         suite_pass_rate=rate,

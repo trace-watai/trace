@@ -20,6 +20,9 @@ from trace_harness.tasks.schemas import Severity
 # 0.3.0: replay trust label and the facts used to predict it.
 REGRESSION_SCHEMA_VERSION = "0.3.0"
 ReplayMode = Literal["static_ok", "live_required", "unlabeled"]
+# Who produced a replay label: the materializer's fixed rule, or a live
+# measurement (#159).
+ReplayModePredictor = Literal["heuristic_v1", "measured"]
 
 
 class ReplayModeBasis(BaseModel):
@@ -32,9 +35,29 @@ class ReplayModeBasis(BaseModel):
     checks_covered_by_control: list[str] = Field(default_factory=list)
     other_irreversible_tools: list[str] = Field(default_factory=list)
     rule_kind: Literal["prohibition", "requirement"] | None = None
-    predicted_by: Literal["heuristic_v1", "measured"] = "heuristic_v1"
+    predicted_by: ReplayModePredictor = "heuristic_v1"
     agreement_rate: float | None = Field(default=None, ge=0, le=1)
     source_experiment_id: str | None = None
+
+
+def classify_replay_mode(basis: ReplayModeBasis) -> ReplayMode:
+    """All four conditions need affirmative evidence; missing facts fail closed.
+
+    Lives beside the basis it reads so the control library and the metrics
+    can re-check a stored label without importing the materializer.
+    """
+    if (
+        basis.control_ids
+        and basis.control_step is not None
+        and basis.control_step == basis.first_irreversible_action_step
+        and basis.rule_kind == "prohibition"
+        and basis.gated_tool
+        and basis.checks_reachable_via_gated_tool
+        and set(basis.checks_reachable_via_gated_tool) <= set(basis.checks_covered_by_control)
+        and not basis.other_irreversible_tools
+    ):
+        return "static_ok"
+    return "live_required"
 
 
 class SiblingTest(BaseModel):
