@@ -139,7 +139,6 @@ def test_control_selection_is_respected_during_individual_validation(tmp_path, m
         return [original, unselected]
 
     monkeypatch.setattr(controls_module, "reference_controls", available)
-    monkeypatch.setattr(cli, "reference_controls", available)
     _edit_json(
         artifact.with_name(names.REPAIR_PACKAGE),
         lambda p: p["controls"][-1].update(name="future_control"),
@@ -181,7 +180,6 @@ def test_individual_rejection_gates_an_otherwise_passing_bundle(
         return [original, ineffective]
 
     monkeypatch.setattr(controls_module, "reference_controls", available)
-    monkeypatch.setattr(cli, "reference_controls", available)
     _edit_json(
         artifact.with_name(names.REPAIR_PACKAGE),
         lambda p: p["controls"].append({**p["controls"][0], "name": "ineffective_control"}),

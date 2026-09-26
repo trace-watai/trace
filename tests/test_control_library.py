@@ -9,7 +9,6 @@ import shutil
 import pytest
 
 from conftest import FIXTURES_DIR
-from trace_harness import cli
 from trace_harness.cli import main
 from trace_harness.environment import controls as controls_module
 from trace_harness.environment.control_library import ControlLibrary, load_library, rollback_control
@@ -370,8 +369,10 @@ def test_no_accepted_control_cannot_be_committed(tmp_path):
 
 
 def _install_reference_set(monkeypatch, controls):
+    # The CLI resolves controls through controls.control_catalogue and
+    # select_controls, both of which read reference_controls from their own
+    # module, so patching it there reaches every path.
     monkeypatch.setattr(controls_module, "reference_controls", lambda: controls)
-    monkeypatch.setattr(cli, "reference_controls", lambda: controls)
 
 
 def test_environment_application_order_is_deterministic(tmp_path, monkeypatch):
