@@ -427,9 +427,12 @@ def run_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None
     rejected included, so the cost comes from the same bytes the trace carries
     rather than from a second accounting path. A provider or model with no
     price stays null. A live run that recorded no response costs zero only when
-    its trace shows nothing was billed (see ``_nothing_billed``). Otherwise,
-    and when the trace cannot be read, the cost is null, so a live run whose
-    cost is unknown is never reported as free.
+    its trace shows nothing was billed (see ``_nothing_billed``). A live run
+    with a call abandoned at its timeout is null even when earlier responses
+    were priced, since the abandoned request may still be billed and its
+    response never reached the trace. Otherwise, and when the trace cannot be
+    read, the cost is null, so a live run whose cost is unknown is never
+    reported as free or as the total of its earlier turns.
     """
     if config.provider == "fixture" or (
         config.cassette is not None and config.cassette.mode == "replay"
@@ -437,6 +440,11 @@ def run_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None
         return 0.0
     events = _trace_events(runs_dir, run_id)
     if events is None:
+        return None
+    if any(
+        e.event_type is TraceEventType.ERROR and e.payload.get("kind") == "model_timeout"
+        for e in events
+    ):
         return None
     responses = [e for e in events if e.event_type is TraceEventType.MODEL_RESPONSE]
     if not responses and config.provider in LIVE_PROVIDERS and _nothing_billed(events):

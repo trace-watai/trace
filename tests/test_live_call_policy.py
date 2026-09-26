@@ -1088,6 +1088,41 @@ def test_a_call_abandoned_at_the_timeout_keeps_its_attempts(
     assert entry.cost_usd is None
 
 
+class _GeminiToolCall(GeminiResponse):
+    """A GenerateContentResponse carrying one function call, with usage_metadata."""
+
+    def __init__(self, name: str, **args: Any) -> None:
+        super().__init__("")
+        self.function_calls = [SimpleNamespace(name=name, args=args)]
+
+
+def test_a_timeout_after_priced_turns_leaves_the_run_cost_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first turn was answered and priced, then the second call hung past
+    the run's time. The abandoned request may still be billed, so the run's
+    cost is unknown rather than the first turn's alone."""
+    release = threading.Event()
+    built: list[Any] = []
+    monkeypatch.setattr(
+        "trace_harness.runner.pipeline.create_model_adapter",
+        _live_gemini([_GeminiToolCall("search_docs", query="refund policy"), release], built),
+    )
+    policy = CallPolicy(initial_delay_seconds=0.01, jitter=False, requests_per_minute=6000.0)
+    suite = _suite("gemini", "gemini-2.5-flash", call_policy=policy, timeout_seconds=0.5)
+    store = ArtifactStore(tmp_path / "runs")
+    try:
+        entry = BatchRunner(store).run(suite).entries[0]
+    finally:
+        release.set()
+
+    assert entry.termination_reason == "timeout"
+    assert len(_events(store, entry.run_id, "model_response")) == 1
+    [error] = _events(store, entry.run_id, "error")
+    assert error["payload"]["kind"] == "model_timeout"
+    assert entry.cost_usd is None
+
+
 def test_a_timeout_with_no_live_call_records_no_attempts() -> None:
     """A fixture-style adapter makes no request, so there is nothing to list."""
     release = threading.Event()
