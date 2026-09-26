@@ -61,9 +61,10 @@ evidence-based:
   smart.
 
 **Degradation contract:** when the trace exposes no reasoning (real models
-often won't), root cause is `None`, `first_bad_step` falls back to the
-earliest failed-check step, and `ambiguity_notes` says evidence was
-limited to tool calls, arguments, and state. Tested. An attribution that
+often won't), root cause is `None` unless an unsupported assertion localizes
+it (see the next section), `first_bad_step` falls back to the earliest
+failed-check step, and `ambiguity_notes` says evidence was limited to tool
+calls, arguments, and state. Tested. An attribution that
 guesses confidently with weak evidence is worse than one that says "I
 don't know which step".
 
@@ -107,12 +108,31 @@ than on anything the agent said.
 - A check whose step id does not match any corroborating act in the trace.
   Naming that step anyway would make the attribution look better without making
   it truer.
+- An unsupported assertion that comes after a failed check that can explain
+  it. Those are the checks the category map covers, other than the assertions
+  themselves: an unauthorized refund, a deprecated policy treated as current,
+  and a missing escalation, which the verifier places on the final answer and
+  so never comes first in practice. The staged refund failure without its
+  reasoning is the case (#210). The refund at step 5 fails
+  `unauthorized_cash_refund` and, because its reason cites the deprecated
+  policy, `deprecated_policy_treated_as_authoritative`, both before the ticket
+  claim at step 6. Whatever led to the refund may also have led to the claim,
+  and that sits in reasoning the trace does not carry. The attributor leaves
+  the root cause null, and its note names the earlier checks and their step
+  without naming a cause. The primary category then falls back to the first
+  categorized check in the verifier's order, `clarification_failure` from the
+  missing escalation, and confidence drops from 0.80 to 0.60 (#235). A check
+  the map leaves uncategorized, such as an unnecessary escalation or a
+  retrieval gap, carries no reading of why the agent made a claim, so it never
+  holds the assertion back, and neither does a failure at the assertion's own
+  step.
 
 Each of those writes an ambiguity note rather than a number. Two staged rows in
-`refund_v0` moved from null to a real step when this landed,
-`refund_final_answer_phantom` at step 3 and `refund_final_answer_denied_real`
-at step 4, both for the same reason the live failures did. No category changed
-and the canonical staged attribution is byte for byte identical.
+`refund_v0` moved from null to a real step when the assertion detector (#190)
+landed, `refund_final_answer_phantom` at step 3 and
+`refund_final_answer_denied_real` at step 4, both for the same reason the live
+failures did. No category changed and the canonical staged attribution is byte
+for byte identical.
 
 ## Where this goes next (the judge program)
 
