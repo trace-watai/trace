@@ -156,29 +156,6 @@ def test_only_a_strictly_earlier_failure_holds_back_an_assertion_root(
     assert result.root_cause_step == root_cause_step
 
 
-def test_the_note_names_the_first_of_several_earlier_failures(failure_run):
-    stripped_trace = _without_reasoning(failure_run.trace)
-    checks = {
-        check.check_id: check for check in _verified(failure_run, stripped_trace).failed_checks
-    }
-    verdict = _verified(failure_run, stripped_trace).model_copy(
-        update={
-            "failed_checks": [
-                checks["ticket_outage_claim_unsupported"],
-                checks["deprecated_policy_treated_as_authoritative"].model_copy(
-                    update={"step_ids": [3, 5]}
-                ),
-            ]
-        }
-    )
-
-    result = HeuristicAttributor().attribute(failure_run.task, stripped_trace, verdict)
-
-    assert result.root_cause_step is None
-    (note,) = [n for n in result.ambiguity_notes if "comes after" in n]
-    assert "deprecated_policy_treated_as_authoritative failed at step 3;" in note
-
-
 @pytest.mark.parametrize("strip_reasoning", [False, True])
 def test_an_unrelated_earlier_failure_does_not_hold_back_an_assertion_root(
     tmp_path, strip_reasoning
@@ -471,6 +448,29 @@ def test_root_cause_is_refused_when_the_trace_does_not_corroborate_it() -> None:
 
     assert result.root_cause_step is None
     assert any("does not corroborate" in note for note in result.ambiguity_notes)
+
+
+def test_the_note_names_the_first_of_several_earlier_failures(failure_run):
+    stripped_trace = _without_reasoning(failure_run.trace)
+    checks = {
+        check.check_id: check for check in _verified(failure_run, stripped_trace).failed_checks
+    }
+    verdict = _verified(failure_run, stripped_trace).model_copy(
+        update={
+            "failed_checks": [
+                checks["ticket_outage_claim_unsupported"],
+                checks["deprecated_policy_treated_as_authoritative"].model_copy(
+                    update={"step_ids": [3, 5]}
+                ),
+            ]
+        }
+    )
+
+    result = HeuristicAttributor().attribute(failure_run.task, stripped_trace, verdict)
+
+    assert result.root_cause_step is None
+    (note,) = [n for n in result.ambiguity_notes if "comes after" in n]
+    assert "deprecated_policy_treated_as_authoritative failed at step 3;" in note
 
 
 def test_earliest_assertion_wins_when_a_run_carries_several() -> None:
