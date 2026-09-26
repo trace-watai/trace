@@ -54,7 +54,13 @@ from trace_harness.environment.state import SupportState
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.failure_bundles.schemas import RepairPackage
 from trace_harness.metrics.history import HISTORY_PATH as DEFAULT_HISTORY_PATH
-from trace_harness.models import create_model_adapter, resolve_model_name
+from trace_harness.models import (
+    KNOWN_PROVIDERS,
+    create_model_adapter,
+    resolve_model_name,
+    unsent_seed_metadata,
+)
+from trace_harness.models.base import ProviderNotConfiguredError
 from trace_harness.models.cassette import CassetteConfig, RecordingModelAdapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.regression.promotion import LibraryGateError, commit_controls
@@ -146,12 +152,18 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--provider",
         default="fixture",
-        help="model provider: 'fixture' (scripted, default) or 'gemini'",
+        help=(
+            f"model provider: one of {', '.join(KNOWN_PROVIDERS)} (default fixture, "
+            "scripted; the others are live and need their own key and SDK extra)"
+        ),
     )
     parser.add_argument(
         "--model",
         default=None,
-        help="model name for real providers (e.g. gemini-3.6-flash); ignored by fixture",
+        help=(
+            "model name for live providers (e.g. gemini-3.6-flash, claude-sonnet-5, gpt-5); "
+            "ignored by fixture"
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -209,8 +221,9 @@ def _run_fixture(
     temperature = getattr(args, "temperature", None)
     seed = getattr(args, "seed", None)
 
-    # The fixture provider replays a script; real providers (gemini) drive the
-    # agent live and need no script — only the fixture path is required.
+    # The fixture provider replays a script. The live providers (gemini,
+    # anthropic, openai) drive the agent live and need no script, so only the
+    # fixture path is required.
     if args.provider == "fixture" and pinned_script is not None:
         if cassette is not None:
             raise CliInputError("regression replay cannot also use model cassettes")
@@ -238,6 +251,7 @@ def _run_fixture(
         )
         if isinstance(adapter, RecordingModelAdapter):
             metadata["cassette_path"] = _repo_relative(adapter.path)
+    metadata.update(unsent_seed_metadata(args.provider, seed))
 
     config = RunConfig(
         task_id=task.task_id,
@@ -1558,6 +1572,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return _dispatch(args, store)
+    except ProviderNotConfiguredError as exc:
+        # A missing key or SDK is a setup problem, and the adapter's message
+        # already says exactly what to do about it. Burying that under a
+        # traceback helps nobody.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except (FileNotFoundError, KeyError, ValueError) as exc:
         # Expected input problems — a mistyped run path, a malformed fixture
         # (TaskLoadError and pydantic ValidationError are ValueErrors), an

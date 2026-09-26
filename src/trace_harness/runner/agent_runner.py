@@ -315,6 +315,15 @@ class AgentRunner:
                     error_message = str(exc)
                     break
                 except ModelAdapterError as exc:
+                    # A response the provider billed for but the adapter could
+                    # not turn into an action is still evidence and still cost
+                    # money, so it is recorded before the error.
+                    if exc.raw is not None:
+                        recorder.record(
+                            TraceEventType.MODEL_RESPONSE,
+                            step_id=step_id,
+                            payload={"raw": exc.raw},
+                        )
                     recorder.record(
                         TraceEventType.ERROR,
                         step_id=step_id,
