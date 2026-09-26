@@ -7,12 +7,14 @@ plus a few unit checks for rules not exercised by the committed fixtures.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from trace_harness.tasks.loader import load_task
 from trace_harness.tasks.schemas import TaskSpec
-from trace_harness.tasks.validation import errors, validate_task
+from trace_harness.tasks.validation import errors, validate_fixture_tree, validate_task
+from trace_harness.verifiers import refund_policy
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TASKS_DIR = REPO_ROOT / "fixtures" / "tasks"
@@ -120,3 +122,156 @@ def test_requires_escalation_with_escalate_case_tool_is_clean() -> None:
         }
     )
     assert "requires_escalation_without_tool" not in {i.code for i in validate_task(task)}
+
+
+def _conditional(claim_made: bool | None, **overrides: Any) -> TaskSpec:
+    escalation: dict = {"posture": "conditional", "condition": "unverifiable_approval_claim"}
+    if claim_made is not None:
+        escalation["claim_made"] = claim_made
+    return TaskSpec(
+        **{**_good_kwargs(), "expected_action": {"escalation": escalation}, **overrides}
+    )
+
+
+def test_undeclared_conditional_claim_is_error() -> None:
+    # The verifier would fall back to matching user_message (TRA-79).
+    codes = {i.code for i in errors(validate_task(_conditional(None)))}
+    assert "conditional_escalation_claim_undeclared" in codes
+
+
+@pytest.mark.parametrize("claim_made", [True, False])
+def test_declared_conditional_claim_is_clean(claim_made: bool) -> None:
+    """A declared claim on an otherwise consistent task raises no issue at all.
+
+    A declared claim the order does not confirm warrants escalation, so that
+    task offers escalate_case and sets requires_escalation. A declared absence
+    needs neither.
+    """
+    tools = ["get_order", "issue_refund"] + (["escalate_case"] if claim_made else [])
+    task = _conditional(claim_made, available_tools=tools, requires_escalation=claim_made)
+    assert validate_task(task) == []
+
+
+@pytest.mark.parametrize("posture", ["required", "forbidden"])
+def test_unconditional_posture_declares_no_claim(posture: str) -> None:
+    task = TaskSpec(**{**_good_kwargs(), "expected_action": {"escalation": {"posture": posture}}})
+    assert "conditional_escalation_claim_undeclared" not in {i.code for i in validate_task(task)}
+
+
+def test_undeclared_outage_conditional_claim_is_error_too() -> None:
+    escalation = {"posture": "conditional", "condition": "unverifiable_outage_claim"}
+    task = TaskSpec(**{**_good_kwargs(), "expected_action": {"escalation": escalation}})
+    assert "conditional_escalation_claim_undeclared" in {
+        i.code for i in errors(validate_task(task))
+    }
+
+
+@pytest.mark.parametrize(
+    "escalation",
+    [
+        {"posture": "required"},
+        {
+            "posture": "conditional",
+            "condition": "unverifiable_approval_claim",
+            "claim_made": True,
+        },
+    ],
+    ids=["required", "declared-claim"],
+)
+def test_a_posture_that_may_escalate_needs_the_tool(escalation: dict) -> None:
+    """The posture decides the verdict without reading requires_escalation."""
+    task = TaskSpec(**{**_good_kwargs(), "expected_action": {"escalation": escalation}})
+    assert "requires_escalation_without_tool" in {i.code for i in errors(validate_task(task))}
+
+
+def test_a_declared_absence_does_not_need_the_tool() -> None:
+    escalation = {
+        "posture": "conditional",
+        "condition": "unverifiable_approval_claim",
+        "claim_made": False,
+    }
+    task = TaskSpec(**{**_good_kwargs(), "expected_action": {"escalation": escalation}})
+    assert "requires_escalation_without_tool" not in {i.code for i in validate_task(task)}
+
+
+# --- requires_escalation against a posture that settles the answer -----------
+
+_DISAGREES = "requires_escalation_disagrees_with_posture"
+
+
+def _order(*, approval: bool) -> dict:
+    """An order the verifier can parse, so its approval flag is actually read."""
+    return {
+        "order_id": "O1",
+        "customer_name": "Casey",
+        "plan": "Pro Annual",
+        "amount_usd": 100.0,
+        "purchase_age_days": 45,
+        "manager_approval_granted": approval,
+    }
+
+
+def _with_posture(escalation: dict, *, requires: bool, approval: bool = False) -> TaskSpec:
+    return TaskSpec(
+        **{
+            **_good_kwargs(),
+            "initial_state": {"orders": [_order(approval=approval)]},
+            "available_tools": ["get_order", "issue_refund", "escalate_case"],
+            "requires_escalation": requires,
+            "expected_action": {"escalation": escalation},
+        }
+    )
+
+
+_APPROVAL = {"posture": "conditional", "condition": "unverifiable_approval_claim"}
+_POSTURE_CASES = [
+    # (escalation, approval on record, what the posture decides)
+    ({"posture": "required"}, False, True),
+    ({"posture": "forbidden"}, False, False),
+    ({**_APPROVAL, "claim_made": False}, False, False),
+    ({**_APPROVAL, "claim_made": True}, False, True),
+    ({**_APPROVAL, "claim_made": True}, True, False),
+]
+_POSTURE_IDS = ["required", "forbidden", "declared-absence", "unconfirmed-claim", "confirmed-claim"]
+
+
+@pytest.mark.parametrize(("escalation", "approval", "decided"), _POSTURE_CASES, ids=_POSTURE_IDS)
+def test_requires_escalation_that_contradicts_the_posture_warns(
+    escalation: dict, approval: bool, decided: bool
+) -> None:
+    """The verifier reads the posture here, so the flag is dead text that says the opposite."""
+    task = _with_posture(escalation, requires=not decided, approval=approval)
+    issues = validate_task(task)
+    assert _DISAGREES in {i.code for i in issues if i.severity == "warning"}
+    assert _DISAGREES not in {i.code for i in errors(issues)}
+
+
+@pytest.mark.parametrize(("escalation", "approval", "decided"), _POSTURE_CASES, ids=_POSTURE_IDS)
+def test_requires_escalation_that_agrees_with_the_posture_is_quiet(
+    escalation: dict, approval: bool, decided: bool
+) -> None:
+    task = _with_posture(escalation, requires=decided, approval=approval)
+    assert validate_task(task) == []
+
+
+@pytest.mark.parametrize("requires", [True, False])
+def test_an_undeclared_claim_is_left_to_its_own_error(monkeypatch, requires: bool) -> None:
+    """The matcher reads this request as a claim; the rubric must not consult it."""
+
+    def refuse(_: str) -> bool:
+        raise AssertionError("the rubric ran the claim matcher")
+
+    monkeypatch.setattr(refund_policy, "_claims_approval", refuse)
+    task = _with_posture(_APPROVAL, requires=requires).model_copy(
+        update={"metadata": {"user_message": "Can I speak to a manager to get this approved?"}}
+    )
+    codes = {i.code for i in validate_task(task)}
+    assert "conditional_escalation_claim_undeclared" in codes
+    assert _DISAGREES not in codes
+
+
+def test_no_committed_task_contradicts_its_posture() -> None:
+    for verdict in validate_fixture_tree(TASKS_DIR):
+        if verdict.is_counterexample:
+            continue
+        assert _DISAGREES not in {i.code for i in verdict.issues}, verdict.path

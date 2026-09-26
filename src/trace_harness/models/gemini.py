@@ -62,6 +62,7 @@ from trace_harness.models.base import (
     Message,
     MessageRole,
     ModelAdapterError,
+    ProviderNotConfiguredError,
     ToolCall,
     ToolSpec,
 )
@@ -77,7 +78,7 @@ DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 THOUGHT_SIGNATURE_KEY = "thought_signature"
 
 
-class GeminiNotConfiguredError(RuntimeError):
+class GeminiNotConfiguredError(ProviderNotConfiguredError):
     """Raised at construction time when the Gemini adapter cannot be used."""
 
 
