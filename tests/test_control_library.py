@@ -528,7 +528,7 @@ def test_full_suite_preserves_positive_cases_and_rollback_restores_baseline(
         )
         == 0
     )
-    assert "1 active (0 gating, 1 advisory) installed" in capsys.readouterr().out
+    assert "control library installed: 1 active (0 gating, 1 advisory)" in (capsys.readouterr().out)
     active = BatchSummary.model_validate_json(
         next(active_store.runs_dir.glob("batches/*/batch_summary.json")).read_bytes()
     )

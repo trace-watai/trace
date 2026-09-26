@@ -1276,7 +1276,7 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
     runner = BatchRunner(store, control_library=args.control_library)
     if runner.library is not None:
         # Advisory entries install like the rest, and the batch measures them.
-        _print("control library:", f"{_library_standing(runner.library)} installed")
+        _print("control library installed:", _library_standing(runner.library))
     summary = runner.run(suite)
 
     print(f"\nBatch {summary.batch_id} complete:")
