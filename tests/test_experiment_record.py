@@ -253,10 +253,15 @@ def test_the_retained_baseline_still_records(tmp_path) -> None:
 
 
 def test_the_retained_files_round_trip_byte_for_byte() -> None:
-    """Loading and dumping the committed files changes nothing in them."""
+    """Loading and dumping the committed files changes nothing in them.
+
+    They were written before later fields existed, such as the agent's
+    ``call_policy`` (#196), so the dump leaves out the fields the files never
+    stated. Every field they do state must come back unchanged.
+    """
     for name, model in (("experiment.json", ExperimentSpec), ("result.json", ExperimentResult)):
         raw = (RETAINED / name).read_text(encoding="utf-8")
-        dumped = model.model_validate_json(raw).model_dump(mode="json")
+        dumped = model.model_validate_json(raw).model_dump(mode="json", exclude_unset=True)
         assert json.dumps(dumped, indent=2) + "\n" == raw
 
 
