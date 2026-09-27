@@ -36,6 +36,7 @@ python -m trace_harness.cli --runs-dir "$SMOKE_DIR" \
 
 echo "==> regression gate"
 python -m trace_harness.cli --runs-dir "$SMOKE_DIR" \
-  collect-regressions docs/acceptance/runs --suite fixtures/suites/refund_bundles_v0.json
+  collect-regressions docs/acceptance/runs --suite fixtures/suites/refund_bundles_v0.json \
+  --experiments docs/acceptance/experiments
 
 echo "==> all checks passed"

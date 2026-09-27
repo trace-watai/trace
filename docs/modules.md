@@ -236,8 +236,8 @@ records, so the guard still counts it.
 `run-sweep` and `branch` do not exist yet and are meant to drive the same
 `BudgetGuard`.
 
-`collector.py` exposes `collect_regressions(path, store, suite_path=...)` and
-`CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
+`collector.py` exposes `collect_regressions(path, store, suite_path=...,
+experiments_path=...)` and `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
 completed failure reproduction and positive siblings. Control validation gates
 only for explicit `static_ok` labels; other labels remain advisory. The CLI and
 `check_repo.sh` call this collector. See [the gate contract](regression_contract.md#what-ci-does).

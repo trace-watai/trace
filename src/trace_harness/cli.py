@@ -1111,13 +1111,69 @@ def _validate_fixtures(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_experiment_plan(path: str) -> tuple[Path, Any]:
+    """Read a plan file the way every experiment command does, through load_plan."""
+    from trace_harness.runner.experiment import load_plan
+
+    spec_path = Path(path)
+    if not spec_path.is_file():
+        raise CliInputError(f"experiment plan not found: {spec_path}")
+    try:
+        return spec_path, load_plan(json.loads(spec_path.read_text(encoding="utf-8")))
+    except ValueError as exc:
+        raise CliInputError(f"{spec_path}: {exc}") from None
+
+
+def _experiment_freeze(args: argparse.Namespace) -> int:
+    """Hash the frozen set into a plan, once, before any condition runs (#195).
+
+    Paths resolve against the working directory like every other CLI path, so
+    this runs from the repository root. A plan that already carries a frozen
+    set is refused: freezing it again after the evaluator moved would turn
+    drift into a clean record. The check reads only the plan it is given, so
+    a plan whose frozen set was deleted by hand freezes again; git history of
+    the plan is the record against that.
+    """
+    from trace_harness.runner.experiment import EXPERIMENT_SCHEMA_VERSION, ExperimentSpec
+    from trace_harness.runner.frozen_set import FrozenSetError, freeze
+    from trace_harness.tracing.artifact_store import atomic_write_text
+
+    spec_path, spec = _load_experiment_plan(args.experiment_path)
+    manifest = spec.frozen_manifest
+    if manifest.frozen_set is not None:
+        raise CliInputError(
+            f"{spec_path} is already frozen; a plan is frozen once, before its conditions run"
+        )
+    try:
+        frozen = freeze(Path.cwd(), suite_id=manifest.suite_id, labels_path=manifest.labels_path)
+    except FrozenSetError as exc:
+        raise CliInputError(str(exc)) from None
+
+    data = spec.model_dump(mode="json")
+    data["schema_version"] = EXPERIMENT_SCHEMA_VERSION
+    data["frozen_manifest"]["frozen_set"] = {n: c.model_dump() for n, c in frozen.items()}
+    data["frozen_manifest"]["fixtures_hash"] = frozen["fixtures"].digest
+    spec = ExperimentSpec.model_validate(data)
+    atomic_write_text(spec_path, json.dumps(spec.model_dump(mode="json"), indent=2) + "\n")
+
+    print(f"\nExperiment frozen: {spec.experiment_id}")
+    for name, component in frozen.items():
+        _print(
+            f"  {name}:",
+            f"{component.digest[:19]}  {len(component.files)} file(s) in {component.path}",
+        )
+    _print("written:", str(spec_path))
+    return 0
+
+
 def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     """Record which batch answered which condition, and what was decided.
 
-    The first record of an experiment stores a copy of its plan beside the
-    result, and no later record rewrites it. Recording again with a plan that
-    differs from the stored one is refused, because changing the plan after the
-    numbers came in is exactly what writing it first is meant to prevent.
+    The plan file itself is read, never written here. The first record of an
+    experiment stores a copy of the plan beside the result, and no later record
+    rewrites it. Recording again with a plan that differs from the stored one
+    is refused, because changing the plan after the numbers came in is exactly
+    what writing it first is meant to prevent.
 
     Recording cannot invent a condition: a ``--condition`` naming something the
     spec does not declare is a usage error, because a result that describes
@@ -1125,10 +1181,19 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     that ran another suite than the plan froze, another agent than its
     condition declares, or a verifier the plan does not freeze is refused for
     the same reason. Re-recording keeps the conditions already recorded and
-    replaces those named again. Every refusal happens before anything is written.
+    replaces those named again.
+
+    Recording also recomputes the plan's frozen set (#195) and refuses, with
+    the files listed, when anything differs. ``--allow-drift`` records anyway,
+    marks the result drifted and forces its decision to review. A condition
+    that keeps its batch from a drifted record keeps the result drifted, with
+    its decision at review, until it is recorded with a new batch. A plan from
+    schema 0.1.0 has no frozen set; it records, and the result says nothing
+    was checked. Every refusal happens before anything is written.
     """
     from trace_harness.runner.batch import BatchSummary
     from trace_harness.runner.experiment import (
+        PRE_FROZEN_SET_SCHEMA_VERSION,
         DecidedBy,
         Decision,
         ExperimentResult,
@@ -1139,14 +1204,9 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         render_experiment_markdown,
         validate_condition_batches,
     )
+    from trace_harness.runner.frozen_set import check_frozen_set, render_changes
 
-    spec_path = Path(args.experiment_path)
-    if not spec_path.is_file():
-        raise CliInputError(f"experiment plan not found: {spec_path}")
-    try:
-        spec = load_plan(json.loads(spec_path.read_text(encoding="utf-8")))
-    except ValueError as exc:
-        raise CliInputError(f"{spec_path}: {exc}") from None
+    spec_path, spec = _load_experiment_plan(args.experiment_path)
 
     stored_path = store.experiment_spec_path(spec.experiment_id)
     stored = None
@@ -1165,15 +1225,17 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     # Re-recording keeps the conditions already recorded, so revising only the
     # decision keeps the result, and a condition named again takes its new batch.
     condition_batches: dict[str, str] = {}
+    prior_result: ExperimentResult | None = None
     prior: dict[str, str] = {}
     if store.experiment_result_path(spec.experiment_id).is_file():
         try:
-            prior = ExperimentResult.model_validate(
+            prior_result = ExperimentResult.model_validate(
                 store.read_experiment_result(spec.experiment_id)
-            ).condition_batches
+            )
         except ValueError as exc:
             path = store.experiment_result_path(spec.experiment_id)
             raise CliInputError(f"{path}: {exc}") from None
+        prior = prior_result.condition_batches
     for pair in args.condition or []:
         name, _, batch_id = pair.partition("=")
         if not name or not batch_id:
@@ -1191,6 +1253,29 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     except ValueError as exc:
         raise CliInputError(str(exc)) from None
     declared = {condition.name: condition for condition in spec.conditions}
+
+    manifest = spec.frozen_manifest
+    drift = []
+    if manifest.frozen_set is None:
+        if spec.schema_version != PRE_FROZEN_SET_SCHEMA_VERSION:
+            raise CliInputError(
+                f"{spec_path} has no frozen set; run `trace-harness experiment freeze "
+                f"{spec_path}` before any condition runs"
+            )
+    else:
+        drift = check_frozen_set(
+            manifest.frozen_set,
+            Path.cwd(),
+            suite_id=manifest.suite_id,
+            labels_path=manifest.labels_path,
+        )
+        if drift and not args.allow_drift:
+            listed = "\n".join(f"  {line}" for line in render_changes(drift))
+            raise CliInputError(
+                f"the frozen set of {spec.experiment_id} changed since the plan was frozen, "
+                f"so recording is refused:\n{listed}\nRestore those files, or pass "
+                "--allow-drift to record the result as drifted with decision review."
+            )
 
     summaries = []
     for batch_id in condition_batches.values():
@@ -1212,6 +1297,15 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
             )
         seen[batch_id] = name
     by_condition = dict(zip(condition_batches, summaries, strict=True))
+    # A batch recorded under drift ran under it, so while any condition keeps
+    # its batch from a drifted record the result stays drifted, listing that
+    # drift, however the condition was named this time.
+    carried = sorted(n for n, batch_id in condition_batches.items() if prior.get(n) == batch_id)
+    carried_drift = bool(carried) and prior_result is not None and prior_result.frozen_set_drifted
+    if carried_drift:
+        assert prior_result is not None
+        earlier = prior_result.frozen_set_drift
+        drift = [*earlier, *(c for c in drift if c not in earlier)]
     try:
         check_frozen_suite(spec, {name: s.suite_id for name, s in by_condition.items()})
         check_condition_arms(spec, by_condition)
@@ -1225,9 +1319,12 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
             summaries,
             conditions={batch: declared[name] for name, batch in condition_batches.items()},
         ),
-        decision=Decision(args.decision),
+        decision=Decision.REVIEW if drift else Decision(args.decision),
         decided_by=DecidedBy(args.decided_by),
         report_path=str(store.experiment_report_path(spec.experiment_id)),
+        frozen_set_verified=manifest.frozen_set is not None and not drift,
+        frozen_set_drifted=bool(drift),
+        frozen_set_drift=drift,
     )
     if stored is None:
         store.write_experiment_spec(spec.experiment_id, spec)
@@ -1238,6 +1335,21 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     print(f"\nExperiment recorded: {spec.experiment_id}")
     _print("hypothesis:", spec.hypothesis)
     _print("decision:", f"{result.decision.value} (by {result.decided_by.value})")
+    if result.frozen_set_drifted:
+        how = (
+            f"carried with {', '.join(carried)} from the earlier record"
+            if carried_drift
+            else "recorded with --allow-drift"
+        )
+        _print("frozen set:", f"DRIFTED, {len(drift)} file(s), {how}")
+        for line in render_changes(drift):
+            print(f"    {line}")
+        if args.decision != Decision.REVIEW.value:
+            _print("", f"--decision {args.decision} overridden: drift forces review")
+    elif result.frozen_set_verified:
+        _print("frozen set:", "verified, every frozen file matches the plan")
+    else:
+        _print("frozen set:", f"not recorded (plan schema {spec.schema_version})")
     for name, batch_id in sorted(condition_batches.items()):
         _print(f"  {name}:", batch_id)
     for metric in type(result.metrics).memo_field_names():
@@ -1521,8 +1633,11 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
 
 def _collect_regressions(args: argparse.Namespace, store: ArtifactStore) -> int:
     from trace_harness.runner.collector import SUMMARY_NAME, collect_regressions
+    from trace_harness.runner.frozen_set import render_changes
 
-    summary = collect_regressions(args.path, store, suite_path=args.suite)
+    summary = collect_regressions(
+        args.path, store, suite_path=args.suite, experiments_path=args.experiments
+    )
     print("\nRegression collection:")
     for entry in summary.entries:
         label = entry.test_name or entry.artifact_path
@@ -1534,6 +1649,17 @@ def _collect_regressions(args: argparse.Namespace, store: ArtifactStore) -> int:
             baseline = "reproduced" if entry.baseline.reproduced else "NOT REPRODUCED"
             detail = f"{baseline}; controls {entry.control_status} ({entry.replay_mode})"
         _print(label, detail)
+    for experiment in summary.experiments:
+        detail = {
+            "matches": "frozen set matches",
+            "drifted": f"WARNING frozen set drifted, {len(experiment.changes)} file(s), not gating",
+            "not_recorded": "frozen set not recorded in the plan",
+        }[experiment.status]
+        _print(experiment.experiment_id, detail)
+        for line in render_changes(experiment.changes[:10]):
+            print(f"    {line}")
+        if len(experiment.changes) > 10:
+            print(f"    and {len(experiment.changes) - 10} more in the summary")
     for test_name, sibling in summary.siblings_failed:
         _print("sibling failed:", f"{test_name} / {sibling}")
     for error in summary.errors:
@@ -1546,6 +1672,9 @@ def _collect_regressions(args: argparse.Namespace, store: ArtifactStore) -> int:
     _print("controls advisory:", str(summary.controls_advisory))
     _print("controls failed:", str(len(summary.controls_failed)))
     _print("malformed:", str(len(summary.malformed)))
+    if args.experiments is not None:
+        _print("experiments checked:", str(len(summary.experiments)))
+        _print("experiments drifted:", f"{len(summary.experiments_drifted)} (warning only)")
     _print("duration:", f"{summary.duration_s:.3f}s")
     _print("summary:", str(store.runs_dir / SUMMARY_NAME))
     _print("gate:", "PASS" if summary.exit_code == 0 else f"FAIL (exit {summary.exit_code})")
@@ -1857,6 +1986,15 @@ def main(argv: list[str] | None = None) -> int:
         "--decision", default="baseline", choices=["baseline", "keep", "discard", "review"]
     )
     p_exp_record.add_argument("--decided-by", default="human", choices=["human", "policy"])
+    p_exp_record.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="record even if the frozen set changed; marks the result drifted, decision review",
+    )
+    p_exp_freeze = exp_sub.add_parser(
+        "freeze", parents=[common], help="hash the frozen set into a plan before anything runs"
+    )
+    p_exp_freeze.add_argument("experiment_path", help="path to the experiment plan JSON")
 
     sub.add_parser(
         "list-experiments", parents=[common], help="list recorded experiments in id order"
@@ -1900,6 +2038,12 @@ def main(argv: list[str] | None = None) -> int:
     p_collect.add_argument("path", help="artifact file or directory to search recursively")
     p_collect.add_argument(
         "--suite", default=None, help="also generate artifacts from this offline fixture suite"
+    )
+    p_collect.add_argument(
+        "--experiments",
+        default=None,
+        metavar="DIR",
+        help="also check each retained experiment's frozen set; drift warns without gating",
     )
     p_collect.add_argument(
         "--append-history",
@@ -1991,6 +2135,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
     if args.command == "validate-fixtures":
         return _validate_fixtures(args)
     if args.command == "experiment":
+        if args.experiment_command == "freeze":
+            return _experiment_freeze(args)
         return _experiment_record(args, store)
     if args.command == "list-experiments":
         return _list_experiments(store)
