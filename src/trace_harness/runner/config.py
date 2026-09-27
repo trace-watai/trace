@@ -8,9 +8,12 @@ that is a reproducibility bug — add it.
 provider; they exist so real adapters have a home for them from day one.
 
 Known metadata keys used by the harness today:
-    task_fixture_path    — repo path of the task fixture the CLI ran
-                           (regression artifacts use it for replay commands)
-    fixture_script_path  — repo path of the fixture script used
+    task_fixture_path    repo path of the task fixture the CLI ran
+                         (regression artifacts use it for replay commands)
+    fixture_script_path  repo path of the fixture script used
+    seed_sent            False when ``seed`` was configured for a provider
+                         whose API has no seed (Anthropic), so it was
+                         recorded and never sent; absent otherwise
 """
 
 from __future__ import annotations

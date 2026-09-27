@@ -32,6 +32,20 @@ dev = [
 gemini = [
     "google-genai>=1.33,<2",
 ]
+# Optional: the Anthropic adapter uses the anthropic SDK. Same rule as above,
+# installing it does NOT make tests require a key. The offline tests stand a
+# fake module in for it and never import this package. The calls the adapter
+# makes were checked against 1.0.0 and 1.8.0. 1.x dropped temperature from
+# messages.create, so the adapter sends it through extra_body.
+anthropic = [
+    "anthropic>=1.0,<2",
+]
+# Optional: the OpenAI adapter uses the openai SDK. Same rule again, installing
+# it does NOT make tests require a key. The calls the adapter makes were checked
+# against 3.0.0 and 3.19.2, the range openai-agents 0.22 also needs.
+openai = [
+    "openai>=3.0,<4",
+]
 
 [project.scripts]
 trace-harness = "trace_harness.cli:main"
