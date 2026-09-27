@@ -11,7 +11,7 @@ from pathlib import Path
 
 from conftest import VALID_TASK_PATH, FixtureRun, run_task_fixture
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.models.base import ActionKind, AgentAction, Message, ToolSpec
+from trace_harness.models.base import ActionKind, AgentAction, Message, ModelAdapterError, ToolSpec
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import RunConfig
 from trace_harness.tasks.loader import load_docs_for_task, load_task
@@ -63,6 +63,50 @@ def test_runner_emits_model_response_when_raw_present(tmp_path: Path) -> None:
         if event.event_type is TraceEventType.MODEL_ACTION
     )
     assert response_index < action_index
+
+
+class _RejectingAdapter:
+    """Answers once with a response it cannot normalize, as a live adapter does
+    when the provider sends two tool calls or a truncated turn."""
+
+    name = "stub"
+
+    def __init__(self, raw: dict | None) -> None:
+        self._raw = raw
+
+    def next_action(self, transcript: list[Message], tools: list[ToolSpec]) -> AgentAction:
+        error = ModelAdapterError("two tool calls in one turn")
+        error.raw = self._raw
+        raise error
+
+
+def _run_rejecting(tmp_path: Path, raw: dict | None):
+    task = load_task(VALID_TASK_PATH)
+    environment = SupportEnvironment.from_task(task, docs=load_docs_for_task(task, VALID_TASK_PATH))
+    store = ArtifactStore(tmp_path / "runs")
+    config = RunConfig(task_id=task.task_id, provider="anthropic", model="claude-sonnet-5")
+    result = AgentRunner(_RejectingAdapter(raw), environment, store).run(task, config)
+    return result, store.read_trace(result.run_id)
+
+
+def test_a_billed_response_the_adapter_rejects_is_recorded_before_the_error(
+    tmp_path: Path,
+) -> None:
+    """The provider billed for the response, so it has to reach the trace, which
+    is what the batch prices a run from."""
+    raw = {"usage": {"input_tokens": 12, "output_tokens": 3}}
+    result, trace = _run_rejecting(tmp_path, raw)
+    assert result.termination_reason.value == "model_error"
+    kinds = [event.event_type for event in trace]
+    response = kinds.index(TraceEventType.MODEL_RESPONSE)
+    assert response < kinds.index(TraceEventType.ERROR)
+    assert trace[response].payload == {"raw": raw}
+    assert TraceEventType.MODEL_ACTION not in kinds
+
+
+def test_a_failure_with_no_response_records_no_model_response(tmp_path: Path) -> None:
+    _, trace = _run_rejecting(tmp_path, None)
+    assert TraceEventType.MODEL_RESPONSE not in [event.event_type for event in trace]
 
 
 def test_fixture_run_emits_no_model_response(tmp_path: Path) -> None:

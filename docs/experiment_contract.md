@@ -259,9 +259,13 @@ frozen set, computes what it can, and writes the result and report under
 plan there, and no later record rewrites it. Recording again with a
 plan that differs from the stored copy exits 2 and writes nothing, since
 changing a plan after its numbers came in is what writing it first prevents; a
-changed plan needs a new `experiment_id`. Recording the same plan again replaces
-the result, which is how a decision is revised. Naming one condition twice, or
-passing a batch from another suite, also exits 2 before anything is written.
+changed plan needs a new `experiment_id`. Recording the same plan again rewrites
+the result, which is how a decision is revised. It keeps the conditions already
+recorded, and a condition named again takes its new batch. Naming one condition
+twice, giving one batch to two conditions under any spelling, passing a batch
+from another suite, a batch whose agent is not the condition's declared
+provider and model, or a batch judged by a verifier the plan does not freeze,
+also exits 2 before anything is written.
 
 `list-experiments` prints one line per experiment and replaces any hand-kept
 spreadsheet of them. An experiment whose files do not load, including one whose
@@ -270,6 +274,9 @@ plan or result names a different experiment than its directory, gets an
 exit code is 1. `RunReader.list_experiments` and the dashboard's
 `listExperiments` likewise leave such an experiment out, and
 `RunReader.unreadable_experiments` and `listUnreadableExperiments` name it.
+Reading a stored plan does not resolve its control ids against the registry,
+so retiring a control never makes an old experiment unreadable. Recording or
+running against a plan still refuses an unknown control id.
 
 ## The retained baseline
 
