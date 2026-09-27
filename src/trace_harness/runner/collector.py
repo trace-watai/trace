@@ -327,7 +327,9 @@ def _check_experiments(directory: Path, summary: CollectorSummary) -> None:
 
 
 def _check_experiment(plan: Path) -> ExperimentFreezeEntry:
-    spec = load_plan(json.loads(plan.read_text(encoding="utf-8")))
+    # The gate checks a retained plan's frozen set, and installs nothing from
+    # it, so a control retired since then leaves the plan readable.
+    spec = load_plan(json.loads(plan.read_text(encoding="utf-8")), check_controls=False)
     result_path = plan.parent / EXPERIMENT_RESULT
     result = (
         ExperimentResult.model_validate_json(result_path.read_text(encoding="utf-8"))

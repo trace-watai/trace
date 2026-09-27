@@ -38,16 +38,19 @@ fixtures component. `branch` and `record` both refuse a plan past schema 0.1.0
 that was never frozen, and both exit 2 with the changed files listed when the
 verifier, environment, attribution scorer, suite or fixtures moved after the
 freeze. `branch` checks before any run, so a changed evaluator costs nothing.
-`branch --allow-drift` runs anyway and prints the drift, and `record` then
-needs the flag too, which forces the decision to review.
+`branch --allow-drift` runs anyway, prints the drift and writes it into each
+batch's metadata. `record` treats a batch that carries drift like a drifted
+record, so the result stays drifted with decision `review` even if the files
+are restored before recording.
 
 ## What a live condition does
 
 For each seed of a `live`, `live_no_control` or `live_swapped` condition:
 
 1. Rebuilds the world from the artifact's pinned state and documents, as
-   `replay` does. The task fixture supplies only the tool subset and the
-   verifier ids.
+   `replay` does. The task fixture supplies the tool subset, the verifier ids
+   and the prompt the live model reads (`description`, `goal` and
+   `user_message`).
 2. Installs the condition's `control_ids` through `select_controls` and
    `install_control`, so every block carries `blocked_by` in the trace.
 3. Runs `ForkAdapter(prefix, continuation, switch_at_step=start.step_id)`.
@@ -268,3 +271,5 @@ would disagree without any harness defect.
 - `verdict_agreement_rate` and `sibling_failure_rate` stay null.
 - `max_runs` is not enforced, and the cap is per invocation, so two
   invocations of one plan may each spend up to it.
+- An incomplete seed is not replaced with a spare one, which pre-registration
+  001 requires. The brief 001 runner (#200) adds that.
