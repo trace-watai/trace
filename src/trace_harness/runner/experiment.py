@@ -123,6 +123,15 @@ class ConditionSpec(BaseModel):
             )
         return self
 
+    @field_validator("seeds")
+    @classmethod
+    def _seeds_are_distinct(cls, seeds: list[int]) -> list[int]:
+        """A seed listed twice would run twice and count twice in a rate's n."""
+        repeated = sorted({seed for seed in seeds if seeds.count(seed) > 1})
+        if repeated:
+            raise ValueError(f"seeds lists {repeated} more than once")
+        return seeds
+
     @field_validator("control_ids")
     @classmethod
     def _control_ids_are_installable(

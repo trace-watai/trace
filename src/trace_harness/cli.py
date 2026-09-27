@@ -1309,7 +1309,7 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         render_experiment_markdown,
         validate_condition_batches,
     )
-    from trace_harness.runner.frozen_set import render_changes
+    from trace_harness.runner.frozen_set import FrozenFileChange, render_changes
 
     spec_path, spec = _load_experiment_plan(args.experiment_path)
 
@@ -1413,6 +1413,14 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         assert prior_result is not None
         earlier = prior_result.frozen_set_drift
         drift = [*earlier, *(c for c in drift if c not in earlier)]
+    # A batch branch ran under drift carries it in its metadata, so restoring
+    # the files before recording does not make its verdicts read as verified.
+    ran_drifted = sorted(n for n, s in by_condition.items() if s.metadata.get("frozen_set_drift"))
+    for name in ran_drifted:
+        for raw in by_condition[name].metadata["frozen_set_drift"]:
+            change = FrozenFileChange.model_validate(raw)
+            if change not in drift:
+                drift.append(change)
     try:
         check_frozen_suite(spec, {name: s.suite_id for name, s in by_condition.items()})
         check_condition_arms(spec, by_condition)
@@ -1443,11 +1451,12 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     _print("hypothesis:", spec.hypothesis)
     _print("decision:", f"{result.decision.value} (by {result.decided_by.value})")
     if result.frozen_set_drifted:
-        how = (
-            f"carried with {', '.join(carried)} from the earlier record"
-            if carried_drift
-            else "recorded with --allow-drift"
-        )
+        sources = []
+        if carried_drift:
+            sources.append(f"carried with {', '.join(carried)} from the earlier record")
+        if ran_drifted:
+            sources.append(f"run by branch under drift for {', '.join(ran_drifted)}")
+        how = "; ".join(sources) or "recorded with --allow-drift"
         _print("frozen set:", f"DRIFTED, {len(drift)} file(s), {how}")
         for line in render_changes(drift):
             print(f"    {line}")
@@ -1541,7 +1550,7 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
         spec_path,
         allow_drift=args.allow_drift,
         refused="branching is refused before any run",
-        override="--allow-drift to run anyway (record will need it too)",
+        override="--allow-drift to run anyway (the batches record the drift)",
     )
     if drift:
         _print("frozen set:", f"DRIFTED, {len(drift)} file(s), running with --allow-drift")
@@ -1562,9 +1571,13 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
                 apply_control=bool(condition.control_ids),
                 control_ids=condition.control_ids or None,
             )
-            summary = replay_batch(report, spec, condition, artifact_path, store, started_at)
+            summary = replay_batch(
+                report, spec, condition, artifact_path, store, started_at, frozen_set_drift=drift
+            )
         else:
-            outcome = run_branch(artifact_path, spec, condition, store, guard=guard)
+            outcome = run_branch(
+                artifact_path, spec, condition, store, guard=guard, frozen_set_drift=drift
+            )
             if outcome.summary is None:
                 print(f"  skipped: {outcome.skipped}")
                 continue
