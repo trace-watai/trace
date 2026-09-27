@@ -2,7 +2,8 @@
  * Experiment data contract.
  *
  * Mirrors `ExperimentSpec` / `ExperimentResult` in
- * `src/trace_harness/runner/experiment.py` (EXPERIMENT_SCHEMA_VERSION 0.2.0),
+ * `src/trace_harness/runner/experiment.py` (EXPERIMENT_SCHEMA_VERSION 0.3.0;
+ * 0.2.0 added the frozen set in #195 and 0.3.0 `continuation_script` in #159),
  * serialized as `experiment.json` and `result.json` under
  * `runs/experiments/{experiment_id}/`.
  *
@@ -13,7 +14,7 @@
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
-export const EXPERIMENT_SCHEMA_VERSION = "0.2.0";
+export const EXPERIMENT_SCHEMA_VERSION = "0.3.0";
 
 /**
  * `EXPERIMENT_ID_PATTERN` in `runner/experiment.py`. An experiment id names a
@@ -56,6 +57,20 @@ export interface RawCassetteConfig {
   directory: string;
 }
 
+/**
+ * `CallPolicy` in `models/policy.py` (#196): the retry, backoff and pacing
+ * rules a live run executes under. A null `requests_per_minute` means no
+ * pacing.
+ */
+export interface RawCallPolicy {
+  max_attempts: number;
+  initial_delay_seconds: number;
+  max_delay_seconds: number;
+  backoff_multiplier: number;
+  jitter: boolean;
+  requests_per_minute?: number | null;
+}
+
 export interface RawAgentConfig {
   label: string;
   provider: string;
@@ -66,6 +81,7 @@ export interface RawAgentConfig {
   max_steps: number;
   timeout_seconds: number;
   cassette?: RawCassetteConfig | null;
+  call_policy?: RawCallPolicy | null;
 }
 
 export interface RawConditionSpec {
@@ -75,6 +91,8 @@ export interface RawConditionSpec {
   control_ids: string[];
   seeds: number[];
   start?: RawStartPoint | null;
+  /** Fixture script played after the start step; absent means the recording (0.3.0). */
+  continuation_script?: string | null;
 }
 
 /**

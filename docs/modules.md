@@ -65,7 +65,10 @@ compare model families at all.
 
 **Exposes:** `ModelAdapter.next_action(transcript, tools) -> AgentAction`;
 `create_model_adapter(provider, ...)` — the only place provider strings are
-interpreted.
+interpreted; `ForkAdapter(prefix, continuation, switch_at_step)` (`fork.py`),
+which serves recorded actions through `switch_at_step` and delegates every
+later step, so the branch stage forks a run without the runner knowing
+([branch_stage.md](branch_stage.md)).
 
 **Provider capability, since they are not interchangeable:**
 
@@ -232,9 +235,21 @@ that would leave less than a tenth of the call's time, at most 5 seconds, is
 not sent, and the call gives up as `deadline`. A cell whose pipeline raised
 after its run started (in verification, bundling, or the runner's own
 bookkeeping) is a `setup_error` that keeps the run's id and the cost its trace
-records, so the guard still counts it.
-`run-sweep` and `branch` do not exist yet and are meant to drive the same
-`BudgetGuard`.
+records, so the guard still counts it. Every path prices a run through
+`run_cost_usd` in `batch.py`. `branch` drives one guard per invocation from the
+experiment plan's `max_cost_usd`, shared by every condition and seed
+([branch_stage.md](branch_stage.md#budget)). `run-sweep` does not exist yet and
+is meant to drive the same `BudgetGuard`.
+
+`branch.py` exposes `run_branch(artifact_path, experiment, condition, store)`
+and `replay_batch(...)`, behind `trace-harness branch`. It continues a
+regression artifact's recording from each experiment condition's start step
+under that condition's agent and controls, verifies, attributes and bundles
+each run the way `run_task_pipeline` does, records divergence from the
+recording and the post-block outcome per entry, and writes one batch per
+condition (`BatchSummary` 0.4.0). `experiment record` derives the divergence
+rates and outcome counts from those batches. See
+[branch_stage.md](branch_stage.md).
 
 `collector.py` exposes `collect_regressions(path, store, suite_path=...,
 experiments_path=...)` and `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
