@@ -151,6 +151,77 @@ def test_a_batch_from_another_suite_is_refused(tmp_path, capsys) -> None:
     assert not (store.runs_dir / "experiments").exists()
 
 
+def test_revising_only_the_decision_keeps_the_recorded_conditions(tmp_path) -> None:
+    store = _store_with_batch(tmp_path)
+    data = _plan_data()
+    plan = _write_plan(tmp_path / "plan.json", data)
+    assert _record(store, plan, "--condition", f"replay_only={BATCH}") == 0
+
+    assert _record(store, plan, "--decision", "keep") == 0
+
+    result = ExperimentResult.model_validate(store.read_experiment_result(data["experiment_id"]))
+    assert result.decision.value == "keep"
+    assert result.condition_batches == {"replay_only": BATCH}
+    assert result.metrics.verified_failure_count == 1
+
+
+def test_one_batch_under_two_spellings_is_refused(tmp_path, capsys) -> None:
+    store = _store_with_batch(tmp_path)
+    data = _plan_data()
+    data["conditions"].append({**data["conditions"][0], "name": "replay_again"})
+    plan = _write_plan(tmp_path / "plan.json", data)
+    capsys.readouterr()
+
+    pairs = ["--condition", f"replay_only={BATCH}", "--condition", f"replay_again={BATCH}/"]
+    assert _record(store, plan, *pairs) == 2
+    assert f"both read batch {BATCH}" in capsys.readouterr().err
+    assert not (store.runs_dir / "experiments").exists()
+
+
+def test_a_batch_of_another_arm_is_refused(tmp_path, capsys) -> None:
+    store = _store_with_batch(tmp_path)
+    data = _plan_data()
+    data["conditions"][0]["agent_config"] = {
+        "label": "sonnet",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+    }
+    plan = _write_plan(tmp_path / "plan.json", data)
+    capsys.readouterr()
+
+    assert _record(store, plan, "--condition", f"replay_only={BATCH}") == 2
+    assert "declares anthropic/claude-sonnet-5 but its batch ran fixture" in (
+        capsys.readouterr().err
+    )
+    assert not (store.runs_dir / "experiments").exists()
+
+
+def test_a_batch_judged_by_a_verifier_the_plan_does_not_freeze_is_refused(tmp_path, capsys) -> None:
+    store = ArtifactStore(tmp_path / "runs")
+    entry = _entry("t1", "fail").model_copy(update={"verifier_id": "some_other_verifier"})
+    store.write_batch_summary(BATCH, _summary(BATCH, [entry]))
+    plan = _write_plan(tmp_path / "plan.json", _plan_data())
+    capsys.readouterr()
+
+    assert _record(store, plan, "--condition", f"replay_only={BATCH}") == 2
+    assert "judged by ['some_other_verifier']" in capsys.readouterr().err
+    assert not (store.runs_dir / "experiments").exists()
+
+
+def test_a_stored_plan_naming_a_retired_control_still_reads(tmp_path) -> None:
+    """Reading is not installing, so a control retired later leaves the plan readable."""
+    store = ArtifactStore(tmp_path / "runs")
+    data = _plan_data()
+    data["conditions"][0]["control_ids"] = ["ctl_retired_v0"]
+    store.write_experiment_spec(data["experiment_id"], data)
+
+    reader = RunReader(store)
+    assert [spec.experiment_id for spec in reader.list_experiments()] == [data["experiment_id"]]
+    assert reader.unreadable_experiments() == {}
+    with pytest.raises(ValueError, match="unknown control id"):
+        load_plan(data)
+
+
 # --- the retained baseline ---
 
 

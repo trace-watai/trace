@@ -206,7 +206,7 @@ class RunReader:
         Both files must name the experiment whose directory holds them, so a
         copied directory cannot pass as a second experiment.
         """
-        spec = load_plan(self.store.read_experiment_spec(experiment_id))
+        spec = load_plan(self.store.read_experiment_spec(experiment_id), check_controls=False)
         try:
             result = ExperimentResult.model_validate(
                 self.store.read_experiment_result(experiment_id)

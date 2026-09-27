@@ -1001,14 +1001,17 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     Recording cannot invent a condition: a ``--condition`` naming something the
     spec does not declare is a usage error, because a result that describes
     different arms than the plan is not a result for that experiment. A batch
-    that ran another suite than the plan froze is refused for the same reason.
-    Every refusal happens before anything is written.
+    that ran another suite than the plan froze, another agent than its
+    condition declares, or a verifier the plan does not freeze is refused for
+    the same reason. Re-recording keeps the conditions already recorded and
+    replaces those named again. Every refusal happens before anything is written.
     """
     from trace_harness.runner.batch import BatchSummary
     from trace_harness.runner.experiment import (
         DecidedBy,
         Decision,
         ExperimentResult,
+        check_condition_arms,
         check_frozen_suite,
         derive_metrics,
         load_plan,
@@ -1038,7 +1041,18 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
                 "the changed plan a new experiment_id."
             )
 
+    # Re-recording keeps the conditions already recorded, so revising only the
+    # decision keeps the result, and a condition named again takes its new batch.
     condition_batches: dict[str, str] = {}
+    prior: dict[str, str] = {}
+    if store.experiment_result_path(spec.experiment_id).is_file():
+        try:
+            prior = ExperimentResult.model_validate(
+                store.read_experiment_result(spec.experiment_id)
+            ).condition_batches
+        except ValueError as exc:
+            path = store.experiment_result_path(spec.experiment_id)
+            raise CliInputError(f"{path}: {exc}") from None
     for pair in args.condition or []:
         name, _, batch_id = pair.partition("=")
         if not name or not batch_id:
@@ -1050,6 +1064,7 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
                 f"--condition gives batch {batch_id} to two conditions; each batch answers one"
             )
         condition_batches[name] = batch_id
+    condition_batches = {**prior, **condition_batches}
     try:
         validate_condition_batches(spec, condition_batches)
     except ValueError as exc:
@@ -1062,11 +1077,23 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
             summaries.append(BatchSummary.model_validate(store.read_batch_summary(batch_id)))
         except FileNotFoundError as exc:
             raise CliInputError(str(exc)) from None
+    # Two spellings of one batch (a trailing slash, say) read the same summary,
+    # so the one-batch-per-condition rule holds on the id the summary states.
+    condition_batches = {
+        name: s.batch_id for name, s in zip(condition_batches, summaries, strict=True)
+    }
+    seen: dict[str, str] = {}
+    for name, batch_id in condition_batches.items():
+        if batch_id in seen:
+            raise CliInputError(
+                f"conditions {seen[batch_id]!r} and {name!r} both read batch {batch_id}; "
+                "each batch answers one"
+            )
+        seen[batch_id] = name
+    by_condition = dict(zip(condition_batches, summaries, strict=True))
     try:
-        check_frozen_suite(
-            spec,
-            {name: s.suite_id for name, s in zip(condition_batches, summaries, strict=True)},
-        )
+        check_frozen_suite(spec, {name: s.suite_id for name, s in by_condition.items()})
+        check_condition_arms(spec, by_condition)
     except ValueError as exc:
         raise CliInputError(str(exc)) from None
 
