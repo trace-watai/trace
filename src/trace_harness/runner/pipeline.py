@@ -217,13 +217,13 @@ def attribute_and_bundle(
     store: ArtifactStore, run_id: str, task: TaskSpec, run_result: RunResult
 ) -> None:
     """Attribute a verified failure and generate its failure bundle."""
-    from trace_harness.attribution.heuristic import HeuristicAttributor
+    from trace_harness.attribution.registry import DEFAULT_METHOD, run_attribution
     from trace_harness.failure_bundles.generator import FailureBundleGenerator
 
     trace = store.read_trace(run_id)
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
 
-    attribution = HeuristicAttributor().attribute(task, trace, verifier_result, run_result)
+    attribution = run_attribution(DEFAULT_METHOD, task, trace, verifier_result, run_result)
     store.write_json(run_id, names.ATTRIBUTION_RESULT, attribution)
 
     config_metadata = store.read_json(run_id, names.RUN_CONFIG).get("metadata", {})

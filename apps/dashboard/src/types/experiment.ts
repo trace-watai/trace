@@ -114,9 +114,8 @@ export interface RawFrozenFileChange {
 
 /**
  * What must not change while the conditions run. `experiment record` refuses
- * a batch from any suite but `suite_id`. If `fixtures_hash` differs between
- * two conditions they answered different questions, and comparing them is
- * void. `frozen_set` covers the verifier, environment, attribution scorer,
+ * a batch from any suite but `suite_id`. `fixtures_hash` is one value for the
+ * whole plan, taken when it is frozen. `frozen_set` covers the verifier, environment, attribution scorer,
  * suite, fixtures and labels, keyed by component name, and `fixtures_hash` is
  * its fixtures digest. It is absent on plans from schema 0.1.0, whose
  * `fixtures_hash` is stored as the plan states it and checked by nothing.
