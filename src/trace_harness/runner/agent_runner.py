@@ -21,10 +21,21 @@ Failure behavior
     ``run_finished``, ``run_result.json``); only a hard kill leaves a trace
     truncated mid-stream. Partial evidence beats no evidence.
 
-# TODO(Rupert/runner): retries/backoff policy for real adapters. The per-call
-# timeout now bounds a hung provider call so the run terminates on time, but
-# Python can't truly cancel the thread — it runs on as a daemon until process
-# exit; real cancellation needs provider-level request timeouts.
+Live calls
+    Retries, backoff and the per-provider rate limit live in
+    ``models/policy.py`` (#196). The runner hands each model call its remaining
+    time through ``call_budget``, so the policy never starts a retry or a
+    rate-limit wait that would end past it, and writes the policy's
+    ``call_record`` into the ``model_response`` or ``error`` event. A call
+    abandoned at the timeout still leaves its attempts on the
+    ``model_timeout`` error event, and an answer the adapter rejected after
+    the call is written as a ``model_response`` before the ``model_error``,
+    because it was billed.
+
+# TODO(Rupert/runner): the per-call timeout bounds a hung provider call so the
+# run terminates on time, but Python can't truly cancel the thread. It runs on
+# as a daemon until process exit; real cancellation needs provider-level
+# request timeouts.
 """
 
 from __future__ import annotations
@@ -48,6 +59,7 @@ from trace_harness.models.base import (
     ScriptExhaustedError,
     ToolSpec,
 )
+from trace_harness.models.policy import CallProgress, call_budget
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunResult, RunStatus, TerminationReason
 from trace_harness.tasks.schemas import TaskSpec
@@ -61,7 +73,15 @@ logger = logging.getLogger(__name__)
 
 
 class _ModelCallTimeout(Exception):
-    """The model adapter's next_action exceeded the run's remaining time budget."""
+    """The model adapter's next_action exceeded the run's remaining time budget.
+
+    ``call_record`` is what the live call policy had done when the call was
+    abandoned, or None for an adapter that makes no live call.
+    """
+
+    def __init__(self, message: str, call_record: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.call_record = call_record
 
 
 def _call_with_timeout(fn: Callable[[], Any], timeout: float) -> Any:
@@ -71,12 +91,20 @@ def _call_with_timeout(fn: Callable[[], Any], timeout: float) -> Any:
     in the background — but it runs as a *daemon*, so it never blocks process
     exit, and the run terminates on time instead of hanging forever. Any
     exception raised inside ``fn`` is re-raised to the caller unchanged.
+
+    The same ``timeout`` is handed to the live call policy through
+    ``call_budget``, set inside the thread that makes the call. The policy
+    stops retrying before it would pass it, so an abandoned thread never
+    starts another request after the run has moved on. The policy also keeps
+    its running record in a ``CallProgress``, which the timeout carries out.
     """
     box: dict[str, Any] = {}
+    progress = CallProgress()
 
     def target() -> None:
         try:
-            box["value"] = fn()
+            with call_budget(timeout, progress):
+                box["value"] = fn()
         except BaseException as exc:  # noqa: BLE001 — re-raised in the caller's thread
             box["error"] = exc
 
@@ -85,7 +113,8 @@ def _call_with_timeout(fn: Callable[[], Any], timeout: float) -> Any:
     thread.join(timeout)
     if thread.is_alive():
         raise _ModelCallTimeout(
-            f"model adapter did not return within {timeout:.1f}s (remaining run budget)"
+            f"model adapter did not return within {timeout:.1f}s (remaining run budget)",
+            call_record=progress.record,
         )
     if "error" in box:
         raise box["error"]
@@ -117,6 +146,25 @@ class ToolEnvironment(Protocol):
         apply to an answer, simply does not define it and nothing is blocked.
         """
         return None
+
+
+def _record_unacted_response(recorder: TraceRecorder, step_id: int, exc: ModelAdapterError) -> bool:
+    """Record a billed response the adapter could not act on, before its error.
+
+    The one place the trace keeps such a response (#160, #196). The provider
+    answered, and the answer could not become an action (a refusal, a blocked,
+    empty or truncated answer, parallel tool calls). It was billed, so it is
+    written as a ``model_response`` event, with the call record beside it as
+    for an accepted answer, and the run's cost is priced from its usage.
+    Returns whether there was one to record.
+    """
+    if exc.raw is None:
+        return False
+    payload: dict[str, Any] = {"raw": exc.raw}
+    if exc.call_record is not None:
+        payload["call_record"] = exc.call_record
+    recorder.record(TraceEventType.MODEL_RESPONSE, step_id=step_id, payload=payload)
+    return True
 
 
 def _check_final_answer(environment: ToolEnvironment, answer: str) -> ToolResult | None:
@@ -204,6 +252,10 @@ class AgentRunner:
         self.environment = environment
         self.artifact_store = artifact_store
         self._consumed = False
+        # The id of the run this runner started, set before anything can call
+        # a provider. A caller that sees run() raise can still find the run's
+        # trace, and what the run spent, through it.
+        self.run_id: str | None = None
 
     def run(self, task: TaskSpec, config: RunConfig) -> RunResult:
         # Fail loud on reuse: the environment's state and a fixture script's
@@ -216,7 +268,7 @@ class AgentRunner:
                 "environment, and runner for each run."
             )
         self._consumed = True
-        run_id = new_run_id()
+        run_id = self.run_id = new_run_id()
         store = self.artifact_store
         store.create_run_dir(run_id)
         recorder = TraceRecorder(run_id, jsonl_path=store.trace_path(run_id))
@@ -295,10 +347,14 @@ class AgentRunner:
                         remaining,
                     )
                 except _ModelCallTimeout as exc:
+                    timeout_payload: dict[str, Any] = {"error": str(exc), "kind": "model_timeout"}
+                    # The attempts a live call made before it was abandoned.
+                    if exc.call_record is not None:
+                        timeout_payload["call_record"] = exc.call_record
                     recorder.record(
                         TraceEventType.ERROR,
                         step_id=step_id,
-                        payload={"error": str(exc), "kind": "model_timeout"},
+                        payload=timeout_payload,
                     )
                     status = RunStatus.TERMINATED
                     termination = TerminationReason.TIMEOUT
@@ -315,19 +371,15 @@ class AgentRunner:
                     error_message = str(exc)
                     break
                 except ModelAdapterError as exc:
-                    # A response the provider billed for but the adapter could
-                    # not turn into an action is still evidence and still cost
-                    # money, so it is recorded before the error.
-                    if exc.raw is not None:
-                        recorder.record(
-                            TraceEventType.MODEL_RESPONSE,
-                            step_id=step_id,
-                            payload={"raw": exc.raw},
-                        )
+                    error_payload: dict[str, Any] = {"error": str(exc), "kind": "model_error"}
+                    recorded = _record_unacted_response(recorder, step_id, exc)
+                    if not recorded and exc.call_record is not None:
+                        # A live call that failed after retries says so here.
+                        error_payload["call_record"] = exc.call_record
                     recorder.record(
                         TraceEventType.ERROR,
                         step_id=step_id,
-                        payload={"error": str(exc), "kind": "model_error"},
+                        payload=error_payload,
                     )
                     status = RunStatus.ERROR
                     termination = TerminationReason.MODEL_ERROR
@@ -335,19 +387,23 @@ class AgentRunner:
                     break
 
                 steps_taken = step_id
-                # Real adapters stash the provider's raw response in action.raw;
-                # record that provider event before the normalized model_action.
-                # Fixture runs leave raw=None and emit nothing.
-                if action.raw is not None:
+                # Real adapters stash the provider's raw response in action.raw
+                # and the call policy's record in action.call_record; record
+                # that provider event before the normalized model_action.
+                # Fixture runs leave both None and emit nothing.
+                if action.raw is not None or action.call_record is not None:
+                    response_payload: dict[str, Any] = {"raw": action.raw}
+                    if action.call_record is not None:
+                        response_payload["call_record"] = action.call_record
                     recorder.record(
                         TraceEventType.MODEL_RESPONSE,
                         step_id=step_id,
-                        payload={"raw": action.raw},
+                        payload=response_payload,
                     )
                 recorder.record(
                     TraceEventType.MODEL_ACTION,
                     step_id=step_id,
-                    payload=action.model_dump(mode="json", exclude={"raw"}),
+                    payload=action.model_dump(mode="json", exclude={"raw", "call_record"}),
                 )
                 transcript.append(_action_to_assistant_message(action))
 
