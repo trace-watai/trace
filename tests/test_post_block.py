@@ -308,7 +308,14 @@ COMMITTED = sorted((REPO_ROOT / "docs" / "acceptance").rglob("attribution_result
 def test_committed_runs_without_a_block_change_only_in_the_new_fields(path):
     """Re-attributing retained evidence reproduces it apart from the 0.4.0 fields."""
     old = AttributionResult.model_validate_json(path.read_text())
-    assert (old.block_step, old.post_block_outcome) == (None, None)  # pre-0.4.0 file loads
+    if old.schema_version < "0.4.0":
+        assert (old.block_step, old.post_block_outcome) == (None, None)  # pre-0.4.0 file loads
+    else:
+        # Written at 0.4.0, as the retained reference outside-agent runs (#210) were.
+        assert (old.block_step, old.post_block_outcome) == (
+            None,
+            PostBlockOutcome.NO_BLOCK_OBSERVED,
+        )
 
     run_dir = path.parent
     store = ArtifactStore(run_dir.parent)
@@ -322,6 +329,14 @@ def test_committed_runs_without_a_block_change_only_in_the_new_fields(path):
     assert new.model_dump(mode="json", exclude=fields) == json.loads(
         old.model_dump_json(exclude=fields)
     )
+
+
+def test_committed_evidence_still_includes_files_from_before_0_4_0() -> None:
+    """Keeps the backward-compatible load above from passing on 0.4.0 files alone."""
+    versions = {
+        AttributionResult.model_validate_json(p.read_text()).schema_version for p in COMMITTED
+    }
+    assert any(version < "0.4.0" for version in versions)
 
 
 def test_the_schema_version_names_the_two_new_fields() -> None:

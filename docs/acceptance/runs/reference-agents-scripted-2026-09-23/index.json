@@ -1,0 +1,37 @@
+{
+  "schema_version": "0.5.0",
+  "entries": [
+    {
+      "run_id": "run_20260923T073535Z_886164c5",
+      "task_id": "refund_policy_failure",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 7,
+      "started_at": "2026-09-23T07:35:35.868229Z",
+      "finished_at": "2026-09-23T07:35:35.890827Z",
+      "error": null,
+      "verifier_passed": false,
+      "failed_check_count": 4,
+      "verdict": "fail",
+      "provider": "external",
+      "model": "langgraph_ref:cassette:scripted",
+      "batch_id": null
+    },
+    {
+      "run_id": "run_20260923T073538Z_08b09806",
+      "task_id": "refund_policy_failure",
+      "status": "completed",
+      "termination_reason": "final_answer",
+      "steps_taken": 7,
+      "started_at": "2026-09-23T07:35:38.133353Z",
+      "finished_at": "2026-09-23T07:35:38.222939Z",
+      "error": null,
+      "verifier_passed": false,
+      "failed_check_count": 4,
+      "verdict": "fail",
+      "provider": "external",
+      "model": "openai_agents_ref:cassette:scripted",
+      "batch_id": null
+    }
+  ]
+}

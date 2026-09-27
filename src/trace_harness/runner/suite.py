@@ -26,9 +26,10 @@ from pydantic import BaseModel, Field, model_validator
 from trace_harness.models.cassette import CassetteConfig
 from trace_harness.models.policy import CallPolicy
 
+# 0.4.0: provider "external" with agent_ref
 # 0.3.0: optional max_cost_usd and per-agent call_policy
 # 0.2.0: optional cassette configuration per agent
-SUITE_SCHEMA_VERSION = "0.3.0"
+SUITE_SCHEMA_VERSION = "0.4.0"
 
 
 class AgentConfig(BaseModel):
@@ -37,6 +38,13 @@ class AgentConfig(BaseModel):
     ``label`` is the human-facing identifier used in batch summaries and must be
     unique within a suite so results can be attributed to the config that
     produced them.
+
+    With ``provider: external`` the run drives an outside agent, and
+    ``agent_ref`` names it as ``package.module:factory`` (see
+    ``runner/target_agent.py``), and ``model`` optionally overrides the label
+    the agent reports for itself. The outside agent owns its model, so such a
+    config refuses ``cassette``, ``call_policy``, ``temperature`` and ``seed``,
+    as the CLI refuses the matching flags with ``--agent``.
     """
 
     label: str
@@ -50,8 +58,39 @@ class AgentConfig(BaseModel):
     cassette: CassetteConfig | None = None
     # Overrides the provider's default retry and rate-limit policy, for example
     # a higher requests_per_minute on a paid tier. Fields it leaves out keep the
-    # provider's default. Ignored by runs that make no live call.
+    # provider's default. Ignored by runs that make no live call, and refused
+    # for provider external, which makes none.
     call_policy: CallPolicy | None = None
+    agent_ref: str | None = None
+
+    @model_validator(mode="after")
+    def _external_needs_agent_ref(self) -> AgentConfig:
+        if self.provider == "external":
+            if not self.agent_ref:
+                raise ValueError("provider 'external' needs agent_ref (package.module:factory)")
+            if self.cassette is not None:
+                raise ValueError(
+                    "provider 'external' cannot use a harness cassette; the outside agent "
+                    "owns its model calls"
+                )
+            if self.call_policy is not None:
+                raise ValueError(
+                    "provider 'external' cannot use a call_policy; the outside agent owns its "
+                    "model calls, so the harness has no request to retry or pace"
+                )
+            # The CLI refuses --temperature and --seed with --agent for the same
+            # reason: run_config.json would record settings nothing applied.
+            model_settings = [
+                name for name in ("temperature", "seed") if getattr(self, name) is not None
+            ]
+            if model_settings:
+                raise ValueError(
+                    f"provider 'external' cannot set {' or '.join(model_settings)}; "
+                    "the outside agent owns its model"
+                )
+        elif self.agent_ref is not None:
+            raise ValueError("agent_ref is only valid with provider 'external'")
+        return self
 
 
 class SuiteSpec(BaseModel):

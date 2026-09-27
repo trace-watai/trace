@@ -357,30 +357,45 @@ class ConditionMismatchError(ValueError):
     """A recorded batch did not run the arm its condition declares."""
 
 
+def _arm(config: Any) -> tuple[str, str]:
+    """What names an agent: its provider and model, or an outside agent's ``agent_ref``.
+
+    An outside agent owns its model, and its ``model`` is usually unset, so two
+    outside agents differ only in the ref that loads them.
+    """
+    if config.provider == "external":
+        return (config.provider, getattr(config, "agent_ref", None) or "")
+    return (config.provider, config.model or "")
+
+
 def check_condition_arms(spec: ExperimentSpec, summaries: dict[str, Any]) -> None:
     """Each condition's batch must have run that condition's agent, judged by the frozen verifiers.
 
     ``summaries`` maps condition name to its batch summary. Every agent config
     in the batch must have the declared provider, and the declared model when
     the condition names one, since the metrics pool the whole batch under the
-    condition. When the plan freezes verifier ids, every verdict in the batch
-    must come from one of them.
+    condition. An outside agent is matched on its ``agent_ref`` instead. When
+    the plan freezes verifier ids, every verdict in the batch must come from
+    one of them.
     """
     declared = {c.name: c.agent_config for c in spec.conditions}
     frozen_verifiers = set(spec.frozen_manifest.verifier_ids)
     problems: list[str] = []
     for name, summary in sorted(summaries.items()):
         want = declared[name]
-        ran = sorted({(c.provider, c.model or "") for c in summary.agent_configs})
-        if any(
-            provider != want.provider or (want.model is not None and model != want.model)
-            for provider, model in ran
-        ):
-            found = ", ".join(f"{p}/{m}" if m else p for p, m in ran)
-            problems.append(
-                f"{name} declares {want.provider}/{want.model or 'any model'} "
-                f"but its batch ran {found}"
+        ran = sorted({_arm(c) for c in summary.agent_configs})
+        if want.provider == "external":
+            wanted = f"{want.provider}/{want.agent_ref}"
+            mismatch = any(arm != _arm(want) for arm in ran)
+        else:
+            wanted = f"{want.provider}/{want.model or 'any model'}"
+            mismatch = any(
+                provider != want.provider or (want.model is not None and model != want.model)
+                for provider, model in ran
             )
+        if mismatch:
+            found = ", ".join(f"{p}/{m}" if m else p for p, m in ran)
+            problems.append(f"{name} declares {wanted} but its batch ran {found}")
         if frozen_verifiers:
             used = {e.verifier_id for e in summary.entries if e.verifier_id is not None}
             stray = sorted(used - frozen_verifiers)
@@ -595,6 +610,9 @@ def _batch_models(summary: Any) -> set[tuple[str, str | None]]:
     for config in summary.agent_configs:
         if config.provider == _FIXTURE[0]:
             models.add(_FIXTURE)
+            continue
+        if config.provider == "external":
+            models.add(_arm(config))
             continue
         try:
             models.add((config.provider, resolve_model_name(config.provider, config.model, None)))

@@ -48,6 +48,11 @@ Budget guard (#196)
     without the guard seeing it. Fixture and replay runs cost nothing and are
     never refused on price.
 
+    An outside agent (provider ``external``, #210) makes its own model calls,
+    which the harness never sees, so its cost is always null. Under a cap it is
+    refused before it starts as ``budget_unenforceable``, like an unpriced live
+    model. Without a cap it runs as any other config does.
+
     ``run-suite`` and ``branch`` drive it. ``branch`` builds one guard per
     invocation from the experiment plan's ``budget.max_cost_usd``, shared by
     every condition and seed, and records a budget block on each condition's
@@ -81,6 +86,7 @@ from trace_harness.runner.config import RunConfig
 from trace_harness.runner.pipeline import PipelineProgress, PipelineResult, run_task_pipeline
 from trace_harness.runner.result import RunStatus
 from trace_harness.runner.suite import AgentConfig, SuiteSpec
+from trace_harness.runner.target_agent import EXTERNAL_PROVIDER
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEvent, TraceEventType, utc_now
 
@@ -218,11 +224,19 @@ class BudgetGuard:
 
         A run that makes no live call costs nothing, so it is refused only once
         the batch has already stopped. A zero cap therefore still runs fixture
-        and replay cells.
+        and replay cells. An outside agent's spend is invisible to the harness,
+        so under a cap it is refused as ``budget_unenforceable``.
         """
         if self.max_cost_usd is None:
             return True
         if self.stop_reason is not None:
+            return False
+        if provider == EXTERNAL_PROVIDER:
+            self._stop(
+                BUDGET_UNENFORCEABLE,
+                "provider external runs an outside agent whose model calls the harness "
+                "never sees, so its spend could pass the cap unseen",
+            )
             return False
         if not makes_live_calls(provider, cassette):
             return True

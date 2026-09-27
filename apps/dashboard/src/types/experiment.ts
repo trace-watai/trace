@@ -82,6 +82,8 @@ export interface RawAgentConfig {
   timeout_seconds: number;
   cassette?: RawCassetteConfig | null;
   call_policy?: RawCallPolicy | null;
+  /** The outside agent, as `package.module:factory`, when provider is `external` (#210). */
+  agent_ref?: string | null;
 }
 
 export interface RawConditionSpec {

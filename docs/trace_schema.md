@@ -51,7 +51,7 @@ that caused a child.
 | `final_answer` | step | final_answer |
 | `run_finished` | null | status, termination_reason, steps_taken |
 | `error` | step? | error, kind (model_timeout \| script_exhausted \| model_error \| internal_error), traceback? |
-| `model_response` | step | **reserved** — raw provider response when a real adapter's output differs from the normalized action |
+| `model_response` | step | raw provider response when a real adapter's output differs from the normalized action; for provider `external`, the raw response(s) the outside agent forwarded before that step's move (a list under `responses` when there was more than one). When the adapter fails after receiving a response instead of acting on it (an outside agent that forwarded responses and then raised), the response is recorded at the failing step, ahead of its `error` event |
 
 Two payload fields are load-bearing downstream: `side_effect` on
 `tool_call_executed` (attribution finds the first irreversible action by
