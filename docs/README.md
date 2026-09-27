@@ -11,6 +11,7 @@ you change X" column.
 | [modules.md](modules.md) | Before your first PR. One section per `src/trace_harness/` module: what belongs there, the rules, what to build next. |
 | [trace_schema.md](trace_schema.md) | Before adding/changing trace events or anything that reads `trace.jsonl`. |
 | [methodology_metrics.md](methodology_metrics.md) | Before reporting any number, or adding one. Every metric with its formula, the artifact field it reads, and its blind spot. |
+| [experiment_contract.md](experiment_contract.md) | Before running or recording an experiment. What the plan freezes, what the result records, and why there is no combined score. |
 | [verifier_philosophy.md](verifier_philosophy.md) | Before writing pass/fail checks or proposing an LLM judge for anything release-blocking. |
 | [attribution_methodology.md](attribution_methodology.md) | Before touching attribution — the step vocabulary and why its fields must never collapse. |
 | [attribution_canonical_run_results.md](attribution_canonical_run_results.md) | Reviewing canonical attribution results, step meanings, evidence rules, and null handling. |
@@ -30,6 +31,8 @@ deterministic-verifier-first, and no hosted services initially. Then
 why the first Phase 3 experiment is the control replay-validity audit, why a
 replayed control verdict is advisory until labeled, and why ownership moved
 from named module owners to lanes.
+[ADR-0004](decisions/ADR-0004-brief-001-registration.md) registers that
+audit as brief 001 and records why its sample supports an existence test.
 
 Write an ADR when reversing the decision later would be expensive (schema
 contracts, storage layout, evaluation methodology, provider choices) or
@@ -38,6 +41,18 @@ when the same debate has happened twice. Format:
 Consequences** — including the costs; an ADR without downsides is
 advertising. Never rewrite an accepted ADR; supersede it. Anyone may
 draft; Mohammed reviews direction.
+
+## Experiments
+
+Research briefs live in [experiments/briefs/](experiments/briefs/). Each
+brief's pre-registration lives in
+[experiments/preregistration/](experiments/preregistration/) and merges
+before any run it governs.
+
+| Doc | Read it when |
+|---|---|
+| [Brief 001, control replay validity](experiments/briefs/001-control-replay-validity.md) | Before trusting a control verdict from `replay --apply-control`, or planning a live continuation run. |
+| [Pre-registration 001](experiments/preregistration/001.md) | Before running or reporting any arm of brief 001. It fixes the hypotheses, sample, thresholds, and stopping rules. |
 
 ## Doc hygiene
 

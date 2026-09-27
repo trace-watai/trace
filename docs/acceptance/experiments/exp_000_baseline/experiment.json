@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1.0",
+  "experiment_id": "exp_000_baseline",
+  "brief_path": null,
+  "hypothesis": "the refund_bundles_v0 suite under the fixture agent reproduces five verified failures, which is the baseline every later condition is compared against",
+  "frozen_manifest": {
+    "suite_id": "refund_bundles_v0",
+    "verifier_ids": [
+      "refund_policy"
+    ],
+    "fixtures_hash": "sha256:01e4172931eda28c"
+  },
+  "conditions": [
+    {
+      "name": "replay_only",
+      "kind": "static_replay",
+      "agent_config": {
+        "label": "fixture-baseline",
+        "provider": "fixture",
+        "model": null,
+        "prompt_version": null,
+        "temperature": null,
+        "seed": null,
+        "max_steps": 16,
+        "timeout_seconds": 120.0,
+        "cassette": null
+      },
+      "control_ids": [],
+      "seeds": [],
+      "start": null
+    }
+  ],
+  "budget": {
+    "max_runs": 16,
+    "max_cost_usd": 0.0
+  },
+  "created_at": "2026-09-17T19:14:50.424454Z",
+  "metadata": {
+    "note": "recorded by hand to prove the contract before the branch stage (#159)"
+  }
+}
