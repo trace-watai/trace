@@ -63,7 +63,14 @@ class EchoAgent:
 
 Point `--agent` at a `package.module:attribute` import path. The attribute can
 be an agent instance, a class, or a function that takes no arguments and
-returns an agent.
+returns an agent. Loading it imports the module and calls the factory, so a
+suite manifest that names an `agent_ref` runs that code; review a suite from
+someone else the way you would review a script. The module must be importable
+from where the harness runs. `python -m trace_harness.cli` puts the current
+directory on the import path and the `trace-harness` command does not, so
+install your package or set `PYTHONPATH` rather than relying on the working
+directory. A ref that cannot be loaded, including one whose module or factory
+raises, exits 2 with the reason.
 
 ```sh
 trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \

@@ -11,6 +11,7 @@ import functools
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,11 +20,16 @@ from test_experiment import _entry, _frozen, _spec, _summary
 from trace_harness.cli import main
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.experiment import (
+    ConditionKind,
+    ConditionMismatchError,
+    ConditionSpec,
     ExperimentResult,
     ExperimentSpec,
+    check_condition_arms,
     load_plan,
     render_experiment_markdown,
 )
+from trace_harness.runner.suite import AgentConfig
 from trace_harness.tracing.artifact_store import ArtifactStore
 
 BATCH = "batch_20260101T000000Z_aaaaaaaa"
@@ -232,6 +238,25 @@ def test_a_stored_plan_naming_a_retired_control_still_reads(tmp_path) -> None:
     assert reader.unreadable_experiments() == {}
     with pytest.raises(ValueError, match="unknown control id"):
         load_plan(data)
+
+
+def test_an_outside_agents_batch_answers_only_its_own_condition() -> None:
+    """Two outside agents differ only in their agent_ref, so that is what is matched."""
+    graph = AgentConfig(label="graph", provider="external", agent_ref="pkg.graph:make")
+    sdk = AgentConfig(label="sdk", provider="external", agent_ref="pkg.sdk:make")
+    spec = _spec(
+        conditions=[
+            ConditionSpec(name="graph", kind=ConditionKind.STATIC_REPLAY, agent_config=graph),
+            ConditionSpec(name="sdk", kind=ConditionKind.STATIC_REPLAY, agent_config=sdk),
+        ]
+    )
+
+    def batch(config: AgentConfig) -> SimpleNamespace:
+        return SimpleNamespace(agent_configs=[config], entries=[])
+
+    check_condition_arms(spec, {"graph": batch(graph), "sdk": batch(sdk)})
+    with pytest.raises(ConditionMismatchError, match="graph declares external/pkg.graph:make"):
+        check_condition_arms(spec, {"graph": batch(sdk), "sdk": batch(graph)})
 
 
 # --- the retained baseline ---
