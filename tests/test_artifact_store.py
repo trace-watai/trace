@@ -24,7 +24,7 @@ def test_create_run_dir_and_json_round_trip(tmp_path):
     loaded = store.read_json("run_x", names.RUN_CONFIG)
     assert loaded["task_id"] == "t1"
     assert loaded["max_steps"] == 3
-    assert loaded["schema_version"] == "0.2.0"
+    assert loaded["schema_version"] == "0.3.0"
 
     store.write_json("run_x", names.FINAL_STATE, {"orders": [], "refunds": []})
     assert store.read_json("run_x", names.FINAL_STATE) == {"orders": [], "refunds": []}

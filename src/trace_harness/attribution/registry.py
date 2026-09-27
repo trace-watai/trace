@@ -10,6 +10,7 @@ from __future__ import annotations
 from trace_harness.attribution.base import AttributionMethod, stamp_method_metadata
 from trace_harness.attribution.heuristic import HeuristicAttributor
 from trace_harness.attribution.schemas import AttributionResult
+from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing.events import TraceEvent
 from trace_harness.verifiers.base import VerifierResult
@@ -37,8 +38,9 @@ class _HeuristicMethod:
         task: TaskSpec,
         trace: list[TraceEvent],
         verifier_result: VerifierResult,
+        run_result: RunResult | None = None,
     ) -> AttributionResult:
-        return HeuristicAttributor().attribute(task, trace, verifier_result)
+        return HeuristicAttributor().attribute(task, trace, verifier_result, run_result)
 
 
 _METHODS: dict[str, AttributionMethod] = {
@@ -65,6 +67,7 @@ def run_attribution(
     task: TaskSpec,
     trace: list[TraceEvent],
     verifier_result: VerifierResult,
+    run_result: RunResult | None = None,
 ) -> AttributionResult:
     """Attribute through the registry, stamping method metadata onto the result.
 
@@ -73,6 +76,6 @@ def run_attribution(
     cost and a zero cost mean different things once a judge exists.
     """
     method = get_attribution_method(name)
-    result = method.attribute(task, trace, verifier_result)
+    result = method.attribute(task, trace, verifier_result, run_result)
     cost = float(getattr(method, "last_cost_usd", 0.0))
     return stamp_method_metadata(result, method, cost_usd=cost)

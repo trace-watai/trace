@@ -54,6 +54,10 @@ class ModelPromptPayload(_IgnoreExtra):
 
 class ModelResponsePayload(_IgnoreExtra):
     raw: dict[str, Any] | None = None
+    # The live call policy's record of how this response was obtained: attempts,
+    # failures, delays, rate-limit wait (models/policy.py CallRecord). Absent
+    # in traces written before #196 and in cassette replays of older recordings.
+    call_record: dict[str, Any] | None = None
 
 
 class ModelActionPayload(_IgnoreExtra):
@@ -122,6 +126,11 @@ class ErrorPayload(_IgnoreExtra):
     error: str
     kind: str
     traceback: str | None = None
+    # From a live call: on a model_error, the attempts made before the policy
+    # gave up; on a model_timeout, the attempts made before the runner
+    # abandoned the call (outcome "abandoned"). A model_error whose answer
+    # arrived and was rejected keeps it on the model_response before it.
+    call_record: dict[str, Any] | None = None
 
 
 TracePayload = (

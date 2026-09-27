@@ -5,7 +5,8 @@ Attribution used to mean one class. ``attribute`` constructed
 nothing to compare one against. The README's claim that "the judge has to beat
 it" needs both a seam and a number, and this module is the seam.
 
-An :class:`AttributionMethod` takes the same three inputs and returns the same
+An :class:`AttributionMethod` takes the same inputs (the task, the trace, the
+verifier result and, when there is one, the run result) and returns the same
 :class:`AttributionResult` whatever is behind it, so a heuristic and a judge are
 directly comparable on identical runs. Each method records what it cost and
 whether it is deterministic, because those are the two things that decide
@@ -17,6 +18,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from trace_harness.attribution.schemas import AttributionResult
+from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing.events import TraceEvent
 from trace_harness.verifiers.base import VerifierResult
@@ -47,8 +49,13 @@ class AttributionMethod(Protocol):
         task: TaskSpec,
         trace: list[TraceEvent],
         verifier_result: VerifierResult,
+        run_result: RunResult | None = None,
     ) -> AttributionResult:
-        """Localize the failure described by ``verifier_result``."""
+        """Localize the failure described by ``verifier_result``.
+
+        ``run_result`` says how the run ended, which the post-block label reads
+        (#157); without it the label falls back to the trace.
+        """
         ...
 
 
