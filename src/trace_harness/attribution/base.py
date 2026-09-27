@@ -43,6 +43,11 @@ class AttributionMethod(Protocol):
     name: str
     #: False for anything whose output can vary between identical inputs.
     deterministic: bool
+    #: What the last ``attribute`` call cost in US dollars, or None when the
+    #: method cannot say. A method may instead put ``cost_usd`` in its
+    #: result's metadata, which wins. A cost reported neither way is recorded
+    #: as unknown, never as zero.
+    last_cost_usd: float | None
 
     def attribute(
         self,
@@ -60,7 +65,7 @@ class AttributionMethod(Protocol):
 
 
 def stamp_method_metadata(
-    result: AttributionResult, method: AttributionMethod, *, cost_usd: float
+    result: AttributionResult, method: AttributionMethod, *, cost_usd: float | None
 ) -> AttributionResult:
     """Record which method produced a result, what it cost, and its determinism.
 

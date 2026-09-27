@@ -140,11 +140,15 @@ Attribution used to mean one class. `attribute` constructed
 `HeuristicAttributor` directly, so there was nowhere to plug a judge in and
 nothing to compare one against.
 
-An `AttributionMethod` takes a task, a trace and a verifier result and returns
-an `AttributionResult`, whatever is behind it. The registry in
+An `AttributionMethod` takes a task, a trace, a verifier result and, when there
+is one, the run result, and returns an `AttributionResult`, whatever is behind
+it. The registry in
 `attribution/registry.py` is the only place a name becomes a class, and
-`attribute --method <name>` selects one. Every result is stamped with the
-method that produced it, what it cost, and whether it is deterministic. Those
+`attribute --method <name>` selects one; an unknown name exits 2 before
+anything runs. Every result is stamped with the method that produced it, what
+it cost, and whether it is deterministic. A method reports its cost as
+`cost_usd` in its result's metadata or as `last_cost_usd`, and a cost it does
+not report is recorded as unknown. Those
 last two decide where a method can run: the heuristic is free and
 deterministic, so it runs on every failure in CI, and a judge will be neither.
 
@@ -154,21 +158,35 @@ which line of the script makes it true. The sentences matter more than the
 numbers. A label nobody can trace back to the fixture is an opinion, and a
 scorer built on opinions measures agreement with whoever wrote them.
 
-**Scoring.** `score-attribution --method <m> --labels <path>` applies the c1
+**Labels.** A label file is JSONL with one record per labeled run. A record
+names its run by `run_id`, as #31's human labels do, or by `task_id` for staged
+tasks with one run each; a task key that matches several runs is reported as
+ambiguous and not scored. Several records may name one run, one per `labeler`,
+and each is scored. A record may leave a field out, which means it is not
+labeled there. Unknown fields, a step that is not an integer, or an unknown
+category fail the file with its line number.
+
+**Scoring.** `score-attribution --method <m> --labels <path>` applies the C1
 formulas from [methodology_metrics.md](methodology_metrics.md): exact-step and
 off-by-one accuracy per step field, plus category accuracy, each reported
 separately with no average across fields. A null label is a real answer, so a
 method that invents a missed-recovery step where the label says there is none
-scores zero on that row rather than counting as a near miss.
+scores zero on that record rather than counting as a near miss. A method that
+names no step where the label names one declined, and C1 makes its accuracy
+there undefined, so that record leaves the denominator and is counted in
+`declined`. An accuracy over no labeled records is null.
 
 The heuristic's score on the staged set is pinned in
 `fixtures/expected/heuristic_attribution_score.json` and a test fails if a
-detector change moves it. As of this writing it gets root cause exactly right
-on 2 of 5, missed recovery on 3 of 5, the first irreversible action on 5 of 5,
-and the category on 5 of 5. That is the number a judge has to beat, and it is
-deliberately not 1.0: the heuristic localizes acts well and intentions poorly,
+detector change moves it. As of this writing it is exactly right on every step
+it names: root cause on 2 of 2, missed recovery on 5 of 5, the first
+irreversible action on 5 of 5, and the category on 5 of 5. It declines to name
+a root cause on 3 of the 5 tasks. It localizes acts well and intentions poorly,
 which is what you would expect from something that cannot read reasoning it was
-not written to look for.
+not written to look for, and the declined count is where that shows. A judge
+has to be read against both numbers, since accuracy alone cannot improve on
+1.0 and a method that names more root causes at the same accuracy is the
+better one.
 
 ## Where this goes next (the judge program)
 

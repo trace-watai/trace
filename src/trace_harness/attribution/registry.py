@@ -7,7 +7,7 @@ rather than somewhere downstream.
 
 from __future__ import annotations
 
-from trace_harness.attribution.base import AttributionMethod, stamp_method_metadata
+from trace_harness.attribution.base import COST_KEY, AttributionMethod, stamp_method_metadata
 from trace_harness.attribution.heuristic import HeuristicAttributor
 from trace_harness.attribution.schemas import AttributionResult
 from trace_harness.runner.result import RunResult
@@ -32,6 +32,7 @@ class _HeuristicMethod:
 
     name = DEFAULT_METHOD
     deterministic = True
+    last_cost_usd = 0.0
 
     def attribute(
         self,
@@ -71,11 +72,13 @@ def run_attribution(
 ) -> AttributionResult:
     """Attribute through the registry, stamping method metadata onto the result.
 
-    Cost is measured by the method itself where it has one; the heuristic is
-    free, so it reports 0.0 rather than leaving the field absent. A missing
-    cost and a zero cost mean different things once a judge exists.
+    Cost is measured by the method itself: the ``cost_usd`` it put in its
+    result's metadata, or else its ``last_cost_usd``. The heuristic is free, so
+    it reports 0.0 rather than leaving the field absent. A method that reports
+    neither is recorded as unknown, because a missing cost and a zero cost mean
+    different things once a judge exists.
     """
     method = get_attribution_method(name)
     result = method.attribute(task, trace, verifier_result, run_result)
-    cost = float(getattr(method, "last_cost_usd", 0.0))
+    cost = result.metadata.get(COST_KEY, getattr(method, "last_cost_usd", None))
     return stamp_method_metadata(result, method, cost_usd=cost)

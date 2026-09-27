@@ -370,6 +370,8 @@ def _attribute(run_dir: Path, method: str = "heuristic") -> bool:
     """Returns True if an attribution was produced (verifier had failed)."""
     from trace_harness.attribution.registry import run_attribution
 
+    _require_attribution_method(method)
+
     store, run_id = ArtifactStore.for_run_path(run_dir)
     task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
     trace = store.read_trace(run_id)
@@ -389,7 +391,7 @@ def _attribute(run_dir: Path, method: str = "heuristic") -> bool:
     attribution = run_attribution(method, task, trace, verifier_result, run_result)
     store.write_json(run_id, names.ATTRIBUTION_RESULT, attribution)
 
-    print(f"\nAttribution for {run_id} (heuristic, confidence {attribution.confidence:.2f}):")
+    print(f"\nAttribution for {run_id} ({method}, confidence {attribution.confidence:.2f}):")
     _print("root_cause_step:", str(attribution.root_cause_step))
     _print("missed_recovery_step:", str(attribution.missed_recovery_step))
     _print("first_irreversible:", str(attribution.first_irreversible_action_step))
@@ -1121,31 +1123,54 @@ def _validate_fixtures(args: argparse.Namespace) -> int:
     return 0
 
 
+def _require_attribution_method(name: str) -> None:
+    """Refuse an unknown method before anything runs, naming the registered ones."""
+    from trace_harness.attribution.registry import (
+        UnknownAttributionMethodError,
+        get_attribution_method,
+    )
+
+    try:
+        get_attribution_method(name)
+    except UnknownAttributionMethodError as exc:
+        raise CliInputError(str(exc)) from None
+
+
 def _score_attribution(args: argparse.Namespace, store: ArtifactStore) -> int:
     """Score a method against a label file and write attribution_score.json.
 
-    Runs the method fresh over every run whose task the labels name, rather
-    than reading committed attributions, so a detector change shows up in the
-    score without anyone regenerating artifacts first.
+    Runs the method fresh over every run a label names, by run id or by task,
+    rather than reading committed attributions, so a detector change shows up
+    in the score without anyone regenerating artifacts first. A run is
+    attributed when its verdict has violations, as the pipeline decides.
     """
     from trace_harness.attribution.registry import run_attribution
-    from trace_harness.attribution.scoring import load_labels, score_attributions
+    from trace_harness.attribution.scoring import (
+        AttributedRun,
+        load_labels,
+        score_attributions,
+    )
 
+    _require_attribution_method(args.method)
     labels_path = Path(args.labels)
     if not labels_path.is_file():
         raise CliInputError(f"labels file not found: {labels_path}")
-    labels = load_labels(labels_path)
-    wanted = {row["task_id"] for row in labels}
+    try:
+        labels = load_labels(labels_path)
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from None
+    wanted_runs = {label.run_id for label in labels if label.run_id}
+    wanted_tasks = {label.task_id for label in labels if label.task_id and not label.run_id}
 
-    attributions: dict[str, dict] = {}
+    runs: list[AttributedRun] = []
     for run_id in store.list_runs():
         if not store.exists(run_id, names.VERIFIER_RESULT):
             continue
         task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
-        if task.task_id not in wanted:
+        if run_id not in wanted_runs and task.task_id not in wanted_tasks:
             continue
         verifier = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
-        if verifier.passed:
+        if not verifier.has_violations:
             continue
         run_result = (
             RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT))
@@ -1153,33 +1178,40 @@ def _score_attribution(args: argparse.Namespace, store: ArtifactStore) -> int:
             else None
         )
         result = run_attribution(args.method, task, store.read_trace(run_id), verifier, run_result)
-        attributions[task.task_id] = result.model_dump(mode="json")
+        runs.append(AttributedRun(run_id, task.task_id, result.model_dump(mode="json")))
 
     score = score_attributions(
-        method=args.method,
-        labels_path=labels_path,
-        labels=labels,
-        attributions=attributions,
+        method=args.method, labels_path=labels_path, labels=labels, runs=runs
     )
     out = store.runs_dir / "attribution_score.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(score.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
+    def ratio(k: int | None, n: int, accuracy: float | None) -> str:
+        return f"{k}/{n} ({'undefined' if accuracy is None else accuracy})"
+
     print(f"\nAttribution score for method '{score.method}':")
     _print("labels:", str(labels_path))
-    _print("scored tasks:", f"{score.labeled_tasks} of {len(labels)}")
+    _print(
+        "scored:",
+        f"{score.scored_labels} of {len(labels)} label(s), {score.scored_runs} run(s)",
+    )
     for field, fs in score.step_fields.items():
         _print(
             f"  {field}:",
-            f"exact {fs.exact}/{fs.labeled} ({fs.exact_accuracy}), "
-            f"off-by-one {fs.off_by_one}/{fs.labeled} ({fs.off_by_one_accuracy})",
+            f"exact {ratio(fs.exact, fs.labeled, fs.exact_accuracy)}, "
+            f"off-by-one {ratio(fs.off_by_one, fs.labeled, fs.off_by_one_accuracy)}, "
+            f"declined {fs.declined}",
         )
+    cat = score.category
     _print(
         "  category:",
-        f"{score.category_correct}/{score.category_labeled} ({score.category_accuracy})",
+        f"{ratio(cat.exact, cat.labeled, cat.exact_accuracy)}, declined {cat.declined}",
     )
-    if score.unscored_tasks:
-        _print("unscored:", ", ".join(score.unscored_tasks))
+    if score.unscored_labels:
+        _print("unscored:", ", ".join(score.unscored_labels))
+    if score.ambiguous_labels:
+        _print("ambiguous:", ", ".join(score.ambiguous_labels) + " (task has several runs)")
     _print("written:", str(out))
     return 0
 
