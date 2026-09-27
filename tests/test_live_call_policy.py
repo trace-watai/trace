@@ -51,10 +51,11 @@ from trace_harness.models.policy import (
     remaining_call_budget,
 )
 from trace_harness.runner.agent_runner import _call_with_timeout
-from trace_harness.runner.batch import BatchRunner
+from trace_harness.runner.batch import BatchRunner, _nothing_billed
 from trace_harness.runner.pipeline import run_task_pipeline
 from trace_harness.runner.suite import AgentConfig, SuiteSpec
 from trace_harness.tracing.artifact_store import ArtifactStore
+from trace_harness.tracing.events import TraceEvent, TraceEventType
 
 # --- fakes -----------------------------------------------------------------
 
@@ -485,6 +486,28 @@ def test_a_backoff_that_would_pass_the_budget_is_not_slept() -> None:
     record = caught.value.call_record
     assert record["outcome"] == "deadline"
     assert record["failures"][0]["delay_seconds"] is None
+
+
+def test_a_retry_that_would_leave_no_time_to_answer_is_not_sent() -> None:
+    """A 9.9 s Retry-After under a 10 s budget would send the retry with 0.1 s
+    left, to be abandoned at the timeout. The floor is a tenth of the call's
+    time, so the call gives up as deadline instead."""
+    live, clock = caller(budget=10.0)
+    fn, calls = scripted(RateLimitError(headers={"retry-after": "9.9"}), "never reached")
+
+    with pytest.raises(ProviderCallError) as caught:
+        live.call(fn, classify)
+
+    assert len(calls) == 1
+    assert clock.sleeps == []
+    assert caught.value.call_record["outcome"] == "deadline"
+
+
+def test_a_retry_with_time_left_to_answer_is_sent() -> None:
+    live, clock = caller(budget=10.0)
+    fn, calls = scripted(RateLimitError(headers={"retry-after": "5"}), "ok")
+    value, record = live.call(fn, classify)
+    assert (value, len(calls), clock.sleeps, record.attempts) == ("ok", 2, [5.0], 2)
 
 
 def test_the_runners_budget_overrides_the_adapters_fallback() -> None:
@@ -1121,6 +1144,50 @@ def test_a_timeout_after_priced_turns_leaves_the_run_cost_unknown(
     [error] = _events(store, entry.run_id, "error")
     assert error["payload"]["kind"] == "model_timeout"
     assert entry.cost_usd is None
+
+
+def test_a_dropped_connection_after_priced_turns_leaves_the_run_cost_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second call failed on dropped connections until the policy gave
+    up. A dropped request may have reached the model and been billed."""
+    built: list[Any] = []
+    lookup = _GeminiToolCall("search_docs", query="refund policy")
+    monkeypatch.setattr(
+        "trace_harness.runner.pipeline.create_model_adapter",
+        _live_gemini([lookup, *[RemoteProtocolError("dropped")] * 3], built),
+    )
+    policy = CallPolicy(
+        max_attempts=3, initial_delay_seconds=0.01, jitter=False, requests_per_minute=6000.0
+    )
+    store = ArtifactStore(tmp_path / "runs")
+    entry = (
+        BatchRunner(store).run(_suite("gemini", "gemini-2.5-flash", call_policy=policy)).entries[0]
+    )
+
+    assert len(_events(store, entry.run_id, "model_response")) == 1
+    [error] = _events(store, entry.run_id, "error")
+    assert error["payload"]["kind"] == "model_error"
+    assert error["payload"]["call_record"]["outcome"] == "retries_exhausted"
+    assert entry.cost_usd is None
+
+
+def _trace(*events: tuple[TraceEventType, dict]) -> list[TraceEvent]:
+    return [
+        TraceEvent(event_id=f"e{i}", run_id="run_x", step_id=1, event_type=kind, payload=payload)
+        for i, (kind, payload) in enumerate(events)
+    ]
+
+
+@pytest.mark.parametrize(("status", "unbilled"), [(503, True), (400, True), (200, False)])
+def test_only_an_error_status_marks_a_failed_attempt_unbilled(status: int, unbilled: bool) -> None:
+    """A 200 whose body the SDK could not parse was answered, and may be billed."""
+    record = {"attempts": 1, "outcome": "permanent_error", "failures": [{"status_code": status}]}
+    events = _trace(
+        (TraceEventType.MODEL_PROMPT, {}),
+        (TraceEventType.ERROR, {"kind": "model_error", "call_record": record}),
+    )
+    assert _nothing_billed(events) is unbilled
 
 
 def test_a_timeout_with_no_live_call_records_no_attempts() -> None:

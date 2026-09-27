@@ -25,7 +25,10 @@ Exit codes: 0 success; 1 with --fail-on-verifier (CI gate mode) when a run
 failed verification or did not complete, and for ``run-suite`` also when a run
 errored or the suite budget stopped the batch before every cell ran; 2 usage
 or input errors (argparse errors, bad paths, malformed fixtures, missing
-artifacts, cassette errors, a suite budget cap that cannot be enforced).
+artifacts, cassette errors), and for ``run-suite`` a budget cap it could not
+enforce: an unpriced model refused before it ran, or a live run that ended
+with an unknown cost, such as one whose model call was abandoned at the
+timeout, which stops the batch.
 Without the flag a verified failure exits 0, since finding failures is this
 tool succeeding.
 
@@ -1222,7 +1225,8 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
     if getattr(args, "report", False):
         _write_and_print_suite_report(store, summary.batch_id, print_full=False)
 
-    # A cap the harness cannot enforce is a configuration problem, like a bad path.
+    # A cap the harness could not enforce: an unpriced model, or a live run whose
+    # cost is unknown. The batch stopped, and its summary names the cause.
     if budget is not None and budget.stop_reason == BUDGET_UNENFORCEABLE:
         return 2
     stopped_early = budget is not None and bool(budget.not_run)

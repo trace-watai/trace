@@ -219,14 +219,20 @@ exits 2. Fixture and replay runs cost exactly zero and are never refused on
 price.
 
 A live run that never got an answer costs exactly zero when the call policy
-gave up and every failed attempt carried an HTTP status, so one outage cell
-does not end a capped batch. Google documents that a request failing with a
-400 or 500 error is not charged; the same reading is applied to Anthropic and
-OpenAI, whose error pages do not say. A failure with no status, or a call
-abandoned at the run's timeout, may have been billed, and that run's cost stays
-null, even when its earlier turns were priced. A cell whose pipeline raised after its run started (in verification,
-bundling, or the runner's own bookkeeping) is a `setup_error` that keeps the
-run's id and the cost its trace records, so the guard still counts it.
+gave up and every failed attempt carried an HTTP error status (400 or above),
+so one outage cell does not end a capped batch. Google documents that a request
+failing with a 400 or 500 error is not charged; the same reading is applied to
+Anthropic and OpenAI, whose error pages do not say. A call that failed after an
+attempt with no error status, such as a dropped connection, or a call abandoned
+at the run's timeout, may have been billed, and that run's cost stays null,
+even when its earlier turns were priced, so a capped batch stops there. A call
+the policy recovered after such an attempt is priced from the response that
+came back, and the failed attempt, if it was billed, is not counted. A retry
+that would leave less than a tenth of the call's time, at most 5 seconds, is
+not sent, and the call gives up as `deadline`. A cell whose pipeline raised
+after its run started (in verification, bundling, or the runner's own
+bookkeeping) is a `setup_error` that keeps the run's id and the cost its trace
+records, so the guard still counts it.
 `run-sweep` and `branch` do not exist yet and are meant to drive the same
 `BudgetGuard`.
 
