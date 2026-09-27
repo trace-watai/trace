@@ -1185,7 +1185,9 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
 
     Recording also recomputes the plan's frozen set (#195) and refuses, with
     the files listed, when anything differs. ``--allow-drift`` records anyway,
-    marks the result drifted and forces its decision to review. A plan from
+    marks the result drifted and forces its decision to review. A condition
+    that keeps its batch from a drifted record keeps the result drifted, with
+    its decision at review, until it is recorded with a new batch. A plan from
     schema 0.1.0 has no frozen set; it records, and the result says nothing
     was checked. Every refusal happens before anything is written.
     """
@@ -1223,15 +1225,17 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     # Re-recording keeps the conditions already recorded, so revising only the
     # decision keeps the result, and a condition named again takes its new batch.
     condition_batches: dict[str, str] = {}
+    prior_result: ExperimentResult | None = None
     prior: dict[str, str] = {}
     if store.experiment_result_path(spec.experiment_id).is_file():
         try:
-            prior = ExperimentResult.model_validate(
+            prior_result = ExperimentResult.model_validate(
                 store.read_experiment_result(spec.experiment_id)
-            ).condition_batches
+            )
         except ValueError as exc:
             path = store.experiment_result_path(spec.experiment_id)
             raise CliInputError(f"{path}: {exc}") from None
+        prior = prior_result.condition_batches
     for pair in args.condition or []:
         name, _, batch_id = pair.partition("=")
         if not name or not batch_id:
@@ -1293,6 +1297,15 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
             )
         seen[batch_id] = name
     by_condition = dict(zip(condition_batches, summaries, strict=True))
+    # A batch recorded under drift ran under it, so while any condition keeps
+    # its batch from a drifted record the result stays drifted, listing that
+    # drift, however the condition was named this time.
+    carried = sorted(n for n, batch_id in condition_batches.items() if prior.get(n) == batch_id)
+    carried_drift = bool(carried) and prior_result is not None and prior_result.frozen_set_drifted
+    if carried_drift:
+        assert prior_result is not None
+        earlier = prior_result.frozen_set_drift
+        drift = [*earlier, *(c for c in drift if c not in earlier)]
     try:
         check_frozen_suite(spec, {name: s.suite_id for name, s in by_condition.items()})
         check_condition_arms(spec, by_condition)
@@ -1323,7 +1336,12 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     _print("hypothesis:", spec.hypothesis)
     _print("decision:", f"{result.decision.value} (by {result.decided_by.value})")
     if result.frozen_set_drifted:
-        _print("frozen set:", f"DRIFTED, {len(drift)} file(s), recorded with --allow-drift")
+        how = (
+            f"carried with {', '.join(carried)} from the earlier record"
+            if carried_drift
+            else "recorded with --allow-drift"
+        )
+        _print("frozen set:", f"DRIFTED, {len(drift)} file(s), {how}")
         for line in render_changes(drift):
             print(f"    {line}")
         if args.decision != Decision.REVIEW.value:

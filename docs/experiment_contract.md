@@ -125,7 +125,9 @@ drift, as a change to `controls.py` or `guardrails.py` already is through the
 at `fixtures/controls/evidence/*/*/index.json`. It is generated, `.gitignore`
 carries the same pattern, and the library's sha256 pins do not cover it. The
 pattern matches one path segment at a time, so an `index.json` at any other
-depth counts.
+depth counts. Cassettes a condition records after the freeze are new files, so
+they go outside `fixtures/`; the default `fixtures/cassettes/` would read as
+drift.
 
 `labels_path` has to be a relative POSIX path with no empty, `.` or `..`
 segment, or the plan fails to load. `freeze` also refuses labels that name a
@@ -164,7 +166,11 @@ With `--allow-drift` the result is written with `frozen_set_drifted: true`, the
 files in `frozen_set_drift`, and decision `review` whatever `--decision` said.
 `ExperimentResult` refuses to load a result marked drifted with any other
 decision, which stops an edit of the decision alone. With nothing drifted,
-`--allow-drift` changes nothing.
+`--allow-drift` changes nothing. Re-recording keeps the conditions already
+recorded, and a batch recorded under drift ran under it, so while any
+condition keeps its batch from a drifted record the result stays drifted, with
+the earlier drift listed and decision `review`, until that condition is
+recorded with a new batch.
 
 **Plans from 0.1.0.** A plan written under schema 0.1.0 has no frozen set and
 still loads. `record` proceeds, and the result carries both flags false, which
