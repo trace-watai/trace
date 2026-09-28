@@ -85,24 +85,28 @@ name off that same event.
 The key is a hash behind a readable prefix.
 
 ```text
-v1:<primary category>:<tool or none>:<digest>
-v1:unsafe_irreversible_action:issue_refund:e621a26e69c17400
+v2:<primary category>:<tool or none>:<digest>
+v2:unsafe_irreversible_action:issue_refund:23b3db1014dba147
 ```
 
 The digest is the first 16 hex characters of SHA-256 over this JSON, written
 with sorted keys and no whitespace.
 
 ```json
-{"category":"unsafe_irreversible_action","checks":["unauthorized_cash_refund"],"tool":"issue_refund","version":"v1"}
+{"category":"unsafe_irreversible_action","checks":["unauthorized_cash_refund"],"task":"refund_policy_control_demo","tool":"issue_refund","version":"v2"}
 ```
 
 The prefix makes an index or a card readable at a glance. Keys are compared
 whole, and the digest is what separates two failures that share a category
 and a tool but fired different checks. With no irreversible step the JSON
-records `"tool":null` and the prefix reads `none`. Run ids, task ids, step
-numbers, messages and evidence stay out of the key, so one failure keys the
-same way across tasks, providers, seeds and days. Changing any of the three
-facts, or how they are written, means bumping `v1`. `tests/test_bundle_key.py`
+records `"tool":null` and the prefix reads `none`. The task id is in the key,
+and run ids, step numbers, messages and evidence stay out, so runs of one task
+that fail the same way key the same across providers, seeds and days, and two
+tasks never share a key. Each task therefore keeps its own card and regression
+artifact to replay or branch from, even beside another task that fails the
+same way. Changing any of the four facts, or how they are written, means
+bumping `v2`. Keys written as `v1`, before the task was part of the key, never
+equal a `v2` key, so a run bundled now never joins a `v1` card. `tests/test_bundle_key.py`
 pins the key of every failing task fixture so such a change shows up as an
 edit to that table.
 
@@ -137,12 +141,9 @@ provider, model and seed from each run's `run_config.json`.
 `RunReader.get_bundle` and the dashboard serve a reproduction the card it
 joined, whose `run_id` names the first occurrence.
 
-By default the lookup covers one whole runs directory, and two different
-tasks that fail the same way share a card when their runs land in the same
-one. Of the nineteen failing task fixtures, nine fall into four groups that
-share a key. Neither `refund_v0` nor `refund_bundles_v0` runs two tasks from
-one group, so every pinned suite expectation still has one card per failing
-task.
+By default the lookup covers one whole runs directory. Since the key names
+the task, only runs of the same task share a card there, and the nineteen
+failing task fixtures form nineteen keys.
 
 ### Scoping the lookup
 
@@ -156,8 +157,9 @@ The branch stage is the caller the scope is for. Its conditions continue the
 same fork with the control on, with it off and with another model, and
 without a scope a failure in one condition joins a card from another. A
 control-on run would then be served the card and regression artifact of a
-control-off run. Passing the runs of one condition keeps each condition's
-cards apart, while its seeds still share one card per key. A scope over the
+control-off run. `branch` passes the runs of the condition it is running, so
+each condition's cards stay apart, while its seeds still share one card per
+key. A scope over the
 whole experiment would merge the conditions again, so one condition's runs
 is the scope to pass. The experiment's metrics count verdicts from batch
 entries and come out the same either way. `run-sweep` scopes each cell to
@@ -166,6 +168,9 @@ its retention keeps, so a failing cell never points to a card outside what is
 retained with it, even in a runs directory that holds earlier runs or an
 earlier sweep. Retention still refuses, naming them, any cell whose home lies
 outside the retained cells ([live_sweep.md](live_sweep.md#retaining-failing-cells)).
+A cell that ended incomplete after breaking a rule is bundled under the same
+scope and can join a failing cell's card, but only failing cells are retained,
+so the retained card lists only the runs retained with it.
 
 Callers that copy runs somewhere else have to keep each reproduction with
 the run holding its card. `ArtifactStore.bundle_home` names that run for one
@@ -220,8 +225,9 @@ longer has, deletes its regression artifact when bundled again into another
 run's card, and anything that pins that file's hash loses the file.
 
 `collect-regressions` discovers `regression_artifact.json` files, which only
-first occurrences hold, so each key is replayed once and reproductions are
-not counted in `artifacts_found`. A bundle cut short before its card was
+first occurrences hold, so each key is replayed once per runs directory or
+scope and reproductions are not counted in `artifacts_found`. Two retained
+sweeps of the same failure keep two cards, and each is replayed. A bundle cut short before its card was
 written can leave an artifact with no card beside it, which the collector
 still finds. Bundling the run again either writes the card beside it or,
 when the run joins another card, deletes it.

@@ -168,7 +168,7 @@ runs this same collection and pins both counts.
 A generated run that reproduced an earlier card holds a `bundle_ref.json`
 pointer and no artifact of its own (#211). It passes the suite's coverage check
 through the artifact of the run it points to and is not collected, so each
-bundle key is replayed once. See
+bundle key is replayed once per runs directory or scope. See
 [failure_bundles.md](failure_bundles.md#replay-and-the-regression-gate).
 
 Each pinned failure must reproduce and every declared positive sibling must pass.

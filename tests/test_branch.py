@@ -326,6 +326,25 @@ def test_store_credit_after_the_block_is_a_substitute_violation(tmp_path):
     assert store.exists(entry.run_id, names.FAILURE_CARD)
 
 
+def test_each_condition_keeps_its_own_cards_beside_the_source_run(tmp_path):
+    """In the source run's own runs directory, a condition's failing runs share
+    cards only with each other, never with the source run or another arm."""
+    path, artifact = _artifact(tmp_path)
+    store = ArtifactStore(path.parent.parent)
+    first = _condition("off_a", "live_no_control", artifact, 2, seeds=[0, 1])
+    second = _condition("off_b", "live_no_control", artifact, 2, seeds=[0, 1])
+    _, spec = _spec(tmp_path, first, second)
+
+    homes: dict[str, set[str]] = {}
+    for condition in spec.conditions:
+        entries = run_branch(path, spec, condition, store).summary.entries
+        runs = [e.run_id for e in entries if e.run_id is not None]
+        homes[condition.name] = set(store.bundle_homes(runs).values())
+        assert homes[condition.name] and homes[condition.name] <= set(runs)
+    assert artifact["source_run_id"] not in homes["off_a"] | homes["off_b"]
+    assert not homes["off_a"] & homes["off_b"]
+
+
 def test_recorded_continuation_without_a_control_never_diverges(tmp_path):
     path, artifact = _artifact(tmp_path)
     _, spec = _spec(tmp_path, _condition("off", "live_no_control", artifact, 2, seeds=[0, 1, 2]))

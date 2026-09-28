@@ -7,8 +7,8 @@ advisory. This reader accepts #156's labels without generating or changing them.
 A generated suite run that reproduced an earlier card holds a ``bundle_ref.json``
 pointer and no regression artifact of its own (#211). It counts as covered when
 the run it points to holds one. It is not an artifact itself, since discovery finds
-the first occurrence's artifact once, so a key is replayed once however many runs
-repeated it.
+the first occurrence's artifact once, so a key is replayed once per runs
+directory or scope however many runs repeated it.
 
 Given an experiments directory, the collector also recomputes every retained
 experiment's frozen set (#195). Drift there is reported and recorded in the
