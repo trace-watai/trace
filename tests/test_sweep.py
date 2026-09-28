@@ -27,7 +27,12 @@ from sweep_fakes import (
 from trace_harness.cli import main
 from trace_harness.models import is_priced
 from trace_harness.models.openai import OpenAINotConfiguredError
-from trace_harness.runner.batch import BUDGET_EXHAUSTED, BatchRunner, BatchSummary
+from trace_harness.runner.batch import (
+    BUDGET_EXHAUSTED,
+    BUDGET_UNENFORCEABLE,
+    BatchRunner,
+    BatchSummary,
+)
 from trace_harness.runner.suite import AgentConfig, SuiteSpec, load_suite
 from trace_harness.runner.sweep import (
     SweepLoadError,
@@ -229,6 +234,26 @@ def test_a_cap_reached_mid_seed_leaves_complete_seeds_differing_by_one(
     assert (flash.runs, mini.runs) == (6, 4)
 
 
+def test_a_cell_that_ends_without_a_cost_stops_every_later_cell(
+    tmp_path, fake_providers, monkeypatch, capsys
+) -> None:
+    """A run whose cost cannot be read could pass the cap unseen (#196), so the
+    sweep stops after it, names the stop, and exits 2."""
+    import sweep_fakes
+
+    monkeypatch.setitem(sweep_fakes.USAGE, "gemini", ("usage_metadata", {}))
+    spec = write_suite_and_spec(tmp_path)
+    assert main(["run-sweep", str(spec), "--runs-dir", str(tmp_path / "runs")]) == 2
+    out = capsys.readouterr().out
+    assert "stopped early (budget_unenforceable)" in out
+
+    (path,) = (tmp_path / "runs/sweeps").glob("*/sweep_summary.json")
+    summary = SweepSummary.model_validate_json(path.read_text())
+    assert summary.runs == 1
+    assert summary.budget.stop_reason == BUDGET_UNENFORCEABLE
+    assert len(summary.budget.not_run) == len(TASKS) * 2 * len(SEEDS) - 1
+
+
 def test_an_unpriced_model_stops_the_sweep_before_any_call(tmp_path, fake_providers) -> None:
     spec = write_suite_and_spec(tmp_path)
     data = json.loads(spec.read_text())
@@ -308,6 +333,11 @@ def test_the_cli_prints_the_summary(tmp_path, fake_providers, capsys) -> None:
                 {"label": "b", "provider": "gemini", "model": "gemini-3.6-flash"},
             ],
             "models must be distinct",
+        ),
+        (
+            "providers",
+            [{"label": "mine", "provider": "external"}],
+            "outside agent's spend is invisible",
         ),
     ],
 )

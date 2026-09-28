@@ -1959,7 +1959,9 @@ def _run_sweep(args: argparse.Namespace, store: ArtifactStore) -> int:
     )
     summary = run_sweep(spec, store, spec_path=args.sweep_path)
 
-    print(f"\nSweep {summary.sweep_id} complete:")
+    stopped = summary.budget.stop_reason if summary.budget is not None else None
+    ended = f"stopped early ({stopped})" if stopped else "complete"
+    print(f"\nSweep {summary.sweep_id} {ended}:")
     for p in summary.providers:
         _print(
             f"{p.label} ({p.model}):",

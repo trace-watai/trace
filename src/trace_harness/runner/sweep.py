@@ -88,6 +88,11 @@ class SweepProvider(BaseModel):
     @field_validator("provider")
     @classmethod
     def _live(cls, value: str) -> str:
+        if value == "external":
+            raise ValueError(
+                "an outside agent's spend is invisible to the harness, so a capped sweep "
+                "cannot run one; a sweep runs live providers only"
+            )
         if value not in LIVE_PROVIDERS:
             raise ValueError(f"{value!r} makes no live call; a sweep runs live providers only")
         return value
