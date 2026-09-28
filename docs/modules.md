@@ -223,21 +223,27 @@ exits 2. Fixture and replay runs cost exactly zero and are never refused on
 price.
 
 A live run that never got an answer costs exactly zero when the call policy
-gave up and every failed attempt carried an HTTP status, so one outage cell
-does not end a capped batch. Google documents that a request failing with a
-400 or 500 error is not charged; the same reading is applied to Anthropic and
-OpenAI, whose error pages do not say. A failure with no status, or a call
-abandoned at the run's timeout, may have been billed, and that run's cost stays
-null. A cell whose pipeline raised after its run started (in verification,
-bundling, or the runner's own bookkeeping) is a `setup_error` that keeps the
-run's id and the cost its trace records, so the guard still counts it. Every
-path prices a run through `run_cost_usd` in `batch.py`. `branch` drives one
-guard per invocation from the experiment plan's `max_cost_usd`, shared by every
-condition and seed ([branch_stage.md](branch_stage.md#budget)). `run-sweep`
-drives one guard per sweep, shared by every provider and seed
-([live_sweep.md](live_sweep.md)). Retaining a sweep's failing cells scans every
-file with `trace_harness/secret_scan.py`, the one secret scanner for evidence,
-whose pure `scan_text` and `scan_paths` any package can import.
+gave up and every failed attempt carried an HTTP error status (400 or above),
+so one outage cell does not end a capped batch. Google documents that a request
+failing with a 400 or 500 error is not charged; the same reading is applied to
+Anthropic and OpenAI, whose error pages do not say. A call that failed after an
+attempt with no error status, such as a dropped connection, or a call abandoned
+at the run's timeout, may have been billed, and that run's cost stays null,
+even when its earlier turns were priced, so a capped batch stops there. A call
+the policy recovered after such an attempt is priced from the response that
+came back, and the failed attempt, if it was billed, is not counted. A retry
+that would leave less than a tenth of the call's time, at most 5 seconds, is
+not sent, and the call gives up as `deadline`. A cell whose pipeline raised
+after its run started (in verification, bundling, or the runner's own
+bookkeeping) is a `setup_error` that keeps the run's id and the cost its trace
+records, so the guard still counts it. Every path prices a run through
+`run_cost_usd` in `batch.py`. `branch` drives one guard per invocation from the
+experiment plan's `max_cost_usd`, shared by every condition and seed
+([branch_stage.md](branch_stage.md#budget)). `run-sweep` drives one guard per
+sweep, shared by every provider and seed ([live_sweep.md](live_sweep.md)).
+Retaining a sweep's failing cells scans every file with
+`trace_harness/secret_scan.py`, the one secret scanner for evidence, whose pure
+`scan_text` and `scan_paths` any package can import.
 
 `branch.py` exposes `run_branch(artifact_path, experiment, condition, store)`
 and `replay_batch(...)`, behind `trace-harness branch`. It continues a
@@ -422,7 +428,9 @@ for input handling, verdicts, and incomplete runs.
 
 `replay --apply-control --commit` promotes accepted controls after replaying
 the proposed library against new and existing regressions. The versioned
-library retains evidence and rollback history. Environments and `run-suite`
+library retains evidence and rollback history, and each entry records whether
+its acceptance is gating (a `static_ok` label its basis supports, predicted
+until #159 measures it) or advisory; `controls list` shows which. Environments and `run-suite`
 load it explicitly with `control_library` / `--control-library`. See
 [the lifecycle](failure_bundles.md#control-library) and
 [ADR-0003](decisions/ADR-0003-control-library.md).

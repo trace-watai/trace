@@ -61,6 +61,7 @@ Retries, time and cost (#196)
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import queue
 import threading
@@ -401,15 +402,25 @@ def load_target_agent(ref: str) -> TargetAgent:
 
     The attribute may be a target agent instance, a class, or a zero-argument
     factory. Every failure is a ``ValueError`` so the CLI reports it as an
-    input error.
+    input error, including an exception the module raises while importing or
+    the factory raises while building the agent.
+
+    Loading an agent runs its module and factory, so a ref is code the harness
+    executes, like ``--script`` is data it replays.
     """
     module_name, sep, attribute = ref.partition(":")
     if not sep or not module_name or not attribute:
         raise ValueError(f"agent ref {ref!r} must look like 'package.module:factory'")
+    if module_name.startswith("."):
+        raise ValueError(f"agent ref {ref!r} must name an absolute module, not a relative one")
     try:
         target: Any = importlib.import_module(module_name)
     except ImportError as exc:
         raise ValueError(f"cannot import agent module {module_name!r}: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 (the module's own code failed)
+        raise ValueError(
+            f"importing agent module {module_name!r} raised {type(exc).__name__}: {exc}"
+        ) from exc
     for part in attribute.split("."):
         try:
             target = getattr(target, part)
@@ -419,9 +430,22 @@ def load_target_agent(ref: str) -> TargetAgent:
         if not callable(target):
             raise ValueError(f"agent ref {ref!r} is neither a target agent nor a factory")
         try:
+            required = [
+                p
+                for p in inspect.signature(target).parameters.values()
+                if p.default is p.empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            ]
+        except (TypeError, ValueError):
+            required = []  # no signature to read; calling it will tell
+        if required:
+            names = ", ".join(p.name for p in required)
+            raise ValueError(f"agent ref {ref!r} must take no arguments; it needs {names}")
+        try:
             target = target()
-        except TypeError as exc:
-            raise ValueError(f"agent ref {ref!r} must take no arguments: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001 (the factory's own code failed)
+            raise ValueError(
+                f"agent ref {ref!r} raised {type(exc).__name__} while building the agent: {exc}"
+            ) from exc
     if not isinstance(target, TargetAgent) or not isinstance(target.name, str):
         raise ValueError(f"agent ref {ref!r} did not produce a target agent with name and run")
     return target
