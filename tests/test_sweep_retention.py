@@ -19,7 +19,9 @@ import pytest
 from conftest import REPO_ROOT
 from sweep_fakes import FAKE_KEY, FakeGemini, FakeOpenAI, install_fakes, write_suite_and_spec
 from trace_harness.cli import main
+from trace_harness.run_reader import RunReader
 from trace_harness.runner import sweep_retention
+from trace_harness.runner.batch import BatchRunner
 from trace_harness.runner.collector import collect_regressions
 from trace_harness.runner.sweep import load_sweep, run_sweep, sweep_dir
 from trace_harness.runner.sweep_retention import (
@@ -97,12 +99,69 @@ def test_failing_cells_are_retained_and_replay_offline(swept, tmp_path, monkeypa
 
 
 def test_the_regression_gate_collects_retained_cells(swept, tmp_path) -> None:
+    """The gate collects one regression artifact per bundle home (#211).
+
+    Gemini's C seed 1 and OpenAI's C seeds 2 and 3 fail the same staged trap
+    the same way, so they share one card, and the seven failing cells have
+    five homes. The two reproductions hold pointers to the home beside them.
+    """
     store, summary = swept
     folder = retain_failing_cells(store, summary.sweep_id, tmp_path / "acceptance")
+    cells = [cell.run_id for cell in summary.failing_cells]
+    homes = ArtifactStore(folder).bundle_homes(cells)
+    assert sorted(homes) == sorted(cells)
+    assert set(homes.values()) <= set(cells)
+    assert len(set(homes.values())) == 5
     gate = collect_regressions(folder, ArtifactStore(tmp_path / "gate"))
-    assert gate.artifacts_found == len(summary.failing_cells) == 7
-    assert gate.blocking == gate.reproduced == 7
+    assert gate.artifacts_found == len(set(homes.values())) == 5
+    assert gate.blocking == gate.reproduced == 5
     assert gate.exit_code == 0
+
+
+def test_a_second_sweep_into_the_same_runs_dir_retains_whole(tmp_path, monkeypatch) -> None:
+    """Earlier runs in the runs directory never make a sweep's cells point outside it.
+
+    Both sweeps fail the same cells the same way, so without the card scope
+    every failing cell of the second would reproduce a card of the first and
+    be retained as a pointer to a run left behind.
+    """
+    install_fakes(monkeypatch)
+    store, root = ArtifactStore(tmp_path / "runs"), tmp_path / "acceptance"
+    spec = load_sweep(write_suite_and_spec(tmp_path))
+    first, second = run_sweep(spec, store), run_sweep(spec, store)
+    for summary in (first, second):
+        cells = [cell.run_id for cell in summary.failing_cells]
+        assert set(store.bundle_homes(cells).values()) <= set(cells)
+        folder = retain_failing_cells(store, summary.sweep_id, root)
+        reader = RunReader(ArtifactStore(folder))
+        assert all(reader.get_bundle(run_id) is not None for run_id in cells)
+        gate = collect_regressions(folder, ArtifactStore(tmp_path / f"gate-{summary.sweep_id}"))
+        assert (gate.artifacts_found, gate.reproduced, gate.exit_code) == (5, 5, 0)
+
+
+def test_a_cell_pointing_outside_the_sweep_is_refused_and_named(tmp_path, monkeypatch) -> None:
+    """A sweep run without the card scope over earlier runs cannot be retained."""
+    install_fakes(monkeypatch)
+    run_cell = BatchRunner.run_cell
+
+    def unscoped(self, config, task_path, *, bundle_scope=None):
+        return run_cell(self, config, task_path)
+
+    store, root = ArtifactStore(tmp_path / "runs"), tmp_path / "acceptance"
+    spec = load_sweep(write_suite_and_spec(tmp_path))
+    run_sweep(spec, store)
+    monkeypatch.setattr(BatchRunner, "run_cell", unscoped)
+    second = run_sweep(spec, store)
+    cells = [cell.run_id for cell in second.failing_cells]
+    outside = {run: home for run, home in store.bundle_homes(cells).items() if home not in cells}
+    assert len(outside) == 7
+
+    with pytest.raises(RetentionError, match="7 failing cell") as refused:
+        retain_failing_cells(store, second.sweep_id, root)
+    for run_id, home in outside.items():
+        assert f"{run_id} -> {home}" in str(refused.value)
+    assert not root.exists()
+    assert not list(store.runs_dir.glob("sweeps/*/retaining-*"))
 
 
 def test_the_readme_has_a_triage_row_per_cell(swept, tmp_path) -> None:
@@ -297,3 +356,14 @@ def test_a_sweep_without_failures_retains_nothing(tmp_path, monkeypatch) -> None
     assert retain_failing_cells(store, summary.sweep_id, tmp_path / "acceptance") is None
     assert not (tmp_path / "acceptance").exists()
     assert (sweep_dir(store.runs_dir, summary.sweep_id) / "sweep_summary.json").is_file()
+
+
+def test_a_retained_card_lists_only_the_runs_retained(tmp_path):
+    """An incomplete cell that broke a rule can join a failing cell's card under
+    the sweep's scope, but only failing cells are retained."""
+    card = tmp_path / "failure_card.json"
+    occurrences = [{"run_id": "run_kept"}, {"run_id": "run_incomplete"}, {"run_id": "run_also"}]
+    card.write_text(json.dumps({"run_id": "run_kept", "occurrences": occurrences}))
+    sweep_retention._drop_occurrences_not_retained(card, {"run_kept", "run_also"})
+    kept = json.loads(card.read_text())["occurrences"]
+    assert [o["run_id"] for o in kept] == ["run_kept", "run_also"]

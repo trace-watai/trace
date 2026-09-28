@@ -333,6 +333,8 @@ def run_branch(
     started_at = utc_now()
     entries: list[BatchRunEntry] = []
     not_run: list[NotRunCell] = []
+    # One condition's runs share cards, never another condition's (#211).
+    condition_runs: list[str] = []
     for seed in seeds:
         if live and not guard.admit(agent.provider, model, agent.cassette):
             not_run.append(
@@ -342,7 +344,15 @@ def run_branch(
         progress = PipelineProgress()
         try:
             entry = _run_seed(
-                artifact, task, experiment, condition, fork_step, seed, store, progress
+                artifact,
+                task,
+                experiment,
+                condition,
+                fork_step,
+                seed,
+                store,
+                progress,
+                scope=condition_runs,
             )
         except Exception as exc:  # noqa: BLE001 (isolate the seed so the batch goes on)
             logger.warning("branch seed %s of %s failed: %s", seed, condition.name, exc)
@@ -418,6 +428,7 @@ def _run_seed(
     seed: int | None,
     store: ArtifactStore,
     progress: PipelineProgress,
+    scope: list[str],
 ) -> BatchRunEntry:
     """Run one seed and score it.
 
@@ -476,7 +487,9 @@ def _run_seed(
         run = runner.run(task, config)
     finally:
         progress.run_id = runner.run_id
-    return _scored_entry(artifact, task, condition, config, fork_step, seed, run, store)
+    entry = _scored_entry(artifact, task, condition, config, fork_step, seed, run, store, scope)
+    scope.append(run.run_id)
+    return entry
 
 
 def _scored_entry(
@@ -488,11 +501,16 @@ def _scored_entry(
     seed: int | None,
     run: RunResult,
     store: ArtifactStore,
+    scope: list[str] | None = None,
 ) -> BatchRunEntry:
-    """Verify, attribute and label a finished run, and compare it with the recording."""
+    """Verify, attribute and label a finished run, and compare it with the recording.
+
+    ``scope`` is the runs of this condition bundled so far, so the run joins
+    only their cards and never a card from another condition or the source run.
+    """
     verdict = verify_run(store, run, task)
     if verdict is not None and verdict.has_violations:
-        attribute_and_bundle(store, run.run_id, task, run)
+        attribute_and_bundle(store, run.run_id, task, run, scope=scope or [])
 
     trace = store.read_trace(run.run_id)
     actions = [e.payload for e in trace if e.event_type is TraceEventType.MODEL_ACTION]

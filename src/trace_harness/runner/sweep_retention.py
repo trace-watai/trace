@@ -8,6 +8,14 @@ and a README with one triage row per cell. The regression gate already collects
 every ``regression_artifact.json`` under ``docs/acceptance/runs``, so retained
 failures gate once they are committed.
 
+A cell that reproduced an earlier failure holds a pointer, ``bundle_ref.json``,
+where its own failure card would be, and the card, repair package and
+regression artifact stay in the run the pointer names (#211). Retention copies
+the cells alone, so it refuses, naming them, any cell whose pointer names a run
+outside the sweep's failing cells. The sweep scopes each cell's card lookup to
+its own failing cells, so a sweep retains whole even into a runs directory that
+holds earlier runs.
+
 Nothing lands unless all of it passes. The copy is assembled in a temporary
 folder under the sweep's own directory in ``runs/``, where no gate looks, and
 it becomes the target only after two checks. Every cell is replayed from its
@@ -138,11 +146,14 @@ def retain_failing_cells(
     target = retain_root / retained_folder_name(summary)
     if target.exists():
         raise RetentionError(f"{target} already exists; move it aside or choose another root")
+    _refuse_bundles_left_behind(store, [cell.run_id for cell in summary.failing_cells])
     work = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=source))
     try:
+        kept = {cell.run_id for cell in summary.failing_cells}
         for cell in summary.failing_cells:
             shutil.copytree(store.run_dir(cell.run_id), work / cell.run_id)
             _point_at_retained_cassette(work / cell.run_id / names.RUN_CONFIG, cell)
+            _drop_occurrences_not_retained(work / cell.run_id / names.FAILURE_CARD, kept)
             (work / cell.cassette_path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source / cell.cassette_path, work / cell.cassette_path)
         (work / SWEEP_SUMMARY).write_text(summary.model_dump_json(indent=2) + "\n")
@@ -168,6 +179,48 @@ def retain_failing_cells(
         return target
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _drop_occurrences_not_retained(card_path: Path, kept: set[str]) -> None:
+    """Keep only the retained runs in a retained card's occurrences.
+
+    A cell that ended incomplete after breaking a rule is bundled under the
+    sweep's scope and can join a failing cell's card, but only failing cells
+    are retained. Listing it would link the retained card to a run that is not
+    there.
+    """
+    if not card_path.is_file():
+        return
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    occurrences = card.get("occurrences")
+    if not isinstance(occurrences, list):
+        return
+    retained = [o for o in occurrences if isinstance(o, dict) and o.get("run_id") in kept]
+    if len(retained) != len(occurrences):
+        card["occurrences"] = retained
+        card_path.write_text(json.dumps(card, indent=2) + "\n", encoding="utf-8")
+
+
+def _refuse_bundles_left_behind(store: ArtifactStore, run_ids: list[str]) -> None:
+    """Refuse cells whose failure bundle lives in a run that would not be retained.
+
+    A cell that reproduced an earlier card holds only ``bundle_ref.json``, and
+    its card, repair package and regression artifact stay in the card's run
+    (#211). Retaining the cell without that run would leave a pointer to
+    nothing, and the regression gate would find no artifact for it. A sweep
+    scopes each cell's card lookup to its own failing cells, so this refuses
+    only a sweep run without that scope or a runs directory changed by hand.
+    """
+    kept = set(run_ids)
+    outside = {
+        run_id: home for run_id, home in store.bundle_homes(run_ids).items() if home not in kept
+    }
+    if outside:
+        listed = "; ".join(f"{run_id} -> {home}" for run_id, home in sorted(outside.items()))
+        raise RetentionError(
+            f"{len(outside)} failing cell(s) point to a failure card in a run outside the "
+            f"sweep's failing cells, which would not be retained: {listed}"
+        )
 
 
 def _point_at_retained_cassette(path: Path, cell: SweepFailingCell) -> None:
@@ -237,7 +290,9 @@ def render_triage_readme(summary: SweepSummary) -> str:
         "Every cell was replayed from its cassette before it was retained and gave the "
         "verdict and checks it gave live. `tests/test_sweep_retention.py` replays every "
         "cell under `docs/acceptance/runs/live-sweep-*` again on each run of the suite, "
-        "and the regression gate replays each failure from its regression artifact.",
+        "and the regression gate replays each failure card's regression artifact. A cell "
+        "that failed the way an earlier cell failed holds `bundle_ref.json`, which names "
+        "the retained run holding their shared card.",
         "",
         "```sh",
         "pytest tests/test_sweep_retention.py -k retained",
