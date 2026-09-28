@@ -650,11 +650,24 @@ def test_agent_refs_resolve_classes_instances_and_factories(attribute):
         (f"{__name__}:SCRIPTS_DIR", "neither a target agent nor a factory"),
         (f"{__name__}:_external", "did not produce a target agent"),
         (f"{__name__}:_run", "must take no arguments"),
+        (".relative.module:make", "absolute module"),
+        (f"{__name__}:_breaks_while_building", "raised TypeError while building"),
     ],
 )
 def test_bad_agent_refs_are_input_errors(ref, message):
     with pytest.raises(ValueError, match=message):
         load_target_agent(ref)
+
+
+def _breaks_while_building() -> ScriptAgent:
+    raise TypeError("a bug inside the factory, not a wrong signature")
+
+
+def test_a_module_that_raises_on_import_is_an_input_error(tmp_path, monkeypatch):
+    (tmp_path / "broken_agent_pkg.py").write_text("raise RuntimeError('boom at import')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with pytest.raises(ValueError, match="raised RuntimeError: boom at import"):
+        load_target_agent("broken_agent_pkg:make")
 
 
 def test_run_pipeline_with_agent_flag_writes_an_external_run(tmp_path, capsys):

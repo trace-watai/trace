@@ -70,6 +70,7 @@ from trace_harness.runner.batch import (
 )
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
 from trace_harness.runner.experiment import ConditionKind, ConditionSpec, ExperimentSpec
+from trace_harness.runner.frozen_set import FrozenFileChange
 from trace_harness.runner.pipeline import (
     PipelineProgress,
     PipelineResult,
@@ -296,6 +297,7 @@ def run_branch(
     condition: ConditionSpec,
     store: ArtifactStore,
     guard: BudgetGuard | None = None,
+    frozen_set_drift: list[FrozenFileChange] | None = None,
 ) -> BranchResult:
     """Run every seed of one live condition and write its batch.
 
@@ -305,6 +307,8 @@ def run_branch(
 
     ``guard`` is shared by every condition of one ``branch`` invocation; a
     caller that passes none gets one built from the plan's ``max_cost_usd``.
+    ``frozen_set_drift`` is what ``branch --allow-drift`` ran under, written
+    into the batch so ``record`` reads it even after the files are restored.
     """
     if condition.kind not in LIVE_KINDS:
         raise ValueError(f"{condition.kind.value} conditions run through replay, see replay_batch")
@@ -352,7 +356,14 @@ def run_branch(
 
     budget = _budget_block(guard, spent_before, stopped_before, not_run)
     summary = _write_batch(
-        store, experiment, condition, artifact, entries, started_at, budget=budget
+        store,
+        experiment,
+        condition,
+        artifact,
+        entries,
+        started_at,
+        budget=budget,
+        **_drift_metadata(frozen_set_drift),
     )
     return BranchResult(condition.name, summary=summary)
 
@@ -364,6 +375,7 @@ def replay_batch(
     artifact_path: Path | str,
     store: ArtifactStore,
     started_at: datetime,
+    frozen_set_drift: list[FrozenFileChange] | None = None,
 ) -> BatchSummary:
     """Record a ``static_replay`` condition's replay as a batch of one.
 
@@ -392,6 +404,7 @@ def replay_batch(
         [entry],
         started_at,
         budget=BatchBudget(max_cost_usd=experiment.budget.max_cost_usd, spent_usd=0.0),
+        **_drift_metadata(frozen_set_drift),
         replay_exit_code=report.exit_code,
     )
 
@@ -618,6 +631,13 @@ def _setup_error(
         condition=condition.name,
         seed=seed,
     )
+
+
+def _drift_metadata(drift: list[FrozenFileChange] | None) -> dict[str, Any]:
+    """The batch metadata that says a batch ran under drift, or nothing."""
+    if not drift:
+        return {}
+    return {"frozen_set_drift": [change.model_dump(mode="json") for change in drift]}
 
 
 def _write_batch(

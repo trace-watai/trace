@@ -41,8 +41,13 @@ and the guard is asked once per provider, which refuses an unpriced model.
 After that the guard works as it does for a batch. It admits each cell before
 it starts and is charged the cell's recorded cost after, so the overshoot is at
 most one run, and a live run that finishes without a cost stops the sweep as
-`budget_unenforceable`. The summary's `budget` block and each batch's own say
-when and why the sweep stopped, and list every cell it never ran.
+`budget_unenforceable`. Since #196 that includes a run with one model call
+abandoned at the timeout, or one that failed after an attempt with no error
+status, so a single hung or dropped call ends the whole sweep, every later
+provider and seed included. The summary's `budget` block and each batch's own
+say when and why the sweep stopped, and list every cell it never ran, and the
+printed header says the sweep stopped early. There is no resume, so running the
+spec again starts over and pays again.
 
 `run-sweep` exits 2 when the spec is malformed, a key is missing, a model
 refuses the spec's temperature, the cap cannot be enforced, or `--retain`

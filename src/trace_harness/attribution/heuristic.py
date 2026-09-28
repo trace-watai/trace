@@ -76,8 +76,9 @@ def check_category(check_id: str) -> FailureCategory | None:
 
 
 # Checks whose violation is an assertion the agent made with nothing behind it.
-# For these the act *is* the cause: no earlier step produced it, unlike an
-# unauthorized refund, which follows from an earlier bad reading of policy. Each
+# For these the act *is* the cause unless a failure that can explain it came
+# first (see below), unlike an unauthorized refund, which follows from an
+# earlier bad reading of policy. Each
 # entry names the tool call that carries the assertion so the step the verifier
 # localized can be corroborated against the trace rather than echoed back.
 _UNSUPPORTED_ASSERTION_CHECKS: dict[str, tuple[str | None, FailureCategory]] = {
@@ -361,8 +362,9 @@ class HeuristicAttributor:
         """Locate a failure whose cause is the unsupported assertion itself.
 
         A ticket claiming an outage the order record contradicts, or a final
-        answer contradicting final state, has no earlier step that produced it.
-        The verifier already localized the step; this corroborates that step
+        answer contradicting final state, is its own cause unless a failure
+        that can explain it came at an earlier step, in which case no root is
+        named. The verifier already localized the step; this corroborates that step
         against the trace before adopting it, so the attribution rests on the
         trace rather than restating the verdict.
 
