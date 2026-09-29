@@ -17,7 +17,8 @@ per-artifact parsers in `src/types/*`. It honors the harness's
 `TRACE_RUNS_DIR` convention (see `apps/dashboard/.env.local.example`) so both
 can point at the same runs directory. There is still no backend or live API —
 this reads the filesystem directly, same as the CLI does; see
-docs/future_api.md for when a real API server becomes worth building.
+docs/public_results.md for the hosted copy of the retained runs and for when a
+local API server becomes worth building.
 Missing-artifact and malformed-JSON states are explicit (404 for unknown
 run, an inline panel for a not-yet-bundled run or unparsable artifact) rather
 than a crash. `src/data/refund-failure-fixture.ts` and its bundled fixture

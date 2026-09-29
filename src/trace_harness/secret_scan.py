@@ -2,8 +2,10 @@ r"""Find credentials in text and files before evidence is retained or published.
 
 One scanner for every place that commits or uploads evidence. Sweep retention
 (#198) runs it over a folder of failing cells before the folder lands under
-``docs/acceptance``, and anything else that publishes evidence can import the
-same two functions.
+``docs/acceptance``, and ``python -m trace_harness.public_results.secret_scan``
+(#205) runs it over ``docs/acceptance`` and every ``cassettes`` folder before
+the publish job uploads them. Anything else that publishes evidence can import
+the same two functions.
 
 ``scan_text(text, path, values=...)``
     Pure. Returns a :class:`SecretHit` for every line of ``text`` that holds
