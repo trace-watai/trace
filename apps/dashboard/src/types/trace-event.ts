@@ -17,9 +17,10 @@ export const TRACE_SCHEMA_VERSION = "0.5.0";
 
 /**
  * Every kind of event a run may emit (mirrors the backend `TraceEventType`
- * StrEnum). MVP runs emit a subset: the fixture adapter produces no separate
- * `model_response`, which is reserved for real provider adapters whose raw
- * response differs from the normalized action.
+ * StrEnum). MVP runs emit a subset. The fixture adapter produces no separate
+ * `model_response`. That type is for real provider adapters, whose raw
+ * response differs from the normalized action, and for outside agents
+ * (provider `external`), whose forwarded responses it records (#210).
  */
 export const TRACE_EVENT_TYPES = [
   "run_started",
@@ -63,8 +64,37 @@ export interface RawModelPromptPayload {
   new_messages: Record<string, unknown>[];
 }
 
+/** One provider request that raised, and the backoff slept after it. */
+export interface RawFailedAttempt {
+  attempt: number;
+  error_class: string;
+  status_code?: number | null;
+  transient: boolean;
+  retry_after_seconds?: number | null;
+  delay_seconds?: number | null;
+}
+
+/**
+ * How the live call policy obtained a response or gave up (#196), mirroring
+ * `CallRecord` in `src/trace_harness/models/policy.py`. `abandoned` means the
+ * runner's timeout ended the call with an attempt still in flight.
+ */
+export interface RawCallRecord {
+  attempts: number;
+  outcome:
+    | "ok"
+    | "permanent_error"
+    | "retries_exhausted"
+    | "deadline"
+    | "abandoned";
+  rate_limit_wait_seconds: number;
+  failures: RawFailedAttempt[];
+}
+
 export interface RawModelResponsePayload {
   raw?: Record<string, unknown> | null;
+  /** Absent in traces written before #196 and in fixture runs. */
+  call_record?: RawCallRecord | null;
 }
 
 export interface RawModelActionPayload {
@@ -142,6 +172,12 @@ export interface RawErrorPayload {
   error: string;
   kind: string;
   traceback?: string | null;
+  /**
+   * From a live call: on a `model_error`, the attempts made before the policy
+   * gave up; on a `model_timeout`, the attempts made before the runner
+   * abandoned the call.
+   */
+  call_record?: RawCallRecord | null;
 }
 
 /** Keeps event_type and payload correlated as a discriminated union. */

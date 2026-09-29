@@ -51,18 +51,35 @@ Rupert on transcript shape); wire `validate-fixtures` into `check_repo.sh`/CI
 (with Sarp); parameterized task variants that sweep boundary values
 (day 29/30/31/60/61) from one template.
 
-## models/ — model adapters *(Rupert Maiti)*
+## models/ — model adapters *(Evaluation Systems)*
 
 **What belongs here:** the provider-neutral contract types (`Message`,
 `ToolSpec`, `ToolCall`, `AgentAction`), the `ModelAdapter` protocol, and
-its implementations: `FixtureModelAdapter` (deterministic scripted agent —
-the default everywhere) and `GeminiModelAdapter` (native function calling
-through the optional `google-genai` SDK, normalized into the same
-single-action contract).
+its implementations. `FixtureModelAdapter` is the deterministic scripted
+agent and the default everywhere. `GeminiModelAdapter` and
+`AnthropicModelAdapter` and `OpenAIModelAdapter` are the three live
+providers, each normalizing native tool calling into the same single-action
+contract through its own optional SDK. Three vendors exist so a live result
+never depends on one credential, which is what #158, #159 and #217 need to
+compare model families at all.
 
 **Exposes:** `ModelAdapter.next_action(transcript, tools) -> AgentAction`;
 `create_model_adapter(provider, ...)` — the only place provider strings are
-interpreted.
+interpreted; `ForkAdapter(prefix, continuation, switch_at_step)` (`fork.py`),
+which serves recorded actions through `switch_at_step` and delegates every
+later step, so the branch stage forks a run without the runner knowing
+([branch_stage.md](branch_stage.md)).
+
+**Provider capability, since they are not interchangeable:**
+
+| Provider | Native tool calling | Seed | Published price | Default pacing |
+| --- | --- | --- | --- | --- |
+| `gemini` | yes | yes | `gemini-2.5-flash`, `-flash-lite` and the default `gemini-3.6-flash`, whose price doubles on 2027-01-01 | 10 requests/minute |
+| `anthropic` | yes | no, the Messages API has none | yes | 50 requests/minute |
+| `openai` | yes | yes, best-effort with `system_fingerprint` | yes | 500 requests/minute |
+
+A seeded sample plan, such as the five seeds per condition in #217, can only
+run against a provider whose seed is actually sent.
 
 **Rules:** no code path may make tests need an API key. No tool execution
 (environment) and no prompt construction (runner). Provider errors become
@@ -72,7 +89,9 @@ shared action contract supports them.
 | Mode | Configuration | Behavior |
 | --- | --- | --- |
 | Fixture (default) | `--provider fixture` | Runs a scripted fixture; no cassette, SDK, or key. |
-| Live | `--provider gemini` | Calls the provider using explicit model settings. |
+| Live | `--provider gemini` | Calls Gemini using explicit model settings. Needs `GEMINI_API_KEY` and the `gemini` extra. Token usage is read from `usage_metadata`, with thinking tokens counted as output, and priced from `GEMINI_PRICING`, which lists the default `gemini-3.6-flash`. A model missing from that table reports a null cost. |
+| Live | `--provider anthropic` | Calls Claude using explicit model settings. Needs `ANTHROPIC_API_KEY` and the `anthropic` extra (1.x). Token usage, cache reads and writes included, is read off the response and priced, so a live run's `cost_usd` is a number, directly or through a recording cassette. A seed is recorded, marked `seed_sent: false` in the run's metadata, and never sent, because the Messages API has none. A temperature for a model that rejects one (Sonnet 5, Opus 4.7 and later, Fable) is refused before the run starts. Thinking blocks are sent back unmodified in front of the tool call they came with. |
+| Live | `--provider openai` | Calls an OpenAI chat model. Needs `OPENAI_API_KEY` and the `openai` extra (3.x). Priced the same way, with cached prompt tokens at the cached rate. The seed is sent, and the response's `system_fingerprint` is recorded so a seeded re-run whose backend build moved can be told apart from a real reproduction. A temperature for a reasoning model (the gpt-5 family, the o-series) is refused before the run starts. |
 | Record | `--cassette-mode record` | `RecordingModelAdapter` wraps the selected provider and writes normalized responses. |
 | Replay | `--cassette-mode replay` | Reads recorded responses without constructing a provider; a missing or mismatched request is an error. |
 
@@ -85,18 +104,47 @@ select record/replay. Suite agent configs accept the same `cassette` object.
 Each versioned entry pins its step, transcript hash (including provider state),
 tool-declaration hash, provider, resolved model, temperature, seed, timeout,
 and prompt version. `run_config.json` retains those settings, cassette mode,
-and resolved path. `RunConfig` and `SuiteSpec` are now `0.2.0`; older `0.1.0`
-data remains readable with cassettes disabled. Changing a setting or request
-requires a new recording. Replay never falls back to the network.
+and resolved path. `RunConfig` and `SuiteSpec` added cassettes in `0.2.0` and
+are `0.3.0` since #196; older data remains readable with cassettes disabled.
+Changing a setting or request requires a new recording. Replay never falls back
+to the network. An entry recorded from a live adapter also keeps the step's
+token counts under the provider's own usage key and its `call_record`, so the
+recorded run is priced and the replay shows the same retries. Those counts
+include Anthropic's cache reads and writes and OpenAI's cached prompt tokens,
+so a recorded run costs what the same run made directly would. A replay itself
+calls nothing, so its `cost_usd` is exactly zero.
 
 Run traces retain fresh audit IDs and timestamps. Deterministic comparisons
 exclude only those two event fields; all remaining trace bytes, tool outcomes,
 and verifier results must agree. See [cassette fixtures](../fixtures/cassettes/README.md)
 for an offline Gemini example and provenance.
 
-**Build next:** add bounded retry/backoff and token/cost extraction; decide the
-parallel-tool-call story (`AgentAction` grows a list form behind a schema
-bump); keep one controlled key-backed acceptance run outside CI.
+**Live call policy (#196):** every live adapter sends its SDK call through
+`LiveCaller` in `models/policy.py`. It retries transient errors (408, 409, 429,
+5xx except 501, and connection failures, a proxy failure included) with
+exponential backoff and jitter, honors a provider's `Retry-After` or Gemini's
+`retryDelay`, and never retries a permanent error (other 4xx, 501, OpenAI's
+`insufficient_quota`, and httpx's `LocalProtocolError` and
+`UnsupportedProtocol`) or anything that is not a provider error, such as
+`ProviderNotConfiguredError`. The jitter is seeded with the run's seed when the
+run has one. Refusals and content filters are rejected after the call returns
+and are never retried; the rejected answer was billed, so it is still written
+as a `model_response` with its usage, before the `error` event. Each provider
+is paced to a minimum spacing between requests, shared by the whole process.
+The runner hands each call its remaining time, and the policy gives up with
+outcome `deadline` before a retry or wait would pass it; a call the runner
+abandons at its timeout leaves its attempts on the `model_timeout` event, with
+outcome `abandoned`. The SDKs' own retries are off (`max_retries=0`), so every
+attempt is recorded: the `CallRecord` rides on `AgentAction.call_record` into
+the `model_response` event, or on the error into the `error` event, and
+cassettes keep it so a replay shows the same retries. `run_config.json` records
+the policy as `call_policy` (`RunConfig 0.3.0`); a suite agent config may
+override it field by field, and fields it leaves out keep the provider's
+default.
+
+**Build next:** decide the parallel-tool-call story (`AgentAction` grows a list
+form behind a schema bump); keep one controlled key-backed acceptance run
+outside CI; update the `gemini-3.6-flash` price line on 2027-01-01.
 
 ## environment/ — the sandboxed world *(Evan Yang)*
 
@@ -157,13 +205,71 @@ per-batch `SuiteReport` (`report.py`).
 **Exposes:** `AgentRunner(adapter, environment, artifact_store).run(task,
 config) -> RunResult`; `build_initial_transcript` (prompt version `v0` —
 bump `RunConfig.prompt_version` when it changes); `BatchRunner(store).run(suite)
--> BatchSummary`; `build_suite_report(summary, store) -> SuiteReport` +
+-> BatchSummary`, and `.run_cell(config, task_path, *, bundle_scope=None) ->
+BatchRunEntry` for one cell with the batch's failure isolation; `build_suite_report(summary, store) -> SuiteReport` +
 `render_suite_report_markdown` (read-only roll-up of a finished batch's
 on-disk artifacts — checks fired, failure categories, claimed-vs-observed
 coverage; see [suite_report.md](suite_report.md)).
 
-`collector.py` exposes `collect_regressions(path, store, suite_path=...)` and
-`CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
+A suite may set `max_cost_usd` (`Suite 0.3.0`). `BatchRunner` asks
+`BudgetGuard` before each run and stops the batch once the recorded spend of
+its live runs reaches the cap, which the summary's `budget` block records as
+`budget_exhausted` along with the cells never run (`BatchSummary 0.3.0`). The
+run that reaches the cap records the stop, so the summary says so even when it
+was the last cell. A live run of an unpriced model under a cap is refused
+before it starts, and a live run that finishes with no recorded cost stops the
+batch after it; both are recorded as `budget_unenforceable` and `run-suite`
+exits 2. Fixture and replay runs cost exactly zero and are never refused on
+price.
+
+A live run that never got an answer costs exactly zero when the call policy
+gave up and every failed attempt carried an HTTP error status (400 or above),
+so one outage cell does not end a capped batch. Google documents that a request
+failing with a 400 or 500 error is not charged; the same reading is applied to
+Anthropic and OpenAI, whose error pages do not say. A call that failed after an
+attempt with no error status, such as a dropped connection, or a call abandoned
+at the run's timeout, may have been billed, and that run's cost stays null,
+even when its earlier turns were priced, so a capped batch stops there. A call
+the policy recovered after such an attempt is priced from the response that
+came back, and the failed attempt, if it was billed, is not counted. A retry
+that would leave less than a tenth of the call's time, at most 5 seconds, is
+not sent, and the call gives up as `deadline`. A cell whose pipeline raised
+after its run started (in verification, bundling, or the runner's own
+bookkeeping) is a `setup_error` that keeps the run's id and the cost its trace
+records, so the guard still counts it. Every path prices a run through
+`run_cost_usd` in `batch.py`. `branch` drives one guard per invocation from the
+experiment plan's `max_cost_usd`, shared by every condition and seed
+([branch_stage.md](branch_stage.md#budget)). `run-sweep` drives one guard per
+sweep, shared by every provider and seed ([live_sweep.md](live_sweep.md)).
+Retaining a sweep's failing cells scans every file with
+`trace_harness/secret_scan.py`, the one secret scanner for evidence, whose pure
+`scan_text` and `scan_paths` any package can import.
+
+`branch.py` exposes `run_branch(artifact_path, experiment, condition, store)`
+and `replay_batch(...)`, behind `trace-harness branch`. It continues a
+regression artifact's recording from each experiment condition's start step
+under that condition's agent and controls, verifies, attributes and bundles
+each run the way `run_task_pipeline` does, records divergence from the
+recording and the post-block outcome per entry, and writes one batch per
+condition (`BatchSummary` 0.4.0). `experiment record` derives the divergence
+rates and outcome counts from those batches. See
+[branch_stage.md](branch_stage.md).
+
+`target_agent.py` runs an outside agent (provider `external`). It exposes the
+`TargetAgent` protocol, `TargetAgentBridge` (a model adapter that serves the
+outside agent's tool calls and final answer to `AgentRunner` one step at a
+time), `load_target_agent("package.module:factory")`, and `run_target_agent`.
+The runner loop is unchanged for these runs, so step numbering, controls,
+`blocked_by`, the final-answer seam, and the step and time limits behave as
+they do for every adapter. The bridge sends no provider request, so no call
+policy wraps it and `run_config.json` records `call_policy` as null. An error
+from the outside agent ends the run as `model_error` and is never retried. The
+budget guard refuses provider `external` under a cap as `budget_unenforceable`,
+since its spend is invisible, and `branch` refuses it before any run. See
+[bring_your_own_agent.md](bring_your_own_agent.md).
+
+`collector.py` exposes `collect_regressions(path, store, suite_path=...,
+experiments_path=...)` and `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate
 completed failure reproduction and positive siblings. Control validation gates
 only for explicit `static_ok` labels; other labels remain advisory. The CLI and
 `check_repo.sh` call this collector. See [the gate contract](regression_contract.md#what-ci-does).
@@ -182,9 +288,7 @@ violations gets no category and no warning, since there is nothing to
 attribute.
 
 **Build next:** a timeout that can interrupt a hung provider call (today
-checked only between steps); deliberate retry/backoff design for real
-adapters; `model_response` events when the first real adapter lands;
-multi-run orchestration (N runs, varied seeds) once live models make runs
+checked only between steps); multi-run orchestration (N runs, varied seeds) once live models make runs
 non-deterministic; a TypeScript `SuiteReport` mirror for the dashboard in
 the style of `apps/dashboard/src/data/run-loader.ts`.
 
@@ -206,9 +310,42 @@ dashboard; renaming a field or file breaks them — coordinate and bump
 `schema_version`. No event *interpretation* here (that's
 verifiers/attribution), no database before local JSON actually hurts.
 
+**Measured 2026-09-23, and again after #211 on 2026-09-24 (#213).** At one
+sweep plus a second domain (640 runs) `list-runs` takes 0.24 s and
+`index.json` is 371 kB, far under the 5 s and 50 MB that would justify a
+sqlite index, so the run index stays JSON. The size line is crossed near
+86,000 runs in one directory, about 270 sweeps. `list-runs` took 2.8 s at
+100,000 runs before #211, and 6.5 s in an earlier pass under heavier load. Two
+costs grow sooner. Every run rewrites the whole index three times, which cost
+631 ms per run at 16,000 runs before #211, and since #211 a failing run
+rewrites it once more and looks its bundle key up across the directory. The
+dashboard renders every run on one page. Method and numbers are in
+[measurements/run_index_scale.md](measurements/run_index_scale.md), and
+`scripts/measure_run_index.py` reproduces them.
+
 **Build next:** structured citations in model actions; parent links for
 provider responses, retries, and future sub-agent spans; storage backend
 interfaces once local JSON demonstrably hurts.
+
+## public_results/ and run_reader_supabase.py, the hosted copy *(Evaluation Systems)*
+
+**What belongs here:** everything that puts the retained evidence under
+`docs/acceptance/` in Supabase and reads it back. `schema.py` names the tables
+from `supabase/migrations/` and versions them, `postgrest.py` is a standard
+library PostgREST client, `retained.py` stages the retained tree as one runs
+directory, `rows.py` builds rows from `RunReader` answers, `upload.py` is the
+idempotent uploader the `publish-results` CI job runs, and `secret_scan.py`
+refuses to publish a key, running the shared `trace_harness/secret_scan.py`
+over the retained tree and every cassette folder. `run_reader_supabase.py` is the read side, and
+`run_readers.py` picks a backend from `TRACE_RUN_READER`.
+
+**Rules:** the hosted set is what `RunReader` serves, and rows are built only
+from `RunReader` calls. `SupabaseRunReader` keeps every `RunReader` signature,
+which a test enforces. The filesystem reader stays the default. A table change
+is a new migration and a `RESULTS_SCHEMA_VERSION` bump, and an applied
+migration is never edited. Tests use synthesized PostgREST responses and a
+throwaway Postgres, and no test reaches a live project. See
+[public_results.md](public_results.md).
 
 ## verifiers/ — deterministic pass/fail *(Karan Gupta)*
 
@@ -243,11 +380,18 @@ simple merge).
 
 **What belongs here:** schemas (`schemas.py`) and the rule-based MVP
 attributor (`heuristic.py`) that explain *where and why* a verified
-failure happened.
+failure happened, and the post-block classifier (`post_block.py`) that
+labels what the agent did after an installed control blocked it.
 
-**Exposes:** `HeuristicAttributor.attribute(task, trace, verifier_result)
--> AttributionResult` (requires a *failed* verifier result; raises on
-passed ones); `FailureCategory` (extend, never repurpose values).
+**Exposes:** `HeuristicAttributor.attribute(task, trace, verifier_result,
+run_result=None) -> AttributionResult` (requires a *failed* verifier result;
+raises on passed ones); `FailureCategory` (extend, never repurpose values);
+`classify_post_block_outcome(trace, verifier_result, run_result)`
+(`post_block.py`), which returns the first control block step and a
+`PostBlockOutcome` label for any run, passed or failed (see
+[failure_taxonomy.md](failure_taxonomy.md#post-block-outcome-labels));
+`check_category(check_id)`, the category the attributor files
+a check under, or None, which the sweep's failure labels read.
 
 **Rules:** `root_cause_step`, `missed_recovery_step`,
 `first_unrecoverable_step`, and `first_irreversible_action_step` are
@@ -317,7 +461,9 @@ for input handling, verdicts, and incomplete runs.
 
 `replay --apply-control --commit` promotes accepted controls after replaying
 the proposed library against new and existing regressions. The versioned
-library retains evidence and rollback history. Environments and `run-suite`
+library retains evidence and rollback history, and each entry records whether
+its acceptance is gating (a `static_ok` label its basis supports, predicted
+until #159 measures it) or advisory; `controls list` shows which. Environments and `run-suite`
 load it explicitly with `control_library` / `--control-library`. See
 [the lifecycle](failure_bundles.md#control-library) and
 [ADR-0003](decisions/ADR-0003-control-library.md).

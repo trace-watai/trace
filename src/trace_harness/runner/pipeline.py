@@ -13,18 +13,31 @@ whether a run came from ``run-pipeline`` or ``run-suite``.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from trace_harness.environment.controls import ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
-from trace_harness.models import create_model_adapter, resolve_model_name
+from trace_harness.models import (
+    create_model_adapter,
+    resolve_call_policy,
+    resolve_model_name,
+    unsent_seed_metadata,
+)
 from trace_harness.models.cassette import RecordingModelAdapter
+from trace_harness.models.policy import CallPolicy
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
 from trace_harness.runner.result import RunResult, RunStatus
 from trace_harness.runner.suite import AgentConfig
+from trace_harness.runner.target_agent import (
+    EXTERNAL_PROVIDER,
+    TargetAgent,
+    load_target_agent,
+    run_target_agent,
+)
 from trace_harness.tasks.loader import load_docs_for_task, load_task
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
@@ -37,6 +50,9 @@ from trace_harness.verifiers.base import (
 )
 from trace_harness.verifiers.registry import get_verifier
 
+if TYPE_CHECKING:
+    from trace_harness.failure_bundles.generator import RecordedBundle
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +64,21 @@ class PipelineResult:
     run_config: RunConfig
     run_result: RunResult
     verifier_result: VerifierResult | None  # None when the task declares no verifiers
+
+
+@dataclass
+class PipelineProgress:
+    """How far one ``run_task_pipeline`` call got, filled in as it goes.
+
+    A caller that has to account for a failure passes one in. When a later
+    stage raises, ``run_id`` says whether the agent run had already started,
+    and so whether a live run may have spent money that its trace can still
+    price. ``run_config`` is the configuration that run executed. Both stay
+    None when the pipeline failed before the run, which calls no provider.
+    """
+
+    run_id: str | None = None
+    run_config: RunConfig | None = None
 
 
 def _repo_relative(path: Path) -> str:
@@ -75,8 +106,19 @@ def run_task_pipeline(
     bundle_on_fail: bool = True,
     control_library: Path | str | None = None,
     controls: list[ControlInstance] | None = None,
+    bundle_scope: Collection[str] | None = None,
+    progress: PipelineProgress | None = None,
 ) -> PipelineResult:
-    """Run one task under one agent config and produce all pipeline artifacts."""
+    """Run one task under one agent config and produce all pipeline artifacts.
+
+    ``bundle_scope`` limits which runs' failure cards a failing run may join
+    (see :func:`attribute_and_bundle`). None joins a card anywhere in the runs
+    directory.
+
+    ``progress``, when given, records the run's id and configuration as soon
+    as the run starts, so a caller can still find the run if a later stage
+    raises.
+    """
     task_path = Path(task_path).resolve()
     task = load_task(task_path)
     docs = load_docs_for_task(task, task_path)
@@ -93,23 +135,38 @@ def run_task_pipeline(
     if environment.installed_controls:
         metadata["controls"] = [c.model_dump(mode="json") for c in environment.installed_controls]
     script_path = None
-    if agent_config.provider == "fixture":
-        script_path = _resolve_fixture_script(task, task_path)
-        metadata["fixture_script_path"] = _repo_relative(script_path)
-    model = resolve_model_name(agent_config.provider, agent_config.model, script_path)
-    adapter = create_model_adapter(
-        agent_config.provider,
-        script_path=script_path,
-        model=model,
-        temperature=agent_config.temperature,
-        seed=agent_config.seed,
-        timeout_seconds=agent_config.timeout_seconds,
-        prompt_version=agent_config.prompt_version or PROMPT_VERSION,
-        cassette=agent_config.cassette,
-        task_id=task.task_id,
-    )
-    if isinstance(adapter, RecordingModelAdapter):
-        metadata["cassette_path"] = _repo_relative(adapter.path)
+    agent: TargetAgent | None = None
+    # An outside agent makes its own model calls, so the harness has none to
+    # retry or pace, and run_config.json records a null call_policy for it as
+    # it does for fixture and replay runs (#196).
+    call_policy: CallPolicy | None = None
+    if agent_config.provider == EXTERNAL_PROVIDER:
+        assert agent_config.agent_ref is not None  # AgentConfig enforces this
+        agent = load_target_agent(agent_config.agent_ref)
+        model = agent_config.model or agent.name
+    else:
+        if agent_config.provider == "fixture":
+            script_path = _resolve_fixture_script(task, task_path)
+            metadata["fixture_script_path"] = _repo_relative(script_path)
+        model = resolve_model_name(agent_config.provider, agent_config.model, script_path)
+        call_policy = resolve_call_policy(
+            agent_config.provider, agent_config.call_policy, agent_config.cassette
+        )
+        adapter = create_model_adapter(
+            agent_config.provider,
+            script_path=script_path,
+            model=model,
+            temperature=agent_config.temperature,
+            seed=agent_config.seed,
+            timeout_seconds=agent_config.timeout_seconds,
+            prompt_version=agent_config.prompt_version or PROMPT_VERSION,
+            cassette=agent_config.cassette,
+            task_id=task.task_id,
+            call_policy=call_policy,
+        )
+        if isinstance(adapter, RecordingModelAdapter):
+            metadata["cassette_path"] = _repo_relative(adapter.path)
+        metadata.update(unsent_seed_metadata(agent_config.provider, agent_config.seed))
 
     config = RunConfig(
         task_id=task.task_id,
@@ -121,13 +178,25 @@ def run_task_pipeline(
         seed=agent_config.seed,
         prompt_version=agent_config.prompt_version or PROMPT_VERSION,
         cassette=agent_config.cassette,
+        call_policy=call_policy,
+        agent_ref=agent_config.agent_ref,
         metadata=metadata,
     )
-    run_result = AgentRunner(adapter, environment, store).run(task, config)
+    if progress is not None:
+        progress.run_config = config
+    if agent is not None:
+        run_result = run_target_agent(agent, environment, store, task, config, progress=progress)
+    else:
+        runner = AgentRunner(adapter, environment, store)
+        try:
+            run_result = runner.run(task, config)
+        finally:
+            if progress is not None:
+                progress.run_id = runner.run_id
 
-    verifier_result = _verify_run(store, run_result, task)
+    verifier_result = verify_run(store, run_result, task)
     if verifier_result is not None and verifier_result.has_violations and bundle_on_fail:
-        _attribute_and_bundle(store, run_result.run_id, task, run_result)
+        attribute_and_bundle(store, run_result.run_id, task, run_result, scope=bundle_scope)
 
     return PipelineResult(
         task=task,
@@ -137,7 +206,7 @@ def run_task_pipeline(
     )
 
 
-def _verify_run(
+def verify_run(
     store: ArtifactStore, run_result: RunResult, task: TaskSpec
 ) -> VerifierResult | None:
     """Run the task's verifiers and persist the merged result. None if no verifiers.
@@ -174,20 +243,33 @@ def _verify_run(
     return merged
 
 
-def _attribute_and_bundle(
-    store: ArtifactStore, run_id: str, task: TaskSpec, run_result: RunResult
-) -> None:
-    """Attribute a verified failure and generate its failure bundle."""
-    from trace_harness.attribution.heuristic import HeuristicAttributor
-    from trace_harness.failure_bundles.generator import FailureBundleGenerator
+def attribute_and_bundle(
+    store: ArtifactStore,
+    run_id: str,
+    task: TaskSpec,
+    run_result: RunResult,
+    *,
+    scope: Collection[str] | None = None,
+) -> RecordedBundle:
+    """Attribute a verified failure and record its failure bundle.
+
+    The bundle is written to the run's directory, or the run joins the card
+    that already has its bundle key (#211); the returned record says which.
+    ``scope`` names the runs whose cards the run may join, for a caller that
+    keeps one card per key within a batch or an experiment. None searches the
+    whole runs directory.
+    """
+    from trace_harness.attribution.registry import DEFAULT_METHOD, run_attribution
+    from trace_harness.failure_bundles.generator import FailureBundleGenerator, record_bundle
 
     trace = store.read_trace(run_id)
     verifier_result = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
 
-    attribution = HeuristicAttributor().attribute(task, trace, verifier_result)
+    attribution = run_attribution(DEFAULT_METHOD, task, trace, verifier_result, run_result)
     store.write_json(run_id, names.ATTRIBUTION_RESULT, attribution)
 
-    config_metadata = store.read_json(run_id, names.RUN_CONFIG).get("metadata", {})
+    run_config = store.read_json(run_id, names.RUN_CONFIG)
+    config_metadata = run_config.get("metadata", {})
     bundle = FailureBundleGenerator().generate(
         task=task,
         run_result=run_result,
@@ -197,7 +279,7 @@ def _attribute_and_bundle(
         final_state=store.read_json(run_id, names.FINAL_STATE),
         initial_state=store.read_json(run_id, names.INITIAL_STATE),
         task_fixture_path=config_metadata.get("task_fixture_path"),
+        agent_ref=run_config.get("agent_ref"),
+        run_config=run_config,
     )
-    store.write_json(run_id, names.FAILURE_CARD, bundle.failure_card)
-    store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)
-    store.write_json(run_id, names.REGRESSION_ARTIFACT, bundle.regression_artifact)
+    return record_bundle(store, bundle, scope=scope)

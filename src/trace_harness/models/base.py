@@ -16,6 +16,8 @@ Intended evolution
     parallel tool calls). ``AgentAction.raw`` is the escape hatch for that
     today; if/when we support parallel tool calls, ``AgentAction`` grows a
     list form behind a schema version bump — do not bolt it on silently.
+    ``AgentAction.call_record`` sits beside ``raw`` and says how the response
+    was obtained (retries, waits); neither is part of the normalized action.
 """
 
 from __future__ import annotations
@@ -81,6 +83,12 @@ class AgentAction(BaseModel):
     # The runner copies it into the assistant Message's metadata without
     # interpreting it; only the adapter that produced it reads it back.
     provider_state: dict[str, Any] | None = None
+    # How the live call policy obtained this response (models/policy.py): the
+    # requests sent, each failed attempt and the delay after it, and the time
+    # spent on the rate limit. Written to the model_response event beside
+    # ``raw`` and kept by cassettes, so a replay shows the same record. None
+    # for fixture actions, which make no call.
+    call_record: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _payload_matches_kind(self) -> AgentAction:
@@ -92,7 +100,39 @@ class AgentAction(BaseModel):
 
 
 class ModelAdapterError(RuntimeError):
-    """Base class for adapter failures the runner should treat as model errors."""
+    """Base class for adapter failures the runner should treat as model errors.
+
+    ``call_record`` is set when the failure came out of a live call, so the
+    attempts that led to it reach the trace. It is None for a failure that
+    never involved a provider request.
+
+    ``raw`` is set when a model response arrived and the adapter failed instead
+    of acting on it. For a live provider the answer was billed but could not
+    become an action (a refusal, a blocked, empty or truncated answer, parallel
+    tool calls), and the adapter's response normalizer attaches it. For an
+    outside agent it is every response the agent forwarded in the step before
+    it raised, as ``{"responses": [...]}`` (``runner/target_agent.py``).
+    Either way the runner writes it as a
+    ``model_response`` event at the failing step, with ``call_record`` beside
+    it, before the error, so the response is not lost and a billed one is
+    priced like any other. It is None for a failure that got no response at
+    all.
+    """
+
+    call_record: dict[str, Any] | None = None
+    raw: dict[str, Any] | None = None
+
+
+class ProviderNotConfiguredError(RuntimeError):
+    """A provider cannot be used as configured: its key or SDK is missing, or
+    the run asks for a setting the chosen model rejects.
+
+    Separate from :class:`ModelAdapterError` because it is raised at
+    construction, before any run exists, so there is nothing to terminate. The
+    CLI catches it and prints the adapter's instructions instead of a
+    traceback, which is the difference between a usable message and one the
+    reader has to scroll past a stack to find.
+    """
 
 
 class ScriptExhaustedError(ModelAdapterError):

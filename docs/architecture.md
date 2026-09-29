@@ -48,7 +48,7 @@ FailureBundleGenerator (failure_bundles/generator.py + regression/materializer.p
    │  → failure_card.json / repair_package.json / regression_artifact.json
    ▼
 Dashboard (apps/dashboard/, consumes the run directory as-is)
-API (future, contract pinned in docs/future_api.md)
+API (future, plan in docs/public_results.md)
 ```
 
 The CLI (`trace_harness/cli.py`) exposes each arrow as a subcommand

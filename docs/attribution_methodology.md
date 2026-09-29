@@ -61,9 +61,10 @@ evidence-based:
   smart.
 
 **Degradation contract:** when the trace exposes no reasoning (real models
-often won't), root cause is `None`, `first_bad_step` falls back to the
-earliest failed-check step, and `ambiguity_notes` says evidence was
-limited to tool calls, arguments, and state. Tested. An attribution that
+often won't), root cause is `None` unless an unsupported assertion localizes
+it (see the next section), `first_bad_step` falls back to the earliest
+failed-check step, and `ambiguity_notes` says evidence was limited to tool
+calls, arguments, and state. Tested. An attribution that
 guesses confidently with weak evidence is worse than one that says "I
 don't know which step".
 
@@ -107,12 +108,85 @@ than on anything the agent said.
 - A check whose step id does not match any corroborating act in the trace.
   Naming that step anyway would make the attribution look better without making
   it truer.
+- An unsupported assertion that comes after a failed check that can explain
+  it. Those are the checks the category map covers, other than the assertions
+  themselves: an unauthorized refund, a deprecated policy treated as current,
+  and a missing escalation, which the verifier places on the final answer and
+  so never comes first in practice. The staged refund failure without its
+  reasoning is the case (#210). The refund at step 5 fails
+  `unauthorized_cash_refund` and, because its reason cites the deprecated
+  policy, `deprecated_policy_treated_as_authoritative`, both before the ticket
+  claim at step 6. Whatever led to the refund may also have led to the claim,
+  and that sits in reasoning the trace does not carry. The attributor leaves
+  the root cause null, and its note names the earlier checks and their step
+  without naming a cause. The primary category then falls back to the first
+  categorized check in the verifier's order, `clarification_failure` from the
+  missing escalation, and confidence drops from 0.80 to 0.60 (#235). A check
+  the map leaves uncategorized, such as an unnecessary escalation or a
+  retrieval gap, carries no reading of why the agent made a claim, so it never
+  holds the assertion back, and neither does a failure at the assertion's own
+  step.
 
 Each of those writes an ambiguity note rather than a number. Two staged rows in
-`refund_v0` moved from null to a real step when this landed,
-`refund_final_answer_phantom` at step 3 and `refund_final_answer_denied_real`
-at step 4, both for the same reason the live failures did. No category changed
-and the canonical staged attribution is byte for byte identical.
+`refund_v0` moved from null to a real step when the assertion detector (#190)
+landed, `refund_final_answer_phantom` at step 3 and
+`refund_final_answer_denied_real` at step 4, both for the same reason the live
+failures did. No category changed and the canonical staged attribution is byte
+for byte identical.
+
+## The method interface, and the number to beat
+
+Attribution used to mean one class. `attribute` constructed
+`HeuristicAttributor` directly, so there was nowhere to plug a judge in and
+nothing to compare one against.
+
+An `AttributionMethod` takes a task, a trace, a verifier result and, when there
+is one, the run result, and returns an `AttributionResult`, whatever is behind
+it. The registry in
+`attribution/registry.py` is the only place a name becomes a class, and
+`attribute --method <name>` selects one; an unknown name exits 2 before
+anything runs. Every result is stamped with the method that produced it, what
+it cost, and whether it is deterministic. A method reports its cost as
+`cost_usd` in its result's metadata or as `last_cost_usd`, and a cost it does
+not report is recorded as unknown. Those
+last two decide where a method can run: the heuristic is free and
+deterministic, so it runs on every failure in CI, and a judge will be neither.
+
+**Ground truth.** `fixtures/attribution_ground_truth/refund_v0_staged.jsonl`
+carries one record per staged failing task, with a sentence per label saying
+which line of the script makes it true. The sentences matter more than the
+numbers. A label nobody can trace back to the fixture is an opinion, and a
+scorer built on opinions measures agreement with whoever wrote them.
+
+**Labels.** A label file is JSONL with one record per labeled run. A record
+names its run by `run_id`, as #31's human labels do, or by `task_id` for staged
+tasks with one run each; a task key that matches several runs is reported as
+ambiguous and not scored. Several records may name one run, one per `labeler`,
+and each is scored. A record may leave a field out, which means it is not
+labeled there. Unknown fields, a step that is not an integer, or an unknown
+category fail the file with its line number.
+
+**Scoring.** `score-attribution --method <m> --labels <path>` applies the C1
+formulas from [methodology_metrics.md](methodology_metrics.md): exact-step and
+off-by-one accuracy per step field, plus category accuracy, each reported
+separately with no average across fields. A null label is a real answer, so a
+method that invents a missed-recovery step where the label says there is none
+scores zero on that record rather than counting as a near miss. A method that
+names no step where the label names one declined, and C1 makes its accuracy
+there undefined, so that record leaves the denominator and is counted in
+`declined`. An accuracy over no labeled records is null.
+
+The heuristic's score on the staged set is pinned in
+`fixtures/expected/heuristic_attribution_score.json` and a test fails if a
+detector change moves it. As of this writing it is exactly right on every step
+it names: root cause on 2 of 2, missed recovery on 5 of 5, the first
+irreversible action on 5 of 5, and the category on 5 of 5. It declines to name
+a root cause on 3 of the 5 tasks. It localizes acts well and intentions poorly,
+which is what you would expect from something that cannot read reasoning it was
+not written to look for, and the declined count is where that shows. A judge
+has to be read against both numbers, since accuracy alone cannot improve on
+1.0 and a method that names more root causes at the same accuracy is the
+better one.
 
 ## Where this goes next (the judge program)
 

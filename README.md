@@ -109,6 +109,10 @@ for every contract and a sub-second offline test suite.
   `trace-harness run-fixture <task> --provider gemini --model gemini-3.6-flash`.
   Fixture provider stays the default everywhere; tests never need a key or the
   SDK. (JSON tool-mode fallback is still TODO.)
+- **Outside agents.** An agent with its own loop and model calls runs through
+  the same environment, trace, and verifier with
+  `trace-harness run-pipeline <task> --agent package.module:factory`. See
+  [docs/bring_your_own_agent.md](docs/bring_your_own_agent.md).
 - **Refund guardrails** — off by default so the canonical failure remains real;
   regression replay can apply the generated deterministic pre-execution
   control and prove that positive sibling cases are not overblocked.
@@ -117,8 +121,10 @@ for every contract and a sub-second offline test suite.
 - **API & dashboard**: the run list, run detail, failure card and trace
   timeline read retained runs, and the timeline marks attribution steps and
   shows each step's failed checks. The dedicated verifier and attribution
-  views, the repair and regression panels, and an API wrapper over `RunReader`
-  remain. See [docs/future_api.md](docs/future_api.md) and
+  views and the repair and regression panels remain. Retained results are
+  hosted in Supabase for public reads, and a local API wrapper over
+  `RunReader` stays a plan. See [docs/public_results.md](docs/public_results.md)
+  and
   [docs/future_dashboard.md](docs/future_dashboard.md).
 - **Replay** — pinned state, documents, normalized agent actions, verifier
   checks, controls, and positive siblings are executable. Wider task-family

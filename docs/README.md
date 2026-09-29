@@ -11,12 +11,17 @@ you change X" column.
 | [modules.md](modules.md) | Before your first PR. One section per `src/trace_harness/` module: what belongs there, the rules, what to build next. |
 | [trace_schema.md](trace_schema.md) | Before adding/changing trace events or anything that reads `trace.jsonl`. |
 | [methodology_metrics.md](methodology_metrics.md) | Before reporting any number, or adding one. Every metric with its formula, the artifact field it reads, and its blind spot. |
+| [experiment_contract.md](experiment_contract.md) | Before running or recording an experiment. What the plan freezes, what the result records, and why there is no combined score. |
+| [branch_stage.md](branch_stage.md) | Before running an experiment condition. How `trace-harness branch` forks a recording, what divergence means, and which metrics its batches feed. |
 | [verifier_philosophy.md](verifier_philosophy.md) | Before writing pass/fail checks or proposing an LLM judge for anything release-blocking. |
 | [attribution_methodology.md](attribution_methodology.md) | Before touching attribution — the step vocabulary and why its fields must never collapse. |
 | [attribution_canonical_run_results.md](attribution_canonical_run_results.md) | Reviewing canonical attribution results, step meanings, evidence rules, and null handling. |
 | [failure_bundles.md](failure_bundles.md) | Before changing cards, repair packages, or regression artifacts. |
+| [bring_your_own_agent.md](bring_your_own_agent.md) | Running an agent built elsewhere (LangGraph, the OpenAI Agents SDK, or anything with its own loop) through the harness, and what the trace guarantees for it. |
+| [measurements/run_index_scale.md](measurements/run_index_scale.md) | Before proposing a database or a new index format for `runs/`. What `index.json` costs at sweep scale and where it stops being enough. |
 | [team_ownership.md](team_ownership.md) | To find an owner, a reviewer, or your Linear workstream. |
-| [future_api.md](future_api.md) / [future_dashboard.md](future_dashboard.md) | Picking up the API or dashboard — contracts and start conditions are pinned there. |
+| [public_results.md](public_results.md) | What is hosted in Supabase for public reads, how it is published and regenerated, its free tier sizing, and the local API plan. |
+| [future_dashboard.md](future_dashboard.md) | Picking up the dashboard. Contracts and start conditions are pinned there. |
 | [AGENTRX_TRACE_SUMMARY.md](AGENTRX_TRACE_SUMMARY.md) | Competitive context: why TRACE's differentiation is the reliability loop, not localization accuracy (Linear TRA-34). |
 | [failure_taxonomy.md](failure_taxonomy.md) | Before adding a failure category or mapping a check to one. |
 | [severity_policy.md](severity_policy.md) | Before setting or changing a check's severity, or deciding what blocks a release. |

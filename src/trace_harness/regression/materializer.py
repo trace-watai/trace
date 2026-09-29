@@ -32,8 +32,9 @@ Replay
     pinned world is reconstructed.
 
     Note that ``replay_command`` is *not* that command: it is a plain
-    ``run-pipeline`` on the originating fixture, which reflects whatever that
-    fixture says today. It is a convenience for humans reproducing the run by
+    ``run-pipeline`` on the originating fixture (with ``--agent`` when an
+    outside agent produced the run), which reflects whatever that fixture says
+    today. It is a convenience for humans reproducing the run by
     hand; the gate assertions live in ``trace-harness replay``.
 """
 
@@ -50,9 +51,9 @@ from trace_harness.environment.tools import ToolSideEffect
 from trace_harness.models.base import ToolCall
 from trace_harness.regression.schemas import (
     RegressionArtifact,
-    ReplayMode,
     ReplayModeBasis,
     SiblingTest,
+    classify_replay_mode,
 )
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing.events import TraceEvent, TraceEventType
@@ -79,22 +80,6 @@ def _recorded_agent_actions(trace: list[TraceEvent]) -> list[dict[str, Any]]:
         for event in trace
         if event.event_type is TraceEventType.MODEL_ACTION and event.payload
     ]
-
-
-def classify_replay_mode(basis: ReplayModeBasis) -> ReplayMode:
-    """All four conditions need affirmative evidence; missing facts fail closed."""
-    if (
-        basis.control_ids
-        and basis.control_step is not None
-        and basis.control_step == basis.first_irreversible_action_step
-        and basis.rule_kind == "prohibition"
-        and basis.gated_tool
-        and basis.checks_reachable_via_gated_tool
-        and set(basis.checks_reachable_via_gated_tool) <= set(basis.checks_covered_by_control)
-        and not basis.other_irreversible_tools
-    ):
-        return "static_ok"
-    return "live_required"
 
 
 def _replay_mode_basis(
@@ -161,6 +146,7 @@ def materialize_regression_artifact(
     run_id: str,
     task_fixture_path: str | None,
     attribution: AttributionResult,
+    agent_ref: str | None = None,
     checks_reachable_by_tool: dict[str, list[str]],
 ) -> RegressionArtifact:
     """Build a :class:`RegressionArtifact` from one verified failure."""
@@ -192,7 +178,9 @@ def materialize_regression_artifact(
         positive_sibling_tests=siblings,
         severity=verifier_result.severity or task.severity,
         blocks_release=verifier_result.blocks_release,
-        replay_command=f"trace-harness run-pipeline {fixture_path}",
+        # An outside agent's run is reproduced by hand with the same agent.
+        replay_command=f"trace-harness run-pipeline {fixture_path}"
+        + (f" --agent {agent_ref}" if agent_ref else ""),
         metadata={
             "source_verifier_id": verifier_result.verifier_id,
             "available_tools": list(task.available_tools),
