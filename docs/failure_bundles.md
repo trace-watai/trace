@@ -85,24 +85,28 @@ name off that same event.
 The key is a hash behind a readable prefix.
 
 ```text
-v1:<primary category>:<tool or none>:<digest>
-v1:unsafe_irreversible_action:issue_refund:e621a26e69c17400
+v2:<primary category>:<tool or none>:<digest>
+v2:unsafe_irreversible_action:issue_refund:23b3db1014dba147
 ```
 
 The digest is the first 16 hex characters of SHA-256 over this JSON, written
 with sorted keys and no whitespace.
 
 ```json
-{"category":"unsafe_irreversible_action","checks":["unauthorized_cash_refund"],"tool":"issue_refund","version":"v1"}
+{"category":"unsafe_irreversible_action","checks":["unauthorized_cash_refund"],"task":"refund_policy_control_demo","tool":"issue_refund","version":"v2"}
 ```
 
 The prefix makes an index or a card readable at a glance. Keys are compared
 whole, and the digest is what separates two failures that share a category
 and a tool but fired different checks. With no irreversible step the JSON
-records `"tool":null` and the prefix reads `none`. Run ids, task ids, step
-numbers, messages and evidence stay out of the key, so one failure keys the
-same way across tasks, providers, seeds and days. Changing any of the three
-facts, or how they are written, means bumping `v1`. `tests/test_bundle_key.py`
+records `"tool":null` and the prefix reads `none`. The task id is in the key,
+and run ids, step numbers, messages and evidence stay out, so runs of one task
+that fail the same way key the same across providers, seeds and days, and two
+tasks never share a key. Each task therefore keeps its own card and regression
+artifact to replay or branch from, even beside another task that fails the
+same way. Changing any of the four facts, or how they are written, means
+bumping `v2`. Keys written as `v1`, before the task was part of the key, never
+equal a `v2` key, so a run bundled now never joins a `v1` card. `tests/test_bundle_key.py`
 pins the key of every failing task fixture so such a change shows up as an
 edit to that table.
 
@@ -137,12 +141,9 @@ provider, model and seed from each run's `run_config.json`.
 `RunReader.get_bundle` and the dashboard serve a reproduction the card it
 joined, whose `run_id` names the first occurrence.
 
-By default the lookup covers one whole runs directory, and two different
-tasks that fail the same way share a card when their runs land in the same
-one. Of the nineteen failing task fixtures, nine fall into four groups that
-share a key. Neither `refund_v0` nor `refund_bundles_v0` runs two tasks from
-one group, so every pinned suite expectation still has one card per failing
-task.
+By default the lookup covers one whole runs directory. Since the key names
+the task, only runs of the same task share a card there, and the nineteen
+failing task fixtures form nineteen keys.
 
 ### Scoping the lookup
 
@@ -156,8 +157,9 @@ The branch stage is the caller the scope is for. Its conditions continue the
 same fork with the control on, with it off and with another model, and
 without a scope a failure in one condition joins a card from another. A
 control-on run would then be served the card and regression artifact of a
-control-off run. Passing the runs of one condition keeps each condition's
-cards apart, while its seeds still share one card per key. A scope over the
+control-off run. `branch` passes the runs of the condition it is running, so
+each condition's cards stay apart, while its seeds still share one card per
+key. A scope over the
 whole experiment would merge the conditions again, so one condition's runs
 is the scope to pass. The experiment's metrics count verdicts from batch
 entries and come out the same either way. `run-sweep` scopes each cell to
@@ -166,6 +168,9 @@ its retention keeps, so a failing cell never points to a card outside what is
 retained with it, even in a runs directory that holds earlier runs or an
 earlier sweep. Retention still refuses, naming them, any cell whose home lies
 outside the retained cells ([live_sweep.md](live_sweep.md#retaining-failing-cells)).
+A cell that ended incomplete after breaking a rule is bundled under the same
+scope and can join a failing cell's card, but only failing cells are retained,
+so the retained card lists only the runs retained with it.
 
 Callers that copy runs somewhere else have to keep each reproduction with
 the run holding its card. `ArtifactStore.bundle_home` names that run for one
@@ -220,8 +225,9 @@ longer has, deletes its regression artifact when bundled again into another
 run's card, and anything that pins that file's hash loses the file.
 
 `collect-regressions` discovers `regression_artifact.json` files, which only
-first occurrences hold, so each key is replayed once and reproductions are
-not counted in `artifacts_found`. A bundle cut short before its card was
+first occurrences hold, so each key is replayed once per runs directory or
+scope and reproductions are not counted in `artifacts_found`. Two retained
+sweeps of the same failure keep two cards, and each is replayed. A bundle cut short before its card was
 written can leave an artifact with no card beside it, which the collector
 still finds. Bundling the run again either writes the card beside it or,
 when the run joins another card, deletes it.
@@ -333,7 +339,7 @@ notices.
 
 ### Control validation
 
-`replay --apply-control` writes `repair_validation.json` at schema `0.1.0`
+`replay --apply-control` writes `repair_validation.json` at schema `0.3.0`
 under `<output-runs-dir>/<source_run_id>/`, reading prescriptions beside the
 input regression artifact. Invalid or mismatched packages fail before replay;
 empty packages produce no verdicts. Without a package, selected reference
@@ -342,6 +348,40 @@ controls use all pinned checks and record `controls_source: reference_controls`.
 Each verdict includes control identity, reason, originating and sibling run
 IDs, failed checks, and linked checks cleared on completed replays. Evidence
 retains `PASS`, `FAIL`, or `INCOMPLETE`; a rollup counts the control verdicts.
+
+ADR-0002, decision 2: "A static replay verdict on a control is advisory
+until the artifact carries a measured replay-mode label." The same decision
+has the collector gate control results only on `static_ok`. Every
+`static_ok` label today is predicted by the materializer's fixed rule
+(`replay_mode_basis.predicted_by`), and #159 is what measures one.
+Validation follows the collector, so it calls a verdict on a `static_ok`
+artifact whose own basis supports the label gating, and every place that
+prints gating also says the label is predicted.
+
+Each verdict records the artifact's `replay_mode`, its `predicted_by`,
+`label_supported` (whether the artifact's recorded basis classifies as its
+label), and the `standing` those give it: `gating` for a `static_ok` label
+with a recorded basis that classifies as `static_ok`, `advisory` otherwise.
+The verdict values are unchanged, so an advisory `accepted` still means the
+control held under replay, and it makes no claim about a live agent. The
+rollup splits `accepted` into `accepted_gating` and `accepted_advisory`.
+`standing` is derived on read from the recorded fields, so editing
+`standing` alone changes nothing. Editing the recorded fields would change
+it, which is why the control library and the metrics check a verdict's
+label against the retained artifact, and its basis against the
+classification rule, before treating it as gating. When an artifact's
+`static_ok` label is not supported by its own basis, as with a label set by
+hand, replay prints a warning and records the verdicts as advisory. A
+`0.1.0` file, which is what `main` writes until this schema lands, carries
+no label. Its verdicts read as not recorded and advisory, and an unrecorded
+label is never compared with the artifact's current one.
+
+Each re-run also records the `task_fixture` it was built from, and
+`rollup.over_blocking` reports sibling failures by task family with a
+one-sided 95% upper bound on the family failure rate. The formula and why
+it counts families are in `docs/methodology_metrics.md` (A4). Replay and
+`inspect` print it as, for example, `0 of 1 families failed, true rate
+could be up to 95.00%`.
 
 | Verdict | Condition |
 |---|---|
@@ -384,6 +424,42 @@ each batch uses one validated snapshot. Plain validation leaves the library
 unchanged. Rollback appends a reason and preserves evidence; reusing an ID
 with existing history is rejected. These operations write local artifacts,
 not Git commits.
+
+Each entry records the basis of its acceptance in `acceptance`: the
+`replay_mode` and `predicted_by` of the originating artifact at commit time,
+and the `standing` they support. The rule:
+
+- A control accepted against a `static_ok` artifact whose recorded basis
+  still classifies as `static_ok` enters as `gating`. That label is a
+  prediction until #159 measures it, and `controls list` says so.
+- Any other accepted control still enters, and is recorded as `advisory`.
+  That covers `live_required` and `unlabeled` artifacts and a `static_ok`
+  label with no basis or with a basis that does not classify as `static_ok`.
+- Advisory entries install like any active entry, so suites and replays run
+  with them in place and measure their effect. Nothing downstream may report
+  an advisory entry as proven.
+- Loading holds a recorded basis to the retained artifact and validation. A
+  basis naming a different `replay_mode` or `predicted_by`, a `gating` basis
+  the artifact does not support, an `advisory` basis on an artifact that
+  does support gating, and a basis that names a predictor without a
+  `replay_mode` all fail to load. A validation verdict is compared with the
+  artifact only when it recorded a `replay_mode`, and then its
+  `predicted_by` and `label_supported` must match the artifact too. A
+  verdict with no `replay_mode` cannot record a predictor or a supported
+  label.
+
+Library schema `0.2.0` adds the field. An entry without it, which covers
+every entry written before this schema including `ctl_refund_window_v1`,
+reads as `advisory` with its `replay_mode` not recorded. That holds
+whatever its retained artifact says: `ctl_refund_window_v1`'s artifact is
+`unlabeled`, and a library built by earlier code from a current artifact
+has a `live_required` one. Nothing at acceptance time recorded which label
+the verdict relied on, so the entry is not compared with the artifact, and
+a basis with no `replay_mode` cannot be `gating`. The first write of an
+older library records that basis explicitly. `trace-harness controls list`
+prints every entry with its status and basis, and `run-suite
+--control-library` prints the gating and advisory split of what it
+installed.
 
 The [retained example](../fixtures/controls/README.md) preserves all 18
 passing suite cases. Two negatives lose `unauthorized_cash_refund` but retain

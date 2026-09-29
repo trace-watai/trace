@@ -294,8 +294,15 @@ def test_tool_use_prompt_tokens_count_as_input() -> None:
 def test_a_response_with_no_usage_reads_as_none_rather_than_zero() -> None:
     assert extract_usage({}) is None
     assert extract_usage({"usage_metadata": None}) is None
-    assert extract_usage({"usage_metadata": {"prompt_token_count": 5}}) is None
+    assert extract_usage({"usage_metadata": {"candidates_token_count": 5}}) is None
     assert extract_usage({"usage_metadata": {"prompt_token_count": True}}) is None
+
+
+def test_a_reply_with_no_output_count_still_bills_its_prompt() -> None:
+    """Zero-valued fields are left out of Gemini's usage, as proto3 JSON does."""
+    usage = {"prompt_token_count": 50_000, "candidates_token_count": None}
+    assert extract_usage({"usage_metadata": usage}) == (50_000, 0)
+    assert extract_usage({"usage_metadata": {"prompt_token_count": 5}}) == (5, 0)
 
 
 def test_cost_is_priced_from_the_recorded_usage() -> None:

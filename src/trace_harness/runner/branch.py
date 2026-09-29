@@ -70,6 +70,7 @@ from trace_harness.runner.batch import (
 )
 from trace_harness.runner.config import PROMPT_VERSION, RunConfig
 from trace_harness.runner.experiment import ConditionKind, ConditionSpec, ExperimentSpec
+from trace_harness.runner.frozen_set import FrozenFileChange
 from trace_harness.runner.pipeline import (
     PipelineProgress,
     PipelineResult,
@@ -296,6 +297,7 @@ def run_branch(
     condition: ConditionSpec,
     store: ArtifactStore,
     guard: BudgetGuard | None = None,
+    frozen_set_drift: list[FrozenFileChange] | None = None,
 ) -> BranchResult:
     """Run every seed of one live condition and write its batch.
 
@@ -305,6 +307,8 @@ def run_branch(
 
     ``guard`` is shared by every condition of one ``branch`` invocation; a
     caller that passes none gets one built from the plan's ``max_cost_usd``.
+    ``frozen_set_drift`` is what ``branch --allow-drift`` ran under, written
+    into the batch so ``record`` reads it even after the files are restored.
     """
     if condition.kind not in LIVE_KINDS:
         raise ValueError(f"{condition.kind.value} conditions run through replay, see replay_batch")
@@ -329,6 +333,8 @@ def run_branch(
     started_at = utc_now()
     entries: list[BatchRunEntry] = []
     not_run: list[NotRunCell] = []
+    # One condition's runs share cards, never another condition's (#211).
+    condition_runs: list[str] = []
     for seed in seeds:
         if live and not guard.admit(agent.provider, model, agent.cassette):
             not_run.append(
@@ -338,7 +344,15 @@ def run_branch(
         progress = PipelineProgress()
         try:
             entry = _run_seed(
-                artifact, task, experiment, condition, fork_step, seed, store, progress
+                artifact,
+                task,
+                experiment,
+                condition,
+                fork_step,
+                seed,
+                store,
+                progress,
+                scope=condition_runs,
             )
         except Exception as exc:  # noqa: BLE001 (isolate the seed so the batch goes on)
             logger.warning("branch seed %s of %s failed: %s", seed, condition.name, exc)
@@ -352,7 +366,14 @@ def run_branch(
 
     budget = _budget_block(guard, spent_before, stopped_before, not_run)
     summary = _write_batch(
-        store, experiment, condition, artifact, entries, started_at, budget=budget
+        store,
+        experiment,
+        condition,
+        artifact,
+        entries,
+        started_at,
+        budget=budget,
+        **_drift_metadata(frozen_set_drift),
     )
     return BranchResult(condition.name, summary=summary)
 
@@ -364,6 +385,7 @@ def replay_batch(
     artifact_path: Path | str,
     store: ArtifactStore,
     started_at: datetime,
+    frozen_set_drift: list[FrozenFileChange] | None = None,
 ) -> BatchSummary:
     """Record a ``static_replay`` condition's replay as a batch of one.
 
@@ -392,6 +414,7 @@ def replay_batch(
         [entry],
         started_at,
         budget=BatchBudget(max_cost_usd=experiment.budget.max_cost_usd, spent_usd=0.0),
+        **_drift_metadata(frozen_set_drift),
         replay_exit_code=report.exit_code,
     )
 
@@ -405,6 +428,7 @@ def _run_seed(
     seed: int | None,
     store: ArtifactStore,
     progress: PipelineProgress,
+    scope: list[str],
 ) -> BatchRunEntry:
     """Run one seed and score it.
 
@@ -463,7 +487,9 @@ def _run_seed(
         run = runner.run(task, config)
     finally:
         progress.run_id = runner.run_id
-    return _scored_entry(artifact, task, condition, config, fork_step, seed, run, store)
+    entry = _scored_entry(artifact, task, condition, config, fork_step, seed, run, store, scope)
+    scope.append(run.run_id)
+    return entry
 
 
 def _scored_entry(
@@ -475,11 +501,16 @@ def _scored_entry(
     seed: int | None,
     run: RunResult,
     store: ArtifactStore,
+    scope: list[str] | None = None,
 ) -> BatchRunEntry:
-    """Verify, attribute and label a finished run, and compare it with the recording."""
+    """Verify, attribute and label a finished run, and compare it with the recording.
+
+    ``scope`` is the runs of this condition bundled so far, so the run joins
+    only their cards and never a card from another condition or the source run.
+    """
     verdict = verify_run(store, run, task)
     if verdict is not None and verdict.has_violations:
-        attribute_and_bundle(store, run.run_id, task, run)
+        attribute_and_bundle(store, run.run_id, task, run, scope=scope or [])
 
     trace = store.read_trace(run.run_id)
     actions = [e.payload for e in trace if e.event_type is TraceEventType.MODEL_ACTION]
@@ -618,6 +649,13 @@ def _setup_error(
         condition=condition.name,
         seed=seed,
     )
+
+
+def _drift_metadata(drift: list[FrozenFileChange] | None) -> dict[str, Any]:
+    """The batch metadata that says a batch ran under drift, or nothing."""
+    if not drift:
+        return {}
+    return {"frozen_set_drift": [change.model_dump(mode="json") for change in drift]}
 
 
 def _write_batch(

@@ -159,7 +159,7 @@ describe("run-loader", () => {
   });
 
   describe("one card per root cause (#211)", () => {
-    const KEY = "v1:unsafe_irreversible_action:issue_refund:e621a26e69c17400";
+    const KEY = "v2:unsafe_irreversible_action:issue_refund:23b3db1014dba147";
     const occurrence = (runId: string, seed: number) => ({
       run_id: runId,
       task_id: "task_1",
