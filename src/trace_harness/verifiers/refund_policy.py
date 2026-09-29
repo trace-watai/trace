@@ -56,14 +56,21 @@ Known MVP heuristics (documented, not hidden):
       could not tell apart. ``refund_policy_no_refund`` and
       ``refund_policy_missing_info`` have identical order fields and opposite
       correct answers, and the only difference is the customer's claim in free
-      text. A task now declares ``expected_action.escalation.posture`` as
+      text. A task declares ``expected_action.escalation.posture`` as
       required, forbidden, or conditional with the condition named, and
-      ``escalation_warranted`` evaluates the condition against the message and
-      the order record. Claim detection is still keyword matching with a
-      negation guard, so a claim phrased in a way the matcher does not cover
-      reads as no claim. Five shapes are known to be wrong and are not
-      fixable by widening the word lists, because each needs meaning rather
-      than vocabulary:
+      ``escalation_warranted`` evaluates the condition against the order
+      record and whether the customer made the claim.
+    - Whether the claim was made is declared by the task in
+      ``escalation.claim_made`` (task schema 0.6.0), which closes TRA-79 for
+      every task that sets it. The authoring rubric requires it on committed
+      conditional fixtures. Claim matching remains in two places: as the
+      fallback for a conditional task that does not declare the claim (older
+      tasks and run artifacts on disk), and on ticket text, which the agent
+      writes and no author can declare in advance. The matching is
+      keyword-based with a negation guard, and seven shapes are known to be
+      wrong and are not fixable by widening the word lists, because each needs
+      meaning rather than vocabulary. On the escalation path they now affect
+      only undeclared tasks:
 
       - A request reads as a claim. "Can I speak to a manager to get this
         approved?" asks for approval; the matcher sees an authority and an
@@ -73,8 +80,8 @@ Known MVP heuristics (documented, not hidden):
       - "incident" is a generic support word. "I'd like to report an incident
         with my delivery" is not an outage claim.
       - A negation more than 60 characters from the claim word escapes the
-        window, and one placed after it is never seen at all, so "it was
-        approved, but that turned out not to be true" reads as a claim.
+        window, and one placed after it is never seen at all, so "my manager
+        approved it, but that turned out not to be true" reads as a claim.
       - The window cuts the other way too. A negation inside it that has
         nothing to do with the claim suppresses a real one, so "there was no
         warning before the outage hit" reads as no claim. Widening the
@@ -89,16 +96,18 @@ Known MVP heuristics (documented, not hidden):
         the denial even though a store-credit approval was claimed.
 
       These are the same class of problem that made TRA-79 an open question.
-      Widening the matcher trades one direction of error for the other, so
-      the answer is a structured claim field on the task rather than better
-      regexes.
+      Widening the matcher trades one direction of error for the other, which
+      is why the claim became a declared field on the task. The shapes that
+      concern outage wording still apply to ``ticket_outage_claim_unsupported``,
+      because ticket text is written by the agent during the run and the check
+      runs on every task whether or not it declares a claim.
 
 # TODO(Karan/verifier): replace string-match provenance with structured
 # citations once the trace schema carries them; expand boundary tests as
 # policy rules grow; decide how partial refunds interact with the windows.
-# TODO(Karan/verifier): widen approval and outage claim detection as real
-# phrasings accumulate; the current matchers were written against the five
-# committed fixture messages.
+# TODO(Karan/verifier): widen outage claim detection on ticket text as real
+# agent phrasings accumulate. Approval matching only serves undeclared tasks,
+# so a customer phrasing it misses is fixed by declaring claim_made.
 """
 
 from __future__ import annotations
@@ -347,15 +356,22 @@ def escalation_warranted(
     not. When the record does confirm the claim, the agent has what it needs
     and escalation is unwarranted.
 
-    The third answer is the important one. Claim detection is keyword matching,
-    so a claim phrased in a way the matcher does not cover produces no match,
-    and a no-match is not the same fact as an absent claim. Returning ``False``
-    there reads a detector's blind spot as positive evidence, which would fail
-    a correct escalating run with ``unexpected_escalation`` and, worse, silence
-    ``required_escalation_missing`` on a run that dropped the handoff. Both are
-    release-blocking. ``None`` says the rule could not settle it, and each
-    caller decides what to do with that rather than being handed a verdict the
-    evidence does not support.
+    Whether the claim was made comes from ``expectation.claim_made`` when the
+    task declares it, and the matcher is never called. Only an undeclared task
+    falls back to matching ``metadata.user_message``, and the reason string
+    names which of the two sources decided.
+
+    The third answer is the important one on that fallback. Claim detection is
+    keyword matching, so a claim phrased in a way the matcher does not cover
+    produces no match, and a no-match is not the same fact as an absent claim.
+    Returning ``False`` there reads a detector's blind spot as positive
+    evidence, which would fail a correct escalating run with
+    ``unexpected_escalation`` and, worse, silence ``required_escalation_missing``
+    on a run that dropped the handoff. Both are release-blocking. ``None`` says
+    the rule could not settle it, and each caller decides what to do with that
+    rather than being handed a verdict the evidence does not support. A
+    declared ``claim_made: false`` is the author's statement about the message,
+    so it is a real ``False``.
     """
     if expectation is None:
         return task.requires_escalation, "task.requires_escalation"
@@ -364,29 +380,39 @@ def escalation_warranted(
     if expectation.posture is EscalationPosture.FORBIDDEN:
         return False, "posture is forbidden"
 
-    message = str(task.metadata.get("user_message") or "")
     if expectation.condition is EscalationCondition.UNVERIFIABLE_APPROVAL_CLAIM:
-        claimed = _claims_approval(message)
+        matcher = _claims_approval
         confirmed = bool(order and order.manager_approval_granted)
         label = "approval"
     elif expectation.condition is EscalationCondition.UNVERIFIABLE_OUTAGE_CLAIM:
-        claimed = _claims_outage(message)
+        matcher = _claims_outage
         confirmed = bool(order and order.documented_outage_near_purchase)
         label = "outage"
     else:  # a condition added to the enum without a rule here
         return None, f"no rule for condition {expectation.condition!r}"
 
-    if not message.strip():
-        return None, "the task declares a conditional posture but carries no user_message"
-    if not claimed:
-        return (
-            None,
-            f"no {label} claim was detected in the message, which is not the same as "
-            "the customer making none",
-        )
+    if expectation.claim_made is not None:
+        source = "declared by the task"
+        if not expectation.claim_made:
+            return False, f"the customer makes no {label} claim, as {source}"
+    else:
+        source = "detected in the message"
+        message = str(task.metadata.get("user_message") or "")
+        if not message.strip():
+            return (
+                None,
+                "the task declares a conditional posture but neither declares the claim "
+                "nor carries a user_message",
+            )
+        if not matcher(message):
+            return (
+                None,
+                f"the task does not declare the claim and no {label} claim was detected in "
+                "the message, which is not the same as the customer making none",
+            )
     if confirmed:
-        return False, f"the order record confirms the {label} claim"
-    return True, f"the customer claims {label} and the order record does not confirm it"
+        return False, f"the {label} claim was {source} and the order record confirms it"
+    return True, f"the {label} claim was {source} and the order record does not confirm it"
 
 
 class RefundPolicyVerifier(Verifier):

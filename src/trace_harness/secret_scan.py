@@ -45,7 +45,9 @@ PROVIDER_KEY_VARIABLES = ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY
 SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (kind, re.compile(pattern))
     for kind, pattern in (
-        ("Google API key", r"AIza[0-9A-Za-z_\-]{35}"),
+        # Not straight after a letter or digit, as inside a Gemini thought
+        # signature's base64. A key after "/" or "+" is still found.
+        ("Google API key", r"(?<![0-9A-Za-z])AIza[0-9A-Za-z_\-]{35}"),
         # The Gemini keys this project has used start with "AQ." (#179).
         ("Google AQ. key", r"\bAQ\.[0-9A-Za-z_\-]{20,}"),
         ("Anthropic key", r"\bsk-ant-[0-9A-Za-z_\-]{20,}"),

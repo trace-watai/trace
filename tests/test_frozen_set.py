@@ -445,6 +445,25 @@ def test_the_retained_result_loads_as_unchecked() -> None:
 # --- the collector over retained experiments ---
 
 
+def test_a_batch_recorded_under_drift_keeps_the_result_drifted(repo, capsys) -> None:
+    """Restoring the files and re-recording to change the decision does not
+    turn a batch that ran under the edited verifier into a verified one."""
+    _edit(repo, VERIFIER)
+    assert _record("--allow-drift") == 0
+    shutil.copy(REPO_ROOT / VERIFIER, repo / VERIFIER)
+    argv = ["--runs-dir", "runs", "experiment", "record", "experiment.json"]
+    edited = [FrozenFileChange(component="verifiers", path=VERIFIER, change="changed")]
+
+    for named in ([], ["--condition", f"replay_only={BATCH}"]):
+        capsys.readouterr()
+        assert main([*argv, *named, "--decision", "keep"]) == 0
+        result = _result(repo)
+        assert result.frozen_set_drifted and not result.frozen_set_verified
+        assert result.decision is Decision.REVIEW
+        assert result.frozen_set_drift == edited
+        assert "carried with replay_only" in capsys.readouterr().out
+
+
 def _retain(repo: Path) -> Path:
     """Record in the copy and keep the experiment the way docs/acceptance does."""
     assert _record() == 0
@@ -482,6 +501,20 @@ def test_a_result_recorded_over_drift_is_reported_as_such(repo) -> None:
     assert summary.exit_code == 0
     (entry,) = summary.experiments
     assert entry.status == "drifted" and entry.recorded_drifted
+
+
+def test_a_retired_control_leaves_a_retained_plan_readable_to_the_gate(repo) -> None:
+    """The gate installs nothing from a retained plan, so a control removed
+    since it was recorded must not fail the gate."""
+    retained = _retain(repo)
+    plan = retained / "exp_000_baseline/experiment.json"
+    data = json.loads(plan.read_text())
+    data["conditions"][0]["control_ids"] = ["ctl_retired_v0"]
+    plan.write_text(json.dumps(data))
+    summary = _collect(repo, retained)
+    assert summary.exit_code == 0
+    assert summary.malformed == []
+    assert [e.status for e in summary.experiments] == ["matches"]
 
 
 def test_a_retained_experiment_that_does_not_load_fails_the_gate(repo) -> None:
