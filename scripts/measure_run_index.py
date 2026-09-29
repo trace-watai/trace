@@ -254,16 +254,18 @@ def template_bundles(templates: list[Path]) -> dict[Path, TemplateBundle]:
         if not (template / names.FAILURE_CARD).is_file():
             continue
         store, run_id = ArtifactStore.for_run_path(template)
+        task_id = store.read_json(run_id, names.RUN_RESULT)["task_id"]
         key = bundle_key(
             VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT)),
             AttributionResult.model_validate(store.read_json(run_id, names.ATTRIBUTION_RESULT)),
             store.read_trace(run_id),
+            task_id,
         )
         config = store.read_json(run_id, names.RUN_CONFIG)
         out[template] = TemplateBundle(
             bundle_key=key,
             occurrence={
-                "task_id": store.read_json(run_id, names.RUN_RESULT)["task_id"],
+                "task_id": task_id,
                 "provider": config.get("provider"),
                 "model": config.get("model"),
                 "seed": config.get("seed"),
