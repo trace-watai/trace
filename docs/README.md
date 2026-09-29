@@ -18,9 +18,11 @@ you change X" column.
 | [attribution_canonical_run_results.md](attribution_canonical_run_results.md) | Reviewing canonical attribution results, step meanings, evidence rules, and null handling. |
 | [failure_bundles.md](failure_bundles.md) | Before changing cards, repair packages, or regression artifacts. |
 | [bring_your_own_agent.md](bring_your_own_agent.md) | Running an agent built elsewhere (LangGraph, the OpenAI Agents SDK, or anything with its own loop) through the harness, and what the trace guarantees for it. |
+| [live_sweep.md](live_sweep.md) | Before running `run-sweep` or reading a sweep. What a cell is, how the spend cap and cassettes work, and what `retain-sweep` keeps. |
 | [measurements/run_index_scale.md](measurements/run_index_scale.md) | Before proposing a database or a new index format for `runs/`. What `index.json` costs at sweep scale and where it stops being enough. |
 | [team_ownership.md](team_ownership.md) | To find an owner, a reviewer, or your Linear workstream. |
 | [public_results.md](public_results.md) | What is hosted in Supabase for public reads, how it is published and regenerated, its free tier sizing, and the local API plan. |
+| [future_api.md](future_api.md) | Following an old link. The API plan moved to public_results.md, and this file points there. |
 | [future_dashboard.md](future_dashboard.md) | Picking up the dashboard. Contracts and start conditions are pinned there. |
 | [AGENTRX_TRACE_SUMMARY.md](AGENTRX_TRACE_SUMMARY.md) | Competitive context: why TRACE's differentiation is the reliability loop, not localization accuracy (Linear TRA-34). |
 | [failure_taxonomy.md](failure_taxonomy.md) | Before adding a failure category or mapping a check to one. |
@@ -42,6 +44,8 @@ Evidence kept for a claim someone will question later.
 | [acceptance/refund-v0-suite.md](acceptance/refund-v0-suite.md) | The canonical refund suite and its outcome counts. |
 | [acceptance/failure-bundles-v0.md](acceptance/failure-bundles-v0.md) | The first five complete failure bundles. |
 | [acceptance/live-gemini-2026-09-13/README.md](acceptance/live-gemini-2026-09-13/README.md) | Eight retained live Gemini runs, #179. |
+| [acceptance/experiments/exp_000_baseline/report.md](acceptance/experiments/exp_000_baseline/report.md) | The baseline experiment: `refund_bundles_v0` under the fixture agent reproduces five verified failures. |
+| [acceptance/runs/reference-agents-scripted-2026-09-23/README.md](acceptance/runs/reference-agents-scripted-2026-09-23/README.md) | Two reference outside agents, LangGraph and the OpenAI Agents SDK, run end to end on a scripted model. Not live-agent evidence. |
 
 ## Plans and specs
 

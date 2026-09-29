@@ -61,12 +61,26 @@ DOCUMENTED_VERSIONS = {
     "MetricsSnapshot": "METRICS_SNAPSHOT_SCHEMA_VERSION",
     "FixtureScript": "FIXTURE_SCRIPT_SCHEMA_VERSION",
     "CassetteEntry": "CASSETTE_SCHEMA_VERSION",
+    "Experiment": "EXPERIMENT_SCHEMA_VERSION",
+    "SweepSpec": "SWEEP_SPEC_SCHEMA_VERSION",
+    "SweepSummary": "SWEEP_SUMMARY_SCHEMA_VERSION",
+    "BundleRef": "BUNDLE_REF_SCHEMA_VERSION",
+    "AttributionScore": "ATTRIBUTION_SCORE_SCHEMA_VERSION",
 }
 
 #: Schema constants deliberately left out of ``DOCUMENTED_VERSIONS``, each
 #: with the reason. A new constant in ``src/`` goes in one of the two, so a
 #: schema can never be versioned without the docs check knowing about it.
-EXEMPT_CONSTANTS: dict[str, str] = {}
+EXEMPT_CONSTANTS: dict[str, str] = {
+    "PRE_FROZEN_SET_SCHEMA_VERSION": (
+        "the last ExperimentSpec version without a frozen set, used as a threshold; "
+        "it versions no schema of its own"
+    ),
+    "RESULTS_SCHEMA_VERSION": (
+        "versions the Supabase SQL layout, which has no model class; docs quote it "
+        "by constant name, and that form is checked without the map"
+    ),
+}
 
 #: Docs under these prefixes are dated records of a moment.
 DATED_RECORD_PREFIXES = ("acceptance/", "decisions/", "experiments/", "superpowers/")
