@@ -94,9 +94,10 @@ TRACE_SUPABASE_ANON_KEY=<publishable or anon key> \
 read method of `RunReader` with the same signature, return types and missing
 states. An unknown run raises `RunNotFound`, an artifact not produced yet is
 `None`, and an unknown batch or experiment raises `FileNotFoundError`. It
-refuses a key that maps to `service_role`. The filesystem `RunReader` is
-unchanged and stays the default. Unset, empty and `filesystem` all select it,
-and any other value is an error.
+refuses a key that maps to `service_role`. The filesystem `RunReader` stays
+the default, with one change: `get_bundle_ref` ignores a `bundle_ref.json`
+beside a run's own card, so both backends name the same home. Unset, empty
+and `filesystem` all select it, and any other value is an error.
 
 For the dashboard, each `jsonb` column is the file of the same name, so the
 parsers in `apps/dashboard/src/types/` apply to it unchanged. Wiring a hosted
@@ -265,8 +266,8 @@ A change upstream reaches the tables in one of three ways.
 
 Measured on 24 September 2026 with `scripts/measure_public_results.py`, which
 prints every figure below. The sweep is two providers by five seeds by the 32
-tasks of `refund_v0`, or 320 runs, all hosted, although #198 plans to retain
-only the failing cells.
+tasks of `refund_v0`, or 320 runs, all hosted, although a sweep (#198) retains
+only its failing cells.
 
 | Quantity | Measured |
 |---|---|

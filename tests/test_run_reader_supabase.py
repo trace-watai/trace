@@ -17,13 +17,14 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import postgrest_fake as fake
 from trace_harness.cli import main
-from trace_harness.public_results import schema
+from trace_harness.public_results import postgrest, schema
 from trace_harness.public_results.postgrest import (
     HttpRequest,
     HttpResponse,
@@ -303,7 +304,8 @@ def test_urllib_transport_returns_error_statuses_and_hides_nothing_it_should_not
             raise http.client.IncompleteRead(b"[", 10)
         return Ok(b"[]")
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    # The transport sends through its own opener, which refuses redirects.
+    monkeypatch.setattr(postgrest, "_OPENER", SimpleNamespace(open=fake_urlopen))
     ok = urllib_transport(HttpRequest("GET", "https://x.supabase.co/rest/v1/runs", {"apikey": "k"}))
     assert ok.status == 206 and ok.headers["content-range"] == "0-0/1" and ok.body == b"[]"
     assert calls[0].get_header("Apikey") == "k"
@@ -364,6 +366,26 @@ def test_cli_list_runs_reads_the_hosted_results_when_selected(
     assert main(["--runs-dir", str(tmp_path / "empty"), "list-experiments"]) == 0
     experiments = len(fs.list_experiments())
     assert f"{experiments} experiment(s) in {fake.BASE_URL}" in capsys.readouterr().out
+
+
+def test_a_hosted_plan_naming_a_retired_control_still_reads(retained) -> None:
+    """Reading a plan installs nothing, so a control retired since it was stored
+    leaves it readable, as it does on disk (#155)."""
+    _, rows = retained
+    server = fake.MemoryPostgrest().load(rows)
+    good = rows[schema.EXPERIMENTS][0]
+    spec = json.loads(json.dumps(good["spec"]))
+    spec["experiment_id"] = "exp_zz_retired_control"
+    spec["conditions"][0]["control_ids"] = ["ctl_retired_v0"]
+    server.tables[schema.EXPERIMENTS]["exp_zz_retired_control"] = {
+        **good,
+        "experiment_id": "exp_zz_retired_control",
+        "spec": spec,
+        "result": None,
+    }
+    hosted = supabase_reader(server)
+    assert "exp_zz_retired_control" in [e.experiment_id for e in hosted.list_experiments()]
+    assert hosted.unreadable_experiments() == {}
 
 
 def test_a_hosted_experiment_that_does_not_load_is_named_as_on_disk(

@@ -343,6 +343,27 @@ def test_offline_builds_and_dumps_without_a_request(
 
 # --- the key scan -------------------------------------------------------------
 
+
+def test_upload_refuses_to_publish_a_key_it_would_send(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The scan runs inside upload too, so a publish started by hand is held to it."""
+    retained = tmp_path / "acceptance"
+    shutil.copytree(ACCEPTANCE, retained)
+    config = next((retained / "runs").glob("run_*/run_config.json"))
+    data = json.loads(config.read_text(encoding="utf-8"))
+    data.setdefault("metadata", {})["note"] = "AIza" + "B" * 35
+    config.write_text(json.dumps(data), encoding="utf-8")
+
+    def no_network(request):  # pragma: no cover - failing is the point
+        raise AssertionError(f"a refused upload sent {request.method} {request.url}")
+
+    assert main([str(retained), "--offline"], env={}, transport=no_network) == 2
+    err = capsys.readouterr().err
+    assert "Google API key" in err and "nothing was uploaded" in err
+    assert "AIza" + "B" * 35 not in err
+
+
 # One planted sample per kind the shared scanner (trace_harness.secret_scan)
 # knows, built at run time so no key-shaped literal sits in the repository.
 PLANTED = {
@@ -506,3 +527,46 @@ def test_only_the_upload_step_sees_the_supabase_secrets() -> None:
         "TRACE_SUPABASE_SERVICE_KEY: ${{ secrets.TRACE_SUPABASE_SERVICE_KEY }}",
         "TRACE_SUPABASE_URL: ${{ secrets.TRACE_SUPABASE_URL }}",
     ]
+
+
+def test_a_redirect_is_not_followed_with_the_key() -> None:
+    """Following a 3xx would resend apikey and Authorization to the new host."""
+    import http.server
+    import threading
+
+    from trace_harness.public_results.postgrest import HttpRequest, urllib_transport
+
+    seen: list[str] = []
+
+    class Elsewhere(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            seen.append(self.headers.get("apikey", ""))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args) -> None:
+            pass
+
+    other = http.server.HTTPServer(("127.0.0.1", 0), Elsewhere)
+    target = f"http://127.0.0.1:{other.server_port}/rest/v1/runs"
+
+    class Redirects(Elsewhere):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.end_headers()
+
+    first = http.server.HTTPServer(("127.0.0.1", 0), Redirects)
+    for server in (first, other):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        response = urllib_transport(
+            HttpRequest(
+                "GET", f"http://127.0.0.1:{first.server_port}/rest/v1/runs", {"apikey": "k"}
+            )
+        )
+    finally:
+        first.shutdown()
+        other.shutdown()
+    assert response.status == 302
+    assert seen == []
