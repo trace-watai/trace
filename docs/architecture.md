@@ -131,9 +131,12 @@ work — note it in the PR instead. See CONTRIBUTING.md.
 
 ## What is deliberately absent (see ADR-0001)
 
-No vector DB, no Docker/Kubernetes, no hosted services, no database, no
-live LLM calls in tests. Each becomes worth adding only after the thing it
+No vector DB, no Docker/Kubernetes, no server of our own, and no live LLM
+calls in tests. Each becomes worth adding only after the thing it
 replaces demonstrably hurts. The dashboard was on this list when ADR-0001 was
 written. #58 scaffolded `apps/dashboard/`, #119 rendered the first failure card
 from a bundled fixture, and #149 and #150 moved it onto retained runs, which it
-reads directly off disk with no service behind it.
+reads directly off disk with no service behind it. Hosting came off the list
+with #205. CI can copy the retained evidence into a Supabase project for public
+reads (see [public_results.md](public_results.md)), and nothing in the
+pipeline, the tests or the dashboard depends on it.

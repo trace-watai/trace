@@ -1,7 +1,8 @@
 > **Superseded.** This review describes `main` as it stood on July 28, 2026.
 > Almost every gap it names has since closed. Read it as a record of what the
-> project looked like at that point. The current state is in
-> `docs/acceptance/v0-tag.md`, which #46 creates when it tags.
+> project looked like at that point. For `main` today start at
+> `docs/README.md`. `docs/acceptance/v0-tag.md` will record the state at the
+> tag once #46 tags.
 
 # TRACE Project State and Integration Review — July 28, 2026
 

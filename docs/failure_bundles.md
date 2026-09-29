@@ -372,8 +372,7 @@ label against the retained artifact, and its basis against the
 classification rule, before treating it as gating. When an artifact's
 `static_ok` label is not supported by its own basis, as with a label set by
 hand, replay prints a warning and records the verdicts as advisory. A
-`0.1.0` file, which is what `main` writes until this schema lands, carries
-no label. Its verdicts read as not recorded and advisory, and an unrecorded
+`0.1.0` file, written before #228, carries no label. Its verdicts read as not recorded and advisory, and an unrecorded
 label is never compared with the artifact's current one.
 
 Each re-run also records the `task_fixture` it was built from, and

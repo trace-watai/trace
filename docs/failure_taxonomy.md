@@ -173,8 +173,9 @@ the taxonomy itself. Seven check ids have no category yet:
 `incomplete_retrieval_coverage`, `policy_not_retrieved_before_action`,
 `unexpected_escalation`, `unexpected_refund_issued` and
 `unnecessary_escalation`. A run failing only on those attributes with
-`primary_failure_category: unknown` and an ambiguity note saying so, instead of
-a guessed category. The gap closes as the map grows.
+`primary_failure_category: unknown` and an ambiguity note saying so, unless its
+reasoning cited a deprecated doc, which makes the root cause
+`stale_source_authority`. The gap closes as the map grows.
 
 ## Post-block outcome labels
 

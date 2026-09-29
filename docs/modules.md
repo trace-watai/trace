@@ -104,8 +104,8 @@ select record/replay. Suite agent configs accept the same `cassette` object.
 Each versioned entry pins its step, transcript hash (including provider state),
 tool-declaration hash, provider, resolved model, temperature, seed, timeout,
 and prompt version. `run_config.json` retains those settings, cassette mode,
-and resolved path. `RunConfig` and `SuiteSpec` added cassettes in `0.2.0` and
-are `0.3.0` since #196; older data remains readable with cassettes disabled.
+and resolved path. `RunConfig` and `SuiteSpec` added cassettes in `0.2.0`, and
+older data remains readable with cassettes disabled.
 Changing a setting or request requires a new recording. Replay never falls back
 to the network. An entry recorded from a live adapter also keeps the step's
 token counts under the provider's own usage key and its `call_record`, so the

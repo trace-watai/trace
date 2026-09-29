@@ -121,10 +121,10 @@ for every contract and a sub-second offline test suite.
 - **API & dashboard**: the run list, run detail, failure card and trace
   timeline read retained runs, and the timeline marks attribution steps and
   shows each step's failed checks. The dedicated verifier and attribution
-  views and the repair and regression panels remain. Retained results are
-  hosted in Supabase for public reads, and a local API wrapper over
-  `RunReader` stays a plan. See [docs/public_results.md](docs/public_results.md)
-  and
+  views and the repair and regression panels remain. CI publishes the
+  retained results to Supabase for public reads once the project's secrets
+  are set, which they are not yet, and a local API wrapper over `RunReader`
+  stays a plan. See [docs/public_results.md](docs/public_results.md) and
   [docs/future_dashboard.md](docs/future_dashboard.md).
 - **Replay** — pinned state, documents, normalized agent actions, verifier
   checks, controls, and positive siblings are executable. Wider task-family

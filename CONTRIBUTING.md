@@ -56,8 +56,10 @@ Every PR includes:
    body says why the expectation legitimately moved.
 
 Keep PRs small and within your lane's folders. Reviewers come from the lane
-that owns the folder (see `docs/team_ownership.md`); add the TPM lane for
-anything cross-cutting, schema-versioned, or ADR-worthy. Ask for TPM review by tagging the PR `needs-tpm` (or pinging
+that owns the folder (see `docs/team_ownership.md`). A PR that changes a shared
+contract, such as a schema version, an artifact file, a trace event, a CLI flag
+or a TypeScript mirror, also gets a reviewer from the consuming lane. Add the
+TPM lane for anything cross-cutting or ADR-worthy. Ask for TPM review by tagging the PR `needs-tpm` (or pinging
 in the team channel) rather than letting it idle.
 
 ## Agent-session metadata (Entire.io)
@@ -103,8 +105,9 @@ contracts. Members are listed in `docs/team_ownership.md`.
 - Determinism in fixture mode is sacred: no clocks in state, no
   randomness, no network in tests. CI runs with **no API keys** — code
   accordingly.
-- TODOs carry a lane: `# TODO(evaluation-core/verifier): …`. Honest TODOs
-  beat fake completeness, and an unowned TODO gets deleted.
+- TODOs carry a lane, as in `# TODO(evaluation-core/verifier): …`. An older
+  TODO that names a person belongs to that person's lane. Honest TODOs beat
+  fake completeness, and an unowned TODO gets deleted.
 - Don't hardcode scenario content in `src/` — scenario content is fixture
   data. (There is no "Casey Nguyen" anywhere in the package; keep it that
   way.)
