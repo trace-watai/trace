@@ -104,8 +104,8 @@ select record/replay. Suite agent configs accept the same `cassette` object.
 Each versioned entry pins its step, transcript hash (including provider state),
 tool-declaration hash, provider, resolved model, temperature, seed, timeout,
 and prompt version. `run_config.json` retains those settings, cassette mode,
-and resolved path. `RunConfig` and `SuiteSpec` added cassettes in `0.2.0` and
-are `0.3.0` since #196; older data remains readable with cassettes disabled.
+and resolved path. `RunConfig` and `SuiteSpec` added cassettes in `0.2.0`, and
+older data remains readable with cassettes disabled.
 Changing a setting or request requires a new recording. Replay never falls back
 to the network. An entry recorded from a live adapter also keeps the step's
 token counts under the provider's own usage key and its `call_record`, so the
@@ -138,7 +138,7 @@ outcome `abandoned`. The SDKs' own retries are off (`max_retries=0`), so every
 attempt is recorded: the `CallRecord` rides on `AgentAction.call_record` into
 the `model_response` event, or on the error into the `error` event, and
 cassettes keep it so a replay shows the same retries. `run_config.json` records
-the policy as `call_policy` (`RunConfig 0.3.0`); a suite agent config may
+the policy as `call_policy` (`RunConfig 0.4.0`); a suite agent config may
 override it field by field, and fields it leaves out keep the provider's
 default.
 
@@ -211,10 +211,10 @@ BatchRunEntry` for one cell with the batch's failure isolation; `build_suite_rep
 on-disk artifacts — checks fired, failure categories, claimed-vs-observed
 coverage; see [suite_report.md](suite_report.md)).
 
-A suite may set `max_cost_usd` (`Suite 0.3.0`). `BatchRunner` asks
+A suite may set `max_cost_usd` (`Suite 0.4.0`). `BatchRunner` asks
 `BudgetGuard` before each run and stops the batch once the recorded spend of
 its live runs reaches the cap, which the summary's `budget` block records as
-`budget_exhausted` along with the cells never run (`BatchSummary 0.3.0`). The
+`budget_exhausted` along with the cells never run (`BatchSummary 0.4.0`). The
 run that reaches the cap records the stop, so the summary says so even when it
 was the last cell. A live run of an unpriced model under a cap is refused
 before it starts, and a live run that finishes with no recorded cost stops the

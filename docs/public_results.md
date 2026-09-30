@@ -247,8 +247,8 @@ migrations.
 
 A change upstream reaches the tables in one of three ways.
 
-- An artifact schema bump, such as `FailureCard` or `RunIndexEntry` in #211,
-  `Experiment` in #203 or a batch summary change, needs no migration. The
+- An artifact schema bump, such as `FailureCard` or `RunIndexEntry` in #211 or
+  a batch summary change, needs no migration. The
   `jsonb` columns take the new JSON, the content hash changes, and the next
   push to `main` re-uploads the affected rows. The hosted reader validates
   with the harness's current models, which already have to read the older

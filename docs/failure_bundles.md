@@ -269,7 +269,7 @@ finding becomes a permanent test.
 
 | Field | Type | Required | Source | Description |
 |---|---|---|---|---|
-| `schema_version` | `str` | auto | hardcoded | Schema version; bump when fields are added or removed (currently `0.5.0`) |
+| `schema_version` | `str` | auto | hardcoded | Schema version; bump when fields are added or removed (`FailureCard 0.5.0`) |
 | `run_id` | `str` | yes | runner | Unique ID of the run that produced this failure |
 | `task_id` | `str` | yes | task spec | ID of the task that was attempted |
 | `title` | `str` | yes | generated | Short headline: task title + first failed check message |
@@ -339,7 +339,7 @@ notices.
 
 ### Control validation
 
-`replay --apply-control` writes `repair_validation.json` at schema `0.3.0`
+`replay --apply-control` writes `repair_validation.json` at `RepairValidation 0.3.0`
 under `<output-runs-dir>/<source_run_id>/`, reading prescriptions beside the
 input regression artifact. Invalid or mismatched packages fail before replay;
 empty packages produce no verdicts. Without a package, selected reference
@@ -372,8 +372,7 @@ label against the retained artifact, and its basis against the
 classification rule, before treating it as gating. When an artifact's
 `static_ok` label is not supported by its own basis, as with a label set by
 hand, replay prints a warning and records the verdicts as advisory. A
-`0.1.0` file, which is what `main` writes until this schema lands, carries
-no label. Its verdicts read as not recorded and advisory, and an unrecorded
+`0.1.0` file, written before #228, carries no label. Its verdicts read as not recorded and advisory, and an unrecorded
 label is never compared with the artifact's current one.
 
 Each re-run also records the `task_fixture` it was built from, and
@@ -471,7 +470,7 @@ remains advisory for live-agent recovery under ADR-0002.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `schema_version` | `str` | auto | Currently `0.2.0` |
+| `schema_version` | `str` | auto | `RepairPackage 0.3.0` |
 | `run_id` | `str` | yes | Run that produced this package |
 | `task_id` | `str` | yes | Task that was attempted |
 | `summary` | `str` | yes | How many controls, which checks they address, overall severity |
