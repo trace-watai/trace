@@ -628,6 +628,49 @@ def test_a_classified_static_ok_label_validates_as_gating(tmp_path, capsys, clas
     assert "gating labels are predicted until #159 measures them" in out
 
 
+def test_a_static_ok_label_does_not_gate_a_control_it_was_not_predicted_for(
+    tmp_path, capsys, monkeypatch, classified_static_ok
+):
+    """The label is a prediction about the controls its basis names (#194 review).
+
+    The second refund control is the same guardrail under another id, so it is
+    accepted exactly as the first is. Only the first was placed when the label
+    was predicted, so only the first gates.
+    """
+    artifact = _bundle_artifact(tmp_path)
+    original = reference_controls()[0]
+    additional = original.model_copy(deep=True)
+    additional.control_id = "ctl_additional"
+    additional.provenance.repair_control = "additional_refund_control"
+    monkeypatch.setattr(controls_module, "reference_controls", lambda: [original, additional])
+    _edit_json(
+        artifact.with_name(names.REPAIR_PACKAGE),
+        lambda p: p["controls"].append({**p["controls"][0], "name": "additional_refund_control"}),
+    )
+    capsys.readouterr()
+
+    code, validation = _replay_validation(
+        tmp_path,
+        artifact,
+        ("--control", REFUND_WINDOW_CONTROL_ID, "--control", additional.control_id),
+    )
+
+    assert code == 0
+    accepted = {
+        c.control_id: c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED
+    }
+    assert set(accepted) == {REFUND_WINDOW_CONTROL_ID, additional.control_id}
+    assert accepted[REFUND_WINDOW_CONTROL_ID].standing == "gating"
+    assert not accepted[additional.control_id].label_supported
+    assert accepted[additional.control_id].standing == "advisory"
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (1, 1)
+    out = capsys.readouterr().out
+    assert (
+        "static_ok was predicted for ctl_refund_window_v1 only; "
+        "verdicts for ctl_additional are recorded as advisory." in out
+    )
+
+
 def test_rollup_splits_accepted_verdicts_by_standing() -> None:
     validation = RepairValidation(
         run_id="run_x",
@@ -884,10 +927,39 @@ def test_a_label_is_supported_when_its_basis_classifies_as_it(replay_mode, basis
     assert basis_supports_label(artifact) is supported
 
 
+def test_a_static_ok_label_backs_only_the_controls_its_basis_names() -> None:
+    artifact = regression_artifact(replay_mode="static_ok", basis=static_ok_basis())
+    assert basis_supports_label(artifact, REFUND_WINDOW_CONTROL_ID)
+    assert gating_refusal(artifact, REFUND_WINDOW_CONTROL_ID) is None
+    assert not basis_supports_label(artifact, "ctl_other")
+    assert gating_refusal(artifact, "ctl_other") == (
+        "the artifact's static_ok label was predicted for ctl_refund_window_v1 only"
+    )
+    # A verdict for another control that recorded the artifact-wide answer
+    # claims gating, and the artifact does not back it.
+    borrowed = ControlValidation(
+        control="other",
+        verdict=ControlVerdict.ACCEPTED,
+        control_id="ctl_other",
+        replay_mode="static_ok",
+        predicted_by="heuristic_v1",
+        label_supported=True,
+    )
+    assert borrowed.standing == "gating"
+    assert not verdict_gates(borrowed, artifact)
+    # live_required claims nothing about any control, so it holds for every one.
+    live = regression_artifact(
+        replay_mode="live_required",
+        basis=static_ok_basis().model_copy(update={"rule_kind": "requirement"}),
+    )
+    assert basis_supports_label(live, "ctl_other")
+
+
 def test_a_verdict_gates_only_against_an_artifact_that_backs_it() -> None:
     verdict = ControlValidation(
         control="a",
         verdict=ControlVerdict.ACCEPTED,
+        control_id=REFUND_WINDOW_CONTROL_ID,
         replay_mode="static_ok",
         predicted_by="heuristic_v1",
         label_supported=True,
@@ -900,6 +972,8 @@ def test_a_verdict_gates_only_against_an_artifact_that_backs_it() -> None:
     assert unsupported_verdict.standing == "advisory"
     assert not verdict_gates(unsupported_verdict, backing)
     assert not verdict_gates(verdict, None)
+    # A label is predicted for named controls, so a verdict naming none never gates.
+    assert not verdict_gates(verdict.model_copy(update={"control_id": None}), backing)
     assert not verdict_gates(verdict, regression_artifact(replay_mode="unlabeled"))
     unsupported = static_ok_basis().model_copy(update={"rule_kind": "requirement"})
     assert not verdict_gates(

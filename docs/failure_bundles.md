@@ -422,9 +422,12 @@ artifact whose own basis supports the label gating, and every place that
 prints gating also says the label is predicted.
 
 Each verdict records the artifact's `replay_mode`, its `predicted_by`,
-`label_supported` (whether the artifact's recorded basis classifies as its
-label), and the `standing` those give it: `gating` for a `static_ok` label
-with a recorded basis that classifies as `static_ok`, `advisory` otherwise.
+`label_supported`, and the `standing` those give it. `label_supported` says
+whether the artifact's recorded basis classifies as its label for this
+verdict's control. A `static_ok` label is a prediction about the controls its
+basis names (`replay_mode_basis.control_ids`), so it supports a verdict for
+one of those and no other. A verdict is `gating` when its `static_ok` label is
+supported and `advisory` otherwise.
 The verdict values are unchanged, so an advisory `accepted` still means the
 control held under replay, and it makes no claim about a live agent. The
 rollup splits `accepted` into `accepted_gating` and `accepted_advisory`.
@@ -492,18 +495,20 @@ Each entry records the basis of its acceptance in `acceptance`: the
 and the `standing` they support. The rule:
 
 - A control accepted against a `static_ok` artifact whose recorded basis
-  still classifies as `static_ok` enters as `gating`. That label is a
-  prediction until #159 measures it, and `controls list` says so.
+  still classifies as `static_ok` and names that control enters as
+  `gating`. That label is a prediction until #159 measures it, and
+  `controls list` says so.
 - Any other accepted control still enters, and is recorded as `advisory`.
-  That covers `live_required` and `unlabeled` artifacts and a `static_ok`
-  label with no basis or with a basis that does not classify as `static_ok`.
+  That covers `live_required` and `unlabeled` artifacts, a `static_ok`
+  label with no basis or with a basis that does not classify as `static_ok`,
+  and a control the basis does not name.
 - Advisory entries install like any active entry, so suites and replays run
   with them in place and measure their effect. Nothing downstream may report
   an advisory entry as proven.
 - Loading holds a recorded basis to the retained artifact and validation. A
   basis naming a different `replay_mode` or `predicted_by`, a `gating` basis
-  the artifact does not support, an `advisory` basis on an artifact that
-  does support gating, and a basis that names a predictor without a
+  the artifact does not support for that control, an `advisory` basis on an
+  artifact that does support gating for it, and a basis that names a predictor without a
   `replay_mode` all fail to load. A validation verdict is compared with the
   artifact only when it recorded a `replay_mode`, and then its
   `predicted_by` and `label_supported` must match the artifact too. A

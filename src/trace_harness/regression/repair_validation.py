@@ -23,6 +23,11 @@ every place that reports it says the label is predicted until #159 measures
 it. An accepted verdict on a ``live_required`` or ``unlabeled`` artifact, or
 on a ``static_ok`` label its basis does not support, says the control held
 under replay and nothing about a live agent.
+
+A ``static_ok`` label is a prediction about the controls its basis names
+(``replay_mode_basis.control_ids``), the ones the materializer placed at the
+first irreversible step. It says nothing about any other control, so a
+verdict for a control outside that set is advisory on the same artifact.
 """
 
 from __future__ import annotations
@@ -80,31 +85,43 @@ def predictor_of(artifact: RegressionArtifact) -> ReplayModePredictor | None:
     return artifact.replay_mode_basis.predicted_by if artifact.replay_mode_basis else None
 
 
-def basis_supports_label(artifact: RegressionArtifact) -> bool:
+def basis_supports_label(artifact: RegressionArtifact, control_id: str | None = None) -> bool:
     """Whether the artifact's recorded basis classifies as the label it carries.
 
     False when there is no basis. A label edited by hand after the
     materializer classified the basis is not supported by it.
+
+    Given a control, a ``static_ok`` label is supported only when the basis
+    was computed for that control. ``live_required`` claims nothing about any
+    control, so it holds for every one its basis classifies as.
     """
     basis = artifact.replay_mode_basis
-    return basis is not None and classify_replay_mode(basis) == artifact.replay_mode
+    if basis is None or classify_replay_mode(basis) != artifact.replay_mode:
+        return False
+    return (
+        control_id is None or artifact.replay_mode != "static_ok" or control_id in basis.control_ids
+    )
 
 
-def gating_refusal(artifact: RegressionArtifact) -> str | None:
+def gating_refusal(artifact: RegressionArtifact, control_id: str | None = None) -> str | None:
     """Why an artifact's label cannot back a gating verdict, or None when it can.
 
     The label has to be ``static_ok``, it has to come with its recorded basis,
     and that basis has to classify as ``static_ok`` under the same rule the
     materializer applied (``basis_supports_label``). A label edited by hand
-    fails the last two.
+    fails the last two. Given a control, the basis also has to have been
+    computed for it.
     """
     if artifact.replay_mode != "static_ok":
         return f"the artifact is {artifact.replay_mode}"
-    if artifact.replay_mode_basis is None:
+    basis = artifact.replay_mode_basis
+    if basis is None:
         return "the artifact's static_ok label has no recorded basis"
     if not basis_supports_label(artifact):
-        classified = classify_replay_mode(artifact.replay_mode_basis)
-        return f"the artifact's recorded basis classifies as {classified}"
+        return f"the artifact's recorded basis classifies as {classify_replay_mode(basis)}"
+    if control_id is not None and control_id not in basis.control_ids:
+        predicted_for = ", ".join(basis.control_ids)
+        return f"the artifact's static_ok label was predicted for {predicted_for} only"
     return None
 
 
@@ -170,9 +187,9 @@ class ControlValidation(BaseModel):
     # Who produced that label, from the artifact's replay_mode_basis. None
     # when the artifact carried no basis or the label was not recorded.
     predicted_by: ReplayModePredictor | None = None
-    # Whether the artifact's recorded basis classifies as its label
-    # (``basis_supports_label``). False when not recorded, so a verdict
-    # written without it stays advisory.
+    # Whether the artifact's recorded basis classifies as its label, for this
+    # verdict's control (``basis_supports_label``). False when not recorded,
+    # so a verdict written without it stays advisory.
     label_supported: bool = False
 
     @model_validator(mode="before")
@@ -202,15 +219,17 @@ def verdict_gates(verdict: ControlValidation, artifact: RegressionArtifact | Non
 
     The verdict's own label is only a claim. It gates when the verdict was
     recorded as gating and the retained artifact is present, carries the same
-    label and predictor, and passes ``gating_refusal``. Anything else is
-    advisory.
+    label and predictor, and passes ``gating_refusal`` for the verdict's own
+    control. Anything else is advisory, including a verdict that names no
+    control, since a label is only ever predicted for named ones.
     """
     return (
         artifact is not None
+        and verdict.control_id is not None
         and verdict.standing == "gating"
         and verdict.replay_mode == artifact.replay_mode
         and verdict.predicted_by == predictor_of(artifact)
-        and gating_refusal(artifact) is None
+        and gating_refusal(artifact, verdict.control_id) is None
     )
 
 

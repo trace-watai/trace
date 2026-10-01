@@ -143,7 +143,7 @@ def commit_controls(
     if len({c.control_id for c in accepted}) != len(accepted):
         raise ValueError("cannot commit duplicate control IDs")
 
-    basis = AcceptanceBasis.for_artifact(artifact)
+    bases = {c.control_id: AcceptanceBasis.for_artifact(artifact, c.control_id) for c in accepted}
     source_prefix = f"source/{_safe_run_id(source.run_id)}"
     files = {
         f"{source_prefix}/{names.REGRESSION_ARTIFACT}": artifact_path.read_bytes(),
@@ -154,7 +154,7 @@ def commit_controls(
     for control in accepted:
         control.provenance.run_id = source.run_id
         resolve_control(control)
-        check_acceptance(control, source, package, artifact, validation, basis)
+        check_acceptance(control, source, package, artifact, validation, bases[control.control_id])
         verdict = next(c for c in validation.controls if c.control_id == control.control_id)
         for rerun in [verdict.originating_rerun, *verdict.sibling_reruns]:
             assert rerun is not None
@@ -244,7 +244,7 @@ def commit_controls(
                             reason="accepted validation and proposed-library replay passed",
                         )
                     ],
-                    acceptance=basis,
+                    acceptance=bases[control.control_id],
                 )
                 for control in accepted
             )

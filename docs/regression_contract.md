@@ -199,7 +199,8 @@ use the fixture provider.
 
 Per-control validation and the control library apply the same rule, with
 one addition: a `static_ok` label only counts as gating there when the
-artifact's own recorded basis still classifies as `static_ok`. Every verdict
+artifact's own recorded basis still classifies as `static_ok` and was
+computed for the control being judged. Every verdict
 in `repair_validation.json` records the artifact's `replay_mode`, its
 `predicted_by`, whether that basis supports the label (`label_supported`),
 and whether those make it gating or advisory, and a library entry records

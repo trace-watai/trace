@@ -644,23 +644,27 @@ def _validate_controls(
     the whole point: a bundle verdict cannot say which control earned it.
 
     Every verdict carries the artifact's ``replay_mode``, ``predicted_by`` and
-    whether its recorded basis supports the label, so an acceptance on an
-    artifact that is not ``static_ok``, or on a ``static_ok`` label its basis
-    does not support, is recorded as advisory.
+    whether its recorded basis supports the label for that verdict's control,
+    so an acceptance on an artifact that is not ``static_ok``, on a
+    ``static_ok`` label its basis does not support, or for a control the label
+    was not predicted for, is recorded as advisory.
     """
     batch_id = new_batch_id()
     pinned_checks = set(artifact.verifier_checks)
     selected_ids = {c.control_id for c in controls}
-    label: dict[str, Any] = {
-        "replay_mode": artifact.replay_mode,
-        "predicted_by": predictor_of(artifact),
-        "label_supported": basis_supports_label(artifact),
-    }
+
+    def label(control_id: str | None) -> dict[str, Any]:
+        return {
+            "replay_mode": artifact.replay_mode,
+            "predicted_by": predictor_of(artifact),
+            "label_supported": basis_supports_label(artifact, control_id),
+        }
+
     validations: list[ControlValidation] = []
 
     for name, expected_checks, instance in _validation_plan(prescribed, controls):
         if instance is None:
-            validations.append(skipped_control(name, **label))
+            validations.append(skipped_control(name, **label(None)))
             print(f"  {name}: skipped (not materializable)")
             continue
         if instance.control_id not in selected_ids or not expected_checks:
@@ -674,7 +678,7 @@ def _validate_controls(
                     control=name,
                     verdict=ControlVerdict.SKIPPED,
                     reason=reason,
-                    **label,
+                    **label(instance.control_id),
                 )
             )
             print(f"  {name}: skipped ({reason})")
@@ -744,7 +748,7 @@ def _validate_controls(
             control_id=instance.control_id,
             originating_rerun=originating,
             sibling_reruns=sibling_reruns,
-            **label,
+            **label(instance.control_id),
         )
         validations.append(result)
         detail = reason or (
@@ -1024,6 +1028,16 @@ def _replay_with_report(
             f"  ⚠ static_ok is not supported by the artifact's own basis ({refusal}); "
             "these verdicts are recorded as advisory."
         )
+    basis = artifact.replay_mode_basis
+    if apply_control and refusal is None and artifact.replay_mode == "static_ok" and basis:
+        outside = [
+            c.control_id for c in individual_controls if c.control_id not in basis.control_ids
+        ]
+        if outside:
+            print(
+                f"  ⚠ static_ok was predicted for {', '.join(basis.control_ids)} only; "
+                f"verdicts for {', '.join(outside)} are recorded as advisory."
+            )
     if apply_control and artifact.replay_mode == "live_required":
         print("  ⚠ static replay is insufficient; a live agent must continue from the block point.")
     _print("pinned inputs:", "state + docs" + (" + agent actions" if script else " (no actions)"))
