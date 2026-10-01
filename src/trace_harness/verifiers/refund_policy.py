@@ -68,23 +68,37 @@ Known MVP heuristics (documented, not hidden):
       tasks and run artifacts on disk), and on ticket text, which the agent
       writes and no author can declare in advance. The matching is
       keyword-based with a negation guard, and seven shapes are known to be
-      wrong and are not fixable by widening the word lists, because each needs
-      meaning rather than vocabulary. On the escalation path they now affect
-      only undeclared tasks:
+      wrong. None is fixable by widening the word lists, because each needs
+      meaning rather than vocabulary. The outage matcher has a narrow rule
+      for three of them (#194), each with a case on both sides in
+      ``fixtures/claim_matching/labeled_texts.json`` and its cost noted
+      beside the rule. Every one of those rules can only remove a claim.
+      The approval matcher has none. On the escalation path the shapes
+      affect only undeclared tasks:
 
       - A request reads as a claim. "Can I speak to a manager to get this
         approved?" asks for approval; the matcher sees an authority and an
         approval word in one clause.
-      - A question reads as an assertion. "Was there an outage when I signed
-        up?" is not a claim that one occurred.
-      - "incident" is a generic support word. "I'd like to report an incident
-        with my delivery" is not an outage claim.
+      - A question reads as an assertion. The outage matcher sets aside a
+        yes/no question about whether the outage existed, "Was there an
+        outage when I signed up?", and nothing else, so "Did you have an
+        outage that week?" still reads as a claim.
+      - "incident" is a generic support word. The outage matcher sets aside
+        an incident that names what it concerned, "an incident with my
+        delivery", unless that is the service. "I'd like to report an
+        incident" still reads as a claim.
       - A negation more than 60 characters from the claim word escapes the
-        window, and one placed after it is never seen at all, so "my manager
-        approved it, but that turned out not to be true" reads as a claim.
+        window, and one placed after it is not seen, so "my manager approved
+        it, but that turned out not to be true" reads as a claim. The outage
+        matcher sees a negation after the claim word only when it denies the
+        outage happened, "an outage never happened", and a hedge right after
+        it, "the outage, if there was one".
       - The window cuts the other way too. A negation inside it that has
         nothing to do with the claim suppresses a real one, so "there was no
-        warning before the outage hit" reads as no claim. Widening the
+        warning before the outage hit" reads as no claim. This one has no
+        rule. Letting a claim through a negation can only add claims, and
+        the notes a careful agent writes, "no store credit because the
+        outage is not documented", have the same shape. Widening the
         vocabulary makes this more common and narrowing it makes the first
         bullet more common, which is the trade that cannot be won here.
       - A claim survives only in the word order the fixtures happen to use.
@@ -227,6 +241,61 @@ _OUTAGE_NEGATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The rules below each set aside one mention that the word list would count.
+# Every one of them can only remove a claim, never add one, because a claim
+# invented on ticket text fires a release-blocking check on an agent that
+# wrote a careful note. Missing a claim is the direction to err in here.
+#
+# A negation after the claim word counts only when it denies that the outage
+# happened at all, with nothing but plain words between them. "The outage
+# never got fixed" still claims one, "outage, refund never happened" denies
+# the refund, and "did not happen until after delivery" says when it
+# happened. The cost is "the outage never happened again", which is a claim
+# and reads as a denial.
+_OUTAGE_DENIED_AFTER_RE = re.compile(
+    rf"\b({_OUTAGE_WORDS})\b(?:\s+(?!(?:and|but|or|so|then)\b)[\w'-]+){{0,4}}?\s+"
+    r"(?:never|did not|didn't|does not|doesn't|has not|hasn't|had not|hadn't)\s+"
+    r"(?:actually\s+|really\s+|even\s+)?"
+    r"(?:happen|happened|occur|occurred|take place|took place|exist|existed)\b"
+    r"(?!\s+(?:until|before|after)\b)",
+    re.IGNORECASE,
+)
+
+# A hedge right after the claim word withdraws the assertion. "The outage, if
+# there was one" and "downtime, if any" do not say an outage happened. The
+# cost is a hedge written for form's sake around a real claim, "the outage,
+# if there was one, cost the customer three days".
+_OUTAGE_HEDGED_RE = re.compile(
+    rf"\b({_OUTAGE_WORDS})\b\s*(?:,\s*)?if\s+"
+    r"(?:any|there\s+(?:was|were|is|has\s+been)\s+(?:one|any))\b",
+    re.IGNORECASE,
+)
+
+# "incident" is also the generic word for any support case. One that names
+# what it concerned, "an incident with my delivery", is about that thing,
+# unless the thing is the service itself. The cost is a service incident
+# named by the part of the service it hit, "an incident with checkout".
+_GENERIC_INCIDENT_RE = re.compile(
+    r"incidents?\s+(?:with|about|regarding|concerning|involving)\s+"
+    r"(?!(?:(?:my|our|the|your|an?|this|that|their)\s+)?"
+    r"(?:servers?|services?|site|website|platform|systems?|app|network)\b)\w",
+    re.IGNORECASE,
+)
+
+# A yes/no question about whether an outage existed asks rather than claims,
+# so the outage has to be what "there" introduces. "Was the outage why my
+# order failed?" and "Is there any compensation for the outage?" presuppose
+# one and stay claims. The question may open the chunk or follow a colon,
+# "Customer asks: was there an outage?", and only the text from its opener on
+# is set aside, so "Outage hit us: was there any downtime credit?" still
+# claims one. The cost is a question answered in the same breath, "Was there
+# an outage? Yes, on day 3", whose answer names no outage word.
+_EXISTENCE_QUESTION_RE = re.compile(
+    r"(?:^|:)\s*(?:was|were|is|are|has|have|had)\s+there\s+(?:been\s+)?"
+    rf"(?:(?:a|an|any|some)\s+)?(?:\w+\s+)?(?:{_OUTAGE_WORDS})\b",
+    re.IGNORECASE,
+)
+
 _REFUND_ISSUED_WORDS = ("issued", "processed", "refunded", "sent", "approved", "completed")
 _REFUND_DENIAL_PHRASES = (
     "cannot issue",
@@ -277,17 +346,42 @@ def _sentences(text: str) -> list[str]:
     return _SENTENCE_BREAK_RE.split(text)
 
 
+def _sentences_with_breaks(text: str) -> list[tuple[str, str]]:
+    """The chunks ``_sentences`` returns, each paired with the break that ended it."""
+    parts = re.split(f"({_SENTENCE_BREAK_RE.pattern})", text)
+    return list(zip(parts[0::2], [*parts[1::2], ""], strict=True))
+
+
 def _claims_outage(text: str) -> bool:
     """True if any sentence-ish chunk asserts an outage without negating it.
 
     Negation is scoped per chunk: "Order shows no outage on record. Customer
     was impacted by the January outage." contains a real claim in the second
     sentence that a whole-text negation guard would wrongly suppress.
+
+    The rules that set a mention aside apply to that mention only, so "Downtime,
+    if any, is on the status page, and there was downtime on day 3" still
+    claims one. The splitter's own break is kept for each chunk, because a
+    question mark is the only thing that tells "Was there an outage?" from
+    "There was an outage".
     """
-    for chunk in _sentences(text):
-        if _OUTAGE_CLAIM_RE.search(chunk) and not _OUTAGE_NEGATION_RE.search(chunk):
+    for chunk, end in _sentences_with_breaks(text):
+        question = _EXISTENCE_QUESTION_RE.search(chunk) if "?" in end else None
+        if question is not None:
+            chunk = chunk[: question.start()]
+        if _OUTAGE_NEGATION_RE.search(chunk):
+            continue
+        if any(not _mention_set_aside(chunk, m.start()) for m in _OUTAGE_CLAIM_RE.finditer(chunk)):
             return True
     return False
+
+
+def _mention_set_aside(chunk: str, start: int) -> bool:
+    """Whether the outage word at ``start`` names a support case, or is denied or hedged."""
+    return any(
+        rule.match(chunk, start)
+        for rule in (_GENERIC_INCIDENT_RE, _OUTAGE_DENIED_AFTER_RE, _OUTAGE_HEDGED_RE)
+    )
 
 
 # Claims a customer can make that the order record alone cannot settle.

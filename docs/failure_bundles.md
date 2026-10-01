@@ -370,13 +370,20 @@ refund controls are selected, each gets its own verdict under the one
 prescription.
 
 The ticket matcher is shared by the verifier and the guardrail, and
-`fixtures/claim_matching/labeled_texts.json` holds 22 ticket texts both are
-tested against. Four are labeled with a meaning the shared matcher gets wrong
-today and are pinned as known wrong, since widening the matcher would trade
-one error for another. Each is an instance of a shape the verifier's module
-docstring documents: a question read as an assertion, "incident" as a
-generic support word, a negation inside the window that is about something
-else, and a negation placed after the claim word.
+`fixtures/claim_matching/labeled_texts.json` holds 43 ticket texts both are
+tested against. The matcher is a word list with a negation window, and
+beyond that it applies narrow rules that each set aside one mention. An
+existential question about the outage asks rather than claims. An
+"incident" that names something other than the service is a support case. A
+negation after the claim word counts only when it denies the outage
+happened, and a hedge such as "if there was one" withdraws the claim. Each
+rule has a case on either side of it in the set, and each rule's comment
+names what it costs. None of them can add a claim, because a claim invented
+on ticket text fails an agent that wrote a careful note. One text is pinned
+as known wrong for that reason. In "there was no warning before the outage
+hit" a negation about the warning suppresses a real claim, and a rule that
+let the claim through would also fire on "no store credit because the
+outage is not documented".
 
 Two of these will never have a `guardrail_ref`, and saying so is the point.
 `expected_action_contract_check` covers a remedy that was omitted or swapped,

@@ -159,6 +159,7 @@ def test_a_refund_block_states_the_rule_it_applied(refund_type, rule) -> None:
 def test_the_matcher_returns_what_the_labeled_set_records(case) -> None:
     """Where the matcher is known wrong, the case says so and pins today's answer."""
     assert claims_outage(case["text"]) is case["matcher"]
+    assert (case["matcher"] is case["claims"]) is ("known_wrong" not in case)
 
 
 @pytest.mark.parametrize("case", LABELED, ids=[c["text"][:40] for c in LABELED])
