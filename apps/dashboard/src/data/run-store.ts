@@ -23,6 +23,8 @@ export const ARTIFACT_NAMES = {
   failureCard: "failure_card.json",
   repairPackage: "repair_package.json",
   regressionArtifact: "regression_artifact.json",
+  /** Written instead of the three bundle files by a reproduction (#211). */
+  bundleRef: "bundle_ref.json",
 } as const;
 
 /** Runs-dir-level (not per-run): a derived, rebuildable index of all runs. */
@@ -56,6 +58,18 @@ export const runDir = (runId: string): string =>
   path.join(resolveRunsDir(), runId);
 
 export const runExists = (runId: string): boolean => existsSync(runDir(runId));
+
+/**
+ * True when `runId` names a directory beside other runs. A pointer between runs
+ * is joined onto the runs dir, so anything with a separator or a parent
+ * reference could read outside it. Mirrors `safe_run_dir_name` in
+ * `artifact_store.py`.
+ */
+export const isSiblingRunId = (runId: string): boolean =>
+  runId.length > 0 &&
+  runId !== "." &&
+  runId !== ".." &&
+  !/[/\\:]/.test(runId);
 
 export const artifactExists = (runId: string, fileName: string): boolean =>
   existsSync(path.join(runDir(runId), fileName));
@@ -100,6 +114,8 @@ export interface RawRunIndexEntry {
   provider?: string | null;
   model?: string | null;
   batch_id?: string | null;
+  /** The failure card this run belongs to; absent before index schema 0.6.0. */
+  bundle_key?: string | null;
 }
 
 /** Reads the runs-dir index; an absent index means no runs yet, not an error. */

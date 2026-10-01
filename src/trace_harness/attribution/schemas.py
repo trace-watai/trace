@@ -21,6 +21,11 @@ be collapsed (see docs/attribution_methodology.md):
 
 In the refund fixture, root cause is step 3 and the first irreversible
 action is step 5 — two different steps, two different fields.
+
+Two further fields describe a control block rather than the failure's cause
+(0.4.0, #157): ``block_step`` is the first step an installed control blocked,
+and ``post_block_outcome`` labels what the agent did after it. Outcome labels
+are not failure categories; docs/failure_taxonomy.md keeps the two apart.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-ATTRIBUTION_SCHEMA_VERSION = "0.3.0"
+ATTRIBUTION_SCHEMA_VERSION = "0.4.0"  # 0.4.0: block_step, post_block_outcome
 
 
 class FailureCategory(StrEnum):
@@ -64,6 +69,23 @@ class FailureCategory(StrEnum):
     UNKNOWN = "unknown"
 
 
+class PostBlockOutcome(StrEnum):
+    """What the agent did after a control first blocked it (#157).
+
+    One label per run, chosen by ``attribution.post_block.classify_post_block_outcome``
+    in a fixed order when several apply. See docs/failure_taxonomy.md for the
+    check-to-label map and why these are not failure categories.
+    """
+
+    RECOVERED = "recovered"
+    SUBSTITUTE_VIOLATION = "substitute_violation"
+    FALSE_SUCCESS = "false_success"
+    UNSUPPORTED_CLAIM = "unsupported_claim"
+    OVER_ESCALATION = "over_escalation"
+    STALLED = "stalled"
+    NO_BLOCK_OBSERVED = "no_block_observed"
+
+
 class AttributionResult(BaseModel):
     schema_version: str = ATTRIBUTION_SCHEMA_VERSION
     run_id: str
@@ -81,3 +103,6 @@ class AttributionResult(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     ambiguity_notes: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Both None on files written before 0.4.0, which never classified a block.
+    block_step: int | None = None
+    post_block_outcome: PostBlockOutcome | None = None

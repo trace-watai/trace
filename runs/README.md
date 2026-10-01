@@ -34,10 +34,10 @@ trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json
 trace-harness run-pipeline fixtures/tasks/refund_policy_valid_cash.json
 ```
 
-**Consumers:** the future dashboard and API (`docs/future_dashboard.md`,
-`docs/future_api.md`) read these files as their data source — the layout
-is the contract, defined in `src/trace_harness/tracing/artifact_store.py`
-(Samrath owns it).
+**Consumers:** the dashboard and the public results uploader
+(`docs/future_dashboard.md`, `docs/public_results.md`) read these files as
+their data source. The layout is the contract, defined in
+`src/trace_harness/tracing/artifact_store.py` (Samrath owns it).
 
 Do not commit run directories; do not hand-edit artifacts (regenerate
 instead — edited artifacts make debugging sessions lie to you).
