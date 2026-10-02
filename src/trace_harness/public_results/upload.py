@@ -52,6 +52,7 @@ from trace_harness.public_results.retained import stage_retained
 from trace_harness.public_results.rows import Row, build_rows
 from trace_harness.run_reader import RunReader
 from trace_harness.run_reader_supabase import URL_ENV
+from trace_harness.secret_scan import key_values, scan_paths
 
 SERVICE_KEY_ENV = "TRACE_SUPABASE_SERVICE_KEY"
 DEFAULT_RETAINED = "docs/acceptance"
@@ -231,9 +232,23 @@ def main(
 
     try:
         with tempfile.TemporaryDirectory(prefix="trace-public-results-") as tmp:
-            rows_by_table = prepare_rows(args.retained, Path(tmp) / "staged")
+            staged = Path(tmp) / "staged"
+            rows_by_table = prepare_rows(args.retained, staged)
+            # The rows are built from exactly these files, so a key in them would
+            # be published. The scan runs here as well as in CI, so a publish
+            # started by hand is held to it too.
+            hits = scan_paths([staged], values=key_values(), relative_to=staged)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if hits:
+        for hit in hits:
+            print(f"error: {hit}", file=sys.stderr)
+        print(
+            f"error: the key scan found {len(hits)} hit(s) in what would be published; "
+            "nothing was uploaded",
+            file=sys.stderr,
+        )
         return 2
     for table, rows in rows_by_table.items():
         print(f"{table}: {len(rows)} rows, {_row_bytes(rows)} bytes of JSON")

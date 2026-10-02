@@ -132,6 +132,15 @@ def test_clean_text_has_no_hits() -> None:
     assert [hit for line in lines for hit in scan_text(line)] == []
 
 
+def test_a_key_shape_inside_a_base64_signature_is_not_a_key() -> None:
+    """Gemini thought signatures are long base64 runs, and one can contain AIza
+    followed by 35 key characters; a key standing alone is still found."""
+    key = "AIza" + "B" * 35
+    signature = '{"thought_signature": "Eq0FCqoFARFNMg' + key + 'Qx9+/w=="}'
+    assert scan_text(signature) == []
+    assert [hit.kind for hit in scan_text('{"note": "' + key + '"}')] == ["Google API key"]
+
+
 def test_each_kind_is_reported_once_per_line() -> None:
     sample = PLANTED["Google API key"]
     text = f"{sample} {sample}\nclean\n{_json_string(chr(10) + sample)}\n"

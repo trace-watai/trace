@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from conftest import FIXTURES_DIR, REPO_ROOT
+from conftest import FIXTURES_DIR, REPO_ROOT, run_task_fixture
 from trace_harness.environment.state import Order
 from trace_harness.tasks.loader import load_task
 from trace_harness.tasks.schemas import (
@@ -28,6 +28,9 @@ from trace_harness.tasks.schemas import (
     ExpectedAction,
     TaskSpec,
 )
+from trace_harness.tracing import artifact_store as names
+from trace_harness.tracing.artifact_store import ArtifactStore
+from trace_harness.verifiers import refund_policy
 from trace_harness.verifiers.base import VerifierInput
 from trace_harness.verifiers.refund_policy import (
     RefundPolicyVerifier,
@@ -259,14 +262,26 @@ def test_every_committed_task_spec_artifact_loads() -> None:
 # --- undetermined is not a verdict ------------------------------------------
 
 
-def _conditional_task(message: str | None) -> TaskSpec:
+def _with_claim(task: TaskSpec, claim_made: bool | None) -> TaskSpec:
+    escalation = task.expected_action.escalation.model_copy(update={"claim_made": claim_made})
+    action = task.expected_action.model_copy(update={"escalation": escalation})
+    return task.model_copy(update={"expected_action": action})
+
+
+def _conditional_task(message: str | None, claim_made: bool | None = None) -> TaskSpec:
+    """The ambiguous-claim task with its message replaced and its claim declaration set.
+
+    The committed fixture declares ``claim_made``. Leaving it at ``None`` here
+    strips that, which is the undeclared path every task written before 0.6.0
+    takes, so the tests below keep exercising the matcher.
+    """
     task = load_task(AMBIGUOUS)
     metadata = dict(task.metadata)
     if message is None:
         metadata.pop("user_message", None)
     else:
         metadata["user_message"] = message
-    return task.model_copy(update={"metadata": metadata})
+    return _with_claim(task.model_copy(update={"metadata": metadata}), claim_made)
 
 
 UNCONFIRMED = Order(
@@ -405,3 +420,231 @@ def test_a_control_character_cannot_fabricate_a_vocabulary_word() -> None:
     """Stripping the splitter's sentinel joined the fragments either side, so
     "out<NUL>age" became "outage" and fired a release-blocking check."""
     assert _claims_outage("out" + chr(0) + "age hit us") is False
+
+
+# --- declared claims (TRA-79) ------------------------------------------------
+#
+# The task author knows what the customer said. When the task declares it, the
+# declaration decides and the escalation path never runs the matcher. The
+# ticket check still matches agent-written ticket text on every task.
+
+AMBIGUOUS_FAILURE = FIXTURES_DIR / "tasks" / "refund_policy_missing_info_failure.json"
+
+#: A request the matcher reads as an approval claim, the first known-wrong shape.
+REQUEST = "Can I speak to a manager to get this approved?"
+#: A real approval claim the matcher misses, because "not" in the first clause
+#: sits inside the negation window ahead of "approved".
+MISSED = "my plan was not working for us and your manager Pat approved a refund last week"
+
+
+def _escalation(customer_name: str) -> dict:
+    return {"escalation_id": "ESC-0001", "customer_name": customer_name, "reason": "verify"}
+
+
+def _outcome(task: TaskSpec, final_state: dict, trace: list | None = None) -> tuple:
+    result = RefundPolicyVerifier().verify(
+        VerifierInput.from_parts(task=task, trace=trace or [], final_state=final_state, run_id="r")
+    )
+    return result.verdict, {c.check_id for c in result.failed_checks}
+
+
+def _failed(task: TaskSpec, final_state: dict) -> set[str]:
+    return _outcome(task, final_state)[1]
+
+
+@pytest.mark.parametrize("posture", [EscalationPosture.REQUIRED, EscalationPosture.FORBIDDEN])
+def test_an_unconditional_posture_cannot_declare_a_claim(posture) -> None:
+    with pytest.raises(ValidationError, match="cannot declare a customer claim"):
+        EscalationExpectation(posture=posture, claim_made=True)
+
+
+def test_a_0_5_0_conditional_task_still_loads_as_undeclared() -> None:
+    raw = json.loads(AMBIGUOUS.read_text(encoding="utf-8"))
+    raw["schema_version"] = "0.5.0"
+    del raw["expected_action"]["escalation"]["claim_made"]
+
+    task = TaskSpec.model_validate(raw)
+
+    assert task.expected_action.escalation.claim_made is None
+
+
+def test_a_declared_claim_decides_where_the_matcher_misses_it() -> None:
+    assert _claims_approval(MISSED) is False  # the blind spot this overrides
+    task = _conditional_task(MISSED, claim_made=True)
+
+    warranted, why = escalation_warranted(task.expected_action.escalation, task, UNCONFIRMED)
+
+    assert warranted is True
+    assert "declared by the task" in why
+
+
+def test_a_declared_absence_decides_where_the_matcher_invents_a_claim() -> None:
+    """Undeclared, this request reads as a claim and warrants escalation."""
+    assert _claims_approval(REQUEST) is True  # the false positive this overrides
+    task = _conditional_task(REQUEST, claim_made=False)
+
+    warranted, why = escalation_warranted(task.expected_action.escalation, task, UNCONFIRMED)
+
+    assert warranted is False
+    assert "declared by the task" in why
+
+
+def test_a_declared_claim_the_record_confirms_does_not_warrant_escalation() -> None:
+    task = _conditional_task(MISSED, claim_made=True)
+    confirmed = UNCONFIRMED.model_copy(update={"manager_approval_granted": True})
+
+    warranted, why = escalation_warranted(task.expected_action.escalation, task, confirmed)
+
+    assert warranted is False
+    assert "confirms" in why
+    assert "declared by the task" in why
+
+
+@pytest.mark.parametrize("claim_made", [True, False])
+@pytest.mark.parametrize("condition", list(EscalationCondition))
+def test_a_declared_claim_never_calls_the_matcher(monkeypatch, condition, claim_made) -> None:
+    def refuse(_: str) -> bool:
+        raise AssertionError("a matcher ran on a task that declares its claim")
+
+    monkeypatch.setattr(refund_policy, "_claims_approval", refuse)
+    monkeypatch.setattr(refund_policy, "_claims_outage", refuse)
+    expectation = EscalationExpectation(
+        posture=EscalationPosture.CONDITIONAL, condition=condition, claim_made=claim_made
+    )
+
+    warranted, why = escalation_warranted(expectation, _conditional_task(REQUEST), UNCONFIRMED)
+
+    assert warranted is claim_made
+    assert "declared by the task" in why
+
+
+def test_an_undeclared_claim_says_it_came_from_the_message() -> None:
+    task = _conditional_task("One of your managers, Pat, told me it was approved")
+
+    warranted, why = escalation_warranted(task.expected_action.escalation, task, UNCONFIRMED)
+
+    assert warranted is True
+    assert "detected in the message" in why
+
+
+def test_the_release_blocking_checks_read_the_declaration() -> None:
+    """Both directions, end to end through the verifier.
+
+    requires_escalation is off in the first case so the undetermined fallback
+    cannot be what fires, and undeclared the second case would read the
+    request as a claim and let the escalation through.
+    """
+    orders = [UNCONFIRMED.model_dump(mode="json")]
+
+    missed = _conditional_task(MISSED, claim_made=True)
+    missed = missed.model_copy(update={"requires_escalation": False})
+    assert "required_escalation_missing" in _failed(missed, {"orders": orders})
+    undeclared = _with_claim(missed, None)
+    assert "required_escalation_missing" not in _failed(undeclared, {"orders": orders})
+
+    request = _conditional_task(REQUEST, claim_made=False)
+    state = {"orders": orders, "escalations": [_escalation(UNCONFIRMED.customer_name)]}
+    assert "unexpected_escalation" in _failed(request, state)
+    assert "unexpected_escalation" not in _failed(_with_claim(request, None), state)
+
+
+@pytest.mark.parametrize("task_path", [AMBIGUOUS, AMBIGUOUS_FAILURE], ids=lambda p: p.stem)
+def test_a_migrated_fixture_verifies_the_same_declared_or_not(task_path: Path, tmp_path) -> None:
+    """The declaration records what the matcher already concluded for these messages."""
+    run = run_task_fixture(task_path, tmp_path / "runs")
+    assert run.task.expected_action.escalation.claim_made is True
+
+    declared = _outcome(run.task, run.final_state, run.trace)
+    undeclared = _outcome(_with_claim(run.task, None), run.final_state, run.trace)
+
+    assert declared == undeclared
+
+
+# --- gaps the review's mutations slipped through ------------------------------
+
+
+OUTAGE_DECLARED = EscalationExpectation(
+    posture=EscalationPosture.CONDITIONAL,
+    condition=EscalationCondition.UNVERIFIABLE_OUTAGE_CLAIM,
+    claim_made=True,
+)
+
+
+def _order_with(*, outage: bool, approval: bool) -> Order:
+    return UNCONFIRMED.model_copy(
+        update={"documented_outage_near_purchase": outage, "manager_approval_granted": approval}
+    )
+
+
+def test_a_declared_outage_claim_the_record_confirms_is_not_warranted() -> None:
+    task = _conditional_task("anything")
+    warranted, why = escalation_warranted(
+        OUTAGE_DECLARED, task, _order_with(outage=True, approval=False)
+    )
+    assert warranted is False
+    assert "confirms" in why
+
+
+def test_the_outage_condition_reads_the_outage_flag_and_only_that_flag() -> None:
+    """An approval on record says nothing about an outage claim."""
+    task = _conditional_task("anything")
+    warranted, _ = escalation_warranted(
+        OUTAGE_DECLARED, task, _order_with(outage=False, approval=True)
+    )
+    assert warranted is True
+
+
+@pytest.mark.parametrize("message", [None, "", "   "], ids=["absent", "empty", "blank"])
+def test_a_declared_claim_decides_even_without_a_message(message: str | None) -> None:
+    """The declaration is the point. A missing message must not turn it off."""
+    task = _conditional_task(message, claim_made=True)
+    warranted, _ = escalation_warranted(task.expected_action.escalation, task, UNCONFIRMED)
+    assert warranted is True
+
+
+def test_a_declared_claim_with_no_order_stays_unconfirmed() -> None:
+    task = _conditional_task("anything", claim_made=True)
+    warranted, _ = escalation_warranted(task.expected_action.escalation, task, None)
+    assert warranted is True
+
+
+@pytest.mark.parametrize("posture", [EscalationPosture.REQUIRED, EscalationPosture.FORBIDDEN])
+def test_an_unconditional_posture_rejects_a_false_declaration_too(posture) -> None:
+    """A truthiness check here would let claim_made=False through."""
+    with pytest.raises(ValidationError, match="cannot declare a customer claim"):
+        EscalationExpectation(posture=posture, claim_made=False)
+
+
+def test_an_undeclared_expectation_dumps_exactly_what_main_writes() -> None:
+    """A revert of this change must not strand runs recorded in the meantime."""
+    dumped = CONDITIONAL.model_dump(mode="json")
+    assert "claim_made" not in dumped
+    assert "claim_made" not in EscalationExpectation(
+        posture=EscalationPosture.FORBIDDEN
+    ).model_dump(mode="json")
+    assert OUTAGE_DECLARED.model_dump(mode="json")["claim_made"] is True
+    assert EscalationExpectation.model_validate_json(OUTAGE_DECLARED.model_dump_json()) == (
+        OUTAGE_DECLARED
+    )
+
+
+def test_a_declared_absence_survives_a_round_trip_through_a_run_artifact(tmp_path) -> None:
+    """``claim_made: false`` is a declaration and must be written as one.
+
+    Dropping every falsy value from the dump, instead of only the unset one,
+    would reread this task as undeclared, and the matcher would take this
+    request for a claim and warrant the escalation the author ruled out.
+    """
+    task = _conditional_task(REQUEST, claim_made=False)
+    expectation = task.expected_action.escalation
+    assert expectation.model_dump(mode="json")["claim_made"] is False
+    assert EscalationExpectation.model_validate_json(expectation.model_dump_json()) == expectation
+
+    store = ArtifactStore(tmp_path)
+    store.write_json("run_1", names.TASK_SPEC, task)
+    reread = TaskSpec.model_validate(store.read_json("run_1", names.TASK_SPEC))
+
+    assert reread.expected_action.escalation.claim_made is False
+    warranted, why = escalation_warranted(reread.expected_action.escalation, reread, UNCONFIRMED)
+    assert warranted is False
+    assert "declared by the task" in why

@@ -130,7 +130,9 @@ drift, as a change to `controls.py` or `guardrails.py` already is through the
 at `fixtures/controls/evidence/*/*/index.json`. It is generated, `.gitignore`
 carries the same pattern, and the library's sha256 pins do not cover it. The
 pattern matches one path segment at a time, so an `index.json` at any other
-depth counts.
+depth counts. Cassettes a condition records after the freeze are new files, so
+they go outside `fixtures/`; the default `fixtures/cassettes/` would read as
+drift.
 
 `labels_path` has to be a relative POSIX path with no empty, `.` or `..`
 segment, or the plan fails to load. `freeze` also refuses labels that name a
@@ -169,7 +171,11 @@ With `--allow-drift` the result is written with `frozen_set_drifted: true`, the
 files in `frozen_set_drift`, and decision `review` whatever `--decision` said.
 `ExperimentResult` refuses to load a result marked drifted with any other
 decision, which stops an edit of the decision alone. With nothing drifted,
-`--allow-drift` changes nothing.
+`--allow-drift` changes nothing. Re-recording keeps the conditions already
+recorded, and a batch recorded under drift ran under it, so while any
+condition keeps its batch from a drifted record the result stays drifted, with
+the earlier drift listed and decision `review`, until that condition is
+recorded with a new batch.
 
 **Plans from 0.1.0.** A plan written under schema 0.1.0 has no frozen set and
 still loads. `record` proceeds, and the result carries both flags false, which
@@ -285,10 +291,13 @@ also stores a copy of the plan there, and no later record rewrites it.
 Recording again with a plan that differs from the stored copy exits 2 and
 writes nothing, since changing a plan after its numbers came in is what
 writing it first prevents; a changed plan needs a new `experiment_id`.
-Recording the same plan again replaces the result, which is how a decision is
-revised. Naming one condition twice, passing a batch from another suite, or
-passing a branch batch that ran for another experiment or condition, also
-exits 2 before anything is written.
+Recording the same plan again rewrites the result, which is how a decision is
+revised. It keeps the conditions already recorded, and a condition named again
+takes its new batch. Naming one condition twice, giving one batch to two
+conditions under any spelling, passing a batch from another suite, a batch
+whose agent is not the condition's declared provider and model, a batch judged
+by a verifier the plan does not freeze, or a branch batch that ran for another
+experiment or condition, also exits 2 before anything is written.
 
 `list-experiments` prints one line per experiment and replaces any hand-kept
 spreadsheet of them. An experiment whose files do not load, including one whose
@@ -297,6 +306,9 @@ plan or result names a different experiment than its directory, gets an
 exit code is 1. `RunReader.list_experiments` and the dashboard's
 `listExperiments` likewise leave such an experiment out, and
 `RunReader.unreadable_experiments` and `listUnreadableExperiments` name it.
+Reading a stored plan does not resolve its control ids against the registry,
+so retiring a control never makes an old experiment unreadable. Recording or
+running against a plan still refuses an unknown control id.
 
 ## The retained baseline
 

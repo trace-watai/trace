@@ -54,7 +54,10 @@ makes the bundle stage's two index calls under the bundle lock, as
 `find_bundle_card`, as a `run-suite` cell's lookup is. A run's
 `run_result.json` appears just before its first index call, and its card or
 pointer just after its lookup, since `record_bundle` writes those last, so each
-lookup sees the directory a real sweep would. A key's first occurrence misses
+lookup finds the cards and results a real sweep would. Every later run's
+directory is on disk from the start, though, and the lookup stats those too, so
+the replay overstates the write totals slightly, on the side of cost. A key's
+first occurrence misses
 the index and scans every card, and each repeat finds the card through the
 index. The script stops unless every lookup finds what the bundle stage would.
 

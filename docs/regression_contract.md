@@ -168,7 +168,7 @@ runs this same collection and pins both counts.
 A generated run that reproduced an earlier card holds a `bundle_ref.json`
 pointer and no artifact of its own (#211). It passes the suite's coverage check
 through the artifact of the run it points to and is not collected, so each
-bundle key is replayed once. See
+bundle key is replayed once per runs directory or scope. See
 [failure_bundles.md](failure_bundles.md#replay-and-the-regression-gate).
 
 Each pinned failure must reproduce and every declared positive sibling must pass.
@@ -187,10 +187,27 @@ It reads an explicit `replay_mode` when present, defaulting older artifacts to
 | `static_ok` | Gates: pinned checks must disappear, no blocking failure may remain, and the scenario and passing siblings must complete. |
 | `live_required` or `unlabeled` | Advisory, including control failures/errors; does not affect the exit code or count as confirmed. |
 
-Until #156 labels artifacts, all control results remain advisory. Control counts
-are per artifact under the current reference-control set, not per individual
-control. #146's per-control reports can replace that validation call once merged.
-This command runs no live agents; optional suites must use the fixture provider.
+Artifacts materialized since #156 carry a label. In the CI gate today the
+retained `docs/acceptance/runs` artifact predates the label and reads as
+`unlabeled`, and the five bundle artifacts are `live_required`, so every
+control result there is advisory. Control counts are per artifact under the
+current reference-control set; the collector does not read the per-control
+verdicts in `repair_validation.json` (#146).
+
+`collect-regressions` runs no live agents, and a `--suite` given to it must
+use the fixture provider.
+
+Per-control validation and the control library apply the same rule, with
+one addition: a `static_ok` label only counts as gating there when the
+artifact's own recorded basis still classifies as `static_ok` and was
+computed for the control being judged. Every verdict
+in `repair_validation.json` records the artifact's `replay_mode`, its
+`predicted_by`, whether that basis supports the label (`label_supported`),
+and whether those make it gating or advisory, and a library entry records
+the same basis for its acceptance. Every `static_ok` label is
+predicted until #159 measures one. See
+[control validation](failure_bundles.md#control-validation) and
+[the control library](failure_bundles.md#control-library).
 
 | Exit | Meaning |
 |---|---|
@@ -295,8 +312,8 @@ the tool surface the run actually had instead.
 trace-harness replay <regression_artifact.json> --apply-control
 ```
 
-This installs the reference controls from `trace_harness/environment/controls.py`
-(every one of them, or only the ids given with repeatable `--control <id>`)
+This installs the reference controls from `trace_harness/environment/controls.py`,
+or, with repeatable `--control <id>`, any controls from its catalogue,
 on the environment before replaying, so a repair control can actually be
 *demonstrated* flipping the gate, not just described in a repair package.
 The installed control ids are printed at the top of the replay.

@@ -104,8 +104,8 @@ select record/replay. Suite agent configs accept the same `cassette` object.
 Each versioned entry pins its step, transcript hash (including provider state),
 tool-declaration hash, provider, resolved model, temperature, seed, timeout,
 and prompt version. `run_config.json` retains those settings, cassette mode,
-and resolved path. `RunConfig` and `SuiteSpec` added cassettes in `0.2.0` and
-are `0.3.0` since #196; older data remains readable with cassettes disabled.
+and resolved path. `RunConfig` and `SuiteSpec` added cassettes in `0.2.0`, and
+older data remains readable with cassettes disabled.
 Changing a setting or request requires a new recording. Replay never falls back
 to the network. An entry recorded from a live adapter also keeps the step's
 token counts under the provider's own usage key and its `call_record`, so the
@@ -138,7 +138,7 @@ outcome `abandoned`. The SDKs' own retries are off (`max_retries=0`), so every
 attempt is recorded: the `CallRecord` rides on `AgentAction.call_record` into
 the `model_response` event, or on the error into the `error` event, and
 cassettes keep it so a replay shows the same retries. `run_config.json` records
-the policy as `call_policy` (`RunConfig 0.3.0`); a suite agent config may
+the policy as `call_policy` (`RunConfig 0.4.0`); a suite agent config may
 override it field by field, and fields it leaves out keep the provider's
 default.
 
@@ -171,12 +171,13 @@ Three seams exist for controls. `register_pre_execute_hook` runs before a
 handler and can prevent the side effect. `register_post_execute_hook` runs
 after one and sees the result, so it can reject a record that should not stand,
 though the side effect has already happened. `register_final_answer_hook` runs
-on the answer itself, which never reaches the environment otherwise, and a
-block there ends the run as terminated with `blocked_by` on the `final_answer`
-event (trace schema 0.5.0). `install_control` refuses a control that reads the
-same rules through the same guardrail as an installed one but disagrees on
-`behavior_on_failure`, because ordering would otherwise decide the outcome and
-nobody decided the ordering.
+on the answer itself, which never reaches the environment otherwise. A block
+there is recorded with `blocked_by` on the `final_answer` event (trace schema
+0.5.0) and goes back to the agent as an observation, as a blocked tool call
+does, and the run goes on until an answer stands or a limit ends it.
+`install_control` refuses a control that reads the same rules through the same
+guardrail as an installed one but disagrees on `behavior_on_failure`, because
+ordering would otherwise decide the outcome and nobody decided the ordering.
 
 **Rules:** every tool declares a side-effect class (`read_only` /
 `external_durable` / `external_irreversible`) — attribution depends on it.
@@ -211,10 +212,10 @@ BatchRunEntry` for one cell with the batch's failure isolation; `build_suite_rep
 on-disk artifacts — checks fired, failure categories, claimed-vs-observed
 coverage; see [suite_report.md](suite_report.md)).
 
-A suite may set `max_cost_usd` (`Suite 0.3.0`). `BatchRunner` asks
+A suite may set `max_cost_usd` (`Suite 0.4.0`). `BatchRunner` asks
 `BudgetGuard` before each run and stops the batch once the recorded spend of
 its live runs reaches the cap, which the summary's `budget` block records as
-`budget_exhausted` along with the cells never run (`BatchSummary 0.3.0`). The
+`budget_exhausted` along with the cells never run (`BatchSummary 0.4.0`). The
 run that reaches the cap records the stop, so the summary says so even when it
 was the last cell. A live run of an unpriced model under a cap is refused
 before it starts, and a live run that finishes with no recorded cost stops the
@@ -223,23 +224,29 @@ exits 2. Fixture and replay runs cost exactly zero and are never refused on
 price.
 
 A live run that never got an answer costs exactly zero when the call policy
-gave up and every failed attempt carried an HTTP status, so one outage cell
-does not end a capped batch. Google documents that a request failing with a
-400 or 500 error is not charged; the same reading is applied to Anthropic and
-OpenAI, whose error pages do not say. A failure with no status, or a call
-abandoned at the run's timeout, may have been billed, and that run's cost stays
-null. A cell whose pipeline raised after its run started (in verification,
-bundling, or the runner's own bookkeeping) is a `setup_error` that keeps the
-run's id and the cost its trace records, so the guard still counts it. Every
-path prices a run through `run_cost_usd` in `batch.py`. `branch` drives one
-guard per invocation from the experiment plan's `max_cost_usd`, shared by every
-condition and seed and started from what the experiment's earlier runs spent,
-and stopped when an earlier stop left the cap unenforceable
-([branch_stage.md](branch_stage.md#budget)). `run-sweep`
-drives one guard per sweep, shared by every provider and seed
-([live_sweep.md](live_sweep.md)). Retaining a sweep's failing cells scans every
-file with `trace_harness/secret_scan.py`, the one secret scanner for evidence,
-whose pure `scan_text` and `scan_paths` any package can import.
+gave up and every failed attempt carried an HTTP error status (400 or above),
+so one outage cell does not end a capped batch. Google documents that a request
+failing with a 400 or 500 error is not charged; the same reading is applied to
+Anthropic and OpenAI, whose error pages do not say. A call that failed after an
+attempt with no error status, such as a dropped connection, or a call abandoned
+at the run's timeout, may have been billed, and that run's cost stays null,
+even when its earlier turns were priced, so a capped batch stops there. A call
+the policy recovered after such an attempt is priced from the response that
+came back, and the failed attempt, if it was billed, is not counted. A retry
+that would leave less than a tenth of the call's time, at most 5 seconds, is
+not sent, and the call gives up as `deadline`. A cell whose pipeline raised
+after its run started (in verification, bundling, or the runner's own
+bookkeeping) is a `setup_error` that keeps the run's id and the cost its trace
+records, so the guard still counts it. Every path prices a run through
+`run_cost_usd` in `batch.py`. `branch` drives one guard per invocation from the
+experiment plan's `max_cost_usd`, shared by every condition and seed and
+started from what the experiment's earlier runs spent, and stopped when an
+earlier stop left the cap unenforceable
+([branch_stage.md](branch_stage.md#budget)). `run-sweep` drives one guard per
+sweep, shared by every provider and seed ([live_sweep.md](live_sweep.md)).
+Retaining a sweep's failing cells scans every file with
+`trace_harness/secret_scan.py`, the one secret scanner for evidence, whose pure
+`scan_text` and `scan_paths` any package can import.
 
 `branch.py` exposes `run_branch(artifact_path, experiment, condition, store)`
 and `replay_batch(...)`, behind `trace-harness branch`. It continues a
@@ -257,11 +264,13 @@ outside agent's tool calls and final answer to `AgentRunner` one step at a
 time), `load_target_agent("package.module:factory")`, and `run_target_agent`.
 The runner loop is unchanged for these runs, so step numbering, controls,
 `blocked_by`, the final-answer seam, and the step and time limits behave as
-they do for every adapter. The bridge sends no provider request, so no call
-policy wraps it and `run_config.json` records `call_policy` as null. An error
-from the outside agent ends the run as `model_error` and is never retried. The
-budget guard refuses provider `external` under a cap as `budget_unenforceable`,
-since its spend is invisible, and `branch` refuses it before any run. See
+they do for every adapter. An outside agent has no turn after its answer, so a
+blocked answer ends its run as `script_exhausted`. The bridge sends no
+provider request, so no call policy wraps it and `run_config.json` records
+`call_policy` as null. An error from the outside agent ends the run as
+`model_error` and is never retried. The budget guard refuses provider
+`external` under a cap as `budget_unenforceable`, since its spend is
+invisible, and `branch` refuses it before any run. See
 [bring_your_own_agent.md](bring_your_own_agent.md).
 
 `collector.py` exposes `collect_regressions(path, store, suite_path=...,
@@ -457,7 +466,9 @@ for input handling, verdicts, and incomplete runs.
 
 `replay --apply-control --commit` promotes accepted controls after replaying
 the proposed library against new and existing regressions. The versioned
-library retains evidence and rollback history. Environments and `run-suite`
+library retains evidence and rollback history, and each entry records whether
+its acceptance is gating (a `static_ok` label its basis supports for that
+control, predicted until #159 measures it) or advisory; `controls list` shows which. Environments and `run-suite`
 load it explicitly with `control_library` / `--control-library`. See
 [the lifecycle](failure_bundles.md#control-library) and
 [ADR-0003](decisions/ADR-0003-control-library.md).

@@ -25,9 +25,11 @@ index and stats every run directory, so the total cost of a sweep grows with
 the square of its size. A run's files appear during the replay when the runner
 would have written them. ``run_result.json`` appears just before the run's
 first index call, and its card or pointer just after its lookup, since
-``record_bundle`` writes those last. So each lookup sees the directory a real
-sweep would show it, a first occurrence misses and scans every card, and a
-repeat finds its card through the index. Above ``--full-write-max`` runs the
+``record_bundle`` writes those last. So each lookup finds the cards and results
+a real sweep would show it, a first occurrence misses and scans every card, and
+a repeat finds its card through the index. Every later run's directory is on
+disk from the start, though, and the lookup stats those too, so the replay
+overstates the write totals slightly, on the side of cost. Above ``--full-write-max`` runs the
 full replay would take hours, so the total is estimated instead from the
 per-run cost measured at evenly spaced index sizes. Every scale small enough
 for a full replay also gets the estimate, which shows how close it lands.
@@ -252,16 +254,18 @@ def template_bundles(templates: list[Path]) -> dict[Path, TemplateBundle]:
         if not (template / names.FAILURE_CARD).is_file():
             continue
         store, run_id = ArtifactStore.for_run_path(template)
+        task_id = store.read_json(run_id, names.RUN_RESULT)["task_id"]
         key = bundle_key(
             VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT)),
             AttributionResult.model_validate(store.read_json(run_id, names.ATTRIBUTION_RESULT)),
             store.read_trace(run_id),
+            task_id,
         )
         config = store.read_json(run_id, names.RUN_CONFIG)
         out[template] = TemplateBundle(
             bundle_key=key,
             occurrence={
-                "task_id": store.read_json(run_id, names.RUN_RESULT)["task_id"],
+                "task_id": task_id,
                 "provider": config.get("provider"),
                 "model": config.get("model"),
                 "seed": config.get("seed"),
