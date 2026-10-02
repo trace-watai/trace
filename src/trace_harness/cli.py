@@ -1838,7 +1838,12 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
     """
     from trace_harness.runner.batch import BatchSummary
     from trace_harness.runner.branch import load_artifact
-    from trace_harness.runner.experiment import DecidedBy, Decision, ExperimentResult
+    from trace_harness.runner.experiment import (
+        DecidedBy,
+        Decision,
+        ExperimentResult,
+        derive_metrics,
+    )
     from trace_harness.runner.validate_control import (
         STATIC_OK_SHORT_PATH,
         KeepEvidence,
@@ -1852,6 +1857,7 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
         short_path_for,
         static_evidence,
     )
+    from trace_harness.runner.verdict_agreement import run_ids
 
     control_id = args.control_id
     artifact_path, spec_path = Path(args.artifact), Path(args.experiment)
@@ -1902,6 +1908,17 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
     result = ExperimentResult.model_validate(store.read_experiment_result(spec.experiment_id))
 
     recorded = result.condition_batches
+    # record keeps every condition the experiment has recorded, so its metrics
+    # pool other controls' batches too. The rule reads metrics derived from the
+    # batches this control just ran and nothing else.
+    declared = {c.name: c for c in spec.conditions}
+    own_conditions = {batch_id: declared[name] for name, batch_id in pairs}
+    own_batches = [BatchSummary.model_validate(store.read_batch_summary(b)) for b in own_conditions]
+    own_metrics = derive_metrics(
+        own_batches,
+        conditions=own_conditions,
+        verifier_results=_verifier_results(store, run_ids(own_batches)),
+    )
 
     def batch(condition: Any) -> BatchSummary | None:
         if condition is None or condition.name not in recorded:
@@ -1944,9 +1961,9 @@ def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
             noise_floor_condition=noise_floor,
             live_gap=live_gap,
             noise_floor_gap=noise_floor_gap,
-            verdict_agreement_rate=result.metrics.verdict_agreement_rate,
-            sibling_failure_rate=result.metrics.sibling_failure_rate,
-            post_block_outcomes=result.metrics.post_block_outcomes,
+            verdict_agreement_rate=own_metrics.verdict_agreement_rate,
+            sibling_failure_rate=own_metrics.sibling_failure_rate,
+            post_block_outcomes=own_metrics.post_block_outcomes,
             recovered_with_blocking_failure=recovered_failed,
             effectiveness=entry,
             effectiveness_note=note,
