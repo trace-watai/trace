@@ -146,6 +146,14 @@ class StandInFor200:
             return path
 
         monkeypatch.setattr(ArtifactStore, "write_experiment_result", write)
+        # validate-control derives the rule's metrics from its own batches, so
+        # the fixed values have to reach that derivation too.
+        real_derive = experiment.derive_metrics
+
+        def derive(*args, **kwargs):
+            return real_derive(*args, **kwargs).model_copy(update=self.fixed)
+
+        monkeypatch.setattr(experiment, "derive_metrics", derive)
         return self
 
     def _metrics(self, store: ArtifactStore, result, batches: dict[str, BatchSummary]):
@@ -539,6 +547,37 @@ def test_a_control_that_blocks_everything_is_discarded_with_rejected_overblocks_
     out = capsys.readouterr().out
     assert "discard by policy" in out and "rejected_overblocks" in out
     assert "Nothing was committed" not in out
+
+
+def test_the_rule_reads_only_the_batches_validate_control_just_ran(tmp_path, no_commit):
+    """record keeps every condition the experiment has recorded, so its metrics
+    pool other controls' batches. Validating another control first must not
+    change what the rule decides for this one.
+    """
+    other = "ctl_policy_source_v1"
+    path, artifact = _demo_artifact(tmp_path)
+    declines = _script(
+        tmp_path, "declines", [_get_order(), _answer("Thanks, Priya. I can't refund this one.")]
+    )
+    other_arms = [
+        {**_static(other), "name": "static_replay_other"},
+        {**_live(artifact, declines, other), "name": "live_other"},
+    ]
+    plan = _plan(tmp_path, *_arms(tmp_path, artifact), *other_arms)
+
+    assert _validate(tmp_path, plan, path, other) == 0
+    assert _validate(tmp_path, plan, path, REFUND_WINDOW_CONTROL_ID) == 0
+
+    result = _result(tmp_path)
+    assert set(result.condition_batches) == {
+        "static_replay",
+        "live",
+        "live_no_control",
+        "static_replay_other",
+        "live_other",
+    }
+    assert result.decision.value == "keep"
+    assert _checks(result) == LIVE_CHECKS
 
 
 def test_a_live_required_artifact_cannot_keep_through_static_replay_alone(
