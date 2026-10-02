@@ -35,7 +35,7 @@ describe("parseFailureCard on a Python-produced artifact", () => {
     const card = parseFailureCard(raw);
 
     expect(card.bundleKey).toBe(raw.bundle_key);
-    expect(card.bundleKey).toMatch(/^v1:stale_source_authority:issue_refund:/);
+    expect(card.bundleKey).toMatch(/^v2:stale_source_authority:issue_refund:/);
     expect(card.occurrences).toEqual([
       {
         runId: raw.run_id,

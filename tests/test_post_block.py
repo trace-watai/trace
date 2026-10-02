@@ -225,19 +225,56 @@ def test_unmapped_checks_leave_the_label_alone():
     assert _label(_trace(), verdict) is PostBlockOutcome.RECOVERED
 
 
-def test_a_blocked_final_answer_is_no_answer_but_its_checks_still_rank():
-    """#193 ends the run as terminated; the verifier still read the answer."""
+def _answer(step: int, *, blocked: bool) -> TraceEvent:
+    return _event(
+        step,
+        TraceEventType.FINAL_ANSWER,
+        final_answer="done",
+        blocked_by="ctl_answer" if blocked else None,
+    )
+
+
+def test_an_answer_accepted_after_a_blocked_one_is_recovered():
+    """The block goes back to the agent, which answers again, and the run completes."""
+    trace = [*_trace(block_at=None, answer_blocked=True), _answer(5, blocked=False)]
+    assert classify_post_block_outcome(trace, _checks(), _run()) == (
+        4,
+        PostBlockOutcome.RECOVERED,
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        TerminationReason.MAX_STEPS_REACHED,
+        TerminationReason.TIMEOUT,
+        TerminationReason.SCRIPT_EXHAUSTED,
+    ],
+)
+def test_an_agent_whose_every_answer_is_blocked_is_stalled(reason):
+    """It never gave an answer, and the run ended at a limit or when a script ran out."""
+    trace = [*_trace(answer_blocked=True), _answer(5, blocked=True), _answer(6, blocked=True)]
+    run = _run(RunStatus.TERMINATED, reason)
+    assert classify_post_block_outcome(trace, _checks(), run) == (2, PostBlockOutcome.STALLED)
+    # A blocked answer is never an answer, whatever the status says.
+    assert _label(trace, _checks()) is PostBlockOutcome.STALLED
+
+
+def test_a_run_that_ended_on_its_blocked_answer_before_the_seam_change_is_stalled():
+    """Runs written before #193's follow-up end at the blocked answer as final_answer_blocked.
+
+    The verifier of that time also checked the blocked answer's text, and a
+    check it recorded after the first block still ranks above ``stalled``.
+    """
     run = _run(RunStatus.TERMINATED, TerminationReason.FINAL_ANSWER_BLOCKED)
     trace = _trace(answer_blocked=True)
     assert _label(trace, _checks(), run) is PostBlockOutcome.STALLED
     verdict = _checks(("final_answer_inconsistent_with_state", 4))
     assert _label(trace, verdict, run) is PostBlockOutcome.FALSE_SUCCESS
-    # A blocked answer is never an answer, whatever the status says.
-    assert _label(trace, _checks()) is PostBlockOutcome.STALLED
 
 
 def test_a_final_answer_that_is_the_first_block_leaves_nothing_after_it():
-    run = _run(RunStatus.TERMINATED, TerminationReason.FINAL_ANSWER_BLOCKED)
+    run = _run(RunStatus.TERMINATED, TerminationReason.MAX_STEPS_REACHED)
     trace = _trace(block_at=None, answer_blocked=True)
     verdict = _checks(("final_answer_inconsistent_with_state", 4))
     assert classify_post_block_outcome(trace, verdict, run) == (4, PostBlockOutcome.STALLED)

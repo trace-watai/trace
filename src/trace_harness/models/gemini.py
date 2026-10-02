@@ -417,7 +417,13 @@ def extract_usage(raw: dict[str, Any]) -> tuple[int, int] | None:
         return None
     prompt = usage.get("prompt_token_count")
     candidates = usage.get("candidates_token_count")
-    if not _is_count(prompt) or not _is_count(candidates):
+    if not _is_count(prompt):
+        return None
+    if candidates is None:
+        # Gemini leaves the output count out of a reply with no candidate
+        # tokens; the prompt was still billed.
+        candidates = 0
+    if not _is_count(candidates):
         return None
     tool_prompt = usage.get("tool_use_prompt_token_count")
     thoughts = usage.get("thoughts_token_count")
@@ -487,7 +493,7 @@ class GeminiModelAdapter:
                 "GEMINI_API_KEY is not set. Get a free key from "
                 "https://aistudio.google.com/apikey, put it in your local "
                 ".env (see .env.example), and re-run. The fixture provider "
-                "(TRACE_MODEL_PROVIDER=fixture) needs no key and is the "
+                "(--provider fixture) needs no key and is the "
                 "default for all tests and CI."
             )
         self._client_obj: genai.Client | None = None

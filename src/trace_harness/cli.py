@@ -31,8 +31,11 @@ failed verification or did not complete, and for ``run-suite`` also when a run
 errored or the suite budget stopped the batch before every cell ran, and from
 ``list-experiments`` when an experiment's files do not load; 2 usage or input
 errors (argparse errors, bad paths, malformed fixtures, missing artifacts,
-cassette errors, a suite budget cap that cannot be enforced, hosted public
-results that refuse or cannot be reached when TRACE_RUN_READER=supabase).
+cassette errors, hosted public results that refuse or cannot be reached when
+TRACE_RUN_READER=supabase), and for ``run-suite`` a budget cap it could not
+enforce: an unpriced model refused before it ran, or a live run that ended
+with an unknown cost, such as one whose model call was abandoned at the
+timeout, which stops the batch.
 Without the flag a verified failure exits 0, since finding failures is this
 tool succeeding.
 
@@ -49,15 +52,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from trace_harness.attribution.registry import DEFAULT_METHOD
 from trace_harness.config import HarnessConfig, load_env_file
 from trace_harness.environment.control_library import (
     DEFAULT_CONTROL_LIBRARY,
+    ControlLibrary,
     load_library,
     rollback_control,
 )
 from trace_harness.environment.controls import (
     ControlInstance,
-    reference_controls,
+    control_catalogue,
     select_controls,
 )
 from trace_harness.environment.state import SupportState
@@ -81,7 +86,11 @@ from trace_harness.regression.repair_validation import (
     ControlVerdict,
     RepairValidation,
     ReRun,
+    basis_supports_label,
     decide_verdict,
+    describe_label,
+    gating_refusal,
+    predictor_of,
     skipped_control,
 )
 from trace_harness.regression.replay import (
@@ -413,9 +422,11 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
     return merged, run_completed
 
 
-def _attribute(run_dir: Path) -> bool:
+def _attribute(run_dir: Path, method: str = "heuristic") -> bool:
     """Returns True if an attribution was produced (verifier had failed)."""
-    from trace_harness.attribution.heuristic import HeuristicAttributor
+    from trace_harness.attribution.registry import run_attribution
+
+    _require_attribution_method(method)
 
     store, run_id = ArtifactStore.for_run_path(run_dir)
     task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
@@ -433,10 +444,10 @@ def _attribute(run_dir: Path) -> bool:
         if store.exists(run_id, names.RUN_RESULT)
         else None
     )
-    attribution = HeuristicAttributor().attribute(task, trace, verifier_result, run_result)
+    attribution = run_attribution(method, task, trace, verifier_result, run_result)
     store.write_json(run_id, names.ATTRIBUTION_RESULT, attribution)
 
-    print(f"\nAttribution for {run_id} (heuristic, confidence {attribution.confidence:.2f}):")
+    print(f"\nAttribution for {run_id} ({method}, confidence {attribution.confidence:.2f}):")
     _print("root_cause_step:", str(attribution.root_cause_step))
     _print("missed_recovery_step:", str(attribution.missed_recovery_step))
     _print("first_irreversible:", str(attribution.first_irreversible_action_step))
@@ -581,12 +592,38 @@ def _prescribed_controls(
     return prescribed, "repair_package"
 
 
-def _instance_for_repair_control(name: str) -> ControlInstance | None:
-    """The shipped control instance a repair control materializes as, if any."""
-    for instance in reference_controls():
-        if instance.provenance.repair_control == name:
-            return instance
-    return None
+def _validation_plan(
+    prescribed: dict[str, set[str]], controls: list[ControlInstance]
+) -> list[tuple[str, set[str], ControlInstance | None]]:
+    """(prescription, linked checks, control) for each verdict validation writes.
+
+    Two catalogue controls can materialize one repair control (the cash-only
+    refund window and the combined refund policy both come from the refund
+    template), so every selected control that materializes a prescription gets
+    its own entry and its own verdict under the prescription's name. A
+    prescription no selected control materializes keeps one entry, carrying the
+    first catalogue control that would (reported as not selected) or None
+    (reported as not materializable).
+    """
+    # A control named twice is validated once.
+    controls = list({c.control_id: c for c in controls}.values())
+    plan: list[tuple[str, set[str], ControlInstance | None]] = []
+    for name, expected_checks in prescribed.items():
+        selected = [c for c in controls if c.provenance.repair_control == name]
+        if selected:
+            plan.extend((name, expected_checks, instance) for instance in selected)
+            continue
+        available = [c for c in control_catalogue() if c.provenance.repair_control == name]
+        plan.append((name, expected_checks, available[0] if available else None))
+    return plan
+
+
+def _not_selected_reason(name: str, explicit_selection: bool) -> str:
+    """Why a materializable prescription was left out of this validation."""
+    if explicit_selection:
+        return "not_selected: this control was excluded by --control"
+    ids = [c.control_id for c in control_catalogue() if c.provenance.repair_control == name]
+    return f"not_selected: not in the default control set; select {' or '.join(ids)} with --control"
 
 
 def _validate_controls(
@@ -599,35 +636,56 @@ def _validate_controls(
     task_fixture_args,
     pinned_state: dict[str, Any] | None,
     script,
+    explicit_selection: bool = False,
 ) -> RepairValidation:
     """Validate each prescribed control in isolation and return the artifact.
 
     Each materializable control is installed on its own, the pinned scenario is
     replayed, and every positive sibling is re-run. Validating one at a time is
     the whole point: a bundle verdict cannot say which control earned it.
+
+    Every verdict carries the artifact's ``replay_mode``, ``predicted_by`` and
+    whether its recorded basis supports the label for that verdict's control,
+    so an acceptance on an artifact that is not ``static_ok``, on a
+    ``static_ok`` label its basis does not support, or for a control the label
+    was not predicted for, is recorded as advisory.
     """
     batch_id = new_batch_id()
     pinned_checks = set(artifact.verifier_checks)
     selected_ids = {c.control_id for c in controls}
+
+    def label(control_id: str | None) -> dict[str, Any]:
+        return {
+            "replay_mode": artifact.replay_mode,
+            "predicted_by": predictor_of(artifact),
+            "label_supported": basis_supports_label(artifact, control_id),
+        }
+
     validations: list[ControlValidation] = []
 
-    for name, expected_checks in prescribed.items():
-        instance = _instance_for_repair_control(name)
+    for name, expected_checks, instance in _validation_plan(prescribed, controls):
         if instance is None:
-            validations.append(skipped_control(name))
+            validations.append(skipped_control(name, **label(None)))
             print(f"  {name}: skipped (not materializable)")
             continue
         if instance.control_id not in selected_ids or not expected_checks:
             reason = (
-                "not_selected: this control was excluded by --control"
+                _not_selected_reason(name, explicit_selection)
                 if instance.control_id not in selected_ids
                 else "no_linked_checks: the prescription names no checks to validate"
             )
             validations.append(
-                ControlValidation(control=name, verdict=ControlVerdict.SKIPPED, reason=reason)
+                ControlValidation(
+                    control=name,
+                    verdict=ControlVerdict.SKIPPED,
+                    reason=reason,
+                    **label(instance.control_id),
+                )
             )
             print(f"  {name}: skipped ({reason})")
             continue
+        if sum(c.provenance.repair_control == name for c in controls) > 1:
+            print(f"  {name}: validating {instance.control_id}")
 
         pinned = _run_fixture(
             task_fixture_args(artifact.task_fixture),
@@ -647,6 +705,7 @@ def _validate_controls(
         originating = ReRun(
             run_id=pinned.run_id,
             task_id=pinned.task_id,
+            task_fixture=artifact.task_fixture,
             verdict=pinned_merged.verdict.value.upper(),
             cleared_checks=sorted(expected_checks - pinned_failed) if pinned_completed else [],
             failed_checks=sorted(pinned_failed),
@@ -664,6 +723,7 @@ def _validate_controls(
                 ReRun(
                     run_id=sib.run_id,
                     task_id=sib.task_id,
+                    task_fixture=sibling.task_fixture,
                     verdict=sib_merged.verdict.value.upper(),
                     failed_checks=sib_failed,
                 )
@@ -681,18 +741,21 @@ def _validate_controls(
             pinned_completed=pinned_completed,
             incomplete_siblings=incomplete_siblings,
         )
-        validations.append(
-            ControlValidation(
-                control=name,
-                verdict=verdict,
-                reason=reason,
-                guardrail_ref=instance.guardrail_ref,
-                control_id=instance.control_id,
-                originating_rerun=originating,
-                sibling_reruns=sibling_reruns,
-            )
+        result = ControlValidation(
+            control=name,
+            verdict=verdict,
+            reason=reason,
+            guardrail_ref=instance.guardrail_ref,
+            control_id=instance.control_id,
+            originating_rerun=originating,
+            sibling_reruns=sibling_reruns,
+            **label(instance.control_id),
         )
-        print(f"  {name}: {verdict.value}" + (f" ({reason})" if reason else ""))
+        validations.append(result)
+        detail = reason or (
+            f"{result.standing}, {describe_label(result.replay_mode, result.predicted_by)}"
+        )
+        print(f"  {name}: {verdict.value} ({detail})")
 
     validation = RepairValidation(
         run_id=artifact.source_run_id,
@@ -703,6 +766,19 @@ def _validate_controls(
     ).rebuild_rollup()
     store.write_json(artifact.source_run_id, names.REPAIR_VALIDATION, validation)
     return validation
+
+
+def _over_blocking_text(failed: int | None, families: int | None, upper_bound: float | None) -> str:
+    """Family over-blocking with its bound, for every place the CLI reports it.
+
+    The bound is stored rounded up to four places and printed with all of
+    them, so 0 of 58 (5.04%) and 0 of 59 (4.96%) read differently.
+    """
+    if failed is None or families is None:
+        return "families not recorded"
+    if upper_bound is None:
+        return "nothing measured, no sibling family completed"
+    return f"{failed} of {families} families failed, true rate could be up to {upper_bound:.2%}"
 
 
 def _tag_batch(store: ArtifactStore, run_id: str, batch_id: str) -> None:
@@ -785,7 +861,50 @@ def _replay(
     except LibraryGateError as exc:
         print(f"\nControl library unchanged: {exc}")
         return 1
-    print(f"\nCommitted controls to {control_library}: {len(library.active_controls())} active")
+    print(f"\nCommitted controls to {control_library}: {_library_standing(library)}")
+    return 0
+
+
+def _library_standing(library: ControlLibrary) -> str:
+    """Active controls split by the standing of the verdict that admitted them."""
+    active = [entry for entry in library.entries if entry.status == "active"]
+    gating = [entry for entry in active if entry.acceptance.standing == "gating"]
+    text = f"{len(active)} active ({len(gating)} gating, {len(active) - len(gating)} advisory)"
+    predicted = sum(1 for entry in gating if entry.acceptance.predicted_by != "measured")
+    if predicted:
+        text += f"; {predicted} gating on a predicted label until #159 measures it"
+    return text
+
+
+def _gating_note(controls: list[ControlValidation]) -> str:
+    """Say so when an accepted gating verdict rests on a predicted label."""
+    predicted = any(
+        c.verdict is ControlVerdict.ACCEPTED
+        and c.standing == "gating"
+        and c.predicted_by != "measured"
+        for c in controls
+    )
+    return "; gating labels are predicted until #159 measures them" if predicted else ""
+
+
+def _list_controls(path: Path) -> int:
+    """Print every library entry with its status and acceptance basis.
+
+    An advisory entry is installed wherever the library is loaded, so suites
+    measure behavior with it in place, but its acceptance came from a replay
+    ADR-0002 does not let gate anything. The listing says which is which.
+    """
+    library = load_library(path, resolve_active=False)
+    print(f"\nControl library: {path} (schema {library.schema_version})")
+    for entry in library.entries:
+        basis = entry.acceptance
+        _print(
+            entry.control.control_id,
+            f"{entry.status} · {basis.standing} "
+            f"({describe_label(basis.replay_mode, basis.predicted_by)}) · "
+            f"{entry.control.guardrail_ref}",
+        )
+    _print("controls:", _library_standing(library))
     return 0
 
 
@@ -848,22 +967,26 @@ def _replay_with_report(
     normal meaning for a regression suite, since a bug silently stopping
     reproduction usually means the fixture broke, not that the bug got fixed.
 
-    With ``apply_control``: installs the reference controls (environment.
-    controls, all of them unless ``control_ids`` narrows the set) on the
-    environment before every run in this replay, and
+    With ``apply_control``: installs the reference set from
+    environment.controls, or the catalogue controls ``control_ids`` names,
+    on the environment before every run in this replay, and
     inverts the assertion — "gate clear" now requires that every pinned check
     stopped firing *and* that the control introduced no new blocking failure
     of its own. Both halves matter: a guardrail that blocks a harmful action
     while leaving the agent asserting it happened has moved the failure, not
     removed it, and must not read as a clear gate.
 
-    A control only affects checks its guardrails actually cover (today:
-    unauthorized_cash_refund). A fixture whose failure also depends on
+    A control only affects checks its guardrail covers (``checks_covered`` in
+    the guardrail registry). A fixture whose failure also depends on
     downstream narration (a ticket, a final answer) that the scripted agent
     repeats unconditionally will still fail on those other checks, because a
-    guardrail can only change what happens in *state*, not what a fixed
-    script says. See docs/regression_contract.md#control-flip-demo for a
-    fixture built so that isn't a problem.
+    pre-call guardrail can only change what happens in *state* and a fixed
+    script says the same thing either way. See
+    docs/regression_contract.md#control-flip-demo for a fixture built so that
+    isn't a problem. When a final-answer guardrail blocks, the runner hands
+    the block back and asks the agent for another move (#193). A replayed
+    recording has none after its final answer, so the replay ends as
+    ``script_exhausted`` and never completes.
 
     Returns structured evidence and the existing command's 0/1 exit status.
     When ``validations`` is given, the per-control validation is appended to
@@ -905,6 +1028,22 @@ def _replay_with_report(
     _print("blocks_release:", str(artifact.blocks_release))
     _print("apply_control:", str(apply_control))
     _print("replay_mode:", artifact.replay_mode)
+    refusal = gating_refusal(artifact) if artifact.replay_mode == "static_ok" else None
+    if apply_control and refusal is not None:
+        print(
+            f"  ⚠ static_ok is not supported by the artifact's own basis ({refusal}); "
+            "these verdicts are recorded as advisory."
+        )
+    basis = artifact.replay_mode_basis
+    if apply_control and refusal is None and artifact.replay_mode == "static_ok" and basis:
+        outside = [
+            c.control_id for c in individual_controls if c.control_id not in basis.control_ids
+        ]
+        if outside:
+            print(
+                f"  ⚠ static_ok was predicted for {', '.join(basis.control_ids)} only; "
+                f"verdicts for {', '.join(outside)} are recorded as advisory."
+            )
     if apply_control and artifact.replay_mode == "live_required":
         print("  ⚠ static replay is insufficient; a live agent must continue from the block point.")
     _print("pinned inputs:", "state + docs" + (" + agent actions" if script else " (no actions)"))
@@ -1031,11 +1170,21 @@ def _replay_with_report(
             task_fixture_args=_fixture_args,
             pinned_state=pinned_state,
             script=script,
+            explicit_selection=bool(control_ids),
         )
         rollup = validation.rollup
         _print(
             "validation:",
-            f"{rollup.accepted} accepted, {rollup.rejected} rejected, {rollup.skipped} skipped",
+            f"{rollup.accepted} accepted ({rollup.accepted_gating} gating, "
+            f"{rollup.accepted_advisory} advisory), {rollup.rejected} rejected, "
+            f"{rollup.skipped} skipped{_gating_note(validation.controls)}",
+        )
+        blocking = rollup.over_blocking
+        _print(
+            "over-blocking:",
+            _over_blocking_text(
+                blocking.families_failed, blocking.independent_families, blocking.upper_bound_95
+            ),
         )
         written = store.artifact_path(artifact.source_run_id, names.REPAIR_VALIDATION)
         _print("written:", str(written))
@@ -1094,6 +1243,99 @@ def _validate_fixtures(args: argparse.Namespace) -> int:
         _print("result:", f"FAIL ({len(failures)} file(s))")
         return 1
     _print("result:", "PASS")
+    return 0
+
+
+def _require_attribution_method(name: str) -> None:
+    """Refuse an unknown method before anything runs, naming the registered ones."""
+    from trace_harness.attribution.registry import (
+        UnknownAttributionMethodError,
+        get_attribution_method,
+    )
+
+    try:
+        get_attribution_method(name)
+    except UnknownAttributionMethodError as exc:
+        raise CliInputError(str(exc)) from None
+
+
+def _score_attribution(args: argparse.Namespace, store: ArtifactStore) -> int:
+    """Score a method against a label file and write attribution_score.json.
+
+    Runs the method fresh over every run a label names, by run id or by task,
+    rather than reading committed attributions, so a detector change shows up
+    in the score without anyone regenerating artifacts first. A run is
+    attributed when its verdict has violations, as the pipeline decides.
+    """
+    from trace_harness.attribution.registry import run_attribution
+    from trace_harness.attribution.scoring import (
+        AttributedRun,
+        load_labels,
+        score_attributions,
+    )
+
+    _require_attribution_method(args.method)
+    labels_path = Path(args.labels)
+    if not labels_path.is_file():
+        raise CliInputError(f"labels file not found: {labels_path}")
+    try:
+        labels = load_labels(labels_path)
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from None
+    wanted_runs = {label.run_id for label in labels if label.run_id}
+    wanted_tasks = {label.task_id for label in labels if label.task_id and not label.run_id}
+
+    runs: list[AttributedRun] = []
+    for run_id in store.list_runs():
+        if not store.exists(run_id, names.VERIFIER_RESULT):
+            continue
+        task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
+        if run_id not in wanted_runs and task.task_id not in wanted_tasks:
+            continue
+        verifier = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
+        if not verifier.has_violations:
+            continue
+        run_result = (
+            RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT))
+            if store.exists(run_id, names.RUN_RESULT)
+            else None
+        )
+        result = run_attribution(args.method, task, store.read_trace(run_id), verifier, run_result)
+        runs.append(AttributedRun(run_id, task.task_id, result.model_dump(mode="json")))
+
+    score = score_attributions(
+        method=args.method, labels_path=labels_path, labels=labels, runs=runs
+    )
+    out = store.runs_dir / "attribution_score.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(score.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+    def ratio(k: int | None, n: int, accuracy: float | None) -> str:
+        return f"{k}/{n} ({'undefined' if accuracy is None else accuracy})"
+
+    print(f"\nAttribution score for method '{score.method}':")
+    _print("labels:", str(labels_path))
+    _print(
+        "scored:",
+        f"{score.scored_labels} of {len(labels)} label(s), {score.scored_runs} run(s)",
+    )
+    for field, fs in score.step_fields.items():
+        _print(
+            f"  {field}:",
+            f"exact {ratio(fs.exact, fs.labeled, fs.exact_accuracy)}, "
+            f"off-by-one {ratio(fs.off_by_one, fs.labeled, fs.off_by_one_accuracy)}, "
+            f"declined {fs.declined}",
+        )
+    cat = score.category
+    _print(
+        "  category:",
+        f"{ratio(cat.exact, cat.labeled, cat.exact_accuracy)}, declined {cat.declined}",
+    )
+    if score.unscored_labels:
+        _print("unscored:", ", ".join(score.unscored_labels))
+    if score.ambiguous_labels:
+        _print("ambiguous:", ", ".join(score.ambiguous_labels) + " (task has several runs)")
+    _print("written:", str(out))
     return 0
 
 
@@ -1164,11 +1406,16 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     Recording cannot invent a condition: a ``--condition`` naming something the
     spec does not declare is a usage error, because a result that describes
     different arms than the plan is not a result for that experiment. A batch
-    that ran another suite than the plan froze is refused for the same reason.
+    that ran another suite than the plan froze, another agent than its
+    condition declares, or a verifier the plan does not freeze is refused for
+    the same reason. Re-recording keeps the conditions already recorded and
+    replaces those named again.
 
     Recording also recomputes the plan's frozen set (#195) and refuses, with
     the files listed, when anything differs. ``--allow-drift`` records anyway,
-    marks the result drifted and forces its decision to review. A plan from
+    marks the result drifted and forces its decision to review. A condition
+    that keeps its batch from a drifted record keeps the result drifted, with
+    its decision at review, until it is recorded with a new batch. A plan from
     schema 0.1.0 has no frozen set; it records, and the result says nothing
     was checked. Every refusal happens before anything is written.
     """
@@ -1177,13 +1424,14 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         DecidedBy,
         Decision,
         ExperimentResult,
+        check_condition_arms,
         check_frozen_suite,
         derive_metrics,
         load_plan,
         render_experiment_markdown,
         validate_condition_batches,
     )
-    from trace_harness.runner.frozen_set import render_changes
+    from trace_harness.runner.frozen_set import FrozenFileChange, render_changes
     from trace_harness.runner.repair_effectiveness import (
         build_repair_effectiveness,
         write_repair_effectiveness,
@@ -1211,7 +1459,20 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
                 "the changed plan a new experiment_id."
             )
 
+    # Re-recording keeps the conditions already recorded, so revising only the
+    # decision keeps the result, and a condition named again takes its new batch.
     condition_batches: dict[str, str] = {}
+    prior_result: ExperimentResult | None = None
+    prior: dict[str, str] = {}
+    if store.experiment_result_path(spec.experiment_id).is_file():
+        try:
+            prior_result = ExperimentResult.model_validate(
+                store.read_experiment_result(spec.experiment_id)
+            )
+        except ValueError as exc:
+            path = store.experiment_result_path(spec.experiment_id)
+            raise CliInputError(f"{path}: {exc}") from None
+        prior = prior_result.condition_batches
     for pair in args.condition or []:
         name, _, batch_id = pair.partition("=")
         if not name or not batch_id:
@@ -1223,6 +1484,7 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
                 f"--condition gives batch {batch_id} to two conditions; each batch answers one"
             )
         condition_batches[name] = batch_id
+    condition_batches = {**prior, **condition_batches}
     try:
         validate_condition_batches(spec, condition_batches)
     except ValueError as exc:
@@ -1260,11 +1522,40 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
                 f"batch {batch_id} ran condition {produced_for!r} and cannot answer {name!r}"
             )
         summaries.append(summary)
+    # Two spellings of one batch (a trailing slash, say) read the same summary,
+    # so the one-batch-per-condition rule holds on the id the summary states.
+    condition_batches = {
+        name: s.batch_id for name, s in zip(condition_batches, summaries, strict=True)
+    }
+    seen: dict[str, str] = {}
+    for name, batch_id in condition_batches.items():
+        if batch_id in seen:
+            raise CliInputError(
+                f"conditions {seen[batch_id]!r} and {name!r} both read batch {batch_id}; "
+                "each batch answers one"
+            )
+        seen[batch_id] = name
+    by_condition = dict(zip(condition_batches, summaries, strict=True))
+    # A batch recorded under drift ran under it, so while any condition keeps
+    # its batch from a drifted record the result stays drifted, listing that
+    # drift, however the condition was named this time.
+    carried = sorted(n for n, batch_id in condition_batches.items() if prior.get(n) == batch_id)
+    carried_drift = bool(carried) and prior_result is not None and prior_result.frozen_set_drifted
+    if carried_drift:
+        assert prior_result is not None
+        earlier = prior_result.frozen_set_drift
+        drift = [*earlier, *(c for c in drift if c not in earlier)]
+    # A batch branch ran under drift carries it in its metadata, so restoring
+    # the files before recording does not make its verdicts read as verified.
+    ran_drifted = sorted(n for n, s in by_condition.items() if s.metadata.get("frozen_set_drift"))
+    for name in ran_drifted:
+        for raw in by_condition[name].metadata["frozen_set_drift"]:
+            change = FrozenFileChange.model_validate(raw)
+            if change not in drift:
+                drift.append(change)
     try:
-        check_frozen_suite(
-            spec,
-            {name: s.suite_id for name, s in zip(condition_batches, summaries, strict=True)},
-        )
+        check_frozen_suite(spec, {name: s.suite_id for name, s in by_condition.items()})
+        check_condition_arms(spec, by_condition)
     except ValueError as exc:
         raise CliInputError(str(exc)) from None
 
@@ -1299,7 +1590,13 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     _print("hypothesis:", spec.hypothesis)
     _print("decision:", f"{result.decision.value} (by {result.decided_by.value})")
     if result.frozen_set_drifted:
-        _print("frozen set:", f"DRIFTED, {len(drift)} file(s), recorded with --allow-drift")
+        sources = []
+        if carried_drift:
+            sources.append(f"carried with {', '.join(carried)} from the earlier record")
+        if ran_drifted:
+            sources.append(f"run by branch under drift for {', '.join(ran_drifted)}")
+        how = "; ".join(sources) or "recorded with --allow-drift"
+        _print("frozen set:", f"DRIFTED, {len(drift)} file(s), {how}")
         for line in render_changes(drift):
             print(f"    {line}")
         if args.decision != Decision.REVIEW.value:
@@ -1442,7 +1739,7 @@ def _branch_conditions(
         spec_path,
         allow_drift=allow_drift,
         refused="branching is refused before any run",
-        override="--allow-drift to run anyway (record will need it too)",
+        override="--allow-drift to run anyway (the batches record the drift)",
     )
     if drift:
         _print("frozen set:", f"DRIFTED, {len(drift)} file(s), running with --allow-drift")
@@ -1480,9 +1777,12 @@ def _branch_conditions(
                 store,
                 started_at,
                 validation=validations[0] if validations else None,
+                frozen_set_drift=drift,
             )
         else:
-            outcome = run_branch(artifact_path, spec, condition, store, guard=guard)
+            outcome = run_branch(
+                artifact_path, spec, condition, store, guard=guard, frozen_set_drift=drift
+            )
             if outcome.summary is None:
                 print(f"  skipped: {outcome.skipped}")
                 if skipped is not None:
@@ -1811,7 +2111,8 @@ def _event_summary(event: TraceEvent) -> str:  # noqa: PLR0911
             return " ".join(parts)
         case TraceEventType.FINAL_ANSWER:
             ans = p.final_answer[:60] + ("…" if len(p.final_answer) > 60 else "")
-            return repr(ans)
+            # A blocked answer was not given, and the run went on after it.
+            return repr(ans) + (f" blocked_by={p.blocked_by}" if p.blocked_by else "")
         case TraceEventType.RUN_FINISHED:
             return f"status={p.status} termination={p.termination_reason} steps={p.steps_taken}"
         case TraceEventType.ERROR:
@@ -1843,10 +2144,23 @@ def _print_repair_validation(store: ArtifactStore, run_id: str) -> bool:
     print(f"\nControl validation for {run_id} ({validation.controls_source}):")
     for control in validation.controls:
         detail = f" — {control.reason}" if control.reason else ""
-        print(f"  {control.verdict.value:28} {control.control}{detail}")
+        standing = (
+            f" [{control.standing}, {describe_label(control.replay_mode, control.predicted_by)}]"
+            if control.verdict is ControlVerdict.ACCEPTED
+            else ""
+        )
+        print(f"  {control.verdict.value:28} {control.control}{standing}{detail}")
     print(
-        f"  rollup: {rollup.accepted} accepted, {rollup.rejected} rejected, "
-        f"{rollup.skipped} skipped"
+        f"  rollup: {rollup.accepted} accepted ({rollup.accepted_gating} gating, "
+        f"{rollup.accepted_advisory} advisory), {rollup.rejected} rejected, "
+        f"{rollup.skipped} skipped{_gating_note(validation.controls)}"
+    )
+    blocking = rollup.over_blocking
+    print(
+        "  over-blocking: "
+        + _over_blocking_text(
+            blocking.families_failed, blocking.independent_families, blocking.upper_bound_95
+        )
     )
     return True
 
@@ -1920,7 +2234,11 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
         f"{len(suite.agent_configs)} agent config(s) = {cells} run(s)"
     )
 
-    summary = BatchRunner(store, control_library=args.control_library).run(suite)
+    runner = BatchRunner(store, control_library=args.control_library)
+    if runner.library is not None:
+        # Advisory entries install like the rest, and the batch measures them.
+        _print("control library installed:", _library_standing(runner.library))
+    summary = runner.run(suite)
 
     print(f"\nBatch {summary.batch_id} complete:")
     for e in summary.entries:
@@ -1963,7 +2281,8 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
     if getattr(args, "report", False):
         _write_and_print_suite_report(store, summary.batch_id, print_full=False)
 
-    # A cap the harness cannot enforce is a configuration problem, like a bad path.
+    # A cap the harness could not enforce: an unpriced model, or a live run whose
+    # cost is unknown. The batch stopped, and its summary names the cause.
     if budget is not None and budget.stop_reason == BUDGET_UNENFORCEABLE:
         return 2
     stopped_early = budget is not None and bool(budget.not_run)
@@ -1992,7 +2311,9 @@ def _run_sweep(args: argparse.Namespace, store: ArtifactStore) -> int:
     )
     summary = run_sweep(spec, store, spec_path=args.sweep_path)
 
-    print(f"\nSweep {summary.sweep_id} complete:")
+    stopped = summary.budget.stop_reason if summary.budget is not None else None
+    ended = f"stopped early ({stopped})" if stopped else "complete"
+    print(f"\nSweep {summary.sweep_id} {ended}:")
     for p in summary.providers:
         _print(
             f"{p.label} ({p.model}):",
@@ -2094,7 +2415,9 @@ def _append_metrics_history(args: argparse.Namespace, store: ArtifactStore) -> N
 
     Appended after the gate has printed its verdict and it never changes the
     exit code. A history file is a record of what main looked like, so a write
-    problem here must not turn a passing gate into a failing one.
+    problem here must not turn a passing gate into a failing one. That covers
+    a history line this version cannot read, such as one from a newer schema:
+    pydantic's ValidationError is a ValueError, and so is a malformed line.
     """
     from trace_harness.metrics.history import append_snapshot, build_snapshot
 
@@ -2106,15 +2429,27 @@ def _append_metrics_history(args: argparse.Namespace, store: ArtifactStore) -> N
     try:
         snapshot = build_snapshot(Path(args.history_root), commit=commit, exclude=[store.runs_dir])
         written = append_snapshot(path, snapshot)
-    except OSError as exc:
-        _print("history:", f"skipped, {exc}")
+    except (OSError, ValueError) as exc:
+        reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        _print("history:", f"skipped, {reason}")
         return
-    coverage = snapshot.coverage.accepted_over_prescribed
-    blocking = snapshot.over_blocking.rate
+    coverage = snapshot.coverage
+    blocking = snapshot.over_blocking
     print("\nMetrics history:")
     _print("commit:", snapshot.commit)
-    _print("coverage:", f"{coverage.numerator}/{coverage.denominator} accepted of prescribed")
-    _print("over-blocking:", f"{blocking.numerator}/{blocking.denominator} siblings failed")
+    _print(
+        "coverage:",
+        f"{coverage.accepted}/{coverage.prescribed} accepted of prescribed "
+        f"({coverage.accepted_gating} gating on predicted static_ok labels, "
+        f"{coverage.accepted_advisory} advisory)",
+    )
+    families = _over_blocking_text(
+        blocking.families_failed, blocking.independent_families, blocking.upper_bound_95
+    )
+    _print(
+        "over-blocking:",
+        f"{blocking.siblings_failed}/{blocking.siblings_run} siblings failed; {families}",
+    )
     _print(
         "cost of learning:",
         f"{snapshot.cost_of_learning.irreversible_actions} irreversible actions, "
@@ -2240,9 +2575,14 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     p_attr = sub.add_parser(
-        "attribute", parents=[common], help="run heuristic attribution on a verified failure"
+        "attribute", parents=[common], help="localize the failure in a verified failing run"
     )
     p_attr.add_argument("run_path")
+    p_attr.add_argument(
+        "--method",
+        default=DEFAULT_METHOD,
+        help="attribution method to use (default: heuristic)",
+    )
 
     p_bundle = sub.add_parser(
         "bundle", parents=[common], help="generate failure card/repair/regression artifacts"
@@ -2307,8 +2647,8 @@ def main(argv: list[str] | None = None) -> int:
         dest="control_ids",
         metavar="CONTROL_ID",
         help=(
-            "with --apply-control: install only this control id (repeatable); "
-            "default is every reference control"
+            "with --apply-control: install only this control id from the control "
+            "catalogue (repeatable); default is the reference set"
         ),
     )
     p_replay.add_argument(
@@ -2333,6 +2673,12 @@ def main(argv: list[str] | None = None) -> int:
     p_rollback.add_argument(
         "--control-library", default=str(DEFAULT_CONTROL_LIBRARY), metavar="PATH"
     )
+    p_list_controls = control_commands.add_parser(
+        "list", help="list library entries with their status and acceptance basis"
+    )
+    p_list_controls.add_argument(
+        "--control-library", default=str(DEFAULT_CONTROL_LIBRARY), metavar="PATH"
+    )
 
     p_pipe = sub.add_parser(
         "run-pipeline",
@@ -2354,6 +2700,13 @@ def main(argv: list[str] | None = None) -> int:
         "path", nargs="?", default="fixtures/tasks", help="directory to validate"
     )
 
+    p_score = sub.add_parser(
+        "score-attribution",
+        parents=[common],
+        help="score an attribution method against a JSONL label file",
+    )
+    p_score.add_argument("--labels", required=True, help="path to a JSONL label file")
+    p_score.add_argument("--method", default=DEFAULT_METHOD)
     p_exp = sub.add_parser(
         "experiment",
         parents=[common],
@@ -2544,7 +2897,7 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         merged, run_completed = _verify(_resolve_run_dir(args.run_path, store.runs_dir))
         return 1 if (args.fail_on_verifier and not (merged.passed and run_completed)) else 0
     if args.command == "attribute":
-        _attribute(_resolve_run_dir(args.run_path, store.runs_dir))
+        _attribute(_resolve_run_dir(args.run_path, store.runs_dir), args.method)
         return 0
     if args.command == "bundle":
         _bundle(_resolve_run_dir(args.run_path, store.runs_dir))
@@ -2559,6 +2912,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
             control_library=Path(args.control_library) if args.control_library else None,
             commit=args.commit,
         )
+    if args.command == "controls" and args.control_command == "list":
+        return _list_controls(Path(args.control_library))
     if args.command == "controls":
         rollback_control(args.control_library, args.control_id, args.reason)
         print(f"Rolled back {args.control_id}: {args.reason.strip()}")
@@ -2576,6 +2931,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         return 1 if (args.fail_on_verifier and not (merged.passed and run_completed)) else 0
     if args.command == "validate-fixtures":
         return _validate_fixtures(args)
+    if args.command == "score-attribution":
+        return _score_attribution(args, store)
     if args.command == "experiment":
         if args.experiment_command == "freeze":
             return _experiment_freeze(args)

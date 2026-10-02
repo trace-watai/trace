@@ -1,10 +1,10 @@
 """SupabaseRunReader: RunReader's reads, served from the hosted public results.
 
 Same method names, parameters, return types and missing-artifact states as
-:class:`trace_harness.run_reader.RunReader`, which stays the default and is not
-changed. Each method reads one row, or one column of one row, from the tables
-in ``supabase/migrations/`` through PostgREST, and validates the stored JSON
-with the same model the filesystem reader uses. A test compares the two
+:class:`trace_harness.run_reader.RunReader`, which stays the default. Each
+method reads one row, or one column of one row, from the tables in
+``supabase/migrations/`` through PostgREST, and validates the stored JSON with
+the same model the filesystem reader uses. A test compares the two
 backends method by method over every retained run, batch and experiment.
 
     list_runs()                -> runs.summary, every row, ordered by run_id
@@ -257,7 +257,9 @@ class SupabaseRunReader:
     def _load_experiment(
         self, experiment_id: str, row: Mapping[str, Any]
     ) -> tuple[ExperimentSpec, ExperimentResult | None]:
-        spec = load_plan(row["spec"])
+        # As the file-based reader does (#155): reading a stored plan installs
+        # nothing, so a control retired since then leaves it readable.
+        spec = load_plan(row["spec"], check_controls=False)
         stored = row.get("result")
         result = None if stored is None else ExperimentResult.model_validate(stored)
         named = {spec.experiment_id, experiment_id} | ({result.experiment_id} if result else set())

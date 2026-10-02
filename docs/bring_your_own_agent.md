@@ -67,7 +67,14 @@ class EchoAgent:
 
 Point `--agent` at a `package.module:attribute` import path. The attribute can
 be an agent instance, a class, or a function that takes no arguments and
-returns an agent.
+returns an agent. Loading it imports the module and calls the factory, so a
+suite manifest that names an `agent_ref` runs that code; review a suite from
+someone else the way you would review a script. The module must be importable
+from where the harness runs. `python -m trace_harness.cli` puts the current
+directory on the import path and the `trace-harness` command does not, so
+install your package or set `PYTHONPATH` rather than relying on the working
+directory. A ref that cannot be loaded, including one whose module or factory
+raises, exits 2 with the reason.
 
 ```sh
 trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \
@@ -83,9 +90,9 @@ trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \
 with an optional `model` that overrides the agent's own label, and an optional
 `"billing": "subscription"` for an agent whose model calls run on a
 subscription plan (see Cost below). `run_config.json` (RunConfig 0.4.0) records
-`provider: external`, the `agent_ref`, and the label. Suite 0.4.0 added outside
-agents and Suite 0.5.0 added `billing`, which is written only when set, so
-older manifests load and configs without it serialize as before.
+`provider: external`, the `agent_ref`, and the label. Outside agents were
+added in Suite 0.4.0 and `billing` was added in Suite 0.5.0. It is written only
+when set, so older manifests load and configs without it serialize as before.
 `--max-steps` and `--timeout` apply as usual. `--script`, `--cassette-mode`,
 `--temperature`, and `--seed` are refused with `--agent`, because the outside
 agent owns its model and the harness would be recording settings it never
@@ -115,8 +122,11 @@ agents.
   pre-call seam before any handler. A blocked call returns `status: error` with
   the control's message, and the trace records the control id as `blocked_by`
   on both `tool_call_executed` and `tool_observation`. Final-answer controls run
-  on the answer you return, and a blocked answer ends the run as
-  `final_answer_blocked`.
+  on the answer you return. The harness hands a blocked answer back and asks
+  for the agent's next move, as it does for every agent, but `run` has already
+  returned, so your agent has no turn to answer again. The run ends as
+  `terminated` with `script_exhausted`, with the answer in the trace under
+  `blocked_by`, and the block message never reaches your agent.
 - **Limits.** The step limit and the timeout are enforced by the harness. When
   a run ends early, the call your agent is waiting on and every later
   `call_tool` raise `RunEnded`. The harness cannot stop your agent's thread,

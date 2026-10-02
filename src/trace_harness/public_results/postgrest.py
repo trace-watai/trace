@@ -70,13 +70,29 @@ class PostgrestError(RuntimeError):
         self.code = code
 
 
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so the key headers are never resent to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        return None
+
+
+# PostgREST never redirects, so a 3xx comes back as a response and the client
+# reports it like any other refusal instead of following it with the key.
+_OPENER = urllib.request.build_opener(_NoRedirects)
+
+
 def urllib_transport(request: HttpRequest, *, timeout: float = DEFAULT_TIMEOUT_S) -> HttpResponse:
-    """Send one request with urllib. HTTP error statuses come back as responses."""
+    """Send one request with urllib. HTTP error statuses come back as responses.
+
+    A redirect is not followed, since following it would send ``apikey`` and
+    ``Authorization`` to whatever host the redirect names.
+    """
     raw = urllib.request.Request(
         request.url, data=request.body, method=request.method, headers=dict(request.headers)
     )
     try:
-        with urllib.request.urlopen(raw, timeout=timeout) as response:  # noqa: S310 (https only)
+        with _OPENER.open(raw, timeout=timeout) as response:
             headers = {k.lower(): v for k, v in response.headers.items()}
             return HttpResponse(response.status, headers, response.read())
     except urllib.error.HTTPError as exc:

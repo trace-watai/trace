@@ -30,41 +30,38 @@ TASKS_DIR = FIXTURES_DIR / "tasks"
 # The key of every failing task fixture, pinned. The key is the identity that
 # decides which runs share a card, so a change to how it is formed has to show
 # up here as a deliberate edit rather than as cards that silently stop
-# merging. Nineteen failing fixtures form fourteen keys. Four groups of
-# different tasks, nine fixtures in all, fail the same way and would share a
-# card in one runs directory. Neither pinned suite runs two tasks from one
-# group, which test_no_pinned_suite_runs_two_tasks_with_one_key asserts, so
-# every pinned suite expectation keeps one card per failing task.
+# merging. The task is part of the key, so the nineteen failing fixtures form
+# nineteen keys and no two tasks ever share a card, which
+# test_no_two_tasks_share_a_key asserts. Runs of one task that fail the same
+# way still share one, across providers, seeds and days.
 PINNED_KEYS = {
-    "refund_policy_failure": "v1:stale_source_authority:issue_refund:5d5539fd98990b68",
-    "refund_policy_control_demo": "v1:unsafe_irreversible_action:issue_refund:e621a26e69c17400",
+    "refund_policy_failure": "v2:stale_source_authority:issue_refund:1f1106ac77ba578c",
+    "refund_policy_control_demo": "v2:unsafe_irreversible_action:issue_refund:23b3db1014dba147",
     "refund_cash_age_boundary_day_31_no_approval": (
-        "v1:unsafe_irreversible_action:issue_refund:e621a26e69c17400"
+        "v2:unsafe_irreversible_action:issue_refund:75e86226543447a0"
     ),
     "refund_cash_age_boundary_day_61_violation": (
-        "v1:unsafe_irreversible_action:issue_refund:e621a26e69c17400"
+        "v2:unsafe_irreversible_action:issue_refund:05d9961af6dc9260"
     ),
     "refund_outage_evidence_day_45_credit_violation": (
-        "v1:unsafe_irreversible_action:issue_refund:88e370f122f88008"
+        "v2:unsafe_irreversible_action:issue_refund:4586d686a58fdcae"
     ),
     "refund_outage_evidence_day_45_not_documented": (
-        "v1:unsafe_irreversible_action:issue_refund:88e370f122f88008"
+        "v2:unsafe_irreversible_action:issue_refund:454845d2ce61fbb1"
     ),
-    "refund_policy_missing_info_failure": "v1:clarification_failure:none:10f9e382dafdffbf",
-    "refund_escalation_missing": "v1:clarification_failure:none:10f9e382dafdffbf",
-    "refund_policy_phantom_refund": "v1:inconsistent_final_answer:none:0df089a5ff187028",
-    "refund_final_answer_phantom": "v1:inconsistent_final_answer:none:0df089a5ff187028",
-    "refund_final_answer_denied_real": (
-        "v1:inconsistent_final_answer:issue_refund:d8a148cc38185d68"
-    ),
-    "refund_retrieval_missed_current": "v1:unknown:issue_refund:4ea80fb65f93ec02",
-    "refund_expected_action_cash_swapped": "v1:unknown:issue_refund:50b1c713c275620c",
-    "refund_retrieval_skipped": "v1:unknown:issue_refund:86de785155f52d96",
-    "refund_retrieval_decline_ungrounded": "v1:unknown:none:49816a5d7bfa0978",
-    "refund_expected_action_decline_escalated": "v1:unknown:none:72960ccabb7b3742",
-    "refund_escalation_unnecessary": "v1:unknown:none:888b753f070db380",
-    "refund_expected_action_cash_omitted": "v1:unknown:none:c7b4ba7570e89c7e",
-    "refund_escalation_duplicate": "v1:unknown:none:fc58d3cdeade159d",
+    "refund_policy_missing_info_failure": "v2:clarification_failure:none:447fa27aa6341631",
+    "refund_escalation_missing": "v2:clarification_failure:none:7eafd8a59e1b72f8",
+    "refund_policy_phantom_refund": "v2:inconsistent_final_answer:none:66a87057639b3dca",
+    "refund_final_answer_phantom": "v2:inconsistent_final_answer:none:d06c8a029eef7f0f",
+    "refund_final_answer_denied_real": "v2:inconsistent_final_answer:issue_refund:0758bea3db8c5d73",
+    "refund_retrieval_missed_current": "v2:unknown:issue_refund:8fef65d0795ac588",
+    "refund_expected_action_cash_swapped": "v2:unknown:issue_refund:32c694f1e075c8c1",
+    "refund_retrieval_skipped": "v2:unknown:issue_refund:ca31c11c229dea41",
+    "refund_retrieval_decline_ungrounded": "v2:unknown:none:b1e8e72cf2d4ffd0",
+    "refund_expected_action_decline_escalated": "v2:unknown:none:752e6e0a3dcf24fb",
+    "refund_escalation_unnecessary": "v2:unknown:none:bc6dd734c237d562",
+    "refund_expected_action_cash_omitted": "v2:unknown:none:0c82c9ba84bdf58a",
+    "refund_escalation_duplicate": "v2:unknown:none:a9e387569862b78c",
 }
 
 
@@ -111,14 +108,23 @@ def test_the_pinned_keys_cover_every_failing_fixture(tmp_path):
         if result.verifier_result is not None and result.verifier_result.has_violations:
             failing.add(result.task.task_id)
     assert failing == set(PINNED_KEYS)
-    assert len(set(PINNED_KEYS.values())) == 14
+    assert len(set(PINNED_KEYS.values())) == len(PINNED_KEYS) == 19
 
 
-@pytest.mark.parametrize("suite", ["refund_v0.json", "refund_bundles_v0.json"])
-def test_no_pinned_suite_runs_two_tasks_with_one_key(suite):
-    tasks = json.loads((FIXTURES_DIR / "suites" / suite).read_text())["tasks"]
-    keys = [PINNED_KEYS[Path(t).stem] for t in tasks if Path(t).stem in PINNED_KEYS]
-    assert keys and len(keys) == len(set(keys))
+def test_no_two_tasks_share_a_key():
+    """Each task keeps its own card and regression artifact to replay or branch from."""
+    assert len(set(PINNED_KEYS.values())) == len(PINNED_KEYS)
+
+
+def test_two_tasks_that_fail_the_same_way_keep_their_own_cards(tmp_path):
+    """Day 31 and day 61 fail on the same check, category and tool (brief 001's
+    fork points). In one runs directory each still gets its own card."""
+    store = ArtifactStore(tmp_path / "runs")
+    first = _pipeline(_task_path("refund_cash_age_boundary_day_31_no_approval"), store)
+    second = _pipeline(_task_path("refund_cash_age_boundary_day_61_violation"), store)
+    for run_id in (first, second):
+        assert (store.runs_dir / run_id / "regression_artifact.json").is_file()
+        assert [o.run_id for o in _card(store, run_id).occurrences] == [run_id]
 
 
 def test_the_key_is_the_documented_recipe(tmp_path):
@@ -127,7 +133,8 @@ def test_the_key_is_the_documented_recipe(tmp_path):
     verifier, _, _ = _key_inputs(store, run_id)
     canonical = json.dumps(
         {
-            "version": "v1",
+            "version": "v2",
+            "task": "refund_policy_failure",
             "checks": sorted({c.check_id for c in verifier.failed_checks}),
             "category": "stale_source_authority",
             "tool": "issue_refund",
@@ -136,14 +143,14 @@ def test_the_key_is_the_documented_recipe(tmp_path):
         separators=(",", ":"),
     )
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
-    assert _card(store, run_id).bundle_key == f"v1:stale_source_authority:issue_refund:{digest}"
+    assert _card(store, run_id).bundle_key == f"v2:stale_source_authority:issue_refund:{digest}"
 
 
-def test_the_key_ignores_order_repeats_and_everything_but_its_three_facts(tmp_path):
+def test_the_key_ignores_order_repeats_and_everything_but_its_four_facts(tmp_path):
     store = ArtifactStore(tmp_path / "runs")
     run_id = _pipeline(FAILURE_TASK_PATH, store)
     verifier, attribution, trace = _key_inputs(store, run_id)
-    key = bundle_key(verifier, attribution, trace)
+    key = bundle_key(verifier, attribution, trace, "refund_policy_failure")
 
     checks = verifier.failed_checks
     reworded = [c.model_copy(update={"step_ids": [99], "message": "reworded"}) for c in checks]
@@ -153,27 +160,29 @@ def test_the_key_ignores_order_repeats_and_everything_but_its_three_facts(tmp_pa
     elsewhere = attribution.model_copy(
         update={"run_id": "run_other", "root_cause_step": 1, "confidence": 0.1}
     )
-    assert bundle_key(shuffled, elsewhere, trace) == key
+    assert bundle_key(shuffled, elsewhere, trace, "refund_policy_failure") == key
 
 
-def test_each_of_the_three_facts_changes_the_key(tmp_path):
+def test_each_of_the_four_facts_changes_the_key(tmp_path):
     store = ArtifactStore(tmp_path / "runs")
     run_id = _pipeline(FAILURE_TASK_PATH, store)
     verifier, attribution, trace = _key_inputs(store, run_id)
-    key = bundle_key(verifier, attribution, trace)
+    key = bundle_key(verifier, attribution, trace, "refund_policy_failure")
 
     fewer_checks = verifier.model_copy(update={"failed_checks": verifier.failed_checks[1:]})
     other_category = attribution.model_copy(
         update={"primary_failure_category": FailureCategory.POLICY_VIOLATION}
     )
     no_irreversible = attribution.model_copy(update={"first_irreversible_action_step": None})
+    task = "refund_policy_failure"
     variants = {
-        bundle_key(fewer_checks, attribution, trace),
-        bundle_key(verifier, other_category, trace),
-        bundle_key(verifier, no_irreversible, trace),
+        bundle_key(fewer_checks, attribution, trace, task),
+        bundle_key(verifier, other_category, trace, task),
+        bundle_key(verifier, no_irreversible, trace, task),
+        bundle_key(verifier, attribution, trace, "refund_policy_control_demo"),
     }
-    assert key not in variants and len(variants) == 3
-    assert bundle_key(verifier, no_irreversible, trace).split(":")[2] == "none"
+    assert key not in variants and len(variants) == 4
+    assert bundle_key(verifier, no_irreversible, trace, task).split(":")[2] == "none"
 
 
 def test_the_tool_is_read_at_the_attributions_first_irreversible_step(tmp_path):

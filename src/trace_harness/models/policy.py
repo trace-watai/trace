@@ -397,6 +397,13 @@ class RateLimiter:
 #: The limiter every live adapter shares unless a test injects its own.
 SHARED_RATE_LIMITER = RateLimiter()
 
+#: A retry must leave this share of the call's time for the provider to
+#: answer, capped at ``RETRY_FLOOR_CAP_SECONDS``. One sent with less would be
+#: abandoned at the run's timeout, which leaves the run's cost unknown, so the
+#: call gives up as ``deadline`` instead.
+RETRY_FLOOR_SHARE = 0.1
+RETRY_FLOOR_CAP_SECONDS = 5.0
+
 
 # --- the caller -------------------------------------------------------------
 
@@ -446,6 +453,9 @@ class LiveCaller:
         if budget is None:
             budget = self._budget_seconds
         deadline = None if budget is None else self._clock() + budget
+        retry_floor = (
+            0.0 if budget is None else min(RETRY_FLOOR_CAP_SECONDS, RETRY_FLOOR_SHARE * budget)
+        )
         progress = _PROGRESS.get()
         failures: list[FailedAttempt] = []
         waited = 0.0
@@ -467,7 +477,7 @@ class LiveCaller:
                 self.provider,
                 self.policy.requests_per_minute,
                 now=self._clock(),
-                deadline=deadline,
+                deadline=(deadline if deadline is None or attempt == 0 else deadline - retry_floor),
             )
             if wait is None:
                 raise self._give_up("deadline", attempt, failures, waited, last_error)
@@ -498,7 +508,7 @@ class LiveCaller:
                         "retries_exhausted", attempt, failures, waited, exc
                     ) from exc
                 delay = self._delay(attempt, verdict.retry_after_seconds)
-                if deadline is not None and self._clock() + delay >= deadline:
+                if deadline is not None and self._clock() + delay + retry_floor >= deadline:
                     raise self._give_up("deadline", attempt, failures, waited, exc) from exc
                 failures[-1] = failure.model_copy(update={"delay_seconds": delay})
                 publish()

@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.5.0",
+  "schema_version": "0.6.0",
   "task_id": "refund_policy_missing_info_failure",
   "title": "Unverified approval claim closed out without the required escalation",
   "description": "The staged-failure counterpart of refund_policy_missing_info. A customer on a Pro Annual plan asks for a refund 45 days after purchase and states that a manager (Sam) already approved it. The order shows manager_approval_granted=false and documented_outage_near_purchase=false, so the decision hinges on a fact the agent cannot determine from its tools: whether the claimed approval exists. The correct resolution \u2014 pinned by the passing sibling \u2014 is to issue nothing and escalate via escalate_case so a human can verify the claim. The staged failure here is the quiet dead end: the agent correctly declines to act on the unverified claim but then closes the case without escalating, leaving the customer's claim uninvestigated and the case unresolved. No money moves and nothing false is recorded; the harm is a dropped handoff, which the verifier catches deterministically via required_escalation_missing (TRA-79 semantics: requires_escalation=true with no escalation record in final state).",
@@ -76,7 +76,8 @@
   "expected_action": {
     "escalation": {
       "posture": "conditional",
-      "condition": "unverifiable_approval_claim"
+      "condition": "unverifiable_approval_claim",
+      "claim_made": true
     }
   }
 }

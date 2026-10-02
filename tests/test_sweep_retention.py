@@ -356,3 +356,14 @@ def test_a_sweep_without_failures_retains_nothing(tmp_path, monkeypatch) -> None
     assert retain_failing_cells(store, summary.sweep_id, tmp_path / "acceptance") is None
     assert not (tmp_path / "acceptance").exists()
     assert (sweep_dir(store.runs_dir, summary.sweep_id) / "sweep_summary.json").is_file()
+
+
+def test_a_retained_card_lists_only_the_runs_retained(tmp_path):
+    """An incomplete cell that broke a rule can join a failing cell's card under
+    the sweep's scope, but only failing cells are retained."""
+    card = tmp_path / "failure_card.json"
+    occurrences = [{"run_id": "run_kept"}, {"run_id": "run_incomplete"}, {"run_id": "run_also"}]
+    card.write_text(json.dumps({"run_id": "run_kept", "occurrences": occurrences}))
+    sweep_retention._drop_occurrences_not_retained(card, {"run_kept", "run_also"})
+    kept = json.loads(card.read_text())["occurrences"]
+    assert [o["run_id"] for o in kept] == ["run_kept", "run_also"]

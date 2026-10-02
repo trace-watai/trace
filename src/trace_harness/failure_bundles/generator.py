@@ -418,7 +418,7 @@ CHECKS_REACHABLE_BY_TOOL = {
 
 # --- root-cause identity (#211) ---
 
-BUNDLE_KEY_VERSION = "v1"
+BUNDLE_KEY_VERSION = "v2"
 # Stands in for the tool in a key's readable prefix when the run took no
 # irreversible action. The digest input records JSON null instead, so a tool
 # that happened to be named "none" could not collide with it.
@@ -451,19 +451,23 @@ def first_irreversible_tool(trace: list[TraceEvent], attribution: AttributionRes
 
 
 def bundle_key(
-    verifier_result: VerifierResult, attribution: AttributionResult, trace: list[TraceEvent]
+    verifier_result: VerifierResult,
+    attribution: AttributionResult,
+    trace: list[TraceEvent],
+    task_id: str,
 ) -> str:
     """The root-cause identity a failure card is deduplicated on.
 
-    Three facts form it and nothing else does. They are the failed verifier
-    check ids as a sorted set, the primary failure category from attribution,
-    and the tool at the first irreversible step (see
-    :func:`first_irreversible_tool`). Run ids, task ids, step numbers,
-    messages and evidence stay out, so two runs that failed the same way
-    share a key wherever and whenever they ran.
+    Four facts form it and nothing else does. They are the task id, the failed
+    verifier check ids as a sorted set, the primary failure category from
+    attribution, and the tool at the first irreversible step (see
+    :func:`first_irreversible_tool`). Run ids, step numbers, messages and
+    evidence stay out, so runs of one task that failed the same way share a key
+    across providers, seeds and days. Two tasks never share one, so each keeps
+    its own regression artifact to replay or branch from.
 
-    The key reads ``v1:<category>:<tool or none>:<digest>``. The digest is the
-    first 16 hex characters of sha256 over the canonical JSON of the three
+    The key reads ``v2:<category>:<tool or none>:<digest>``. The digest is the
+    first 16 hex characters of sha256 over the canonical JSON of the four
     facts and the version, with sorted keys and no whitespace. The prefix is
     there for people reading an index or a card. The digest is what separates
     two failures with the same category and tool but different checks, and
@@ -473,7 +477,13 @@ def bundle_key(
     category = attribution.primary_failure_category.value
     tool = first_irreversible_tool(trace, attribution)
     canonical = json.dumps(
-        {"version": BUNDLE_KEY_VERSION, "checks": checks, "category": category, "tool": tool},
+        {
+            "version": BUNDLE_KEY_VERSION,
+            "task": task_id,
+            "checks": checks,
+            "category": category,
+            "tool": tool,
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -527,7 +537,7 @@ class FailureBundleGenerator:
             task, run_result, trace, verifier_result, attribution, final_state
         ).model_copy(
             update={
-                "bundle_key": bundle_key(verifier_result, attribution, trace),
+                "bundle_key": bundle_key(verifier_result, attribution, trace, task.task_id),
                 "occurrences": [_occurrence(run_result, task, run_config)],
             }
         )

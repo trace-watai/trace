@@ -18,8 +18,8 @@ provider or model with no price records ``null``, and aggregate coverage makes
 that missing telemetry visible.
 
 A live run that never got an answer is priced from how its call failed. When
-the call policy gave up and every failed attempt carried an HTTP status, the
-provider answered each request with an error, and the run is recorded as
+the call policy gave up and every failed attempt carried an HTTP error status
+(400 or above), the provider answered each request with an error, and the run is recorded as
 costing exactly zero. Google's billing page says a request that fails with a
 400 or 500 error is not charged; Anthropic's and OpenAI's error pages say
 nothing either way, and the same reading is applied to them. A failure with no
@@ -358,9 +358,8 @@ class BatchRunner:
         self.store = store
         # Freeze one validated set for the entire batch. Invalid libraries fail
         # before any cell runs instead of becoming a series of setup errors.
-        self.controls = (
-            load_library(control_library).active_controls() if control_library is not None else None
-        )
+        self.library = load_library(control_library) if control_library is not None else None
+        self.controls = self.library.active_controls() if self.library is not None else None
 
     def run(self, suite: SuiteSpec) -> BatchSummary:
         started_at = utc_now()
@@ -462,12 +461,45 @@ def _trace_events(runs_dir: Path, run_id: str) -> list[TraceEvent] | None:
         return None
 
 
+def _unbilled_failure(failure: object) -> bool:
+    """A failed attempt the provider answered with an HTTP error status.
+
+    See ``_nothing_billed`` for why such an attempt is taken as unbilled.
+    """
+    return (
+        isinstance(failure, dict)
+        and isinstance(failure.get("status_code"), int)
+        and failure["status_code"] >= 400
+    )
+
+
+def _left_a_billed_call_unrecorded(event: TraceEvent) -> bool:
+    """Whether an error event is a call that may have been billed with no response in the trace.
+
+    A call abandoned at the run's timeout, or a call that failed after an
+    attempt the provider did not answer with an error status, such as a
+    dropped connection, may have been billed, and nothing it cost is in the
+    trace. A call the policy recovered from such an attempt is priced from
+    the response that came back, without the failed attempt.
+    """
+    if event.event_type is not TraceEventType.ERROR:
+        return False
+    kind = event.payload.get("kind")
+    if kind == "model_timeout":
+        return True
+    record = event.payload.get("call_record")
+    if kind != "model_error" or not isinstance(record, dict):
+        return False
+    failures = record.get("failures")
+    return isinstance(failures, list) and not all(_unbilled_failure(f) for f in failures)
+
+
 def _nothing_billed(events: list[TraceEvent]) -> bool:
     """Whether a live run that recorded no response spent nothing, as its trace shows.
 
     True when no request was ever prepared, or when the call policy gave up on
-    the run's one call and every failed attempt carried an HTTP status, so the
-    provider answered each request with an error (see the module docstring on
+    the run's one call and every failed attempt carried an HTTP error status
+    (400 or above), so the provider answered each request with an error (see the module docstring on
     why that is taken as unbilled). False for anything else, including a
     failure with no status (the request may have reached the model before the
     connection dropped), a call the runner abandoned at its timeout, a response
@@ -483,10 +515,7 @@ def _nothing_billed(events: list[TraceEvent]) -> bool:
     if not isinstance(record, dict) or record.get("outcome") == "ok":
         return False
     failures = record.get("failures")
-    return isinstance(failures, list) and all(
-        isinstance(failure, dict) and isinstance(failure.get("status_code"), int)
-        for failure in failures
-    )
+    return isinstance(failures, list) and all(_unbilled_failure(f) for f in failures)
 
 
 def _guard_model(config: AgentConfig) -> str | None:
@@ -513,9 +542,13 @@ def run_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None
     rejected included, so the cost comes from the same bytes the trace carries
     rather than from a second accounting path. A provider or model with no
     price stays null. A live run that recorded no response costs zero only when
-    its trace shows nothing was billed (see ``_nothing_billed``). Otherwise,
-    and when the trace cannot be read, the cost is null, so a live run whose
-    cost is unknown is never reported as free.
+    its trace shows nothing was billed (see ``_nothing_billed``). A live run
+    with a call abandoned at its timeout, or a call that failed after an
+    attempt with no error status, is null even when earlier responses were
+    priced, since that request may still be billed and its response never
+    reached the trace (see ``_left_a_billed_call_unrecorded``). Otherwise, and
+    when the trace cannot be read, the cost is null, so a live run whose cost
+    is unknown is never reported as free or as the total of its earlier turns.
     """
     if config.provider == "fixture" or (
         config.cassette is not None and config.cassette.mode == "replay"
@@ -523,6 +556,8 @@ def run_cost_usd(config: RunConfig, runs_dir: Path, run_id: str) -> float | None
         return 0.0
     events = _trace_events(runs_dir, run_id)
     if events is None:
+        return None
+    if any(_left_a_billed_call_unrecorded(e) for e in events):
         return None
     responses = [e for e in events if e.event_type is TraceEventType.MODEL_RESPONSE]
     if not responses and config.provider in LIVE_PROVIDERS and _nothing_billed(events):
