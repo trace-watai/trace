@@ -929,6 +929,27 @@ def test_a_start_the_agent_would_never_act_after_fails_before_anything_runs(tmp_
         assert not runs.exists()
 
 
+def test_a_start_after_an_earlier_recorded_answer_fails_before_anything_runs(tmp_path, capsys):
+    """A recording can hold an answer a control blocked (#193).
+
+    Every condition replays the recording up to the fork, and with the control
+    off that answer stands and ends the run before the agent acts.
+    """
+    path, artifact = _artifact(tmp_path)
+    answer = AgentAction(kind=ActionKind.FINAL_ANSWER, final_answer="Your refund is on its way.")
+    artifact["pinned_agent_actions"].insert(1, answer.model_dump(mode="json"))
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    script = _script(tmp_path, STORE_CREDIT)
+    spec_path, _ = _spec(
+        tmp_path, _condition("late", "live", artifact, 3, continuation_script=script)
+    )
+    runs = tmp_path / "runs"
+    capsys.readouterr()
+    assert main(["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]) == 2
+    assert "gives a final answer at step 2" in capsys.readouterr().err
+    assert not runs.exists()
+
+
 @pytest.mark.parametrize("version", ["0.2.0", "0.3.0"])
 def test_batch_summaries_written_before_the_branch_stage_still_load(version):
     """The retained summary is 0.2.0; 0.3.0 is the same with #196's budget block."""
