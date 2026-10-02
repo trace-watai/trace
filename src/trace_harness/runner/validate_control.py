@@ -538,21 +538,22 @@ def short_path_for(
     for a control it was predicted with, which the basis names. The short
     path also needs a replay-only condition for the control to run.
     """
-    from trace_harness.regression.materializer import classify_replay_mode
+    from trace_harness.regression.repair_validation import basis_supports_label, gating_refusal
 
     if artifact.replay_mode != "static_ok":
         return False, None
-    basis = artifact.replay_mode_basis
-    if basis is None or classify_replay_mode(basis) != "static_ok":
+    # gating_refusal is the one rule for whether a label backs this control
+    # (#226). The two notes say which half of it failed.
+    if gating_refusal(artifact, control_id) is not None:
+        basis = artifact.replay_mode_basis
+        if basis is not None and basis_supports_label(artifact):
+            return False, (
+                f"a static_ok artifact took the live path, since its label was predicted with "
+                f"{list(basis.control_ids)} installed and says nothing about {control_id}"
+            )
         return False, (
             "a static_ok artifact took the live path, since its replay_mode_basis does not "
             "support the label"
-        )
-    predicted_with = list(basis.control_ids)
-    if control_id not in predicted_with:
-        return False, (
-            f"a static_ok artifact took the live path, since its label was predicted with "
-            f"{predicted_with} installed and says nothing about {control_id}"
         )
     if not conditions.static:
         return False, (
