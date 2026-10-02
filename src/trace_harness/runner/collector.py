@@ -7,8 +7,8 @@ advisory. This reader accepts #156's labels without generating or changing them.
 A generated suite run that reproduced an earlier card holds a ``bundle_ref.json``
 pointer and no regression artifact of its own (#211). It counts as covered when
 the run it points to holds one. It is not an artifact itself, since discovery finds
-the first occurrence's artifact once, so a key is replayed once however many runs
-repeated it.
+the first occurrence's artifact once, so a key is replayed once per runs
+directory or scope however many runs repeated it.
 
 Given an experiments directory, the collector also recomputes every retained
 experiment's frozen set (#195). Drift there is reported and recorded in the
@@ -339,7 +339,9 @@ def _check_experiments(directory: Path, summary: CollectorSummary) -> None:
 
 
 def _check_experiment(plan: Path) -> ExperimentFreezeEntry:
-    spec = load_plan(json.loads(plan.read_text(encoding="utf-8")))
+    # The gate checks a retained plan's frozen set, and installs nothing from
+    # it, so a control retired since then leaves the plan readable.
+    spec = load_plan(json.loads(plan.read_text(encoding="utf-8")), check_controls=False)
     result_path = plan.parent / EXPERIMENT_RESULT
     result = (
         ExperimentResult.model_validate_json(result_path.read_text(encoding="utf-8"))

@@ -70,10 +70,11 @@ def load_env_file(path: Path | str = ".env") -> dict[str, str]:
 class HarnessConfig(BaseModel):
     """Machine-local settings shared by all CLI commands."""
 
-    # Honest status: read from TRACE_MODEL_PROVIDER but not consumed yet —
-    # `run-fixture` is fixture-only by definition. This becomes meaningful
-    # when a provider-agnostic `run` command lands alongside the first live
-    # adapter. TODO(Rupert/runner): wire it up then.
+    # Read from TRACE_MODEL_PROVIDER, but no command consumes it. run-fixture
+    # and run-pipeline take --provider (default fixture) and run-suite takes
+    # the provider from each agent config, so .env.example says setting it
+    # changes nothing. TODO(evaluation-systems/cli): make it the --provider
+    # default, or drop it.
     model_provider: str = DEFAULT_PROVIDER
     runs_dir: Path = Path(DEFAULT_RUNS_DIR)
     log_level: str = DEFAULT_LOG_LEVEL

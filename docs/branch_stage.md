@@ -38,8 +38,10 @@ fixtures component. `branch` and `record` both refuse a plan past schema 0.1.0
 that was never frozen, and both exit 2 with the changed files listed when the
 verifier, environment, attribution scorer, suite or fixtures moved after the
 freeze. `branch` checks before any run, so a changed evaluator costs nothing.
-`branch --allow-drift` runs anyway and prints the drift, and `record` then
-needs the flag too, which forces the decision to review.
+`branch --allow-drift` runs anyway, prints the drift and writes it into each
+batch's metadata. `record` treats a batch that carries drift like a drifted
+record, so the result stays drifted with decision `review` even if the files
+are restored before recording.
 
 Brief 001 runs this sequence once per condition, with its harness check,
 retention and offline regeneration around it, in
@@ -50,8 +52,9 @@ retention and offline regeneration around it, in
 For each seed of a `live`, `live_no_control` or `live_swapped` condition:
 
 1. Rebuilds the world from the artifact's pinned state and documents, as
-   `replay` does. The task fixture supplies only the tool subset and the
-   verifier ids.
+   `replay` does. The task fixture supplies the tool subset, the verifier ids
+   and the prompt the live model reads (`description`, `goal` and
+   `user_message`).
 2. Installs the condition's `control_ids` through `select_controls` and
    `install_control`, so every block carries `blocked_by` in the trace.
 3. Runs `ForkAdapter(prefix, continuation, switch_at_step=start.step_id)`.
@@ -67,7 +70,17 @@ For each seed of a `live`, `live_no_control` or `live_swapped` condition:
 
 The start step is the last recorded step. At brief 001's fork points it is the
 control step, so the recorded action there is replayed, the control blocks it,
-and the agent takes over after the block. A condition with no `start` hands
+and the agent takes over after the block.
+
+A final answer that a condition's control blocks goes back to the agent too,
+and the run goes on to its next step (#193). An agent that reads the block
+can act again, so an arm with a final-answer control completes on its next
+accepted answer and is labeled `recovered` when no mapped check fired after
+the block. A fixture arm with no `continuation_script` plays the recording,
+which ends at its final answer, so a blocked recorded answer ends the run as
+`script_exhausted` and the run is `stalled`. A start at a recorded final
+answer is still refused, since the pinned action does not say whether a
+control blocked it when it was recorded. A condition with no `start` hands
 the agent the whole run from step 1.
 
 A `live_no_control` condition replays that same recorded action with nothing

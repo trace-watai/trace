@@ -149,9 +149,11 @@ def retain_failing_cells(
     _refuse_bundles_left_behind(store, [cell.run_id for cell in summary.failing_cells])
     work = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=source))
     try:
+        kept = {cell.run_id for cell in summary.failing_cells}
         for cell in summary.failing_cells:
             shutil.copytree(store.run_dir(cell.run_id), work / cell.run_id)
             _point_at_retained_cassette(work / cell.run_id / names.RUN_CONFIG, cell)
+            _drop_occurrences_not_retained(work / cell.run_id / names.FAILURE_CARD, kept)
             (work / cell.cassette_path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source / cell.cassette_path, work / cell.cassette_path)
         (work / SWEEP_SUMMARY).write_text(summary.model_dump_json(indent=2) + "\n")
@@ -177,6 +179,26 @@ def retain_failing_cells(
         return target
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _drop_occurrences_not_retained(card_path: Path, kept: set[str]) -> None:
+    """Keep only the retained runs in a retained card's occurrences.
+
+    A cell that ended incomplete after breaking a rule is bundled under the
+    sweep's scope and can join a failing cell's card, but only failing cells
+    are retained. Listing it would link the retained card to a run that is not
+    there.
+    """
+    if not card_path.is_file():
+        return
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    occurrences = card.get("occurrences")
+    if not isinstance(occurrences, list):
+        return
+    retained = [o for o in occurrences if isinstance(o, dict) and o.get("run_id") in kept]
+    if len(retained) != len(occurrences):
+        card["occurrences"] = retained
+        card_path.write_text(json.dumps(card, indent=2) + "\n", encoding="utf-8")
 
 
 def _refuse_bundles_left_behind(store: ArtifactStore, run_ids: list[str]) -> None:

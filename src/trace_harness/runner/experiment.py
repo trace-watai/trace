@@ -35,6 +35,7 @@ from pydantic import (
     ConfigDict,
     Field,
     SerializerFunctionWrapHandler,
+    ValidationInfo,
     field_validator,
     model_serializer,
     model_validator,
@@ -126,9 +127,20 @@ class ConditionSpec(BaseModel):
             )
         return self
 
+    @field_validator("seeds")
+    @classmethod
+    def _seeds_are_distinct(cls, seeds: list[int]) -> list[int]:
+        """A seed listed twice would run twice and count twice in a rate's n."""
+        repeated = sorted({seed for seed in seeds if seeds.count(seed) > 1})
+        if repeated:
+            raise ValueError(f"seeds lists {repeated} more than once")
+        return seeds
+
     @field_validator("control_ids")
     @classmethod
-    def _control_ids_are_installable(cls, control_ids: list[str]) -> list[str]:
+    def _control_ids_are_installable(
+        cls, control_ids: list[str], info: ValidationInfo
+    ) -> list[str]:
         """Each id must name a control that can be installed.
 
         ``select_controls`` is the lookup ``replay --control`` uses and the
@@ -141,6 +153,10 @@ class ConditionSpec(BaseModel):
         repeated = sorted({cid for cid in control_ids if control_ids.count(cid) > 1})
         if repeated:
             raise ValueError(f"control_ids lists {repeated} more than once")
+        if (info.context or {}).get("check_controls") is False:
+            # A stored plan read for display is not about to install anything,
+            # and a control retired later must not make it unreadable.
+            return control_ids
         for control in select_controls(control_ids):
             resolve_control(control)
         return control_ids
@@ -354,19 +370,23 @@ class ExperimentResult(BaseModel):
 PLAN_FILE_REQUIRED = ("experiment_id", "created_at")
 
 
-def load_plan(data: Any) -> ExperimentSpec:
+def load_plan(data: Any, *, check_controls: bool = True) -> ExperimentSpec:
     """A plan read from a file, which must state its own id and creation time.
 
     The model defaults both so a plan can be built in code. Read from a file,
     a default would mint a fresh id on every read, so recording the same file
     twice would file two experiments, and the creation time would be the time
     of reading.
+
+    ``check_controls=False`` skips resolving each condition's control ids
+    against the registry, for a stored plan that is only read. Recording or
+    running against a plan always checks them.
     """
     if isinstance(data, dict):
         missing = [name for name in PLAN_FILE_REQUIRED if name not in data]
         if missing:
             raise ValueError(f"an experiment plan file must state {', '.join(missing)}")
-    return ExperimentSpec.model_validate(data)
+    return ExperimentSpec.model_validate(data, context={"check_controls": check_controls})
 
 
 class FrozenSuiteError(ValueError):
@@ -387,6 +407,63 @@ def check_frozen_suite(spec: ExperimentSpec, suites: dict[str, str]) -> None:
         raise FrozenSuiteError(
             f"{spec.experiment_id} freezes suite {frozen!r}, but {found}; "
             "a batch from another suite cannot answer this plan"
+        )
+
+
+class ConditionMismatchError(ValueError):
+    """A recorded batch did not run the arm its condition declares."""
+
+
+def _arm(config: Any) -> tuple[str, str]:
+    """What names an agent: its provider and model, or an outside agent's ``agent_ref``.
+
+    An outside agent owns its model, and its ``model`` is usually unset, so two
+    outside agents differ only in the ref that loads them.
+    """
+    if config.provider == "external":
+        return (config.provider, getattr(config, "agent_ref", None) or "")
+    return (config.provider, config.model or "")
+
+
+def check_condition_arms(spec: ExperimentSpec, summaries: dict[str, Any]) -> None:
+    """Each condition's batch must have run that condition's agent, judged by the frozen verifiers.
+
+    ``summaries`` maps condition name to its batch summary. Every agent config
+    in the batch must have the declared provider, and the declared model when
+    the condition names one, since the metrics pool the whole batch under the
+    condition. An outside agent is matched on its ``agent_ref`` instead. When
+    the plan freezes verifier ids, every verdict in the batch must come from
+    one of them.
+    """
+    declared = {c.name: c.agent_config for c in spec.conditions}
+    frozen_verifiers = set(spec.frozen_manifest.verifier_ids)
+    problems: list[str] = []
+    for name, summary in sorted(summaries.items()):
+        want = declared[name]
+        ran = sorted({_arm(c) for c in summary.agent_configs})
+        if want.provider == "external":
+            wanted = f"{want.provider}/{want.agent_ref}"
+            mismatch = any(arm != _arm(want) for arm in ran)
+        else:
+            wanted = f"{want.provider}/{want.model or 'any model'}"
+            mismatch = any(
+                provider != want.provider or (want.model is not None and model != want.model)
+                for provider, model in ran
+            )
+        if mismatch:
+            found = ", ".join(f"{p}/{m}" if m else p for p, m in ran)
+            problems.append(f"{name} declares {wanted} but its batch ran {found}")
+        if frozen_verifiers:
+            used = {e.verifier_id for e in summary.entries if e.verifier_id is not None}
+            stray = sorted(used - frozen_verifiers)
+            if stray:
+                problems.append(
+                    f"{name}'s batch was judged by {stray}, which the plan does not freeze"
+                )
+    if problems:
+        raise ConditionMismatchError(
+            f"{spec.experiment_id}: " + "; ".join(problems) + "; a batch of another arm cannot "
+            "answer this condition"
         )
 
 
@@ -658,6 +735,9 @@ def _batch_models(summary: Any) -> set[tuple[str, str | None]]:
     for config in summary.agent_configs:
         if config.provider == _FIXTURE[0]:
             models.add(_FIXTURE)
+            continue
+        if config.provider == "external":
+            models.add(_arm(config))
             continue
         try:
             models.add((config.provider, resolve_model_name(config.provider, config.model, None)))

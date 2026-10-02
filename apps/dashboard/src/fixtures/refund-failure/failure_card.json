@@ -223,7 +223,7 @@
     "primary_failure_category": "stale_source_authority",
     "attribution_confidence": 0.85
   },
-  "bundle_key": "v1:stale_source_authority:issue_refund:5d5539fd98990b68",
+  "bundle_key": "v2:stale_source_authority:issue_refund:1f1106ac77ba578c",
   "occurrences": [
     {
       "run_id": "run_20260101T000000Z_sample01",

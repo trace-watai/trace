@@ -32,6 +32,8 @@ from trace_harness.runner.batch import BatchSummary
 from trace_harness.runner.branch import post_fork_divergence, run_branch
 from trace_harness.runner.experiment import (
     EXPERIMENT_SCHEMA_VERSION,
+    ConditionSpec,
+    Decision,
     ExperimentResult,
     ExperimentSpec,
 )
@@ -326,6 +328,25 @@ def test_store_credit_after_the_block_is_a_substitute_violation(tmp_path):
     assert entry.post_block_outcome == attribution["post_block_outcome"]
     assert (entry.diverged, entry.first_post_fork_divergence_step) == (True, 3)
     assert store.exists(entry.run_id, names.FAILURE_CARD)
+
+
+def test_each_condition_keeps_its_own_cards_beside_the_source_run(tmp_path):
+    """In the source run's own runs directory, a condition's failing runs share
+    cards only with each other, never with the source run or another arm."""
+    path, artifact = _artifact(tmp_path)
+    store = ArtifactStore(path.parent.parent)
+    first = _condition("off_a", "live_no_control", artifact, 2, seeds=[0, 1])
+    second = _condition("off_b", "live_no_control", artifact, 2, seeds=[0, 1])
+    _, spec = _spec(tmp_path, first, second)
+
+    homes: dict[str, set[str]] = {}
+    for condition in spec.conditions:
+        entries = run_branch(path, spec, condition, store).summary.entries
+        runs = [e.run_id for e in entries if e.run_id is not None]
+        homes[condition.name] = set(store.bundle_homes(runs).values())
+        assert homes[condition.name] and homes[condition.name] <= set(runs)
+    assert artifact["source_run_id"] not in homes["off_a"] | homes["off_b"]
+    assert not homes["off_a"] & homes["off_b"]
 
 
 def test_recorded_continuation_without_a_control_never_diverges(tmp_path):
@@ -824,7 +845,8 @@ def test_branch_refuses_a_drifted_plan_before_any_run_unless_allowed(tmp_path, c
     spec_path, _ = _spec(tmp_path, _condition("live", "live", artifact, 2), frozen=False)
     assert main(["experiment", "freeze", str(spec_path)]) == 0
     environment = root / "src/trace_harness/environment/support_env.py"
-    environment.write_text(environment.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    original = environment.read_text(encoding="utf-8")
+    environment.write_text(original + "\n", encoding="utf-8")
 
     runs = tmp_path / "runs"
     branch = ["--runs-dir", str(runs), "branch", str(path), "--experiment", str(spec_path)]
@@ -837,7 +859,29 @@ def test_branch_refuses_a_drifted_plan_before_any_run_unless_allowed(tmp_path, c
 
     assert main([*branch, "--allow-drift"]) == 0
     assert "DRIFTED, 1 file(s), running with --allow-drift" in capsys.readouterr().out
-    assert (runs / "batches").exists()
+    (batch,) = [p.name for p in (runs / "batches").iterdir()]
+
+    # Restoring the file before recording does not clean the batch: its
+    # verdicts came from the edited environment.
+    environment.write_text(original, encoding="utf-8")
+    record = ["--runs-dir", str(runs), "experiment", "record", str(spec_path)]
+    assert main([*record, "--condition", f"live={batch}", "--decision", "keep"]) == 0
+    assert "run by branch under drift for live" in capsys.readouterr().out
+    result = ExperimentResult.model_validate_json(
+        (runs / "experiments/exp_branch_test/result.json").read_text(encoding="utf-8")
+    )
+    assert result.frozen_set_drifted and not result.frozen_set_verified
+    assert result.decision is Decision.REVIEW
+    assert [(c.component, c.path) for c in result.frozen_set_drift] == [
+        ("environment", "src/trace_harness/environment/support_env.py")
+    ]
+
+
+def test_a_seed_listed_twice_is_refused(tmp_path):
+    """It would run twice and count twice in a rate's n."""
+    _, artifact = _artifact(tmp_path)
+    with pytest.raises(ValueError, match=r"seeds lists \[0\] more than once"):
+        ConditionSpec.model_validate(_condition("live", "live", artifact, 2, seeds=[0, 0]))
 
 
 @pytest.mark.parametrize(

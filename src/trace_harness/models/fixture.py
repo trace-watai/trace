@@ -32,6 +32,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 
 from trace_harness.models.base import (
+    ActionKind,
     AgentAction,
     Message,
     ScriptExhaustedError,
@@ -85,9 +86,18 @@ class FixtureModelAdapter:
         Raises :class:`ScriptExhaustedError` when the script runs out before
         the run terminates — the runner records this as a distinct
         termination reason so an under-length script is never mistaken for a
-        model decision.
+        model decision. A script whose last action is a final answer is only
+        asked again when a control blocked that answer, and a script cannot
+        react to the block, so the error says that instead.
         """
         if self._cursor >= len(self.script.actions):
+            last = self.script.actions[-1]
+            if last.kind is ActionKind.FINAL_ANSWER:
+                raise ScriptExhaustedError(
+                    f"fixture script '{self.script.script_id}' exhausted after "
+                    f"{len(self.script.actions)} actions; a control blocked its final "
+                    "answer, and a script cannot answer again."
+                )
             raise ScriptExhaustedError(
                 f"fixture script '{self.script.script_id}' exhausted after "
                 f"{len(self.script.actions)} actions; the run did not reach a "
