@@ -73,7 +73,9 @@ the block. A fixture arm with no `continuation_script` plays the recording,
 which ends at its final answer, so a blocked recorded answer ends the run as
 `script_exhausted` and the run is `stalled`. A start at a recorded final
 answer is still refused, since the pinned action does not say whether a
-control blocked it when it was recorded. A condition with no `start` hands
+control blocked it when it was recorded, and so is a start after one, since
+a condition replays the recording up to the start with its own controls and
+the answer may stand there and end the run. A condition with no `start` hands
 the agent the whole run from step 1.
 
 A `live_no_control` condition replays that same recorded action with nothing
