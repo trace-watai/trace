@@ -209,7 +209,12 @@ does not keep (`runner/verdict_agreement.py`).
 
 A pair is one arm, artifact, control and model. Its static verdict is clear
 when `metadata.replay_exit_code` is 0 on the `static_replay` batch for that
-artifact and control. A completed control-on seed is clear when its verdict
+artifact and control, as pre-registration 001 defines it. A static replay
+that runs out before the end exits non-zero and so is not clear. That is
+what happens to a final-answer control, whose block leaves the recorded
+script nothing to do, so such a pair reads as a disagreement whenever its
+live seeds are clear. Brief 001's registered pairs use only the refund
+window control and are not affected. A completed control-on seed is clear when its verdict
 records no blocking failure after the fork, meaning no failed check with
 `blocks_release` and a step id past the start step. The live verdict is clear
 when at least half the completed seeds are. A pair with fewer than five
