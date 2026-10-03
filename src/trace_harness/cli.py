@@ -13,6 +13,7 @@ Commands (each is one pipeline stage; ``run-pipeline`` chains them):
     trace-harness collect-regressions docs/acceptance/runs
     trace-harness report-suite batch_<...>
     trace-harness branch       <regression_artifact.json> --experiment <experiment.json>
+    trace-harness validate-control <control_id> --experiment <experiment.json> --artifact <a.json>
     trace-harness run-pipeline <task> --agent trace_harness.agents.langgraph_ref:agent
 
 ``run-suite`` runs many tasks across agent configs in one batch, isolating
@@ -944,6 +945,7 @@ def _replay_with_report(
     validate_individually: bool = True,
     validation_controls: list[ControlInstance] | None = None,
     replayed_run_dirs: list[Path] | None = None,
+    validations: list[RepairValidation] | None = None,
 ) -> ReplayReport:
     """Replay a regression artifact and assert the gate conditions hold.
 
@@ -987,6 +989,8 @@ def _replay_with_report(
     ``script_exhausted`` and never completes.
 
     Returns structured evidence and the existing command's 0/1 exit status.
+    When ``validations`` is given, the per-control validation is appended to
+    it, which is how the branch stage keeps each control's verdict (#203).
     """
     # Flag and control-id errors are usage errors: fail before any output.
     if control_ids and not apply_control:
@@ -1184,6 +1188,8 @@ def _replay_with_report(
         )
         written = store.artifact_path(artifact.source_run_id, names.REPAIR_VALIDATION)
         _print("written:", str(written))
+        if validations is not None:
+            validations.append(validation)
 
     if validation is not None:
         if validation.has_incomplete:
@@ -1666,6 +1672,42 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     reuse the ``replay --apply-control`` path and record its verdict as a batch
     of one. Every condition is checked before any of them runs.
     """
+    artifact_path = Path(args.artifact_path)
+    if not artifact_path.is_file():
+        raise CliInputError(f"regression artifact not found: {artifact_path}")
+    spec_path, spec = _load_experiment_plan(args.experiment)
+    conditions = [c for c in spec.conditions if args.condition in (None, c.name)]
+    if not conditions:
+        declared = sorted(c.name for c in spec.conditions)
+        raise CliInputError(f"condition {args.condition!r} is not declared; declared: {declared}")
+    code, pairs = _branch_conditions(
+        artifact_path, spec_path, spec, conditions, store, allow_drift=args.allow_drift
+    )
+    if code == 0 and pairs:
+        print("\nRecord with:")
+        print(
+            f"  trace-harness experiment record {spec_path} "
+            + " ".join(f"--condition {name}={batch_id}" for name, batch_id in pairs)
+        )
+    return code
+
+
+def _branch_conditions(
+    artifact_path: Path,
+    spec_path: Path,
+    spec: Any,
+    conditions: list[Any],
+    store: ArtifactStore,
+    *,
+    allow_drift: bool,
+    skipped: dict[str, str] | None = None,
+) -> tuple[int, list[tuple[str, str]]]:
+    """Check, then run, the given conditions; return the exit code and each condition's batch.
+
+    Shared by ``branch`` and ``validate-control`` (#203). A condition skipped
+    for a missing cassette has no batch and no pair, and when ``skipped`` is
+    given it gains the condition's name and why.
+    """
     from trace_harness.runner.batch import BUDGET_UNENFORCEABLE
     from trace_harness.runner.branch import (
         admit_before_any_run,
@@ -1680,14 +1722,6 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     )
     from trace_harness.runner.experiment import ConditionKind
 
-    artifact_path = Path(args.artifact_path)
-    if not artifact_path.is_file():
-        raise CliInputError(f"regression artifact not found: {artifact_path}")
-    spec_path, spec = _load_experiment_plan(args.experiment)
-    conditions = [c for c in spec.conditions if args.condition in (None, c.name)]
-    if not conditions:
-        declared = sorted(c.name for c in spec.conditions)
-        raise CliInputError(f"condition {args.condition!r} is not declared; declared: {declared}")
     artifact = load_artifact(artifact_path)
     for condition in conditions:
         validate_condition(artifact, condition)
@@ -1703,7 +1737,7 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     drift = _frozen_set_drift(
         spec,
         spec_path,
-        allow_drift=args.allow_drift,
+        allow_drift=allow_drift,
         refused="branching is refused before any run",
         override="--allow-drift to run anyway (the batches record the drift)",
     )
@@ -1722,19 +1756,28 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
         _print("budget:", f"stopped before this invocation, {earlier.detail}")
     admit_before_any_run(guard, conditions)
 
-    pairs: list[str] = []
+    pairs: list[tuple[str, str]] = []
     for condition in conditions:
         print(f"\nBranch condition: {condition.name} ({condition.kind.value})")
         if condition.kind is ConditionKind.STATIC_REPLAY:
             started_at = utc_now()
+            validations: list[RepairValidation] = []
             report = _replay_with_report(
                 artifact_path,
                 store,
                 apply_control=bool(condition.control_ids),
                 control_ids=condition.control_ids or None,
+                validations=validations,
             )
             summary = replay_batch(
-                report, spec, condition, artifact_path, store, started_at, frozen_set_drift=drift
+                report,
+                spec,
+                condition,
+                artifact_path,
+                store,
+                started_at,
+                validation=validations[0] if validations else None,
+                frozen_set_drift=drift,
             )
         else:
             outcome = run_branch(
@@ -1742,6 +1785,8 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
             )
             if outcome.summary is None:
                 print(f"  skipped: {outcome.skipped}")
+                if skipped is not None:
+                    skipped[condition.name] = outcome.skipped or "no batch"
                 continue
             summary = outcome.summary
         for entry in summary.entries:
@@ -1761,7 +1806,7 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
             _print("stopped:", f"{budget.stop_reason}; {budget.detail}")
             _print("not run:", f"{len(budget.not_run)} seed(s)")
         _print("batch:", str(store.batch_summary_path(summary.batch_id)))
-        pairs.append(f"--condition {condition.name}={summary.batch_id}")
+        pairs.append((condition.name, summary.batch_id))
 
     print()
     _print(
@@ -1775,11 +1820,213 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     # invocation with no live condition never asked the guard, so a stop
     # carried over from earlier runs does not fail it.
     if guard.stop_reason == BUDGET_UNENFORCEABLE and any(map(calls_a_provider, conditions)):
-        return 2
-    if pairs:
-        print("\nRecord with:")
-        print(f"  trace-harness experiment record {spec_path} " + " ".join(pairs))
+        return 2, pairs
+    return 0, pairs
+
+
+def _validate_control(args: argparse.Namespace, store: ArtifactStore) -> int:
+    """Run one control's conditions, record them, and decide keep, discard or review (#203).
+
+    The conditions go through ``branch`` and the batches through ``experiment
+    record``, which writes the result with decision review by policy. The keep
+    rule then reads that result's metrics, the static verdict on the replay-only
+    batch and the B1 sidecar beside the result, and the result is written again
+    with the rule's decision by policy. The path is chosen once, before any run,
+    and the rule judges that path; on the static_ok short path only the
+    replay-only conditions run. Nothing here writes the control library. A keep
+    names the ``replay --apply-control --commit`` a human runs.
+    """
+    from trace_harness.runner.batch import BatchSummary
+    from trace_harness.runner.branch import load_artifact
+    from trace_harness.runner.experiment import (
+        DecidedBy,
+        Decision,
+        ExperimentResult,
+        derive_metrics,
+    )
+    from trace_harness.runner.validate_control import (
+        STATIC_OK_SHORT_PATH,
+        KeepEvidence,
+        conditions_for_control,
+        decide_keep,
+        effectiveness_entry,
+        live_arm,
+        read_repair_effectiveness,
+        recovered_with_blocking_failure,
+        render_keep_markdown,
+        short_path_for,
+        static_evidence,
+    )
+    from trace_harness.runner.verdict_agreement import run_ids
+
+    control_id = args.control_id
+    artifact_path, spec_path = Path(args.artifact), Path(args.experiment)
+    for path, what in ((artifact_path, "regression artifact"), (spec_path, "experiment plan")):
+        if not path.is_file():
+            raise CliInputError(f"{what} not found: {path}")
+    spec_path, spec = _load_experiment_plan(str(spec_path))
+    if spec.keep_rule is None:
+        raise CliInputError(
+            f"{spec_path} has no keep_rule, and validate-control reads every threshold from "
+            "the plan (experiment schema 0.4.0)"
+        )
+    select_controls([control_id])
+    artifact = load_artifact(artifact_path)
+    selected = conditions_for_control(spec, control_id)
+    short, path_note = short_path_for(artifact, control_id, selected)
+    conditions = selected.to_run(short)
+    skipped_by_short_path = [c.name for c in selected.to_run(short=False) if c not in conditions]
+
+    print(f"\nValidate control: {control_id} on {artifact.test_name} ({artifact.replay_mode})")
+    if short:
+        _print(
+            "path:",
+            "static_ok short path, replay only; not run: "
+            + (", ".join(skipped_by_short_path) or "nothing"),
+        )
+    elif path_note:
+        _print("path:", path_note)
+    skipped: dict[str, str] = {}
+    code, pairs = _branch_conditions(
+        artifact_path, spec_path, spec, conditions, store, allow_drift=False, skipped=skipped
+    )
+    if code:
+        return code
+
+    # Recorded through experiment record itself, so the metrics are the ones it
+    # derives. Review by policy stands until the rule has run.
+    _experiment_record(
+        argparse.Namespace(
+            experiment_path=str(spec_path),
+            condition=[f"{name}={batch_id}" for name, batch_id in pairs],
+            decision="review",
+            decided_by="policy",
+            allow_drift=False,
+        ),
+        store,
+    )
+    result = ExperimentResult.model_validate(store.read_experiment_result(spec.experiment_id))
+
+    recorded = result.condition_batches
+    # record keeps every condition the experiment has recorded, so its metrics
+    # pool other controls' batches too. The rule reads metrics derived from the
+    # batches this control just ran and nothing else.
+    declared = {c.name: c for c in spec.conditions}
+    own_conditions = {batch_id: declared[name] for name, batch_id in pairs}
+    own_batches = [BatchSummary.model_validate(store.read_batch_summary(b)) for b in own_conditions]
+    own_metrics = derive_metrics(
+        own_batches,
+        conditions=own_conditions,
+        verifier_results=_verifier_results(store, run_ids(own_batches)),
+    )
+
+    def batch(condition: Any) -> BatchSummary | None:
+        if condition is None or condition.name not in recorded:
+            return None
+        return BatchSummary.model_validate(store.read_batch_summary(recorded[condition.name]))
+
+    def verdict_of(run_id: str) -> VerifierResult | None:
+        if not store.exists(run_id, names.VERIFIER_RESULT):
+            return None
+        return VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
+
+    static = None
+    for condition in selected.static:
+        summary = batch(condition)
+        static = static_evidence(summary.metadata, control_id) if summary else None
+        if static is not None:
+            break
+    live_batch, noise_batch = batch(selected.live), batch(selected.noise_floor)
+    live, live_gap = live_arm(
+        selected.live, live_batch, skipped.get(selected.live.name) if selected.live else None
+    )
+    noise = selected.noise_floor
+    noise_floor, noise_floor_gap = live_arm(
+        noise, noise_batch, skipped.get(noise.name) if noise else None
+    )
+    recovered_failed = None
+    if live_batch is not None and selected.live is not None:
+        fork_step = selected.live.start.step_id if selected.live.start else 0
+        recovered_failed = recovered_with_blocking_failure(live_batch, verdict_of, fork_step)
+    sidecar = read_repair_effectiveness(store.experiment_dir(spec.experiment_id))
+    entry, note = effectiveness_entry(sidecar, artifact, control_id, live, noise_floor, recorded)
+    outcome = decide_keep(
+        KeepEvidence(
+            control_id=control_id,
+            replay_mode=artifact.replay_mode,
+            short_path=short,
+            path_note=path_note,
+            static=static,
+            live_condition=live,
+            noise_floor_condition=noise_floor,
+            live_gap=live_gap,
+            noise_floor_gap=noise_floor_gap,
+            verdict_agreement_rate=own_metrics.verdict_agreement_rate,
+            sibling_failure_rate=own_metrics.sibling_failure_rate,
+            post_block_outcomes=own_metrics.post_block_outcomes,
+            recovered_with_blocking_failure=recovered_failed,
+            effectiveness=entry,
+            effectiveness_note=note,
+        ),
+        spec.keep_rule,
+    )
+    commit_command = (
+        f"trace-harness replay {artifact_path} --apply-control --control {control_id} --commit"
+        if outcome.decision is Decision.KEEP
+        else None
+    )
+    result = ExperimentResult.model_validate(
+        {
+            **result.model_dump(mode="json"),
+            "decision": outcome.decision.value,
+            "decided_by": DecidedBy.POLICY.value,
+            "metadata": {
+                **result.metadata,
+                "validate_control": {
+                    **outcome.model_dump(mode="json"),
+                    "artifact": str(artifact_path),
+                    "test_name": artifact.test_name,
+                    "conditions_run": [name for name, _ in pairs],
+                    "not_run_on_short_path": skipped_by_short_path,
+                    "skipped_conditions": skipped,
+                    "keep_rule": spec.keep_rule.model_dump(mode="json"),
+                    "commit_command": commit_command,
+                },
+            },
+        }
+    )
+    store.write_experiment_result(
+        spec.experiment_id,
+        result,
+        markdown=_experiment_markdown(spec, result, sidecar)
+        + render_keep_markdown(outcome, commit_command),
+    )
+
+    path = (
+        "static_ok short path (replay only)"
+        if outcome.path == STATIC_OK_SHORT_PATH
+        else "live path"
+    )
+    print(f"\nKeep rule for {control_id}: {outcome.decision.value} by policy, {path}")
+    for check in outcome.checks:
+        _print(f"  {check.name}:", f"{'met' if check.met else 'not met'}, {check.detail}")
+    if outcome.decision is Decision.DISCARD:
+        for reason in outcome.reasons:
+            _print("  reason:", reason)
+    for line in outcome.notes:
+        _print("  note:", line)
+    if commit_command:
+        print("\nNothing was committed. A human commits the control with")
+        print(f"  {commit_command}")
+    _print("written:", str(store.experiment_result_path(spec.experiment_id)))
     return 0
+
+
+def _experiment_markdown(spec: Any, result: Any, sidecar: Any) -> str:
+    """``report.md`` as record renders it, so a rewrite keeps record's B1 section (#200)."""
+    from trace_harness.runner.experiment import render_experiment_markdown
+
+    return render_experiment_markdown(spec, result, repair=sidecar)
 
 
 def _list_experiments(store: ArtifactStore) -> int:
@@ -2518,6 +2765,19 @@ def main(argv: list[str] | None = None) -> int:
         help="run even if the plan's frozen set changed; record will need the flag too",
     )
 
+    p_validate_control = sub.add_parser(
+        "validate-control",
+        parents=[common],
+        help="run a control's conditions and decide keep, discard or review by the plan's rule",
+    )
+    p_validate_control.add_argument("control_id", help="the control to validate")
+    p_validate_control.add_argument(
+        "--experiment", required=True, help="path to the frozen experiment plan with a keep_rule"
+    )
+    p_validate_control.add_argument(
+        "--artifact", required=True, help="path to the regression_artifact.json the conditions fork"
+    )
+
     p_suite = sub.add_parser(
         "run-suite",
         parents=[common],
@@ -2691,6 +2951,8 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
         return _list_experiments(store)
     if args.command == "branch":
         return _branch(args, store)
+    if args.command == "validate-control":
+        return _validate_control(args, store)
     if args.command == "run-suite":
         return _run_suite(args, store)
     if args.command == "run-sweep":

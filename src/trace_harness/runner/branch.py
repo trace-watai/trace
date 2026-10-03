@@ -69,6 +69,7 @@ from trace_harness.models.cassette import (
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
 from trace_harness.models.fork import ForkAdapter
 from trace_harness.models.policy import CallPolicy
+from trace_harness.regression.repair_validation import RepairValidation
 from trace_harness.regression.replay import pinned_initial_state, pinned_script
 from trace_harness.regression.report import ReplayReport
 from trace_harness.regression.schemas import RegressionArtifact
@@ -110,6 +111,9 @@ logger = logging.getLogger(__name__)
 LIVE_KINDS = frozenset(
     {ConditionKind.LIVE, ConditionKind.LIVE_NO_CONTROL, ConditionKind.LIVE_SWAPPED}
 )
+# Where a replay-only batch keeps the per-control #146 verdicts its replay
+# earned, which validate-control reads (#203).
+CONTROL_VALIDATIONS_KEY = "control_validations"
 #: Plan metadata key listing the seeds that replace a run ending incomplete.
 REPLACEMENT_SEEDS = "replacement_seeds"
 #: The statuses of a run that exists and ended incomplete, the ones replaced.
@@ -520,6 +524,7 @@ def replay_batch(
     artifact_path: Path | str,
     store: ArtifactStore,
     started_at: datetime,
+    validation: RepairValidation | None = None,
     frozen_set_drift: list[FrozenFileChange] | None = None,
 ) -> BatchSummary:
     """Record a ``static_replay`` condition's replay as a batch of one.
@@ -527,7 +532,10 @@ def replay_batch(
     The entry is the replayed scenario run. The replay's own verdict, the exit
     code ``replay --apply-control`` would return, goes in the batch metadata,
     and so do the positive siblings it ran, by run id, which is what
-    ``sibling_failure_rate`` counts (A4 in docs/methodology_metrics.md).
+    ``sibling_failure_rate`` counts (A4 in docs/methodology_metrics.md). So
+    does ``validation``, the per-control verdicts (#146) the replay earned
+    when it validated controls one at a time, cut to the controls the
+    condition installed.
     """
     artifact = load_artifact(artifact_path)
     run_id = report.scenario.run_id
@@ -542,6 +550,13 @@ def replay_batch(
         artifact.task_fixture,
         store.runs_dir,
     ).model_copy(update={"condition": condition.name, "post_block_outcome": block.outcome})
+    verdicts: dict[str, Any] = {}
+    if validation is not None:
+        verdicts[CONTROL_VALIDATIONS_KEY] = [
+            c.model_dump(mode="json")
+            for c in validation.controls
+            if c.control_id in condition.control_ids
+        ]
     # A replay calls no provider, so it spends nothing and is never refused.
     return _write_batch(
         store,
@@ -553,6 +568,7 @@ def replay_batch(
         budget=BatchBudget(max_cost_usd=experiment.budget.max_cost_usd, spent_usd=0.0),
         **_drift_metadata(frozen_set_drift),
         replay_exit_code=report.exit_code,
+        **verdicts,
         siblings=[{"test_name": s.test_name, "run_id": s.run_id} for s in report.siblings],
     )
 

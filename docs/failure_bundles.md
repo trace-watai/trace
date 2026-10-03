@@ -360,7 +360,16 @@ which is what ADR-0002 expects of a static verdict.
 With a pinned agent that reads the block and acts again, escalating or
 restating what the tools did, per-control validation accepts either control
 on its bundle task, and the positive sibling still passes
-(`tests/test_final_answer_seam.py`).
+(`tests/test_final_answer_seam.py`). `validate-control` measures them live.
+On offline conditions for the missing-info failure, where the live arm is
+blocked, escalates and answers again on every seed, live evidence, the
+sibling pass rate, B1 and the margin over the noise floor all meet the plan,
+and the decision is still `review`. `replay --apply-control --commit`, the
+step that commits a kept control, commits only an accepted static verdict, so
+the keep rule requires one. `verdict_agreement_rate` is 0 for the same
+reason, since a static replay that never completes is never clear and every
+live seed is. Committing a final-answer control on live evidence is left for
+a separate decision.
 
 Only `ctl_refund_window_v1` is in the default set that `replay` installs and
 the materializer uses to predict replay mode. The others are in

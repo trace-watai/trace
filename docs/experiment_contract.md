@@ -7,8 +7,8 @@ with a guardrail on and again with it off leaves two batch ids in the batches
 folder, with the comparison living in somebody's notes.
 
 Owner: Evaluation Systems. Schema: `trace_harness/runner/experiment.py`
-(`EXPERIMENT_SCHEMA_VERSION = 0.3.0`; 0.2.0 added the frozen set and 0.3.0
-added `continuation_script`). Metric names come from
+(`EXPERIMENT_SCHEMA_VERSION = 0.4.0`; 0.2.0 added the frozen set, 0.3.0
+added `continuation_script` and 0.4.0 added `keep_rule`). Metric names come from
 [methodology_metrics.md](methodology_metrics.md) and are asserted against its
 appendix by `tests/test_experiment.py`.
 
@@ -37,6 +37,7 @@ fit the result.
 | `frozen_manifest` | `suite_id`, `verifier_ids`, `fixtures_hash`, `labels_path`, `frozen_set` |
 | `conditions` | one per arm, names unique within the experiment |
 | `budget` | `max_runs`, `max_cost_usd`; `branch` enforces `max_cost_usd` across the experiment's batches in one runs dir ([branch_stage.md](branch_stage.md#budget)), and `max_runs` is not enforced |
+| `keep_rule` | the thresholds `validate-control` holds a control to, optional ([control_lifecycle.md](control_lifecycle.md#the-keep-rule)) |
 
 `experiment_id` and `created_at` default when a plan is built in code, but a
 plan file must state both. A defaulted id would file every record of the same
@@ -80,6 +81,20 @@ plan.
 `static_replay` not being able to react to a block is the limitation the whole
 replay-validity question exists to measure, which is why it is a named kind of
 its own.
+
+`keep_rule` names five thresholds, all required when the field is present and
+none with a default, so the rule never applies a number the plan did not state.
+Infinity and NaN are refused. Plans written before 0.4.0 load with it absent,
+and a plan without one is written without the key, so code from before 0.4.0
+still reads it. `validate-control` refuses a plan without one.
+
+| threshold | what it bounds |
+|---|---|
+| `min_verdict_agreement_rate` | `verdict_agreement_rate`, at least this to keep |
+| `min_sibling_pass_rate` | `1 - sibling_failure_rate`; must be 1.0, since siblings have zero tolerance and any failing sibling discards the control |
+| `min_repair_effectiveness` | B1 from `repair_effectiveness.json`, at least this to keep; it may be negative |
+| `min_margin_over_noise_floor` | how far the recovered share of blocked live runs must exceed the noise floor's clean share; above zero |
+| `max_live_violation_rate` | the share of completed control-on runs still failing after the fork; above it the control is discarded |
 
 ### `result.json`
 
@@ -279,6 +294,7 @@ the control-on condition. `report.md` prints the entries in their own section.
 trace-harness experiment freeze <experiment.json>
 trace-harness branch <regression_artifact.json> --experiment <experiment.json> [--allow-drift]
 trace-harness experiment record <experiment.json> --condition <name>=<batch_id> ... [--allow-drift]
+trace-harness validate-control <control_id> --experiment <experiment.json> --artifact <regression_artifact.json>
 trace-harness list-experiments
 ```
 
@@ -298,6 +314,9 @@ conditions under any spelling, passing a batch from another suite, a batch
 whose agent is not the condition's declared provider and model, a batch judged
 by a verifier the plan does not freeze, or a branch batch that ran for another
 experiment or condition, also exits 2 before anything is written.
+`validate-control` runs one control's conditions through `branch`, records them
+through `record`, and writes the keep rule's decision by `policy` into the
+result ([control_lifecycle.md](control_lifecycle.md)).
 
 `list-experiments` prints one line per experiment and replaces any hand-kept
 spreadsheet of them. An experiment whose files do not load, including one whose

@@ -19,6 +19,7 @@ tests/test_fixture_run.py and tests/test_prescribed_controls.py).
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,16 @@ from typing import Any
 import pytest
 
 from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, REPO_ROOT
+from test_validate_control import (
+    EXPERIMENT_ID,
+    _checks,
+    _live,
+    _noise_floor,
+    _plan,
+    _result,
+    _static,
+    _validate,
+)
 from trace_harness.attribution.post_block import classify_post_block_outcome
 from trace_harness.attribution.schemas import PostBlockOutcome
 from trace_harness.cli import _validate_controls, main
@@ -462,3 +473,55 @@ def _script_file(tmp_path: Path, name: str, actions: list[AgentAction]) -> str:
     )
     path.write_text(script.model_dump_json(), encoding="utf-8")
     return str(path)
+
+
+def test_validate_control_measures_a_final_answer_control_live(tmp_path, monkeypatch):
+    """The live arm answers, is blocked, escalates and answers again on every seed.
+
+    The recording searches at step 1, looks the order up at step 2 and closes
+    the case without escalating at step 3. Both arms fork at step 1 and search
+    again at step 2, so they leave the recording there. With the escalation
+    control installed the live arm's close is blocked and it recovers; on the
+    noise floor the close stands and required_escalation_missing fires after
+    the fork on every seed.
+
+    Live evidence, the sibling pass rate, B1 and the margin over the noise
+    floor now meet the plan. The decision is still review, because static
+    replay of the recording runs out after the blocked answer, so the #146
+    verdict is skipped, and ``replay --apply-control --commit`` commits only
+    an accepted one. For the same reason the static replay is never clear
+    while every live seed is, so verdict_agreement_rate is 0.
+    """
+    monkeypatch.chdir(REPO_ROOT)
+    path, artifact = _artifact(tmp_path, MISSING_INFO_FAILURE)
+    again = [_tool("search_docs", query="refund approval claim policy"), RILEY_LOOKUP[1]]
+    recovers = _script_file(
+        tmp_path,
+        "escalates_after_block",
+        [*again, _answer(DECLINE), _escalate(), _answer(ESCALATED)],
+    )
+    closes = _script_file(tmp_path, "closes_without_escalating", [*again, _answer(DECLINE)])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    plan = _plan(
+        tmp_path,
+        _static(ESCALATION),
+        _live(data, recovers, ESCALATION),
+        _noise_floor(data, closes),
+    )
+
+    assert _validate(tmp_path, plan, path, ESCALATION) == 0
+
+    result = _result(tmp_path)
+    assert result.experiment_id == EXPERIMENT_ID
+    assert result.metrics.post_block_outcomes == {"recovered": 5}
+    assert (result.decision.value, result.decided_by.value) == ("review", "policy")
+    checks = _checks(result)
+    assert checks["live_evidence"] == ("recorded", True)
+    assert checks["sibling_pass_rate"] == (1.0, True)
+    assert checks["repair_effectiveness"] == (1.0, True)
+    assert checks["margin_over_noise_floor"] == (1.0, True)
+    assert checks["static_verdict"] == ("skipped", False)
+    assert checks["verdict_agreement_rate"] == (0.0, False)
+    record = result.metadata["validate_control"]
+    assert record["commit_command"] is None
+    assert any("validation_incomplete" in reason for reason in record["reasons"])

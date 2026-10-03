@@ -2,9 +2,9 @@
  * Experiment data contract.
  *
  * Mirrors `ExperimentSpec` / `ExperimentResult` in
- * `src/trace_harness/runner/experiment.py` (EXPERIMENT_SCHEMA_VERSION 0.3.0;
- * 0.2.0 added the frozen set in #195 and 0.3.0 `continuation_script` in #159),
- * serialized as `experiment.json` and `result.json` under
+ * `src/trace_harness/runner/experiment.py` (EXPERIMENT_SCHEMA_VERSION 0.4.0;
+ * 0.2.0 added the frozen set in #195, 0.3.0 `continuation_script` in #159 and
+ * 0.4.0 `keep_rule` in #203), serialized as `experiment.json` and `result.json` under
  * `runs/experiments/{experiment_id}/`.
  *
  * An experiment relates several batches to one question. The plan is written
@@ -14,7 +14,7 @@
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
-export const EXPERIMENT_SCHEMA_VERSION = "0.3.0";
+export const EXPERIMENT_SCHEMA_VERSION = "0.4.0";
 
 /**
  * `EXPERIMENT_ID_PATTERN` in `runner/experiment.py`. An experiment id names a
@@ -135,6 +135,22 @@ export interface RawBudget {
   max_cost_usd: number;
 }
 
+/**
+ * The thresholds `validate-control` holds a control to (0.4.0, #203). Every
+ * one is required when the rule is present, so no threshold is ever implied,
+ * and none is infinite. `min_repair_effectiveness` may be negative, since B1
+ * is. `min_sibling_pass_rate` is always 1, since siblings have zero tolerance
+ * and any failing sibling discards the control. The rule itself is stated in
+ * `docs/control_lifecycle.md`.
+ */
+export interface RawKeepRule {
+  min_verdict_agreement_rate: number;
+  min_sibling_pass_rate: 1;
+  min_repair_effectiveness: number;
+  min_margin_over_noise_floor: number;
+  max_live_violation_rate: number;
+}
+
 export interface RawExperimentSpec {
   schema_version: string;
   experiment_id: string;
@@ -143,6 +159,8 @@ export interface RawExperimentSpec {
   frozen_manifest: RawFrozenManifest;
   conditions: RawConditionSpec[];
   budget: RawBudget;
+  /** Absent on plans before 0.4.0 and on plans that validate no control. */
+  keep_rule?: RawKeepRule | null;
   created_at: string;
   metadata: Record<string, unknown>;
 }
