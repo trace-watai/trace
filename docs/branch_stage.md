@@ -98,7 +98,7 @@ run's verdict carries the recording's failure, which matters for
 | provider `fixture`, no `continuation_script` | The recorded actions after the start step |
 | provider `fixture` with `continuation_script` | That script's actions, from the step after the start |
 | A live provider | `create_model_adapter` with the condition's model, temperature, timeout, prompt version, cassette and call policy, and the seed. `run_config.json` records the call policy as `run_task_pipeline` does |
-| provider `external` (an outside agent, #210) | Not supported yet. The condition is refused before any run, since an outside agent runs its own loop from the task prompt and cannot take over a recorded run partway |
+| provider `external` (an outside agent, #210) that declares `supports_fork` | A `TargetAgentBridge` over the agent. Its first move comes after the start step, and `TaskPrompt.history` gives it the recorded steps with their observations. `run_config.json` records the `agent_ref`, no call policy, and `seed_sent: false`, since the harness cannot send the seed. The Claude Code agent renders the steps into its first message ([bring_your_own_agent.md](bring_your_own_agent.md#continuing-a-recorded-run)). An outside agent that cannot be imported, or does not declare `supports_fork`, is refused before any run |
 
 A live condition whose cassette mode is `replay` runs offline. When any of its
 seeds has no cassette file, the whole condition is skipped: no runs, no batch,
@@ -189,13 +189,15 @@ and its re-runs, as `repair_validation.json` records them. `validate-control`
 ## Batches
 
 One batch per condition, at `runs/batches/{batch_id}/batch_summary.json`,
-schema 0.4.0. Its `metadata` holds `experiment_id`, `condition`,
-`condition_kind`, `source_run_id` and `start`. Each entry gains `condition`,
+schema 0.5.0. Since 0.4.0 its `metadata` holds `experiment_id`, `condition`,
+`condition_kind`, `source_run_id` and `start`, and each entry has `condition`,
 `seed`, `first_post_fork_divergence_step`, `diverged` and
-`post_block_outcome`, and each run's index entry is tagged with the batch id,
-as `run-suite` does. Suite batches leave the new fields null, and summaries
-written before 0.4.0 load with them null and empty metadata. The dashboard
-mirror is `apps/dashboard/src/types/batch-summary.ts`.
+`post_block_outcome`. Each run's index entry is tagged with the batch id, as
+`run-suite` does. Suite batches leave the branch fields null, and summaries
+written before 0.4.0 load with them null and empty metadata. 0.5.0 added the
+entry's `notional_cost_usd`, set only for an outside agent that reports one
+([bring_your_own_agent.md](bring_your_own_agent.md#retries-time-cost-and-branching)).
+The dashboard mirror is `apps/dashboard/src/types/batch-summary.ts`.
 
 ## Metrics
 
@@ -315,6 +317,12 @@ cost after it finishes, and an unknown cost never counts as zero.
 - A seed that calls no provider, meaning the fixture provider or a cassette
   replay, costs nothing and is never refused, even after the guard has
   stopped. `static_replay` conditions never ask the guard.
+- An outside agent makes model calls the harness never sees, so every seed of
+  it is live to the guard. A config billed per call is refused before any run
+  as `budget_unenforceable`. A config that declares `billing: "subscription"`
+  is admitted without a charge until the guard stops, and refused like any
+  live seed after that. Its entries record `cost_usd` as null and the cost the
+  agent reported as `notional_cost_usd`, which the cap never counts.
 
 Every batch carries a `budget` block. Its `max_cost_usd` is the plan's cap and
 its `spent_usd` is what that batch's live runs cost, so the blocks of one

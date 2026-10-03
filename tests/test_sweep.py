@@ -191,7 +191,7 @@ def test_each_provider_writes_one_batch_tagged_with_the_sweep(tmp_path, fake_pro
     summary, store = _run(tmp_path)
     for provider in summary.providers:
         batch = BatchSummary.model_validate(store.read_batch_summary(provider.batch_id))
-        assert batch.schema_version == "0.4.0"
+        assert batch.schema_version == "0.5.0"
         assert batch.metadata == {
             "sweep_id": summary.sweep_id,
             "sweep_name": "probe",

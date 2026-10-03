@@ -212,10 +212,10 @@ BatchRunEntry` for one cell with the batch's failure isolation; `build_suite_rep
 on-disk artifacts — checks fired, failure categories, claimed-vs-observed
 coverage; see [suite_report.md](suite_report.md)).
 
-A suite may set `max_cost_usd` (`Suite 0.4.0`). `BatchRunner` asks
+A suite may set `max_cost_usd` (`Suite 0.5.0`). `BatchRunner` asks
 `BudgetGuard` before each run and stops the batch once the recorded spend of
 its live runs reaches the cap, which the summary's `budget` block records as
-`budget_exhausted` along with the cells never run (`BatchSummary 0.4.0`). The
+`budget_exhausted` along with the cells never run (`BatchSummary 0.5.0`). The
 run that reaches the cap records the stop, so the summary says so even when it
 was the last cell. A live run of an unpriced model under a cap is refused
 before it starts, and a live run that finishes with no recorded cost stops the
@@ -254,7 +254,7 @@ regression artifact's recording from each experiment condition's start step
 under that condition's agent and controls, verifies, attributes and bundles
 each run the way `run_task_pipeline` does, records divergence from the
 recording and the post-block outcome per entry, and writes one batch per
-condition (`BatchSummary` 0.4.0). `experiment record` derives the divergence
+condition (`BatchSummary` 0.5.0). `experiment record` derives the divergence
 rates and outcome counts from those batches. See
 [branch_stage.md](branch_stage.md).
 
@@ -270,8 +270,22 @@ provider request, so no call policy wraps it and `run_config.json` records
 `call_policy` as null. An error from the outside agent ends the run as
 `model_error` and is never retried. The budget guard refuses provider
 `external` under a cap as `budget_unenforceable`, since its spend is
-invisible, and `branch` refuses it before any run. See
+invisible, unless its config declares `billing: "subscription"` (Suite
+0.5.0). Such a config is admitted without a charge, and the cost its runtime
+reports is recorded as the entry's `notional_cost_usd` (BatchSummary 0.5.0),
+which no cap or total counts. `branch` runs an outside agent that declares
+`supports_fork` after a condition's start step, with the recorded steps in
+`TaskPrompt.history`, and refuses any other outside agent before any run. See
 [bring_your_own_agent.md](bring_your_own_agent.md).
+
+`agents/` holds the reference outside agents, which the core package never
+imports. `langgraph_ref.py` and `openai_agents_ref.py` run a framework loop over
+a scripted model, each behind its extra. `claude_code_ref.py` runs the task
+through the local Claude Code CLI with no built-in tool, giving it the task's
+tools through `claude_code_mcp.py`, a standard-library MCP server that relays
+every call to `call_tool`. It records to and replays from harness model
+cassettes. See
+[bring_your_own_agent.md](bring_your_own_agent.md#claude-code).
 
 `collector.py` exposes `collect_regressions(path, store, suite_path=...,
 experiments_path=...)` and `CollectorSummary` (`0.1.0`). It reuses replay's structured `ReplayReport` to gate

@@ -25,9 +25,14 @@ Neither is a bound. A call can return more output tokens than the cassette's
 largest, and a live transcript can grow faster than the recorded one. What
 bounds the spend is the plan's cap, which the budget guard checks between runs.
 
-The swapped model is priced on Gemini's token counts, since no Claude run is
-retained. Anthropic counts tokens with its own tokenizer, so that line is a
-proxy.
+The swapped arm runs claude-sonnet-5 through the Claude Code CLI on a Claude
+plan, declared as ``billing: "subscription"`` in the plan (the 2026-09-25
+amendment to pre-registration 001). It has no per-run charge and records no
+``cost_usd``, so it is left out of the total against the cap. Its line is a
+notional one, what the same calls would cost over the API at Anthropic's list
+prices, priced from Gemini's token counts, since no Claude run of a fork point
+is retained. Anthropic counts tokens with its own tokenizer, and Claude Code
+adds calls of its own, so that line is a proxy.
 
 Usage::
 
@@ -65,6 +70,20 @@ def input_at(step: int, inputs: list[int]) -> int:
     return inputs[-1] + (step - len(inputs)) * growth
 
 
+def priced_as(agent: dict) -> tuple[str, str]:
+    """The provider and model a condition's calls are priced as.
+
+    The plan's one outside agent is the Claude Code agent, whose calls go to
+    Anthropic models, so it is priced at Anthropic's list prices for the model
+    it runs, as the CLI prices them.
+    """
+    if agent["provider"] == "external":
+        from trace_harness.runner.target_agent import load_target_agent
+
+        return "anthropic", load_target_agent(agent["agent_ref"]).model
+    return agent["provider"], agent["model"]
+
+
 def run_cost(provider: str, model: str, calls: list[tuple[int, int]]) -> float:
     """One run's calls priced together, as the harness prices a run."""
     from trace_harness.models import estimate_cost_usd
@@ -84,32 +103,41 @@ def run_cost(provider: str, model: str, calls: list[tuple[int, int]]) -> float:
 def estimate(
     plan_path: Path = PLAN, cassette: Path = CASSETTE, output_tokens: int | None = None
 ) -> dict:
-    """Per-condition and total dollars under both scenarios."""
+    """Per-condition and total dollars under both scenarios.
+
+    ``rows`` and the totals are the conditions charged against the cap.
+    ``notional_rows`` and ``notional_*_usd`` are the subscription-billed ones,
+    which the cap never counts.
+    """
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     inputs, largest = cassette_tokens(cassette)
     output = largest if output_tokens is None else output_tokens
     artifacts = {fp["source_run_id"]: fp["artifact"] for fp in plan["metadata"]["fork_points"]}
     replacements = len(plan["metadata"].get("replacement_seeds") or [])
-    rows = []
+    rows, notional_rows = [], []
     for condition in plan["conditions"]:
         if condition["kind"] not in LIVE_ARMS:
             continue
         agent = condition["agent_config"]
+        provider, model = priced_as(agent)
         fork = condition["start"]["step_id"]
         artifact = json.loads((REPO / artifacts[condition["start"]["source_run_id"]]).read_text())
         recorded_after = len(artifact["pinned_agent_actions"]) - fork
         max_steps = agent.get("max_steps", 16)
 
-        def one_run(calls: int, fork: int = fork, agent: dict = agent) -> float:
+        def one_run(
+            calls: int, fork: int = fork, provider: str = provider, model: str = model
+        ) -> float:
             steps = range(fork + 1, fork + 1 + calls)
             priced = [(input_at(s, inputs), output) for s in steps]
-            return run_cost(agent["provider"], agent["model"], priced)
+            return run_cost(provider, model, priced)
 
         seeds = len(condition["seeds"])
-        rows.append(
+        subscription = agent.get("billing") == "subscription"
+        (notional_rows if subscription else rows).append(
             {
                 "condition": condition["name"],
-                "model": agent["model"],
+                "model": model,
                 "expected_usd": seeds * one_run(recorded_after),
                 "high_usd": (seeds + replacements) * one_run(max_steps - fork),
             }
@@ -118,8 +146,11 @@ def estimate(
     return {
         "cap_usd": cap,
         "rows": rows,
+        "notional_rows": notional_rows,
         "expected_usd": round(sum(r["expected_usd"] for r in rows), 2),
         "high_usd": round(sum(r["high_usd"] for r in rows), 2),
+        "notional_expected_usd": round(sum(r["expected_usd"] for r in notional_rows), 2),
+        "notional_high_usd": round(sum(r["high_usd"] for r in notional_rows), 2),
         "cassette_inputs": inputs,
         "cassette_max_output": largest,
         "output_tokens_per_call": output,
@@ -147,9 +178,19 @@ def main(argv: list[str] | None = None) -> int:
             f"{row['expected_usd']:>9.4f} {row['high_usd']:>9.4f}"
         )
     print(
-        f"total: expected ${result['expected_usd']:.2f}, high ${result['high_usd']:.2f}, "
-        f"cap ${result['cap_usd']:.2f}"
+        f"total against the cap: expected ${result['expected_usd']:.2f}, "
+        f"high ${result['high_usd']:.2f}, cap ${result['cap_usd']:.2f}"
     )
+    for row in result["notional_rows"]:
+        print(
+            f"{row['condition']:<64} {row['model']:<18} "
+            f"{row['expected_usd']:>9.4f} {row['high_usd']:>9.4f}  notional"
+        )
+    if result["notional_rows"]:
+        print(
+            f"notional, on a Claude plan and not charged: expected "
+            f"${result['notional_expected_usd']:.2f}, high ${result['notional_high_usd']:.2f}"
+        )
     return 0 if result["high_usd"] <= result["cap_usd"] else 1
 
 

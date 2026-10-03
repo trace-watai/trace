@@ -2276,6 +2276,13 @@ def _run_suite(args: argparse.Namespace, store: ArtifactStore) -> int:
     _print("passed / failed:", f"{agg.verifier_passed} / {agg.verifier_failed}")
     _print("errored:", str(agg.errored))
     _print("known cost:", f"${agg.known_cost_usd:.6f} ({agg.cost_recorded}/{agg.total} runs)")
+    notional = [e.notional_cost_usd for e in summary.entries if e.notional_cost_usd is not None]
+    if notional:
+        _print(
+            "notional cost:",
+            f"${sum(notional):.6f} ({len(notional)}/{agg.total} runs, reported by the agent "
+            "and not charged)",
+        )
     budget = summary.budget
     if budget is not None:
         _print(

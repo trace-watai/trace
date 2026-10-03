@@ -65,8 +65,14 @@ NESTED_TOKEN_FIELDS: dict[str, frozenset[str]] = {
 
 #: Where each provider's raw response keeps its token counts. Recording reads
 #: from this key and replay rebuilds it, so a recorded live run is priced from
-#: the same counts in both modes.
-USAGE_KEYS = {"gemini": "usage_metadata", "anthropic": "usage", "openai": "usage"}
+#: the same counts in both modes. The Claude Code reference agent records its
+#: cassettes under its own namespace, with Anthropic's usage block.
+USAGE_KEYS = {
+    "gemini": "usage_metadata",
+    "anthropic": "usage",
+    "openai": "usage",
+    "claude_code_ref": "usage",
+}
 
 #: Fields of AgentAction a cassette response never holds: the raw SDK payload,
 #: and the call record, which an entry keeps in its own field.

@@ -14,22 +14,35 @@ Design notes
     - ``max_cost_usd`` caps what the batch may spend on live calls (#196).
       ``BatchRunner`` checks it before each run through ``BudgetGuard``. A
       suite without it runs uncapped, as before.
+    - ``billing: "subscription"`` on an outside agent's config says its model
+      calls count against a subscription plan with no per-run charge, so a
+      capped batch admits it without a charge (see ``runner/batch.py``).
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from trace_harness.models.cassette import CassetteConfig
 from trace_harness.models.policy import CallPolicy
 
+# 0.5.0: billing "subscription" for provider "external"
 # 0.4.0: provider "external" with agent_ref
 # 0.3.0: optional max_cost_usd and per-agent call_policy
 # 0.2.0: optional cassette configuration per agent
-SUITE_SCHEMA_VERSION = "0.4.0"
+SUITE_SCHEMA_VERSION = "0.5.0"
+#: The one billing an agent config can declare (0.5.0).
+SUBSCRIPTION_BILLING = "subscription"
 
 
 class AgentConfig(BaseModel):
@@ -45,6 +58,15 @@ class AgentConfig(BaseModel):
     the agent reports for itself. The outside agent owns its model, so such a
     config refuses ``cassette``, ``call_policy``, ``temperature`` and ``seed``,
     as the CLI refuses the matching flags with ``--agent``.
+
+    ``billing`` is only for provider ``external``. ``subscription`` declares
+    that the outside agent's model calls count against a subscription plan
+    with no per-run charge, such as the Claude Code agent on a Claude login.
+    A capped batch then admits the config without charging it, and the cost
+    the agent's own runtime reports is recorded as ``notional_cost_usd``,
+    which no cap counts. Absent, the calls are taken as billed per call at a
+    cost the harness cannot see, and the config is refused under a cap. The
+    key is written only when set, so configs without it serialize as before.
     """
 
     label: str
@@ -62,6 +84,15 @@ class AgentConfig(BaseModel):
     # for provider external, which makes none.
     call_policy: CallPolicy | None = None
     agent_ref: str | None = None
+    billing: Literal["subscription"] | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_billing(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # A config without billing writes exactly the bytes it always did.
+        data = handler(self)
+        if self.billing is None:
+            data.pop("billing", None)
+        return data
 
     @model_validator(mode="after")
     def _external_needs_agent_ref(self) -> AgentConfig:
@@ -90,6 +121,11 @@ class AgentConfig(BaseModel):
                 )
         elif self.agent_ref is not None:
             raise ValueError("agent_ref is only valid with provider 'external'")
+        if self.billing is not None and self.provider != "external":
+            raise ValueError(
+                "billing is only valid with provider 'external'; a live provider's runs are "
+                "priced from the usage their traces record"
+            )
         return self
 
 

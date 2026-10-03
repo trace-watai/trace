@@ -26,10 +26,14 @@ class TargetAgent(Protocol):
     ) -> str: ...
 ```
 
-- `prompt` carries `task_id`, `system`, `user`, and `max_steps`. The system and
-  user text are exactly what the harness gives its own model adapters.
-  `max_steps` is the harness step limit, so set your framework's own recursion
-  or turn limit above it and let the harness limit be the one that binds.
+- `prompt` carries `task_id`, `system`, `user`, `max_steps`, and
+  `timeout_seconds`. The system and user text are exactly what the harness
+  gives its own model adapters. `max_steps` is the harness step limit, so set
+  your framework's own recursion or turn limit above it and let the harness
+  limit be the one that binds. `timeout_seconds` is the run's time limit, or
+  null when there is none. The harness cannot stop your agent's thread, so an
+  agent that starts processes of its own can use it to stop them once the run
+  is over.
 - `tools` lists the task's tools as `ToolSpec` objects, each with a name, a
   description, and a JSON schema for its arguments.
 - `call_tool(name, arguments)` runs one tool call inside the harness and blocks
@@ -83,9 +87,12 @@ trace-harness run-pipeline fixtures/tasks/refund_policy_failure.json \
 {"label": "my-graph", "provider": "external", "agent_ref": "mypackage.agents:make_agent"}
 ```
 
-with an optional `model` that overrides the agent's own label. `run_config.json`
-(RunConfig 0.4.0) records `provider: external`, the `agent_ref`, and the label.
-Suite manifests that name an outside agent are Suite 0.4.0.
+with an optional `model` that overrides the agent's own label, and an optional
+`"billing": "subscription"` for an agent whose model calls run on a
+subscription plan (see Cost below). `run_config.json` (RunConfig 0.4.0) records
+`provider: external`, the `agent_ref`, and the label. Outside agents were
+added in Suite 0.4.0 and `billing` was added in Suite 0.5.0. It is written only
+when set, so older manifests load and configs without it serialize as before.
 `--max-steps` and `--timeout` apply as usual. `--script`, `--cassette-mode`,
 `--temperature`, and `--seed` are refused with `--agent`, because the outside
 agent owns its model and the harness would be recording settings it never
@@ -184,9 +191,34 @@ empty and notes the earlier step.
   `max_cost_usd` therefore refuses your agent config before its first run as
   `budget_unenforceable`, and `run-suite` exits 2, the same as for a live model
   with no price. Without a cap the config runs like any other.
-- **Branching.** `trace-harness branch` does not run outside agents yet. A
-  condition whose agent config has `provider: external` is refused before any
-  run with an error that says so, and `branch` takes no `--agent` flag.
+- **Subscription billing.** When your agent's model calls count against a
+  subscription plan with no per-run charge, declare it with
+  `"billing": "subscription"` on the agent config (Suite 0.5.0). Under a cap
+  the config is then admitted without a charge, until the cap stops for
+  another reason, and once it has stopped the config is refused like any live
+  run. `cost_usd` stays null, since the harness saw no charge, and it is never
+  counted as zero. The declaration is yours to make: an agent billed per call
+  and declared this way would spend outside the cap. `billing` is refused on
+  any other provider.
+- **Notional cost.** A forwarded `raw` response may carry
+  `notional_cost_usd`, what your agent's own runtime reports its calls would
+  have cost over the API. A batch entry of your agent records the sum as
+  `notional_cost_usd` (BatchSummary 0.5.0), and `run-suite` prints it on its
+  own line. It is never a `cost_usd`, and no total, aggregate or cap counts it.
+- **Branching.** `trace-harness branch` continues a recorded run from a
+  condition's start step, and an outside agent can take over there when it
+  declares `supports_fork = True`. The recording's steps are replayed through
+  the start step as for any condition, and your agent's first move comes after
+  them. `prompt.history` then holds those steps in order, each a
+  `RecordedStep` with its `step`, `tool_name`, `arguments`, and the
+  `observation` it got, a control's block message included, and `max_steps`
+  still counts them. How your agent hands them to its model is up to it. A
+  condition whose outside agent cannot be imported, or does not declare
+  `supports_fork`, is refused before any run, and `branch` takes no `--agent`
+  flag. Every seed of an outside agent is live to the plan's cap, so a config
+  billed per call is refused as `budget_unenforceable`, and one declaring
+  subscription billing is admitted without a charge. The harness cannot send
+  your agent a seed, so its runs record the seed with `seed_sent: false`.
 
 ## Reference agents
 
@@ -194,12 +226,13 @@ Working examples ship under `src/trace_harness/agents/`, each behind its own
 extra. The core package never imports them, and their tests skip when the
 extra is not installed.
 
-The model underneath every reference agent is scripted. Its turns come from
-the task's fixture script, either directly or through a cassette recorded from
-that script, so a reference run shows the outside-agent path working end to end
-and says nothing about how a live model behaves. The agent's `name`, and so the
-`model` field of every run it produces, says which source was used, for example
-`langgraph_ref:cassette:scripted`.
+The model underneath the LangGraph and Agents SDK references is scripted. Its
+turns come from the task's fixture script, either directly or through a
+cassette recorded from that script, so a run of either shows the outside-agent
+path working end to end and says nothing about how a live model behaves. The
+agent's `name`, and so the `model` field of every run it produces, says which
+source was used, for example `langgraph_ref:cassette:scripted`. The Claude Code
+agent runs a live model and has [its own section](#claude-code).
 
 Each reference module has two factories.
 
@@ -298,6 +331,185 @@ items. `output_items` keeps it in the turn's reasoning item, in the
 `encrypted_content` field the SDK replays unchanged, and `transcript_of` puts
 it back on the harness turn for the next request. The LangGraph reference
 carries it in the message's `additional_kwargs`.
+
+## Claude Code
+
+`trace_harness.agents.claude_code_ref` runs the task through the local Claude
+Code CLI. Claude Code's own agent loop drives the model, and the harness keeps
+the environment, the controls, the trace, and the verifier as it does for any
+outside agent. The CLI's model calls run on the Claude plan it is logged in
+with, so a run counts against that plan's usage and carries no per-token
+charge.
+
+### Setup
+
+Install Claude Code ([setup](https://code.claude.com/docs/en/setup)) and log in
+once in a terminal by running `claude` and `/login` with the Claude account
+whose plan should carry the runs. The agent was built against version 2.1.273
+and checked once against it on 2026-09-25: `refund_policy_valid_cash` with
+claude-sonnet-5 passed in 5 steps and about 11 seconds, and its recording
+replayed offline to the same trace. Nothing else is needed, since the module
+uses only the core package.
+
+```sh
+trace-harness run-pipeline fixtures/tasks/refund_policy_valid_cash.json \
+  --agent trace_harness.agents.claude_code_ref:agent
+```
+
+`:agent` runs `claude-sonnet-5`, and the run's `model` field is
+`claude_code_ref:claude-sonnet-5`. Another model, or a recording, takes a small
+factory of your own.
+
+```python
+from pathlib import Path
+
+from trace_harness.agents.claude_code_ref import ClaudeCodeAgent, ClaudeCodeCassette
+
+
+def recording_agent():
+    return ClaudeCodeAgent(
+        "claude-sonnet-5",
+        cassette=ClaudeCodeCassette(Path("/tmp/claude-code-cassettes"), "record"),
+    )
+```
+
+The agent never logs in and never answers a prompt of the CLI. A CLI that is
+not logged in ends the run with an error saying so.
+
+### What it guarantees
+
+Each run starts `claude -p` in a fresh temporary directory, which is removed
+afterwards. The flags are described in the
+[CLI reference](https://code.claude.com/docs/en/cli-reference) and
+[headless mode](https://code.claude.com/docs/en/headless).
+
+- **Only the task's tools.** `--tools ""` removes every built-in tool. The only
+  tool source is a small MCP server in the package
+  (`agents/claude_code_mcp.py`), loaded through `--mcp-config` with
+  `--strict-mcp-config`, which lists exactly the task's tools. The CLI names
+  them `mcp__trace__<tool>`. Tool search is turned off, so no search tool is
+  added. The run's `system/init` message must list exactly those tools, or the
+  run ends before any tool call.
+- **Every call goes through the harness.** The MCP server relays each call over
+  a Unix socket to the agent, which runs it through `call_tool`. Validation,
+  controls, `blocked_by`, the step and time limits, and the trace work
+  unchanged. A blocked call reaches the CLI as the control's message, as an
+  MCP tool result with `isError` set.
+- **Nothing waits on a person.** Only the task's tools are allowed, under
+  `--permission-mode dontAsk` and `--permission-prompts none`, so anything
+  that would prompt is denied.
+- **Nothing else shapes the run.** `--setting-sources ""` loads no user,
+  project, or local settings, so no hooks, permission rules, or CLAUDE.md
+  files apply. Auto memory and claude.ai connectors are off, and
+  `--no-session-persistence` saves no session.
+- **The prompt is the harness's.** `--system-prompt` is the task's system
+  prompt with one line added that says how the CLI names the tools. The task's
+  user message is the first message, sent on stdin.
+- **The plan pays.** The CLI's environment has no `ANTHROPIC_API_KEY` or
+  `ANTHROPIC_AUTH_TOKEN`, which would otherwise take precedence over the
+  login ([environment variables](https://code.claude.com/docs/en/env-vars)),
+  and no variable that marks a nested Claude Code session. The `system/init`
+  message must report `apiKeySource` as `none`, or the run ends before any
+  tool call.
+- **The model asked for.** The `system/init` message and every model response
+  must name the model the agent was given. A fallback to another model ends
+  the run.
+- **Reasoning reaches attribution.** Every assistant message in the stream is
+  forwarded to `on_model_response`. The CLI writes one message per content
+  block, so the blocks of one model response are forwarded together, with
+  thinking signatures left out. Thinking, and any text written beside a tool
+  call, become the step's reasoning. The Anthropic API returns thinking
+  redacted unless Claude Code's `showThinkingSummaries` setting is on
+  ([settings](https://code.claude.com/docs/en/settings-reference)), and the
+  agent does not turn it on, so in practice a step's reasoning is the text the
+  model wrote beside its tool call, and many steps have none. A tool call
+  waits until its `tool_use` block has been read, so the response that made
+  the call lands on the call's step. The `result` message's `usage`, `modelUsage`, and `total_cost_usd` are
+  forwarded last, with the CLI version, at the final step.
+- **Failures end cleanly.** No `claude` on PATH, a missing login, an error
+  result, a non-zero exit, a stream line that is not JSON, a rejected usage
+  limit, and a run past its time limit each end the run as `model_error` with
+  a message that says which. The CLI runs in its own process group, which is
+  stopped with the MCP server inside it when the run ends, when the harness
+  run ended first (the next tool call gets `RunEnded`, or the run's time limit
+  plus 5 seconds passes), and when the interpreter exits.
+- **Offline replay.** With a `ClaudeCodeCassette` in `record` mode, every move
+  is written to a harness model cassette at
+  `<root>/claude_code_ref/<task_id>/<model>/default.jsonl`, with the responses
+  forwarded for it. In `replay` mode no CLI starts. Each move is served from
+  the cassette after the conversation so far is checked against the
+  recording, so a replay forwards the same responses and makes the same calls,
+  and a run that drifts from the recording stops with a request mismatch.
+  The forwarded responses include the result message, so a replayed run
+  reports the recorded run's `total_cost_usd` and `notional_cost_usd`, though
+  nothing ran. Recording never overwrites a cassette.
+
+`tests/test_claude_code_agent.py` checks each of these with a fake `claude` on
+PATH (`tests/fake_claude_cli.py`) that starts the MCP server the way the CLI
+does. No test runs the real CLI.
+
+### Continuing a recorded run
+
+The agent declares `supports_fork`, so `branch` can hand it a recorded run
+after the condition's start step. It continues by giving the CLI a rendered
+transcript of the recorded prefix in its first message, after the task's user
+message. The CLI offers no public way to take earlier assistant turns or tool
+results.
+
+- `--input-format stream-json` takes user messages only
+  ([streaming input](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode),
+  and `SDKUserMessage` in the
+  [TypeScript reference](https://code.claude.com/docs/en/agent-sdk/typescript)).
+  A `tool_result` block in a user message has to answer the `tool_use` block of
+  an assistant turn before it, and no input message can carry that turn.
+- A session's history is loaded only by `--resume` or `--continue` from
+  Claude Code's own stored transcripts
+  ([headless mode](https://code.claude.com/docs/en/headless#continue-conversations)),
+  or through the Agent SDK's session store, whose entries the documentation
+  calls opaque ([session storage](https://code.claude.com/docs/en/agent-sdk/session-storage)).
+  Writing either would depend on Claude Code's internal format, and the agent
+  writes no session file.
+
+The rendered prefix starts with one line saying the conversation was recorded
+up to step k, that the calls below were already made in this order with the
+results the tools returned, and to continue from step k + 1. Each step follows
+as `Step n: <tool> <arguments as sorted JSON>`, then `Result (ok)` or
+`Result (error)` with the result rendered exactly as the harness's Anthropic
+adapter renders a tool result: the error text when there is one, which for a
+blocked call is the control's message, and otherwise the result as sorted
+JSON. The recorded reasoning is left out, since that adapter does not send it
+either. The rendered text is part of the first message, so a recording of a
+continued run replays only for the same prefix.
+
+### Rate limits and your plan
+
+- A run uses the usage limits of the plan the CLI is logged in with, the same
+  limits that claude.ai and every other Claude Code session draw on
+  ([costs](https://code.claude.com/docs/en/costs)).
+- When the CLI reports a `rate_limit_event` with status `rejected`, the plan's
+  limit is reached. The agent stops the CLI at once and the run ends as
+  `model_error`, with the time the limit resets. Under `branch` that run is
+  incomplete, so a seed replacement is spent on it.
+- With usage credits turned on, use past the plan's limit is charged to those
+  credits, and the harness cannot see that charge. Turn them off if the plan
+  alone should carry the runs.
+- `total_cost_usd` is the CLI's client-side estimate at API list prices
+  ([cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking)).
+  For a run on a plan it is what the same calls would have cost over the API,
+  and nothing was charged. The agent forwards it a second time as
+  `notional_cost_usd`, so a batch records it apart from `cost_usd`.
+- A suite or experiment config for the agent declares
+  `"billing": "subscription"`, so a spend cap admits it without a charge. The
+  cap then binds only on the configs the harness can price.
+
+```json
+{
+  "label": "claude-code-sonnet-5",
+  "provider": "external",
+  "agent_ref": "trace_harness.agents.claude_code_ref:agent",
+  "billing": "subscription"
+}
+```
 
 ## Out of scope
 
