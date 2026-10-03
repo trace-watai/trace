@@ -56,6 +56,7 @@ from trace_harness.environment.controls import (
     ControlInstance,
     find_conflict,
     resolve_control,
+    resolve_guardrail,
 )
 from trace_harness.environment.registry import ToolRegistry, default_support_registry
 from trace_harness.environment.state import Doc, SupportState
@@ -80,8 +81,12 @@ class SupportEnvironment:
         registry: ToolRegistry | None = None,
         available_tools: list[str] | None = None,
         control_library: Path | str | None = None,
+        task: TaskSpec | None = None,
     ):
         self.state = state
+        # Final-answer controls read the task (the escalation rule needs its
+        # posture and message). None when the environment was built without one.
+        self.task = task
         self._registry = registry or default_support_registry()
         self._pre_execute_hooks: list[Callable[[ToolCall, SupportState], ToolResult | None]] = []
         self._post_execute_hooks: list[PostExecuteHook] = []
@@ -89,7 +94,9 @@ class SupportEnvironment:
         # control_id -> (instance, the hook we registered for it). Installed
         # controls are explicit, inspectable state (TRA-87); raw hooks added
         # through register_pre_execute_hook are not tracked here.
-        self._installed_controls: dict[str, tuple[ControlInstance, PreExecuteHook]] = {}
+        self._installed_controls: dict[
+            str, tuple[ControlInstance, PreExecuteHook | FinalAnswerHook]
+        ] = {}
         if available_tools is None:
             self._available = self._registry.names()
         else:
@@ -119,6 +126,7 @@ class SupportEnvironment:
             registry=registry,
             available_tools=task.available_tools,
             control_library=control_library,
+            task=task,
         )
 
     def register_pre_execute_hook(
@@ -161,9 +169,12 @@ class SupportEnvironment:
     # --- controls as data (TRA-87) ---
 
     def install_control(self, instance: ControlInstance) -> None:
-        """Install a data-defined control as a pre-execute hook.
+        """Install a data-defined control on the seam its guardrail names.
 
-        Resolves ``instance.guardrail_ref`` through the guardrail registry and
+        A pre-call guardrail becomes a pre-execute hook and a final-answer
+        guardrail becomes a final-answer hook, which also receives the task
+        this environment was built from. Resolves ``instance.guardrail_ref``
+        through the guardrail registry and
         checks ``instance.rule_ref`` against the rules that guardrail reads
         *now*, so an unknown ref or a mismatched ``rule_ref`` fails here, at
         install time, never later at dispatch. Installing the same
@@ -182,13 +193,26 @@ class SupportEnvironment:
                 f"{instance.behavior_on_failure.action})"
             )
         guardrail = resolve_control(instance)
+        seam = resolve_guardrail(instance.guardrail_ref).seam
         control_id = instance.control_id
 
         # One closure per control, even when two controls share a guardrail,
         # so uninstall_control removes exactly this one. It also stamps each
         # block with the control that caused it.
+        if seam == "final_answer":
+
+            def answer_hook(answer: str, state: SupportState) -> ToolResult | None:
+                result = guardrail(answer, state, self.task)  # type: ignore[call-arg]
+                if result is None:
+                    return None
+                return result.model_copy(update={"blocked_by": control_id})
+
+            self._installed_controls[instance.control_id] = (instance, answer_hook)
+            self.register_final_answer_hook(answer_hook)
+            return
+
         def hook(call: ToolCall, state: SupportState) -> ToolResult | None:
-            result = guardrail(call, state)
+            result = guardrail(call, state)  # type: ignore[call-arg]
             if result is None:
                 return None
             return result.model_copy(update={"blocked_by": control_id})
@@ -202,7 +226,10 @@ class SupportEnvironment:
             _, hook = self._installed_controls.pop(control_id)
         except KeyError:
             raise ValueError(f"control {control_id!r} is not installed") from None
-        self._pre_execute_hooks.remove(hook)
+        if hook in self._final_answer_hooks:
+            self._final_answer_hooks.remove(hook)  # type: ignore[arg-type]
+        else:
+            self._pre_execute_hooks.remove(hook)  # type: ignore[arg-type]
 
     @property
     def installed_controls(self) -> list[ControlInstance]:

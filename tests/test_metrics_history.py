@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO_ROOT, regression_artifact, static_ok_basis
+from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID
 from trace_harness.metrics.history import (
     Coverage,
     MetricsSnapshot,
@@ -30,10 +31,12 @@ from trace_harness.metrics.history import (
 )
 from trace_harness.regression.repair_validation import RepairValidation
 
-# The one control with a registered guardrail, so coverage has something real
+# A prescribed control with a registered guardrail, so coverage has something real
 # to count as materializable.
 MATERIAL = "deterministic_pre_call_refund_guardrail"
-PAPER = "ticket_claim_grounding_check"
+# A prescribed control that still has no guardrail after #194, so coverage has
+# something real to count as unmaterializable.
+PAPER = "escalation_discipline_check"
 COMMITTED_HISTORY = REPO_ROOT / "docs" / "acceptance" / "metrics_history.jsonl"
 
 
@@ -143,7 +146,7 @@ def _verdict(
     control: str, replay_mode: str | None = None, verdict: str = "accepted"
 ) -> RepairValidation:
     """A verdict as replay writes it on an artifact whose basis supports its label."""
-    entry = {"control": control, "verdict": verdict}
+    entry = {"control": control, "verdict": verdict, "control_id": REFUND_WINDOW_CONTROL_ID}
     if replay_mode is not None:
         entry["replay_mode"] = replay_mode
         entry["predicted_by"] = "heuristic_v1"
@@ -191,6 +194,14 @@ def test_only_an_accepted_verdict_can_make_a_name_gating() -> None:
     assert (coverage.accepted_gating, coverage.accepted_advisory) == (0, 1)
 
 
+def test_a_verdict_for_a_control_its_label_was_not_predicted_for_is_advisory() -> None:
+    """The static_ok basis names ctl_refund_window_v1, so another control's verdict borrows it."""
+    validation = _verdict(MATERIAL, "static_ok")
+    validation.controls[0].control_id = "ctl_other"
+    coverage = compute_coverage({MATERIAL}, [validation], [SUPPORTED])
+    assert (coverage.accepted_gating, coverage.accepted_advisory) == (0, 1)
+
+
 @pytest.mark.parametrize("layout", ["run_dir", "library_evidence"])
 @pytest.mark.parametrize(
     ("artifact_label", "gating"),
@@ -217,6 +228,7 @@ def test_snapshot_checks_a_gating_verdict_against_the_retained_artifact(
                 {
                     "control": MATERIAL,
                     "verdict": "accepted",
+                    "control_id": REFUND_WINDOW_CONTROL_ID,
                     "replay_mode": "static_ok",
                     "predicted_by": "heuristic_v1",
                     "label_supported": True,

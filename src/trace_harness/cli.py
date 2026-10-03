@@ -61,7 +61,7 @@ from trace_harness.environment.control_library import (
 )
 from trace_harness.environment.controls import (
     ControlInstance,
-    reference_controls,
+    control_catalogue,
     select_controls,
 )
 from trace_harness.environment.state import SupportState
@@ -591,12 +591,38 @@ def _prescribed_controls(
     return prescribed, "repair_package"
 
 
-def _instance_for_repair_control(name: str) -> ControlInstance | None:
-    """The shipped control instance a repair control materializes as, if any."""
-    for instance in reference_controls():
-        if instance.provenance.repair_control == name:
-            return instance
-    return None
+def _validation_plan(
+    prescribed: dict[str, set[str]], controls: list[ControlInstance]
+) -> list[tuple[str, set[str], ControlInstance | None]]:
+    """(prescription, linked checks, control) for each verdict validation writes.
+
+    Two catalogue controls can materialize one repair control (the cash-only
+    refund window and the combined refund policy both come from the refund
+    template), so every selected control that materializes a prescription gets
+    its own entry and its own verdict under the prescription's name. A
+    prescription no selected control materializes keeps one entry, carrying the
+    first catalogue control that would (reported as not selected) or None
+    (reported as not materializable).
+    """
+    # A control named twice is validated once.
+    controls = list({c.control_id: c for c in controls}.values())
+    plan: list[tuple[str, set[str], ControlInstance | None]] = []
+    for name, expected_checks in prescribed.items():
+        selected = [c for c in controls if c.provenance.repair_control == name]
+        if selected:
+            plan.extend((name, expected_checks, instance) for instance in selected)
+            continue
+        available = [c for c in control_catalogue() if c.provenance.repair_control == name]
+        plan.append((name, expected_checks, available[0] if available else None))
+    return plan
+
+
+def _not_selected_reason(name: str, explicit_selection: bool) -> str:
+    """Why a materializable prescription was left out of this validation."""
+    if explicit_selection:
+        return "not_selected: this control was excluded by --control"
+    ids = [c.control_id for c in control_catalogue() if c.provenance.repair_control == name]
+    return f"not_selected: not in the default control set; select {' or '.join(ids)} with --control"
 
 
 def _validate_controls(
@@ -609,6 +635,7 @@ def _validate_controls(
     task_fixture_args,
     pinned_state: dict[str, Any] | None,
     script,
+    explicit_selection: bool = False,
 ) -> RepairValidation:
     """Validate each prescribed control in isolation and return the artifact.
 
@@ -617,29 +644,32 @@ def _validate_controls(
     the whole point: a bundle verdict cannot say which control earned it.
 
     Every verdict carries the artifact's ``replay_mode``, ``predicted_by`` and
-    whether its recorded basis supports the label, so an acceptance on an
-    artifact that is not ``static_ok``, or on a ``static_ok`` label its basis
-    does not support, is recorded as advisory.
+    whether its recorded basis supports the label for that verdict's control,
+    so an acceptance on an artifact that is not ``static_ok``, on a
+    ``static_ok`` label its basis does not support, or for a control the label
+    was not predicted for, is recorded as advisory.
     """
     batch_id = new_batch_id()
     pinned_checks = set(artifact.verifier_checks)
     selected_ids = {c.control_id for c in controls}
-    label: dict[str, Any] = {
-        "replay_mode": artifact.replay_mode,
-        "predicted_by": predictor_of(artifact),
-        "label_supported": basis_supports_label(artifact),
-    }
+
+    def label(control_id: str | None) -> dict[str, Any]:
+        return {
+            "replay_mode": artifact.replay_mode,
+            "predicted_by": predictor_of(artifact),
+            "label_supported": basis_supports_label(artifact, control_id),
+        }
+
     validations: list[ControlValidation] = []
 
-    for name, expected_checks in prescribed.items():
-        instance = _instance_for_repair_control(name)
+    for name, expected_checks, instance in _validation_plan(prescribed, controls):
         if instance is None:
-            validations.append(skipped_control(name, **label))
+            validations.append(skipped_control(name, **label(None)))
             print(f"  {name}: skipped (not materializable)")
             continue
         if instance.control_id not in selected_ids or not expected_checks:
             reason = (
-                "not_selected: this control was excluded by --control"
+                _not_selected_reason(name, explicit_selection)
                 if instance.control_id not in selected_ids
                 else "no_linked_checks: the prescription names no checks to validate"
             )
@@ -648,11 +678,13 @@ def _validate_controls(
                     control=name,
                     verdict=ControlVerdict.SKIPPED,
                     reason=reason,
-                    **label,
+                    **label(instance.control_id),
                 )
             )
             print(f"  {name}: skipped ({reason})")
             continue
+        if sum(c.provenance.repair_control == name for c in controls) > 1:
+            print(f"  {name}: validating {instance.control_id}")
 
         pinned = _run_fixture(
             task_fixture_args(artifact.task_fixture),
@@ -716,7 +748,7 @@ def _validate_controls(
             control_id=instance.control_id,
             originating_rerun=originating,
             sibling_reruns=sibling_reruns,
-            **label,
+            **label(instance.control_id),
         )
         validations.append(result)
         detail = reason or (
@@ -933,22 +965,24 @@ def _replay_with_report(
     normal meaning for a regression suite, since a bug silently stopping
     reproduction usually means the fixture broke, not that the bug got fixed.
 
-    With ``apply_control``: installs the reference controls (environment.
-    controls, all of them unless ``control_ids`` narrows the set) on the
-    environment before every run in this replay, and
+    With ``apply_control``: installs the reference set from
+    environment.controls, or the catalogue controls ``control_ids`` names,
+    on the environment before every run in this replay, and
     inverts the assertion — "gate clear" now requires that every pinned check
     stopped firing *and* that the control introduced no new blocking failure
     of its own. Both halves matter: a guardrail that blocks a harmful action
     while leaving the agent asserting it happened has moved the failure, not
     removed it, and must not read as a clear gate.
 
-    A control only affects checks its guardrails actually cover (today:
-    unauthorized_cash_refund). A fixture whose failure also depends on
+    A control only affects checks its guardrail covers (``checks_covered`` in
+    the guardrail registry). A fixture whose failure also depends on
     downstream narration (a ticket, a final answer) that the scripted agent
     repeats unconditionally will still fail on those other checks, because a
-    guardrail can only change what happens in *state*, not what a fixed
-    script says. See docs/regression_contract.md#control-flip-demo for a
-    fixture built so that isn't a problem.
+    pre-call guardrail can only change what happens in *state* and a fixed
+    script says the same thing either way. See
+    docs/regression_contract.md#control-flip-demo for a fixture built so that
+    isn't a problem. A final-answer guardrail that blocks ends the run (#193),
+    so its replay never completes.
 
     Returns structured evidence and the existing command's 0/1 exit status.
     """
@@ -994,6 +1028,16 @@ def _replay_with_report(
             f"  ⚠ static_ok is not supported by the artifact's own basis ({refusal}); "
             "these verdicts are recorded as advisory."
         )
+    basis = artifact.replay_mode_basis
+    if apply_control and refusal is None and artifact.replay_mode == "static_ok" and basis:
+        outside = [
+            c.control_id for c in individual_controls if c.control_id not in basis.control_ids
+        ]
+        if outside:
+            print(
+                f"  ⚠ static_ok was predicted for {', '.join(basis.control_ids)} only; "
+                f"verdicts for {', '.join(outside)} are recorded as advisory."
+            )
     if apply_control and artifact.replay_mode == "live_required":
         print("  ⚠ static replay is insufficient; a live agent must continue from the block point.")
     _print("pinned inputs:", "state + docs" + (" + agent actions" if script else " (no actions)"))
@@ -1120,6 +1164,7 @@ def _replay_with_report(
             task_fixture_args=_fixture_args,
             pinned_state=pinned_state,
             script=script,
+            explicit_selection=bool(control_ids),
         )
         rollup = validation.rollup
         _print(
@@ -2314,8 +2359,8 @@ def main(argv: list[str] | None = None) -> int:
         dest="control_ids",
         metavar="CONTROL_ID",
         help=(
-            "with --apply-control: install only this control id (repeatable); "
-            "default is every reference control"
+            "with --apply-control: install only this control id from the control "
+            "catalogue (repeatable); default is the reference set"
         ),
     )
     p_replay.add_argument(

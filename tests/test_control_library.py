@@ -11,7 +11,6 @@ import shutil
 import pytest
 
 from conftest import FIXTURES_DIR
-from trace_harness import cli
 from trace_harness.cli import main
 from trace_harness.environment import controls as controls_module
 from trace_harness.environment.control_library import (
@@ -388,8 +387,10 @@ def test_no_accepted_control_cannot_be_committed(tmp_path):
 
 
 def _install_reference_set(monkeypatch, controls):
+    # The CLI resolves controls through controls.control_catalogue and
+    # select_controls, both of which read reference_controls from their own
+    # module, so patching it there reaches every path.
     monkeypatch.setattr(controls_module, "reference_controls", lambda: controls)
-    monkeypatch.setattr(cli, "reference_controls", lambda: controls)
 
 
 def test_environment_application_order_is_deterministic(tmp_path, monkeypatch):
@@ -627,6 +628,46 @@ def test_a_classified_static_ok_label_commits_as_gating(tmp_path, classified_sta
     out = capsys.readouterr().out
     assert "gating (replay_mode static_ok, predicted until #159 measures it)" in out
     assert "1 gating on a predicted label until #159 measures it" in out
+
+
+def test_a_control_the_label_was_not_predicted_for_commits_as_advisory(
+    tmp_path, classified_static_ok, monkeypatch
+):
+    artifact = _bundle(tmp_path)
+    original = reference_controls()[0]
+    additional = original.model_copy(deep=True)
+    additional.control_id = "ctl_additional"
+    additional.provenance.repair_control = "additional_refund_control"
+    _install_reference_set(monkeypatch, [original, additional])
+    _edit(
+        artifact.with_name(names.REPAIR_PACKAGE),
+        lambda p: p["controls"].append(
+            {**p["controls"][0], "name": additional.provenance.repair_control}
+        ),
+    )
+    library = tmp_path / "controls/library.json"
+    assert _commit(tmp_path, artifact, library, "--control", additional.control_id) == 0
+    (entry,) = load_library(library).entries
+    assert entry.acceptance == AcceptanceBasis(
+        replay_mode="static_ok", predicted_by="heuristic_v1", standing="advisory"
+    )
+    # A verdict that recorded the artifact-wide answer is refused by name.
+    root, refs = library.parent, entry.provenance
+    validation = RepairValidation.model_validate_json(refs.repair_validation.read(root))
+    for verdict in validation.controls:
+        verdict.label_supported = True
+    with pytest.raises(ValueError, match="predicted for ctl_refund_window_v1 only"):
+        check_acceptance(
+            entry.control,
+            RunResult.model_validate_json(refs.source_run.read(root)),
+            RepairPackage.model_validate_json(refs.repair_package.read(root)),
+            RegressionArtifact.model_validate_json(refs.regression_artifact.read(root)),
+            validation,
+            entry.acceptance,
+        )
+    _set_acceptance(library, "static_ok", "gating")
+    with pytest.raises(ValueError, match="predicted for ctl_refund_window_v1 only"):
+        load_library(library)
 
 
 def test_an_artifact_that_supports_gating_cannot_be_recorded_as_advisory(

@@ -128,12 +128,12 @@ class AcceptanceBasis(BaseModel):
     standing: VerdictStanding = "advisory"
 
     @classmethod
-    def for_artifact(cls, artifact: RegressionArtifact) -> AcceptanceBasis:
-        """The basis an artifact supports: gating only past ``gating_refusal``."""
+    def for_artifact(cls, artifact: RegressionArtifact, control_id: str) -> AcceptanceBasis:
+        """The basis an artifact supports for one control: gating only past ``gating_refusal``."""
         return cls(
             replay_mode=artifact.replay_mode,
             predicted_by=predictor_of(artifact),
-            standing="gating" if gating_refusal(artifact) is None else "advisory",
+            standing="gating" if gating_refusal(artifact, control_id) is None else "advisory",
         )
 
 
@@ -207,12 +207,13 @@ def check_acceptance(
     A recorded basis must name the artifact's own ``replay_mode`` and
     ``predicted_by`` and the standing the artifact supports. A gating
     acceptance therefore needs a ``static_ok`` label whose recorded basis
-    classifies as ``static_ok`` (``gating_refusal``), and an advisory one
-    cannot be recorded as gating. A verdict's recorded label must be the
-    artifact's, down to whether its basis supports it. A label that was never
-    recorded, on the verdict or on the basis, is not compared with the
-    artifact, and a verdict or basis without one can only be advisory and
-    cannot name a predictor.
+    classifies as ``static_ok`` and was computed for this control
+    (``gating_refusal``), and an advisory one cannot be recorded as gating.
+    A verdict's recorded label must be the artifact's, down to whether its
+    basis supports it for this control. A label that was never recorded, on
+    the verdict or on the basis, is not compared with the artifact, and a
+    verdict or basis without one can only be advisory and cannot name a
+    predictor.
     """
     run_id = source.run_id
     if {package.run_id, artifact.source_run_id, validation.run_id, control.provenance.run_id} != {
@@ -269,7 +270,13 @@ def _check_replay_label(
             f"control {control_id!r} was validated on a label from {predicted_by} "
             f"but the artifact's label is from {predictor_of(artifact)}"
         )
-    if verdict.label_supported != basis_supports_label(artifact):
+    if verdict.label_supported != basis_supports_label(artifact, control_id):
+        if verdict.label_supported and basis_supports_label(artifact):
+            # The basis supports the label, only not for this control.
+            raise ValueError(
+                f"control {control_id!r} was validated on a label its basis supported, "
+                f"but {gating_refusal(artifact, control_id)}"
+            )
         recorded = "supported" if verdict.label_supported else "did not support"
         now = "does not" if verdict.label_supported else "does"
         raise ValueError(
@@ -297,7 +304,7 @@ def _check_basis(control_id: str, basis: AcceptanceBasis, artifact: RegressionAr
             f"control {control_id!r} records replay_mode {basis.replay_mode} "
             f"but the artifact is {artifact.replay_mode}"
         )
-    refusal = gating_refusal(artifact)
+    refusal = gating_refusal(artifact, control_id)
     if basis.standing == "gating" and refusal is not None:
         raise ValueError(f"control {control_id!r} records a gating acceptance but {refusal}")
     if basis.standing == "advisory" and refusal is None:

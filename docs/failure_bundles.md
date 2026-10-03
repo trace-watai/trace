@@ -312,17 +312,78 @@ implements it, or to `None` when nothing does yet. Per-control validation
 reports the latter as `skipped: not_materializable` rather than pretending,
 and writes every verdict to `repair_validation.json` (issue #146).
 
-| Prescribed `RepairControl.name` | Executable `guardrail_ref` |
-|---|---|
-| `deterministic_pre_call_refund_guardrail` | `unauthorized_cash_refund_guardrail` (installed by `ctl_refund_window_v1`) |
-| `current_policy_source_precedence` | none yet |
-| `ticket_claim_grounding_check` | none yet |
-| `final_answer_state_grounding_check` | none yet |
-| `required_escalation_enforcement` | none yet |
-| `escalation_discipline_check` | none yet |
-| `retrieval_before_action_check` | none yet |
-| `expected_action_contract_check` | never; detection only, see below |
-| `regression_test_ci_gate` | never; a CI-side control, #161 makes it real |
+| Prescribed `RepairControl.name` | Executable `guardrail_ref` | Seam | Static validation on the bundle suite |
+|---|---|---|---|
+| `deterministic_pre_call_refund_guardrail` | `unauthorized_cash_refund_guardrail` (`ctl_refund_window_v1`, the default, cash only) | pre-call | rejected, overblocks on the two cash refunds (`refund_policy_failure`, day 31 without approval); rejected, failure persists on the day 45 store credit, which is outside its scope |
+| `deterministic_pre_call_refund_guardrail` | `unauthorized_refund_guardrail` (`ctl_refund_policy_v2`, cash and store credit) | pre-call | rejected, overblocks on all three |
+| `current_policy_source_precedence` | `deprecated_policy_citation_guardrail` (`ctl_policy_source_v1`) | pre-call | rejected, overblocks |
+| `ticket_claim_grounding_check` | `ticket_outage_claim_guardrail` (`ctl_ticket_grounding_v1`) | pre-call | accepted |
+| `final_answer_state_grounding_check` | `final_answer_state_grounding_guardrail` (`ctl_final_answer_grounding_v1`) | final answer | skipped, incomplete; can never be accepted, see below |
+| `required_escalation_enforcement` | `required_escalation_guardrail` (`ctl_required_escalation_v1`) | final answer | skipped, incomplete; can never be accepted, see below |
+| `escalation_discipline_check` | none yet | | |
+| `retrieval_before_action_check` | none yet | | |
+| `expected_action_contract_check` | never; detection only, see below | | |
+| `regression_test_ci_gate` | never; a CI-side control, #161 makes it real | | |
+
+Every row with a guardrail is executable and blocks what its check names,
+and each guardrail reads the rule the matching verifier check reads (#194).
+The policy source guardrail applies its check's gate to the one call it
+sees: a deprecated doc id in the arguments blocks the call only when current
+policy would also forbid it, so a correct refund that notes "v2 is
+deprecated, using v4" goes through.
+
+The last column is what `replay --apply-control --control <id>` records
+against the bundle suite's failing tasks. Only ticket grounding is accepted,
+and the other verdicts have two different causes.
+
+The refund and policy source verdicts come from static replay. When a refund
+is blocked, the recorded script goes on to tell the customer the refund went
+out, which adds `final_answer_inconsistent_with_state` and reads as
+overblocking. A live agent sees the block and can answer differently, which
+a script cannot do. That is the gap brief 001 measures and the reason
+ADR-0002 treats static control verdicts as advisory.
+
+The two final-answer controls can never be accepted, because a blocked final
+answer ends the run. Whenever a hook on the final-answer seam from #193 blocks
+an answer, the runner ends the run as `terminated` (`final_answer_blocked`),
+with a scripted agent or a live one, and `decide_verdict` records a pinned
+replay that did not complete as `skipped: validation_incomplete`. Every
+validation in which one of these controls acts is therefore incomplete, and
+neither control can be committed to the control library. Both act on the
+bundle suite's static replays, because the replayed answer is the one the
+check failed. A live run in which the control never fires could clear the
+check, but that verdict would describe the agent, since the control did
+nothing. The instruction in each block message ("Call escalate_case, then
+answer.", "Describe what the tools actually did.") becomes the run's error
+message and never reaches the agent.
+Static replay is not the cause, so validating with a live agent does not fix
+this. It needs a change at the #193 seam, such as handing the block back to
+the agent as an observation so it can answer again, or a change to how
+validation judges a blocked answer.
+
+Only `ctl_refund_window_v1` is in the default set that `replay` installs and
+the materializer uses to predict replay mode. The others are in
+`control_catalogue()` and are selected with `--control`. Widening the default
+set would change the replay label of every artifact and every pinned
+expectation built on one, so that is left for a separate change. When both
+refund controls are selected, each gets its own verdict under the one
+prescription.
+
+The ticket matcher is shared by the verifier and the guardrail, and
+`fixtures/claim_matching/labeled_texts.json` holds 43 ticket texts both are
+tested against. The matcher is a word list with a negation window, and
+beyond that it applies narrow rules that each set aside one mention. An
+existential question about the outage asks rather than claims. An
+"incident" that names something other than the service is a support case. A
+negation after the claim word counts only when it denies the outage
+happened, and a hedge such as "if there was one" withdraws the claim. Each
+rule has a case on either side of it in the set, and each rule's comment
+names what it costs. None of them can add a claim, because a claim invented
+on ticket text fails an agent that wrote a careful note. One text is pinned
+as known wrong for that reason. In "there was no warning before the outage
+hit" a negation about the warning suppresses a real claim, and a rule that
+let the claim through would also fire on "no store credit because the
+outage is not documented".
 
 Two of these will never have a `guardrail_ref`, and saying so is the point.
 `expected_action_contract_check` covers a remedy that was omitted or swapped,
@@ -346,7 +407,9 @@ empty packages produce no verdicts. Without a package, selected reference
 controls use all pinned checks and record `controls_source: reference_controls`.
 
 Each verdict includes control identity, reason, originating and sibling run
-IDs, failed checks, and linked checks cleared on completed replays. Evidence
+IDs, failed checks, and linked checks cleared on completed replays. When two
+selected controls materialize one prescription, each gets its own verdict
+under the prescription's name, told apart by `control_id`. Evidence
 retains `PASS`, `FAIL`, or `INCOMPLETE`; a rollup counts the control verdicts.
 
 ADR-0002, decision 2: "A static replay verdict on a control is advisory
@@ -359,9 +422,12 @@ artifact whose own basis supports the label gating, and every place that
 prints gating also says the label is predicted.
 
 Each verdict records the artifact's `replay_mode`, its `predicted_by`,
-`label_supported` (whether the artifact's recorded basis classifies as its
-label), and the `standing` those give it: `gating` for a `static_ok` label
-with a recorded basis that classifies as `static_ok`, `advisory` otherwise.
+`label_supported`, and the `standing` those give it. `label_supported` says
+whether the artifact's recorded basis classifies as its label for this
+verdict's control. A `static_ok` label is a prediction about the controls its
+basis names (`replay_mode_basis.control_ids`), so it supports a verdict for
+one of those and no other. A verdict is `gating` when its `static_ok` label is
+supported and `advisory` otherwise.
 The verdict values are unchanged, so an advisory `accepted` still means the
 control held under replay, and it makes no claim about a live agent. The
 rollup splits `accepted` into `accepted_gating` and `accepted_advisory`.
@@ -429,18 +495,20 @@ Each entry records the basis of its acceptance in `acceptance`: the
 and the `standing` they support. The rule:
 
 - A control accepted against a `static_ok` artifact whose recorded basis
-  still classifies as `static_ok` enters as `gating`. That label is a
-  prediction until #159 measures it, and `controls list` says so.
+  still classifies as `static_ok` and names that control enters as
+  `gating`. That label is a prediction until #159 measures it, and
+  `controls list` says so.
 - Any other accepted control still enters, and is recorded as `advisory`.
-  That covers `live_required` and `unlabeled` artifacts and a `static_ok`
-  label with no basis or with a basis that does not classify as `static_ok`.
+  That covers `live_required` and `unlabeled` artifacts, a `static_ok`
+  label with no basis or with a basis that does not classify as `static_ok`,
+  and a control the basis does not name.
 - Advisory entries install like any active entry, so suites and replays run
   with them in place and measure their effect. Nothing downstream may report
   an advisory entry as proven.
 - Loading holds a recorded basis to the retained artifact and validation. A
   basis naming a different `replay_mode` or `predicted_by`, a `gating` basis
-  the artifact does not support, an `advisory` basis on an artifact that
-  does support gating, and a basis that names a predictor without a
+  the artifact does not support for that control, an `advisory` basis on an
+  artifact that does support gating for it, and a basis that names a predictor without a
   `replay_mode` all fail to load. A validation verdict is compared with the
   artifact only when it recorded a `replay_mode`, and then its
   `predicted_by` and `label_supported` must match the artifact too. A
