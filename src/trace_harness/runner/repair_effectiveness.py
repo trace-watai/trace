@@ -32,8 +32,9 @@ MIN_COMPLETED_RUNS = 5
 class ConditionViolations(BaseModel):
     """Blocking failures after the fork over completed runs, for one condition.
 
-    A blocking failure counts only checks whose ``step_ids`` fall after the
-    fork step. Runs that ended incomplete are left out of both counts.
+    A blocking failure counts only checks whose ``step_ids`` fall at or after
+    the fork step, as the 2026-10-03 amendment to pre-registration 001 reads
+    "after the fork". Runs that ended incomplete are left out of both counts.
     """
 
     model_config = ConfigDict(extra="forbid")

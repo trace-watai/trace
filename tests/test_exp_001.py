@@ -335,19 +335,18 @@ def test_the_dry_run_sidecar(dry_run):
         )
         for e in sidecar.entries
     }
-    # Both arms replay the recorded refund at the fork step, and B1 counts only
-    # checks after it, so the control-off refund at the fork step never counts
-    # (runbook_001.md, "B1 at the registered fork points"). refund_policy_failure
-    # also fails at steps 6 and 7 either way, so its B1 is 0. The purchase_age
-    # recordings fail only at the fork step without the control, so their
-    # baseline is 0 and B1 is null with that reason.
+    # Both arms replay the recorded refund at the fork step, and since the
+    # 2026-10-03 amendment B1 counts checks at or after it, so the control-off
+    # refund at the fork step counts (runbook_001.md, "B1 at the registered
+    # fork points"). The fixture's control-on continuation fails after the
+    # fork on every seed too, so B1 is 0 at all three fork points.
     for arm in ("live", "live_swapped"):
-        assert rows[(f"{arm}__refund_policy_failure", 5)] == (5, 5, 5, 5, 0.0)
         for task, step in (
+            ("refund_policy_failure", 5),
             ("refund_cash_age_boundary_day_31_no_approval", 4),
             ("refund_cash_age_boundary_day_61_violation", 3),
         ):
-            assert rows[(f"{arm}__{task}", step)] == (5, 5, 0, 5, None)
+            assert rows[(f"{arm}__{task}", step)] == (5, 5, 5, 5, 0.0)
     assert len(rows) == 6
     for entry in sidecar.entries:
         assert entry.control_id == REFUND_WINDOW_CONTROL_ID
