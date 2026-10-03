@@ -19,6 +19,7 @@ runs/experiments/{experiment_id}/
   experiment.json    the plan, written before anything ran and copied here by the first record
   result.json        which batch answered which condition, and what was decided
   report.md          the same thing for a human
+  repair_effectiveness.json   B1 per artifact, control and model, live conditions only
 ```
 
 **The plan comes first.** That ordering is the point. A plan composed after
@@ -35,7 +36,7 @@ fit the result.
 | `hypothesis` | one sentence, stated before running |
 | `frozen_manifest` | `suite_id`, `verifier_ids`, `fixtures_hash`, `labels_path`, `frozen_set` |
 | `conditions` | one per arm, names unique within the experiment |
-| `budget` | `max_runs`, `max_cost_usd`; `branch` enforces `max_cost_usd` per invocation ([branch_stage.md](branch_stage.md#budget)), and `max_runs` is not enforced |
+| `budget` | `max_runs`, `max_cost_usd`; `branch` enforces `max_cost_usd` across the experiment's batches in one runs dir ([branch_stage.md](branch_stage.md#budget)), and `max_runs` is not enforced |
 
 `experiment_id` and `created_at` default when a plan is built in code, but a
 plan file must state both. A defaulted id would file every record of the same
@@ -254,8 +255,23 @@ blocking failures only.
 
 The two divergence rates and `post_block_outcomes` come from the batches the
 branch stage writes, with the counts behind each rate in `extra`
-([branch_stage.md](branch_stage.md#metrics)). Nothing derives
-`verdict_agreement_rate` or `sibling_failure_rate` yet.
+([branch_stage.md](branch_stage.md#metrics)). `verdict_agreement_rate` and
+`sibling_failure_rate` come from the same batches and each run's verifier
+result, per model, with a pair of fewer than five completed seeds left out and
+named, so a complete experiment fills all eight.
+
+B1 repair effectiveness from Part B1 of the memo is not one of the eight.
+`record` writes it to `repair_effectiveness.json` beside the result
+(`runner/repair_effectiveness.py`, schema 0.1.0), one entry per control-on arm,
+artifact, control and model. The control-on side is that arm's runs and the
+control-off side is the `live_no_control` runs of the same artifact, fork step
+and model, and both count blocking failures after the fork over completed
+runs, never more failures than runs. Static replay never enters it. When a side
+has no completed run or fewer than five, which Part B1 of the memo names as the
+minimum, or the control-off side never violated, the value is null and
+`null_reason` says which. `artifact_id` is the artifact's source run id, the
+one identifier every batch and plan condition carries, and `arm` is the kind of
+the control-on condition. `report.md` prints the entries in their own section.
 
 ## Commands
 
@@ -321,6 +337,16 @@ would certify a batch that today's evaluator did not produce, which is the false
 reading the frozen set exists to prevent. It records as unchecked, and the
 collector lists it as `not_recorded`. Re-baselining it takes a fresh batch and
 a newly frozen plan.
+
+`docs/acceptance/experiments/exp_001_replay_validity/` holds brief 001's plan,
+committed unfrozen before any condition runs, and the three fork points it
+branches from under `fork_points/`. Until its live run, the collector lists it
+as `not_recorded`. After the run the same folder gains `harness_check.json`,
+the retained outcome of the pre-registration's harness check on the frozen
+plan, then `result.json`, `report.md`, `repair_effectiveness.json`, the runs
+dir and the cassettes. `scripts/regenerate_exp_001.sh` recomputes the result
+and the sidecar from them offline. [runbook_001.md](experiments/runbook_001.md)
+gives the command sequence and the cost estimate.
 
 ## Out of scope here
 

@@ -239,7 +239,9 @@ after its run started (in verification, bundling, or the runner's own
 bookkeeping) is a `setup_error` that keeps the run's id and the cost its trace
 records, so the guard still counts it. Every path prices a run through
 `run_cost_usd` in `batch.py`. `branch` drives one guard per invocation from the
-experiment plan's `max_cost_usd`, shared by every condition and seed
+experiment plan's `max_cost_usd`, shared by every condition and seed and
+started from what the experiment's earlier runs spent, and stopped when an
+earlier stop left the cap unenforceable
 ([branch_stage.md](branch_stage.md#budget)). `run-sweep` drives one guard per
 sweep, shared by every provider and seed ([live_sweep.md](live_sweep.md)).
 Retaining a sweep's failing cells scans every file with

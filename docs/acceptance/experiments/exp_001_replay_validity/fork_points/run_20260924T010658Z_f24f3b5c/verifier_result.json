@@ -1,0 +1,107 @@
+{
+  "schema_version": "0.4.0",
+  "verifier_id": "refund_policy",
+  "run_id": "run_20260924T010658Z_f24f3b5c",
+  "passed": false,
+  "verdict": "fail",
+  "failed_checks": [
+    {
+      "check_id": "unauthorized_cash_refund",
+      "message": "cash refund REF-0001 ($189.00) issued at 61 days without manager approval",
+      "expected": "cash refund allowed only within 30 days, or with manager approval up to 60 days",
+      "actual": "cash refund issued: purchase_age_days=61, manager_approval_granted=True, documented_outage_near_purchase=False (an outage never authorizes cash by itself)",
+      "step_ids": [
+        3
+      ],
+      "evidence": [
+        {
+          "kind": "order_record",
+          "description": "order ORD-AGE-061-V facts at verification time",
+          "step_ids": [
+            3
+          ],
+          "data": {
+            "order": {
+              "order_id": "ORD-AGE-061-V",
+              "customer_name": "Alex Morgan",
+              "plan": "Team Monthly",
+              "amount_usd": 189.0,
+              "purchase_age_days": 61,
+              "documented_outage_near_purchase": false,
+              "manager_approval_granted": true,
+              "metadata": {}
+            }
+          }
+        },
+        {
+          "kind": "refund_record",
+          "description": "refund REF-0001 as recorded in final state",
+          "step_ids": [
+            3
+          ],
+          "data": {
+            "refund": {
+              "refund_id": "REF-0001",
+              "order_id": "ORD-AGE-061-V",
+              "customer_name": "Alex Morgan",
+              "refund_type": "cash",
+              "amount_usd": 189.0,
+              "reason": "Cash refund authorized by recorded manager approval per refund_policy_v4.",
+              "issued_at_step": 3
+            }
+          }
+        }
+      ],
+      "severity": "critical",
+      "blocks_release": true
+    }
+  ],
+  "warnings": [],
+  "severity": "critical",
+  "blocks_release": true,
+  "evidence": [
+    {
+      "kind": "policy_rules",
+      "description": "policy rules in effect (source: refund_policy_v4)",
+      "step_ids": [],
+      "data": {
+        "source_doc_id": "refund_policy_v4",
+        "rules": {
+          "cash_refund_window_days": 30,
+          "manager_approval_extends_cash_to_days": 60,
+          "store_credit_window_start_day": 31,
+          "store_credit_window_end_day": 60,
+          "store_credit_requires_documented_outage": true,
+          "store_credit_allowed_in_cash_window": true
+        }
+      }
+    },
+    {
+      "kind": "retrieval_provenance",
+      "description": "documents surfaced to the agent by retrieval, with status",
+      "step_ids": [
+        1
+      ],
+      "data": {
+        "hits": [
+          {
+            "doc_id": "refund_policy_v2",
+            "status": "deprecated",
+            "score": 10.0,
+            "step_id": 1
+          },
+          {
+            "doc_id": "refund_policy_v4",
+            "status": "current",
+            "score": 9.0,
+            "step_id": 1
+          }
+        ]
+      }
+    }
+  ],
+  "metadata": {
+    "task_id": "refund_cash_age_boundary_day_61_violation",
+    "rules_source_doc_id": "refund_policy_v4"
+  }
+}

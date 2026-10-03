@@ -43,6 +43,10 @@ batch's metadata. `record` treats a batch that carries drift like a drifted
 record, so the result stays drifted with decision `review` even if the files
 are restored before recording.
 
+Brief 001 runs this sequence once per condition, with its harness check,
+retention and offline regeneration around it, in
+[runbook_001.md](experiments/runbook_001.md).
+
 ## What a live condition does
 
 For each seed of a `live`, `live_no_control` or `live_swapped` condition:
@@ -59,6 +63,9 @@ For each seed of a `live`, `live_no_control` or `live_swapped` condition:
 4. Verifies, attributes and bundles on failure as `run_task_pipeline` does,
    then labels the run with `classify_post_block_outcome`, passed runs
    included ([failure_taxonomy.md](failure_taxonomy.md#post-block-outcome-labels)).
+   A failing run joins only a failure card of an earlier run of its own
+   condition (#211), so its seeds that fail alike share one card and two
+   conditions never do ([failure_bundles.md](failure_bundles.md#scoping-the-lookup)).
 5. Compares the run's actions after the start step with the recording's.
 
 The start step is the last recorded step. At brief 001's fork points it is the
@@ -100,11 +107,16 @@ missing recording cannot quietly shrink the sample. Cassettes live at
 `<directory>/<task_id>/<model>/<seed>.jsonl` and count steps from the first
 call after the fork.
 
-That path names no condition, and recording never overwrites a file. So
-before any condition runs, `branch` exits 2 when a seed in record mode would
-write a file that already exists, or when two selected seeds share a path and
-at least one of them records. Either would otherwise fail only after earlier
-seeds had spent. Give each condition its own `cassette.directory`. Several
+That path names no condition, and recording never overwrites a file. One
+check, `check_cassette_paths` in `runner/branch.py`, covers every seed a
+selected condition could run, its declared seeds and the plan's replacement
+seeds. Before any condition runs, `branch` exits 2 when two of those seeds
+share a path and at least one of them records, and when a recording
+condition already has a cassette for any of them, listing every such file.
+Either would otherwise fail only after earlier seeds had spent, and a
+condition branched again would spend its replacement seeds live. Give each
+condition its own `cassette.directory`. A condition is branched into its
+cassette folder once, and its first batch is the one to record. Several
 conditions may still replay one recording.
 
 ## Divergence
@@ -163,7 +175,9 @@ A `static_replay` condition reuses `replay --apply-control` with the
 condition's controls, or a plain replay when it has none. The replayed scenario
 run becomes a batch of one whose entry carries the scenario's verdict and
 post-block outcome, and the replay's exit code goes in
-`metadata.replay_exit_code`. The divergence fields stay null.
+`metadata.replay_exit_code`. The positive siblings the replay ran go in
+`metadata.siblings` as `test_name` and `run_id`, since the sibling rate reads
+their verdicts. The divergence fields stay null.
 
 ## Batches
 
@@ -178,15 +192,46 @@ mirror is `apps/dashboard/src/types/batch-summary.ts`.
 
 ## Metrics
 
-`experiment record` maps each recorded batch to the kind of the condition it
-answers and fills three metrics as Part B2 of
-[methodology_metrics.md](methodology_metrics.md) defines them.
+`experiment record` maps each recorded batch to the condition it answers and
+fills five metrics as Part B2 of
+[methodology_metrics.md](methodology_metrics.md) defines them. The last two
+read each run's `verifier_result.json` as well, because a blocking failure
+after the fork depends on the steps of the failed checks, which a batch entry
+does not keep (`runner/verdict_agreement.py`).
 
 | Metric | Formula |
 |---|---|
 | `first_post_fork_divergence_rate` | `diverged / completed` over `live` batches |
 | `noise_floor_divergence_rate` | The same over `live_no_control` batches |
 | `post_block_outcomes` | Count per label over `live` batches |
+| `verdict_agreement_rate` | Agreeing pairs over sufficient pairs of the `live` arm |
+| `sibling_failure_rate` | Failed siblings over judged siblings, over `static_replay` batches with a control |
+
+A pair is one arm, artifact, control and model. Its static verdict is clear
+when `metadata.replay_exit_code` is 0 on the `static_replay` batch for that
+artifact and control, as pre-registration 001 defines it. A static replay
+that runs out before the end exits non-zero and so is not clear. That is
+what happens to a final-answer control, whose block leaves the recorded
+script nothing to do, so such a pair reads as a disagreement whenever its
+live seeds are clear. Brief 001's registered pairs use only the refund
+window control and are not affected. A completed control-on seed is clear when its verdict
+records no blocking failure after the fork, meaning no failed check with
+`blocks_release` and a step id past the start step. The live verdict is clear
+when at least half the completed seeds are. A pair with fewer than five
+completed seeds, or with no static verdict, is excluded and its reason stated,
+as pre-registration 001 requires. `live` and `live_swapped` pairs are rated per
+model. The headline is the `live` arm's rate and is null when more than one
+model answers that arm, since the pre-registration never pools models.
+
+`extra` carries `verdict_agreement_k`, `_n` and `_excluded` for the headline,
+the same three and `verdict_agreement_rate` per arm and model under
+`/<arm>/<model>`, and for each pair
+`pair/<arm>/<model>/<task>/<control>/` with `completed_seeds`,
+`live_clear_share` and `static_clear`. The share is what the memo asks to see
+beside a majority. `result.metadata.verdict_agreement_pairs` holds the same
+pairs as rows with the exclusion reasons, and `report.md` prints them. A
+sibling that never completed stays out of the sibling denominator, and
+`sibling_failure_k` and `_n` go in `extra`.
 
 The k and n behind each rate go in `metrics.extra` as integers, named
 `first_post_fork_divergence_k` and `_n`, and `noise_floor_divergence_k` and
@@ -219,12 +264,21 @@ three, which is how the offline tests and the harness check read them.
 
 ## Budget
 
-The plan's `budget.max_cost_usd` caps what one `branch` invocation spends on
-live calls, across every selected condition and seed, through the #196
-`BudgetGuard` that `run-suite` uses. The guard is built once per invocation
-and follows the same contract: it admits a run before it starts and is charged
-the run's recorded cost after it finishes, and an unknown cost never counts as
-zero.
+The plan's `budget.max_cost_usd` caps what the experiment spends on live
+calls, across every condition and seed and every `branch` invocation into one
+runs dir, through the #196 `BudgetGuard` that `run-suite` uses. The guard is
+built once per invocation and starts from what the experiment's earlier runs in
+the runs dir spent, which `branch` prints when it is not zero. That is the
+`spent_usd` of the experiment's batches, plus every live run tagged with the
+experiment in its `run_config.json` that no batch lists, priced from its own
+trace by `run_cost_usd`, the function that prices every batch entry. Such a
+run is left by an invocation that was
+interrupted, since a batch is written when its condition ends, or by a seed
+that failed after its run existed. Branching one condition at a time, or again
+after an interruption, therefore spends the cap once in total. Runs and
+batches of other experiments never count. The guard follows the `run-suite`
+contract: it admits a run before it starts and is charged the run's recorded
+cost after it finishes, and an unknown cost never counts as zero.
 
 - Before any condition runs, the guard is asked once about each live
   condition. A live model with no price under the cap, or a cap of zero, stops
@@ -235,6 +289,14 @@ zero.
   runs, so the overshoot is at most one run.
 - A live seed that finishes with no recorded cost stops the guard as
   `budget_unenforceable`.
+- The stop outlasts the invocation. When an earlier batch of the experiment
+  stopped as `budget_unenforceable`, or an unbatched live run of it has no
+  known cost, because its model is unpriced or its trace is gone or
+  unreadable, the next invocation starts stopped, prints why, and refuses
+  every live seed. An interrupted run that sent a request and recorded no
+  provider response yet has no known cost, so interrupting the first live
+  call of a seed stops the cap this way. A call in flight when an invocation is interrupted is
+  missing from its run's trace, so the spend can be short by that call.
 - A seed that failed after its run started, in the runner itself or while
   it was verified, attributed or labelled, is recorded as `setup_error` with
   its run id and the error. It is priced from its trace by `run_cost_usd`,
@@ -255,8 +317,26 @@ condition, or stopped while the condition ran, the block records
 each seed never run in `not_run`. A condition refused whole still writes its
 batch, with no entries. `branch` exits as `run-suite` does without
 `--fail-on-verifier`: 2 when the cap cannot be enforced, without the
-`Record with` line, and 0 after an exhausted cap. `max_runs` is recorded in
-the plan and not enforced.
+`Record with` line, and 0 after an exhausted cap. An invocation that runs only
+`static_replay` conditions never asks the guard and exits 0 even when an
+earlier stop was carried over. `max_runs` is recorded in the plan and not
+enforced.
+
+## Seed replacement
+
+A plan may list `replacement_seeds` in its `metadata`. A live seed whose run
+exists and ends `terminated` or `error` is then replaced by the next unused
+seed from that list, and a replacement that ends incomplete is replaced in
+turn, until the list runs out. The decision reads run status alone, never the
+verdict, which is pre-registration 001's rule for seeds 5 to 9. A seed the
+budget refused is not replaced, and neither is a `setup_error`, where the
+harness failed before the run existed or while processing it. That is a harness
+problem, and a replacement would only spend a live seed on the same failure.
+Replacement seeds land in the same batch with their own seed numbers. With
+cassettes in `replay` mode, only the declared seeds are checked up front, so a
+replacement with no recording ends as a `setup_error`. The list rides in plan
+metadata because `ConditionSpec` has no field for it, and a malformed list
+exits 2 before any run.
 
 ## Harness check
 
@@ -280,8 +360,5 @@ would disagree without any harness defect.
 - A prefix recorded by the fixture adapter carries no provider state. No test
   here calls a live provider, so whether one accepts earlier turns without it
   is unexercised.
-- `verdict_agreement_rate` and `sibling_failure_rate` stay null.
-- `max_runs` is not enforced, and the cap is per invocation, so two
-  invocations of one plan may each spend up to it.
-- An incomplete seed is not replaced with a spare one, which pre-registration
-  001 requires. The brief 001 runner (#200) adds that.
+- `max_runs` is not enforced. The cap spans the runs and batches in one runs
+  dir, so two runs dirs of one plan may each spend up to it.

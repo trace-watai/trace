@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -434,8 +435,14 @@ def validate_condition_batches(spec: ExperimentSpec, condition_batches: dict[str
         )
 
 
-def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -> str:
-    """A short human-readable report, written beside the two JSON files."""
+def render_experiment_markdown(
+    spec: ExperimentSpec, result: ExperimentResult, repair: Any | None = None
+) -> str:
+    """A short human-readable report, written beside the two JSON files.
+
+    ``repair`` is the B1 sidecar (:class:`RepairEffectivenessReport`), shown in
+    its own section because it is not one of the eight metrics.
+    """
     lines = [
         f"# {spec.experiment_id}",
         "",
@@ -462,11 +469,48 @@ def render_experiment_markdown(spec: ExperimentSpec, result: ExperimentResult) -
         lines.append(f"| {name} | {'not measured' if value is None else value} |")
     for name, value in sorted(result.metrics.extra.items()):
         lines.append(f"| {name} (extra) | {value} |")
+    lines += _pair_lines(result.metadata.get("verdict_agreement_pairs") or [])
+    if repair is not None and repair.entries:
+        lines += [
+            "",
+            "## Repair effectiveness (B1, outside the eight)",
+            "",
+            "| artifact | arm | control | model | control on | control off | B1 |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for e in repair.entries:
+            on, off = e.control_on, e.control_off
+            value = e.repair_effectiveness if e.null_reason is None else f"null: {e.null_reason}"
+            lines.append(
+                f"| {e.artifact_id} | {e.arm} | {e.control_id} | {e.model} "
+                f"| {on.blocking_failures_after_fork}/{on.completed_runs} "
+                f"| {off.blocking_failures_after_fork}/{off.completed_runs} | {value} |"
+            )
     if result.frozen_set_drift:
         lines += ["", "## Frozen set drift", "", "| component | change | file |", "|---|---|---|"]
         for c in result.frozen_set_drift:
             lines.append(f"| {c.component} | {c.change} | {c.path} |")
     return "\n".join(lines) + "\n"
+
+
+def _pair_lines(pairs: list[dict[str, Any]]) -> list[str]:
+    """The verdict agreement pairs, each excluded pair with its reason."""
+    if not pairs:
+        return []
+    lines = [
+        "",
+        "## Verdict agreement pairs",
+        "",
+        "| arm | model | task | control | static clear | clear seeds | agrees |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for p in pairs:
+        agrees = f"excluded: {p['excluded']}" if p["excluded"] else p["agrees"]
+        lines.append(
+            f"| {p['kind']} | {p['model']} | {p['task_id']} | {p['control']} "
+            f"| {p['static_clear']} | {p['clear_seeds']}/{p['completed_seeds']} | {agrees} |"
+        )
+    return lines
 
 
 def _suite_line(spec: ExperimentSpec, result: ExperimentResult) -> str:
@@ -494,9 +538,12 @@ def _frozen_set_line(result: ExperimentResult) -> str:
 
 
 def derive_metrics(
-    batch_summaries: list[Any], *, conditions: dict[str, ConditionSpec] | None = None
+    batch_summaries: list[Any],
+    *,
+    conditions: dict[str, ConditionSpec] | None = None,
+    verifier_results: Mapping[str, Any] | None = None,
 ) -> ExperimentMetrics:
-    """Compute every metric the batch summaries can support today.
+    """Compute every metric the batch summaries can support.
 
     Three of the eight come from a batch alone, each as Part B2 of
     ``docs/methodology_metrics.md`` defines it:
@@ -523,9 +570,13 @@ def derive_metrics(
     them. ``live_swapped`` batches feed none of the three, because the
     pre-registration reports each live model on its own. The counts behind
     each rate go in ``extra`` so the rate is never read without its
-    denominator. Nothing derives ``verdict_agreement_rate`` or
-    ``sibling_failure_rate`` yet, so they stay ``None``, since a zero there
-    would read as a measurement.
+    denominator.
+
+    With ``conditions`` and ``verifier_results``, which maps a run id to its
+    verifier result, ``verdict_agreement_rate`` and ``sibling_failure_rate``
+    are derived as ``runner/verdict_agreement.py`` documents (#200). Without
+    them the two stay ``None``, since a zero there would read as a
+    measurement.
 
     The three read one model. :class:`MixedLiveModelsError` is raised when the
     ``live`` and ``live_no_control`` batches ran more than one real provider
@@ -536,6 +587,12 @@ def derive_metrics(
     recorded, fixture batches feed the three.
     """
     from trace_harness.runner.batch import BatchSummary
+    from trace_harness.runner.verdict_agreement import (
+        agreement_rate,
+        recorded_batches,
+        score_pairs,
+        sibling_failures,
+    )
 
     summaries = [
         s if isinstance(s, BatchSummary) else BatchSummary.model_validate(s)
@@ -579,7 +636,19 @@ def derive_metrics(
     control_on = of_kind(ConditionKind.LIVE)
     outcomes = Counter(str(e.post_block_outcome) for e in control_on if e.post_block_outcome)
 
+    agreement = siblings = None
+    if conditions is not None and verifier_results is not None:
+        recorded = recorded_batches(summaries, conditions)
+        agreement = agreement_rate(score_pairs(recorded, verifier_results), extra)
+        failed_siblings = sibling_failures(recorded, verifier_results)
+        if failed_siblings is not None:
+            k, n = failed_siblings
+            extra["sibling_failure_k"], extra["sibling_failure_n"] = k, n
+            siblings = round(k / n, 4)
+
     return ExperimentMetrics(
+        verdict_agreement_rate=agreement,
+        sibling_failure_rate=siblings,
         first_post_fork_divergence_rate=_divergence_rate(
             control_on, extra, "first_post_fork_divergence"
         ),

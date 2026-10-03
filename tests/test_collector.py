@@ -90,8 +90,12 @@ def test_retained_plus_bundle_suite_reproduces_eight_with_advisory_controls(tmp_
     # Three retained artifacts (the refund_v0 failure and the two reference
     # outside-agent runs from #210) plus five generated from the bundle suite.
     assert summary.artifacts_found == summary.blocking == summary.reproduced == 8
-    # One retained experiment (#195), checked and undrifted.
-    assert [e.experiment_id for e in summary.experiments] == ["exp_000_baseline"]
+    # The retained baseline (#195) and the exp_001 plan (#200), which has no
+    # result until its live run; neither has drifted.
+    assert [e.experiment_id for e in summary.experiments] == [
+        "exp_000_baseline",
+        "exp_001_replay_validity",
+    ]
     assert summary.experiments_drifted == []
     assert summary.siblings_passed == 8
     assert summary.not_reproduced == summary.siblings_failed == summary.malformed == []

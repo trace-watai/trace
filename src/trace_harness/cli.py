@@ -1426,6 +1426,16 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
         validate_condition_batches,
     )
     from trace_harness.runner.frozen_set import FrozenFileChange, render_changes
+    from trace_harness.runner.repair_effectiveness import (
+        build_repair_effectiveness,
+        write_repair_effectiveness,
+    )
+    from trace_harness.runner.verdict_agreement import (
+        pair_table,
+        recorded_batches,
+        run_ids,
+        score_pairs,
+    )
 
     spec_path, spec = _load_experiment_plan(args.experiment_path)
 
@@ -1543,16 +1553,22 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     except ValueError as exc:
         raise CliInputError(str(exc)) from None
 
+    # The live verdicts and B1 read each run's failed checks and their steps,
+    # which a batch entry does not keep (#200).
+    parsed = [BatchSummary.model_validate(s) for s in summaries]
+    by_batch = {batch_id: declared[name] for name, batch_id in condition_batches.items()}
+    verdicts = _verifier_results(store, run_ids(parsed))
+    recorded = recorded_batches(parsed, by_batch)
+    pairs = score_pairs(recorded, verdicts)
+    repair = build_repair_effectiveness(spec.experiment_id, recorded, verdicts)
     result = ExperimentResult(
         experiment_id=spec.experiment_id,
         condition_batches=condition_batches,
-        metrics=derive_metrics(
-            summaries,
-            conditions={batch: declared[name] for name, batch in condition_batches.items()},
-        ),
+        metrics=derive_metrics(parsed, conditions=by_batch, verifier_results=verdicts),
         decision=Decision.REVIEW if drift else Decision(args.decision),
         decided_by=DecidedBy(args.decided_by),
         report_path=str(store.experiment_report_path(spec.experiment_id)),
+        metadata={"verdict_agreement_pairs": pair_table(pairs)} if pairs else {},
         frozen_set_verified=manifest.frozen_set is not None and not drift,
         frozen_set_drifted=bool(drift),
         frozen_set_drift=drift,
@@ -1560,8 +1576,9 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     if stored is None:
         store.write_experiment_spec(spec.experiment_id, spec)
     store.write_experiment_result(
-        spec.experiment_id, result, markdown=render_experiment_markdown(spec, result)
+        spec.experiment_id, result, markdown=render_experiment_markdown(spec, result, repair)
     )
+    sidecar = write_repair_effectiveness(store, repair)
 
     print(f"\nExperiment recorded: {spec.experiment_id}")
     _print("hypothesis:", spec.hypothesis)
@@ -1587,10 +1604,25 @@ def _experiment_record(args: argparse.Namespace, store: ArtifactStore) -> int:
     for metric in type(result.metrics).memo_field_names():
         value = getattr(result.metrics, metric)
         _print(f"  {metric}:", "not measured" if value is None else str(value))
-    if excluded := result.metrics.extra.get("live_fixture_batches_excluded"):
-        _print("left out:", f"{excluded} fixture batch(es) from the live metrics")
+    excluded = [p for p in pairs if p.excluded]
+    if excluded:
+        _print("excluded pairs:", f"{len(excluded)}, left out of verdict_agreement_rate")
+        for pair in excluded:
+            print(f"    {pair.kind} {pair.model} {pair.task_id} {pair.control}: {pair.excluded}")
+    _print("repair effectiveness:", f"{len(repair.entries)} entr(ies) in {sidecar}")
+    if left_out := result.metrics.extra.get("live_fixture_batches_excluded"):
+        _print("left out:", f"{left_out} fixture batch(es) from the live metrics")
     _print("written:", str(store.experiment_dir(spec.experiment_id)))
     return 0
+
+
+def _verifier_results(store: ArtifactStore, ids: list[str]) -> dict[str, VerifierResult]:
+    """Each named run's verifier result; a run without one is left for the metrics to exclude."""
+    return {
+        run_id: VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
+        for run_id in ids
+        if store.exists(run_id, names.VERIFIER_RESULT)
+    }
 
 
 def _frozen_set_drift(
@@ -1634,11 +1666,14 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     reuse the ``replay --apply-control`` path and record its verdict as a batch
     of one. Every condition is checked before any of them runs.
     """
-    from trace_harness.runner.batch import BUDGET_UNENFORCEABLE, BudgetGuard
+    from trace_harness.runner.batch import BUDGET_UNENFORCEABLE
     from trace_harness.runner.branch import (
         admit_before_any_run,
+        calls_a_provider,
         check_cassette_paths,
+        experiment_guard,
         load_artifact,
+        replacement_seeds,
         replay_batch,
         run_branch,
         validate_condition,
@@ -1656,9 +1691,13 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     artifact = load_artifact(artifact_path)
     for condition in conditions:
         validate_condition(artifact, condition)
-    # Recording never overwrites a cassette, so a collision found at a later
-    # seed would come after earlier seeds had spent.
-    check_cassette_paths(artifact, conditions)
+    # Recording never overwrites a cassette, so a collision or an existing
+    # recording found at a later seed, a replacement seed included, would come
+    # after earlier seeds had spent (#159, #200).
+    try:
+        check_cassette_paths(artifact, conditions, replacement_seeds(spec))
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from None
     # The same check record runs, made before any spend: a sweep on a changed
     # evaluator would be refused at record after its money was gone.
     drift = _frozen_set_drift(
@@ -1670,10 +1709,17 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     )
     if drift:
         _print("frozen set:", f"DRIFTED, {len(drift)} file(s), running with --allow-drift")
-    # One guard for the whole invocation, from the plan's cap (#196). Asking it
-    # about every live condition first means a cap that cannot hold stops every
-    # live run before the first one starts.
-    guard = BudgetGuard(spec.budget.max_cost_usd)
+    # One guard for the whole invocation, from the plan's cap (#196). It starts
+    # from what earlier runs of this experiment spent, batched or not, and
+    # stopped when an earlier stop left the cap unenforceable, so branching one
+    # condition at a time cannot multiply the cap (#200). Asking it about every
+    # live condition first means a cap that cannot hold stops every live run
+    # before the first one starts.
+    guard, earlier = experiment_guard(store, spec)
+    if guard.spent_usd:
+        _print("budget:", f"${guard.spent_usd:.6f} already spent by earlier runs of the plan")
+    if guard.stop_reason is not None:
+        _print("budget:", f"stopped before this invocation, {earlier.detail}")
     admit_before_any_run(guard, conditions)
 
     pairs: list[str] = []
@@ -1720,13 +1766,15 @@ def _branch(args: argparse.Namespace, store: ArtifactStore) -> int:
     print()
     _print(
         "budget:",
-        f"${guard.spent_usd:.6f} of ${guard.max_cost_usd:.6f} spent on live runs",
+        f"${guard.spent_usd:.6f} of ${guard.max_cost_usd:.6f} spent on live runs of the plan",
     )
     if guard.stop_reason is not None:
         _print("stopped:", f"{guard.stop_reason}; {guard.detail}")
     # Exits as run-suite does: a cap the harness cannot enforce is a
-    # configuration problem, and an exhausted cap is a recorded early stop.
-    if guard.stop_reason == BUDGET_UNENFORCEABLE:
+    # configuration problem, and an exhausted cap is a recorded early stop. An
+    # invocation with no live condition never asked the guard, so a stop
+    # carried over from earlier runs does not fail it.
+    if guard.stop_reason == BUDGET_UNENFORCEABLE and any(map(calls_a_provider, conditions)):
         return 2
     if pairs:
         print("\nRecord with:")

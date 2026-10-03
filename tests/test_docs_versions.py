@@ -66,6 +66,7 @@ DOCUMENTED_VERSIONS = {
     "SweepSummary": "SWEEP_SUMMARY_SCHEMA_VERSION",
     "BundleRef": "BUNDLE_REF_SCHEMA_VERSION",
     "AttributionScore": "ATTRIBUTION_SCORE_SCHEMA_VERSION",
+    "RepairEffectivenessReport": "REPAIR_EFFECTIVENESS_SCHEMA_VERSION",
 }
 
 #: Schema constants deliberately left out of ``DOCUMENTED_VERSIONS``, each

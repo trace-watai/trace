@@ -94,6 +94,7 @@ before any run it governs.
 |---|---|
 | [Brief 001, control replay validity](experiments/briefs/001-control-replay-validity.md) | Before trusting a control verdict from `replay --apply-control`, or planning a live continuation run. |
 | [Pre-registration 001](experiments/preregistration/001.md) | Before running or reporting any arm of brief 001. It fixes the hypotheses, sample, thresholds, and stopping rules. |
+| [Runbook 001](experiments/runbook_001.md) | Before freezing or running exp_001. It lists the values that wait on confirmation, the open B1 decision, and every command in order. |
 
 ## Doc hygiene
 
