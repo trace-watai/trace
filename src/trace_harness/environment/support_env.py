@@ -145,7 +145,11 @@ class SupportEnvironment:
 
         A final answer never reaches the environment on its own, so without
         this seam no control can act on what the agent claims. Returning a
-        result blocks the answer and ends the run as blocked.
+        result blocks the answer. The runner then hands the result's message
+        back to the agent, as it does for a blocked tool call, and the run goes
+        on to the agent's next step, completing only on an answer no hook
+        blocks. Set ``blocked_by`` on the result, as ``install_control`` does,
+        so the trace can tell the blocked answer from one that stood.
         """
         self._final_answer_hooks.append(hook)
 

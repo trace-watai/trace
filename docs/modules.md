@@ -171,12 +171,13 @@ Three seams exist for controls. `register_pre_execute_hook` runs before a
 handler and can prevent the side effect. `register_post_execute_hook` runs
 after one and sees the result, so it can reject a record that should not stand,
 though the side effect has already happened. `register_final_answer_hook` runs
-on the answer itself, which never reaches the environment otherwise, and a
-block there ends the run as terminated with `blocked_by` on the `final_answer`
-event (trace schema 0.5.0). `install_control` refuses a control that reads the
-same rules through the same guardrail as an installed one but disagrees on
-`behavior_on_failure`, because ordering would otherwise decide the outcome and
-nobody decided the ordering.
+on the answer itself, which never reaches the environment otherwise. A block
+there is recorded with `blocked_by` on the `final_answer` event (trace schema
+0.5.0) and goes back to the agent as an observation, as a blocked tool call
+does, and the run goes on until an answer stands or a limit ends it.
+`install_control` refuses a control that reads the same rules through the same
+guardrail as an installed one but disagrees on `behavior_on_failure`, because
+ordering would otherwise decide the outcome and nobody decided the ordering.
 
 **Rules:** every tool declares a side-effect class (`read_only` /
 `external_durable` / `external_irreversible`) — attribution depends on it.
@@ -261,11 +262,13 @@ outside agent's tool calls and final answer to `AgentRunner` one step at a
 time), `load_target_agent("package.module:factory")`, and `run_target_agent`.
 The runner loop is unchanged for these runs, so step numbering, controls,
 `blocked_by`, the final-answer seam, and the step and time limits behave as
-they do for every adapter. The bridge sends no provider request, so no call
-policy wraps it and `run_config.json` records `call_policy` as null. An error
-from the outside agent ends the run as `model_error` and is never retried. The
-budget guard refuses provider `external` under a cap as `budget_unenforceable`,
-since its spend is invisible, and `branch` refuses it before any run. See
+they do for every adapter. An outside agent has no turn after its answer, so a
+blocked answer ends its run as `script_exhausted`. The bridge sends no
+provider request, so no call policy wraps it and `run_config.json` records
+`call_policy` as null. An error from the outside agent ends the run as
+`model_error` and is never retried. The budget guard refuses provider
+`external` under a cap as `budget_unenforceable`, since its spend is
+invisible, and `branch` refuses it before any run. See
 [bring_your_own_agent.md](bring_your_own_agent.md).
 
 `collector.py` exposes `collect_regressions(path, store, suite_path=...,

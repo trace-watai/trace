@@ -291,11 +291,20 @@ def test_final_answer_seam_blocks_the_agents_answer(tmp_path):
             tool_name="final_answer", status="error", error="ungrounded", blocked_by="ctl_answer"
         )
 
+    started = time.monotonic()
     result, trace, _ = _run(ScriptAgent(), FAILURE_TASK_PATH, tmp_path, final_answer_hook=block)
+    # The runner hands the block back and asks for another move, and the
+    # agent's run() has already returned, so the run ends at once with no
+    # answer, as a script with no action left does.
+    assert time.monotonic() - started < 30
     assert result.status is RunStatus.TERMINATED
-    assert result.termination_reason is TerminationReason.FINAL_ANSWER_BLOCKED
+    assert result.termination_reason is TerminationReason.SCRIPT_EXHAUSTED
+    assert "no further turn to answer again" in (result.error or "")
     assert result.final_output is None
-    assert _events(trace, TraceEventType.FINAL_ANSWER)[0].payload["blocked_by"] == "ctl_answer"
+    (answer,) = _events(trace, TraceEventType.FINAL_ANSWER)
+    assert answer.payload["blocked_by"] == "ctl_answer"
+    (error,) = _events(trace, TraceEventType.ERROR)
+    assert (error.step_id, error.payload["kind"]) == (answer.step_id + 1, "script_exhausted")
 
 
 # --- limits, failures, and odd agents ---
@@ -851,8 +860,17 @@ class _Raises:
         raise TimeoutError("the agent's own model call timed out")
 
 
-@pytest.mark.parametrize("agent", [_Answers(), _Raises()], ids=["answered", "raised"])
-def test_asking_an_ended_agent_for_another_move_fails_at_once(agent):
+@pytest.mark.parametrize(
+    ("agent", "error", "message"),
+    [
+        # The runner asks an agent that answered again only after a block,
+        # and the agent has no turn left, as a script with no action left.
+        (_Answers(), ScriptExhaustedError, "has no further turn to answer again"),
+        (_Raises(), TargetAgentError, "has ended and has no further move"),
+    ],
+    ids=["answered", "raised"],
+)
+def test_asking_an_ended_agent_for_another_move_fails_at_once(agent, error, message):
     """A retry of the last move would otherwise wait out the whole time budget."""
     bridge = TargetAgentBridge(agent, task_id="t", max_steps=4)
     transcript = [
@@ -880,8 +898,8 @@ def test_asking_an_ended_agent_for_another_move_fails_at_once(agent):
     waiting = again.is_alive()
     bridge.close()
     assert not waiting
-    assert isinstance(outcome[0], TargetAgentError)
-    assert "has ended and has no further move" in str(outcome[0])
+    assert type(outcome[0]) is error
+    assert message in str(outcome[0])
 
 
 def test_a_capped_suite_refuses_an_outside_agent_as_unenforceable(tmp_path):

@@ -981,8 +981,10 @@ def _replay_with_report(
     pre-call guardrail can only change what happens in *state* and a fixed
     script says the same thing either way. See
     docs/regression_contract.md#control-flip-demo for a fixture built so that
-    isn't a problem. A final-answer guardrail that blocks ends the run (#193),
-    so its replay never completes.
+    isn't a problem. When a final-answer guardrail blocks, the runner hands
+    the block back and asks the agent for another move (#193). A replayed
+    recording has none after its final answer, so the replay ends as
+    ``script_exhausted`` and never completes.
 
     Returns structured evidence and the existing command's 0/1 exit status.
     """
@@ -1831,7 +1833,8 @@ def _event_summary(event: TraceEvent) -> str:  # noqa: PLR0911
             return " ".join(parts)
         case TraceEventType.FINAL_ANSWER:
             ans = p.final_answer[:60] + ("…" if len(p.final_answer) > 60 else "")
-            return repr(ans)
+            # A blocked answer was not given, and the run went on after it.
+            return repr(ans) + (f" blocked_by={p.blocked_by}" if p.blocked_by else "")
         case TraceEventType.RUN_FINISHED:
             return f"status={p.status} termination={p.termination_reason} steps={p.steps_taken}"
         case TraceEventType.ERROR:

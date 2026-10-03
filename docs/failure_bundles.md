@@ -318,8 +318,8 @@ and writes every verdict to `repair_validation.json` (issue #146).
 | `deterministic_pre_call_refund_guardrail` | `unauthorized_refund_guardrail` (`ctl_refund_policy_v2`, cash and store credit) | pre-call | rejected, overblocks on all three |
 | `current_policy_source_precedence` | `deprecated_policy_citation_guardrail` (`ctl_policy_source_v1`) | pre-call | rejected, overblocks |
 | `ticket_claim_grounding_check` | `ticket_outage_claim_guardrail` (`ctl_ticket_grounding_v1`) | pre-call | accepted |
-| `final_answer_state_grounding_check` | `final_answer_state_grounding_guardrail` (`ctl_final_answer_grounding_v1`) | final answer | skipped, incomplete; can never be accepted, see below |
-| `required_escalation_enforcement` | `required_escalation_guardrail` (`ctl_required_escalation_v1`) | final answer | skipped, incomplete; can never be accepted, see below |
+| `final_answer_state_grounding_check` | `final_answer_state_grounding_guardrail` (`ctl_final_answer_grounding_v1`) | final answer | skipped, incomplete; the recording has no turn after its blocked answer, see below |
+| `required_escalation_enforcement` | `required_escalation_guardrail` (`ctl_required_escalation_v1`) | final answer | skipped, incomplete; the recording has no turn after its blocked answer, see below |
 | `escalation_discipline_check` | none yet | | |
 | `retrieval_before_action_check` | none yet | | |
 | `expected_action_contract_check` | never; detection only, see below | | |
@@ -343,23 +343,24 @@ overblocking. A live agent sees the block and can answer differently, which
 a script cannot do. That is the gap brief 001 measures and the reason
 ADR-0002 treats static control verdicts as advisory.
 
-The two final-answer controls can never be accepted, because a blocked final
-answer ends the run. Whenever a hook on the final-answer seam from #193 blocks
-an answer, the runner ends the run as `terminated` (`final_answer_blocked`),
-with a scripted agent or a live one, and `decide_verdict` records a pinned
-replay that did not complete as `skipped: validation_incomplete`. Every
-validation in which one of these controls acts is therefore incomplete, and
-neither control can be committed to the control library. Both act on the
-bundle suite's static replays, because the replayed answer is the one the
-check failed. A live run in which the control never fires could clear the
-check, but that verdict would describe the agent, since the control did
-nothing. The instruction in each block message ("Call escalate_case, then
-answer.", "Describe what the tools actually did.") becomes the run's error
-message and never reaches the agent.
-Static replay is not the cause, so validating with a live agent does not fix
-this. It needs a change at the #193 seam, such as handing the block back to
-the agent as an observation so it can answer again, or a change to how
-validation judges a blocked answer.
+The two final-answer controls are skipped as incomplete in static replay,
+and an agent that reads the block can get them accepted. A final answer a
+control blocks goes back to the agent as an observation, as a blocked tool
+call does, and the run goes on to the agent's next step under the same step
+and time limits (#193). The instruction in each block message ("Call
+escalate_case, then answer.", "Describe what the tools actually did.")
+reaches the agent. A recording ends at its final answer, so when static
+replay blocks that answer the replayed script has nothing left to do. The run
+ends as `terminated` with `script_exhausted`, and `decide_verdict` records
+the pinned replay as `skipped: validation_incomplete`. Both controls act on
+the bundle suite's static replays, because the replayed answer is the one the
+check failed, so static replay alone still cannot accept either of them,
+which is what ADR-0002 expects of a static verdict.
+
+With a pinned agent that reads the block and acts again, escalating or
+restating what the tools did, per-control validation accepts either control
+on its bundle task, and the positive sibling still passes
+(`tests/test_final_answer_seam.py`).
 
 Only `ctl_refund_window_v1` is in the default set that `replay` installs and
 the materializer uses to predict replay mode. The others are in

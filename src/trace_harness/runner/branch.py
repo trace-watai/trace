@@ -158,11 +158,24 @@ def validate_condition(artifact: RegressionArtifact, condition: ConditionSpec) -
             "to continue with"
         )
     # A run that ends at or before the fork gives the agent no action to
-    # compare, and the divergence rate would drop it from its denominator.
-    if artifact.pinned_agent_actions[fork_step - 1].get("kind") == ActionKind.FINAL_ANSWER.value:
+    # compare, and the divergence rate would drop it from its denominator. A
+    # recording can hold an answer a control blocked before the fork (#193).
+    # Replayed with nothing installed that answer stands and ends the run.
+    answered = [
+        step
+        for step, action in enumerate(artifact.pinned_agent_actions[:fork_step], start=1)
+        if action.get("kind") == ActionKind.FINAL_ANSWER.value
+    ]
+    if answered and answered[0] == fork_step:
         raise ValueError(
             f"condition {condition.name!r} starts at step {fork_step}, where the recording "
             "gives its final answer, so the run ends before the agent acts"
+        )
+    if answered:
+        raise ValueError(
+            f"condition {condition.name!r} starts at step {fork_step}, but the recording "
+            f"gives a final answer at step {answered[0]}, so the run can end there before "
+            "the agent acts"
         )
     if agent.max_steps <= fork_step:
         raise ValueError(

@@ -28,7 +28,10 @@ class TerminationReason(StrEnum):
     MAX_STEPS_REACHED = "max_steps_reached"
     TIMEOUT = "timeout"
     SCRIPT_EXHAUSTED = "script_exhausted"
-    # A control stopped the answer the agent tried to give (#193).
+    # A control stopped the answer the agent tried to give (#193). The runner
+    # no longer ends a run this way: a blocked answer goes back to the agent,
+    # which acts again, and the run ends on an accepted answer or a limit.
+    # Kept so a run result written before that change still loads.
     FINAL_ANSWER_BLOCKED = "final_answer_blocked"
     MODEL_ERROR = "model_error"
     INTERNAL_ERROR = "internal_error"

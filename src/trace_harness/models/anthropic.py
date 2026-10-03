@@ -375,8 +375,10 @@ def _action_from_response(response: Any, raw: dict[str, Any]) -> AgentAction:
             provider_state=state,
         )
     if text:
-        # A final answer ends the run, so there is no later request its
-        # thinking would have to go back in.
+        # An accepted final answer ends the run. After a blocked one the next
+        # request adds a user message and starts a new turn, and outside tool
+        # use Anthropic allows a prior turn's thinking to be left out, so none
+        # is kept for a final answer.
         return AgentAction(kind=ActionKind.FINAL_ANSWER, final_answer=text, raw=raw)
     raise ModelAdapterError(
         "Anthropic returned neither a tool call nor text (empty or blocked response)"

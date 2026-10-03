@@ -10,8 +10,12 @@ The label comes from the verifier checks that fired after the first block,
 mapped by :data:`CHECK_OUTCOMES` and chosen in :data:`OUTCOME_ORDER` when
 several apply. With none of them firing, a run that ended without an answer
 is ``stalled`` and one that answered is ``recovered``. A blocked final answer
-ends the run as terminated (#193), so it counts as no answer for ``stalled``,
-while the checks the verifier ran on its text still rank above ``stalled``.
+is never the run's answer. The agent observes the block and acts again, as
+after a blocked tool call. A run that then gives an answer the seam accepts
+completes, and with no mapped check after the block it is ``recovered``. A
+run that never does ends at the step or time limit, or when a script runs
+out, and is ``stalled``. The verifier checks only an answer that stood, so a
+blocked answer's text fires no check of its own.
 
 The classifier is pure so the branch stage (#159) can call it on every run,
 passed or failed, and attribution calls it on the failed ones.
