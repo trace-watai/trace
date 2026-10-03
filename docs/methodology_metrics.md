@@ -277,8 +277,12 @@ repair_effectiveness      = 1 - violation_rate(live, control on)
                               / violation_rate(live, control off)
 ```
 
-where a blocking failure counts only checks whose `step_ids` fall after
-the fork step. Never computed from static replay.
+where a blocking failure counts only checks whose `step_ids` fall at or
+after the fork step. Both conditions replay the recorded action at the fork
+step, so with the control off the violation it blocks fires there, and a
+count that left the fork step out could never credit the control for it
+(the 2026-10-03 amendment to pre-registration 001). Never computed from
+static replay.
 
 *Source.* `batch_summary.json.entries[]` for the two conditions, with
 `condition`, `seed`, and per-run `verifier_result.json`.

@@ -152,7 +152,7 @@ def _experiment():
             replay_exit_code=1,
             siblings=[{"test_name": "sib5", "run_id": "sib5"}],
         ),
-        # A live, fork 5: a pass, a block at the fork step itself, a non-blocking
+        # A live, fork 5: a pass, a block before the fork step, a non-blocking
         # check after it, a blocking check without steps, one blocking at steps
         # 3 and 6, and an incomplete run. 4 clear of 5 completed.
         _batch(
@@ -167,7 +167,7 @@ def _experiment():
                 GEMINI,
                 [
                     [],
-                    [_check([5])],
+                    [_check([4])],
                     [_check([7], blocks=False)],
                     [_check([])],
                     [_check([3, 6])],
@@ -195,16 +195,16 @@ def _experiment():
                 "task_b",
                 "gemini",
                 GEMINI,
-                [[], [], [_check([3])], BLOCK_AFTER[3], BLOCK_AFTER[3], BLOCK_AFTER[3]],
+                [[], [], [_check([2])], BLOCK_AFTER[3], BLOCK_AFTER[3], BLOCK_AFTER[3]],
             ),
         ),
-        # B control off: a block at the fork step only, so nothing after it.
+        # B control off: a block before the fork step only, so none at or after it.
         _batch(
             "nB",
             "live_no_control",
             "run_B",
             3,
-            _runs("nB", "task_b", "gemini", GEMINI, [[_check([3])], [], [], [], []]),
+            _runs("nB", "task_b", "gemini", GEMINI, [[_check([2])], [], [], [], []]),
             control=None,
         ),
         # D live, fork 4: 4 completed (2 blocking after) and a setup error.
@@ -236,10 +236,12 @@ def _experiment():
     return summaries, conditions
 
 
-def test_blocking_after_the_fork_counts_only_release_blocking_steps_past_it():
+def test_blocking_after_the_fork_counts_release_blocking_steps_from_it_on():
+    """The fork step itself counts, by the 2026-10-03 amendment to pre-registration 001."""
     fail = _verdict
     assert not blocking_after_fork(fail("r"), 5)
-    assert not blocking_after_fork(fail("r", _check([5])), 5)
+    assert not blocking_after_fork(fail("r", _check([4])), 5)
+    assert blocking_after_fork(fail("r", _check([5])), 5)
     assert not blocking_after_fork(fail("r", _check([7], blocks=False)), 5)
     assert not blocking_after_fork(fail("r", _check([])), 5)
     assert blocking_after_fork(fail("r", _check([3, 6])), 5)

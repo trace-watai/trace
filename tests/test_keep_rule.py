@@ -886,9 +886,11 @@ def test_recovered_runs_are_read_for_blocking_failures_after_the_fork():
         _entry_row(run_id="no_verdict", post_block_outcome="recovered"),
         _entry_row(run_id="stalled", post_block_outcome="stalled"),
     )
-    # after_fork, and no_verdict, which nothing shows clean.
-    assert recovered_with_blocking_failure(batch, verdicts.get, fork_step=1) == 2
-    assert recovered_with_blocking_failure(batch, verdicts.get, fork_step=3) == 1
+    # at_fork, after_fork, and no_verdict, which nothing shows clean. The fork
+    # step itself counts since the 2026-10-03 amendment to pre-registration 001.
+    assert recovered_with_blocking_failure(batch, verdicts.get, fork_step=1) == 3
+    # From step 3 on only after_fork's step 3 counts, beside no_verdict.
+    assert recovered_with_blocking_failure(batch, verdicts.get, fork_step=3) == 2
 
 
 def test_more_recovered_failures_than_recovered_runs_is_refused():

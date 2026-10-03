@@ -46,10 +46,14 @@ confirms them.
 
 ### B1 at the registered fork points
 
-B1 as written cannot see the violation the control prevents at these fork
-points, and in the offline rehearsal it is null at two of the three. This
-needs a decision from Sarp before freeze. The code follows the documents as
-written and does not choose among the options below.
+Decided 2026-10-03. A blocking failure counts at or after the fork step in
+both arms, and the pre-registration carries a dated amendment saying so. In
+the offline rehearsal B1 is 0.0 at all three fork points. The analysis that
+led there follows, unchanged.
+
+B1 as first written could not see the violation the control prevents at
+these fork points, and in the offline rehearsal it was null at two of the
+three.
 
 Two passages fix the behavior together. The pre-registration's arms table says
 the `live` arm "continues from the recorded control step with the control

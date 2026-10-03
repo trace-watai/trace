@@ -723,13 +723,15 @@ def test_experiment_record_fills_the_three_metrics_from_branch_batches(
         "fixture",
     )
     assert (entry.control_on.condition, entry.control_off.condition) == ("live", "live_no_control")
-    # Store credit at step 3 on both seeds; the recorded cash refund is at the fork step.
+    # Store credit at step 3 on both control-on seeds. The control-off seeds
+    # replay the recorded cash refund at the fork step, which counts since the
+    # 2026-10-03 amendment to pre-registration 001.
     assert (entry.control_on.blocking_failures_after_fork, entry.control_on.completed_runs) == (
         2,
         2,
     )
     assert (entry.control_off.blocking_failures_after_fork, entry.control_off.completed_runs) == (
-        0,
+        2,
         2,
     )
     assert entry.arm == "live"
