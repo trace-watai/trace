@@ -1,6 +1,3 @@
-import Link from "next/link";
-import { notFound } from "next/navigation";
-
 import { ErrorPanel } from "@/components/run/error-panel";
 import { TraceStepper } from "@/components/trace/trace-stepper";
 import {
@@ -8,7 +5,6 @@ import {
   getTrace,
   getVerifier,
   MalformedArtifactError,
-  RunNotFoundError,
 } from "@/data/run-loader";
 import { buildTraceSteps, type TraceStep } from "@/lib/trace-steps";
 
@@ -46,9 +42,6 @@ const loadTraceData = (runId: string): TraceDataResult => {
       steps: buildTraceSteps(trace, attribution, verifier),
     };
   } catch (error) {
-    if (error instanceof RunNotFoundError) {
-      return notFound();
-    }
     if (error instanceof MalformedArtifactError) {
       return { status: "malformed", message: error.message };
     }
@@ -62,24 +55,7 @@ const TracePage = async ({ params, searchParams }: TracePageProps) => {
   const result = loadTraceData(runId);
 
   return (
-    <main className="mx-auto w-[90vw] max-w-6xl py-12">
-      <header className="mb-8 flex items-start justify-between gap-4">
-        <div className="space-y-2">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            <span className="text-primary">TRACE</span> Trace
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Step-by-step trace for <span className="font-mono">{runId}</span>
-          </p>
-        </div>
-        <Link
-          href={`/runs/${runId}`}
-          className="shrink-0 text-sm font-medium text-primary hover:underline"
-        >
-          Failure card →
-        </Link>
-      </header>
-
+    <main className="mx-auto w-[90vw] max-w-6xl pb-12 pt-8">
       {result.status === "malformed" ? (
         <ErrorPanel title="Malformed run data" message={result.message} />
       ) : (

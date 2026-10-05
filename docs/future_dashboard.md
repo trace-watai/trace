@@ -1,15 +1,18 @@
 # Future: dashboard (trace replay & failure UX)
 
-**Status: live run reads landed for run summary + failure card; other views
-pending.** Owner: Skye Haik. Data contracts: coordinate with Samrath
-(trace/artifact schemas) and Darrel (attribution semantics).
+**Status: live run reads landed for run summary, failure card, and trace
+timeline; other views pending.** Owner: Skye Haik. Data contracts: coordinate
+with Samrath (trace/artifact schemas) and Darrel (attribution semantics).
 
 **Current stack:** Next.js + TypeScript + Tailwind + shadcn/ui in
 `apps/dashboard/`.
 
-**Live data:** `/runs` lists stored runs and `/runs/{run_id}` renders the run
-summary and failure card for a real `runs/{run_id}/` directory, read directly
-off disk by `src/data/run-loader.ts` — a TypeScript mirror of
+**Live data:** `/runs` lists stored runs, `/runs/{run_id}` renders the run
+summary and failure card, and `/runs/{run_id}/trace` renders a step-by-step
+stepper over the trace (reasoning, action, observation, retrieval results,
+attribution markers, and failed checks pinned to the step they happened on)
+for a real `runs/{run_id}/` directory, read directly off disk by
+`src/data/run-loader.ts` — a TypeScript mirror of
 `trace_harness.run_reader.RunReader`'s method surface (`list_runs`, `get_run`,
 `get_task`, `get_trace`, `get_verifier`, `get_attribution`, `get_bundle`),
 built on `src/data/run-store.ts` (the filesystem layer) and the existing
@@ -33,8 +36,8 @@ dashboard-side state.
 | View | Status | Primary source | What it must show |
 |---|---|---|---|
 | Run summary | Live | `run_result.json` + `task_spec.json` | status vs verdict distinction and steps are visible; timing and task goal remain |
-| Trace timeline | Pending | `trace.jsonl` | step-grouped events; prompts/actions/observations; retrieval results with doc **status badges** |
-| Verifier failures | Pending | `verifier_result.json` | failed checks with expected/actual, severity, blocks_release, evidence drill-down to steps |
+| Trace timeline | Live | `trace.jsonl` | step-grouped events; prompts/actions/observations; retrieval results with doc **status badges** |
+| Verifier failures | Live | `verifier_result.json` | failed checks with expected/actual, severity, blocks_release, evidence drill-down to steps |
 | Attribution | Pending | `attribution_result.json` | root cause vs missed recovery vs first irreversible — **distinct markers on the timeline** (steps 3 / 4 / 5 in the fixture), confidence + ambiguity notes |
 | Failure card | Live | `failure_card.json` | the human story: summary, blast radius, symptoms |
 | Repair package | Pending | `repair_package.json` | controls with installation points + priorities |
@@ -46,6 +49,7 @@ what would prevent it*. Step ids are the cross-linking currency — every
 evidence item carries them.
 
 **Still out of scope:** auth, live polling, run comparison, and editing. The
-next integration step is building the pending views (trace timeline, verifier
-failures, attribution, repair package) on the same `run-loader.ts` seam the
-run summary and failure card already use.
+next integration step is building the remaining pending views (verifier
+failures, attribution, repair package, regression artifact) on the same
+`run-loader.ts` seam the run summary, failure card, and trace timeline
+already use (tracked in #154).

@@ -1,12 +1,8 @@
-import Link from "next/link";
-import { notFound } from "next/navigation";
-
 import { FailureCard } from "@/components/failure/failure-card";
 import { ErrorPanel } from "@/components/run/error-panel";
 import {
   getBundle,
   MalformedArtifactError,
-  RunNotFoundError,
   type FailureBundle,
 } from "@/data/run-loader";
 
@@ -22,9 +18,6 @@ const loadBundle = (runId: string): BundleResult => {
   try {
     return { status: "ok", bundle: getBundle(runId) };
   } catch (error) {
-    if (error instanceof RunNotFoundError) {
-      return notFound();
-    }
     if (error instanceof MalformedArtifactError) {
       return { status: "malformed", message: error.message };
     }
@@ -37,22 +30,7 @@ const RunPage = async ({ params }: RunPageProps) => {
   const result = loadBundle(runId);
 
   return (
-    <main className="container max-w-4xl py-12">
-      <header className="mb-8 flex items-start justify-between gap-4">
-        <div className="space-y-2">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            <span className="text-primary">TRACE</span> Dashboard
-          </h1>
-          <p className="text-sm text-muted-foreground">Most recent runs</p>
-        </div>
-        <Link
-          href={`/runs/${runId}/trace`}
-          className="shrink-0 text-sm font-medium text-primary hover:underline"
-        >
-          View trace →
-        </Link>
-      </header>
-
+    <main className="container max-w-4xl pb-12 pt-8">
       {result.status === "malformed" ? (
         <ErrorPanel title="Malformed run data" message={result.message} />
       ) : result.bundle ? (
