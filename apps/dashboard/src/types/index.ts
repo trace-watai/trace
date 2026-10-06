@@ -10,3 +10,4 @@ export * from "./verifier-result";
 export * from "./repair-package";
 export * from "./regression-artifact";
 export * from "./trace-event";
+export * from "./metrics-snapshot";

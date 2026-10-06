@@ -1,0 +1,983 @@
+"""Per-control validation verdicts (issue #146).
+
+Covers real accepted, ineffective, overblocking, and interrupted replays,
+control selection, prescription provenance, inspection, CI exit behavior, the
+replay_mode standing each verdict carries, and over-blocking by task family.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from conftest import FIXTURES_DIR, regression_artifact, static_ok_basis
+from trace_harness import cli
+from trace_harness.cli import main
+from trace_harness.environment import controls as controls_module
+from trace_harness.environment.controls import (
+    GUARDRAIL_REGISTRY,
+    REFUND_WINDOW_CONTROL_ID,
+    RegisteredGuardrail,
+    reference_controls,
+)
+from trace_harness.environment.tools import ToolResult
+from trace_harness.metrics.bounds import clopper_pearson_upper
+from trace_harness.regression.repair_validation import (
+    REPAIR_VALIDATION_SCHEMA_VERSION,
+    ControlValidation,
+    ControlVerdict,
+    RepairValidation,
+    ReRun,
+    basis_supports_label,
+    decide_verdict,
+    gating_refusal,
+    over_blocking_summary,
+    predictor_of,
+    sibling_family,
+    skipped_control,
+    standing_for,
+    verdict_gates,
+)
+from trace_harness.tasks.loader import load_task
+from trace_harness.tracing import artifact_store as names
+from trace_harness.tracing.artifact_store import ArtifactStore
+
+CONTROL_DEMO_TASK_PATH = FIXTURES_DIR / "tasks" / "refund_policy_control_demo.json"
+PINNED_VALIDATION = (
+    FIXTURES_DIR
+    / "controls"
+    / "evidence"
+    / "4f23ca45a8a047758b3dd1f6adf9b732"
+    / names.REPAIR_VALIDATION
+)
+
+
+def _bundle_artifact(tmp_path):
+    runs_dir = tmp_path / "runs_bundle"
+    assert main(["--runs-dir", str(runs_dir), "run-pipeline", str(CONTROL_DEMO_TASK_PATH)]) == 0
+    (run_dir,) = [p for p in runs_dir.iterdir() if p.is_dir()]
+    return run_dir / names.REGRESSION_ARTIFACT
+
+
+def _validation_for(tmp_path, extra_args=()):
+    """Replay the demo bundle with controls and return the written artifact."""
+    artifact = _bundle_artifact(tmp_path)
+    return _replay_validation(tmp_path, artifact, extra_args)
+
+
+def _replay_validation(tmp_path, artifact, extra_args=()):
+    replay_dir = tmp_path / "runs_replay"
+    code = main(
+        ["--runs-dir", str(replay_dir), "replay", str(artifact), "--apply-control", *extra_args]
+    )
+    source_run_id = json.loads(artifact.read_text())["source_run_id"]
+    data = json.loads(
+        (replay_dir / source_run_id / names.REPAIR_VALIDATION).read_text(encoding="utf-8")
+    )
+    return code, RepairValidation.model_validate(data)
+
+
+def _edit_json(path, edit):
+    data = json.loads(path.read_text())
+    edit(data)
+    path.write_text(json.dumps(data))
+
+
+def _replace_refund_guardrail(monkeypatch, fn):
+    ref = "unauthorized_cash_refund_guardrail"
+    original = GUARDRAIL_REGISTRY[ref]
+    monkeypatch.setitem(
+        GUARDRAIL_REGISTRY,
+        ref,
+        RegisteredGuardrail(fn=fn, rule_source=original.rule_source, rule_keys=original.rule_keys),
+    )
+
+
+def test_prescriptions_come_from_input_bundle_in_a_separate_directory(tmp_path):
+    artifact = _bundle_artifact(tmp_path)
+    package_path = artifact.with_name(names.REPAIR_PACKAGE)
+    _edit_json(package_path, lambda p: p["controls"][-1].update(name="future_control"))
+    package = json.loads(package_path.read_text())
+
+    code, validation = _replay_validation(tmp_path, artifact)
+
+    assert code == 0
+    assert validation.controls_source == "repair_package"
+    assert [c.control for c in validation.controls] == [c["name"] for c in package["controls"]]
+    assert validation.controls[-1].verdict is ControlVerdict.SKIPPED
+
+
+def test_empty_package_does_not_invent_prescriptions(tmp_path):
+    artifact = _bundle_artifact(tmp_path)
+    _edit_json(artifact.with_name(names.REPAIR_PACKAGE), lambda p: p.update(controls=[]))
+    code, validation = _replay_validation(tmp_path, artifact)
+    assert code == 0
+    assert validation.controls_source == "repair_package"
+    assert validation.controls == []
+
+
+@pytest.mark.parametrize("change", ["malformed", "wrong_run", "wrong_task", "unlinked_check"])
+def test_invalid_package_fails_before_replay(tmp_path, capsys, change):
+    artifact = _bundle_artifact(tmp_path)
+    package = artifact.with_name(names.REPAIR_PACKAGE)
+    if change == "malformed":
+        package.write_text("{")
+    elif change == "wrong_run":
+        _edit_json(package, lambda p: p.update(run_id="another_run"))
+    elif change == "wrong_task":
+        _edit_json(package, lambda p: p.update(task_id="another_task"))
+    else:
+        _edit_json(package, lambda p: p["controls"][0].update(linked_verifier_checks=["unknown"]))
+    output = tmp_path / "replay"
+    capsys.readouterr()
+    assert main(["--runs-dir", str(output), "replay", str(artifact), "--apply-control"]) == 2
+    assert capsys.readouterr().err
+    assert not output.exists() or not list(output.iterdir())
+
+
+def test_standalone_artifact_records_reference_control_fallback(tmp_path):
+    artifact = _bundle_artifact(tmp_path)
+    standalone = tmp_path / "standalone.json"
+    standalone.write_text(artifact.read_text())
+    code, validation = _replay_validation(tmp_path, standalone)
+    assert code == 0
+    assert validation.controls_source == "reference_controls"
+    assert [c.control_id for c in validation.controls] == [REFUND_WINDOW_CONTROL_ID]
+
+
+def test_control_selection_is_respected_during_individual_validation(tmp_path, monkeypatch):
+    artifact = _bundle_artifact(tmp_path)
+    original = reference_controls()[0]
+    unselected = original.model_copy(deep=True)
+    unselected.control_id = "ctl_unselected"
+    unselected.provenance.repair_control = "future_control"
+
+    def available():
+        return [original, unselected]
+
+    monkeypatch.setattr(controls_module, "reference_controls", available)
+    _edit_json(
+        artifact.with_name(names.REPAIR_PACKAGE),
+        lambda p: p["controls"][-1].update(name="future_control"),
+    )
+
+    code, validation = _replay_validation(
+        tmp_path, artifact, ("--control", REFUND_WINDOW_CONTROL_ID)
+    )
+    assert code == 0
+    unselected_result = next(c for c in validation.controls if c.control == "future_control")
+    assert unselected_result.verdict is ControlVerdict.SKIPPED
+    assert "not_selected" in unselected_result.reason
+    assert unselected_result.originating_rerun is None
+    assert len(ArtifactStore(tmp_path / "runs_replay").read_index().entries) == 2
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_individual_rejection_gates_an_otherwise_passing_bundle(
+    tmp_path, monkeypatch, capsys, gated
+):
+    artifact = _bundle_artifact(tmp_path)
+    original = reference_controls()[0]
+    ineffective = original.model_copy(deep=True)
+    ineffective.control_id = "ctl_ineffective"
+    ineffective.guardrail_ref = "ineffective"
+    ineffective.provenance.repair_control = "ineffective_control"
+    registered = GUARDRAIL_REGISTRY[original.guardrail_ref]
+    monkeypatch.setitem(
+        GUARDRAIL_REGISTRY,
+        ineffective.guardrail_ref,
+        RegisteredGuardrail(
+            fn=lambda call, state: None,
+            rule_source=registered.rule_source,
+            rule_keys=registered.rule_keys,
+        ),
+    )
+
+    def available():
+        return [original, ineffective]
+
+    monkeypatch.setattr(controls_module, "reference_controls", available)
+    _edit_json(
+        artifact.with_name(names.REPAIR_PACKAGE),
+        lambda p: p["controls"].append({**p["controls"][0], "name": "ineffective_control"}),
+    )
+    capsys.readouterr()
+    code, validation = _replay_validation(
+        tmp_path, artifact, ("--fail-on-rejected",) if gated else ()
+    )
+    assert validation.rollup.accepted == 1
+    assert validation.rollup.rejected == 1
+    assert code == (1 if gated else 0)
+    assert f"Replay result: {'FAIL' if gated else 'PASS'}" in capsys.readouterr().out
+
+
+def test_only_linked_checks_are_counted_as_cleared(tmp_path):
+    runs_dir = tmp_path / "bundle"
+    task = FIXTURES_DIR / "tasks" / "refund_policy_failure.json"
+    assert main(["--runs-dir", str(runs_dir), "run-pipeline", str(task)]) == 0
+    (run_dir,) = [p for p in runs_dir.iterdir() if p.is_dir()]
+    code, validation = _replay_validation(tmp_path, run_dir / names.REGRESSION_ARTIFACT)
+    assert code == 1
+    control = next(c for c in validation.controls if c.control_id == REFUND_WINDOW_CONTROL_ID)
+    assert control.originating_rerun.cleared_checks == ["unauthorized_cash_refund"]
+    assert "required_escalation_missing" in control.originating_rerun.failed_checks
+    assert "final_answer_inconsistent_with_state" in control.originating_rerun.failed_checks
+    assert control.verdict is ControlVerdict.REJECTED_OVERBLOCKS
+    assert "never pinned" in control.reason
+
+
+def test_materializable_control_without_linked_checks_is_skipped(tmp_path):
+    artifact = _bundle_artifact(tmp_path)
+    _edit_json(
+        artifact.with_name(names.REPAIR_PACKAGE),
+        lambda p: p["controls"][0].update(linked_verifier_checks=[]),
+    )
+    _, validation = _replay_validation(tmp_path, artifact)
+    control = validation.controls[0]
+    assert control.verdict is ControlVerdict.SKIPPED
+    assert "no_linked_checks" in control.reason
+    assert control.originating_rerun is None
+
+
+def test_incomplete_pinned_run_cannot_earn_acceptance(tmp_path, capsys):
+    artifact = _bundle_artifact(tmp_path)
+    _edit_json(artifact, lambda a: a.update(pinned_agent_actions=a["pinned_agent_actions"][:-1]))
+    capsys.readouterr()
+    code, validation = _replay_validation(tmp_path, artifact)
+    assert code == 1
+    control = validation.controls[0]
+    assert control.verdict is ControlVerdict.SKIPPED
+    assert "validation_incomplete" in control.reason
+    assert control.originating_rerun.verdict == "INCOMPLETE"
+    assert control.originating_rerun.cleared_checks == []
+    assert "Replay result: FAIL" in capsys.readouterr().out
+
+
+def test_incomplete_isolated_run_fails_even_when_bundle_completes(tmp_path, monkeypatch, capsys):
+    artifact = _bundle_artifact(tmp_path)
+    real_run = cli._run_fixture
+    calls = 0
+
+    def interrupt_individual(args, store, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            args.max_steps = 2
+        return real_run(args, store, **kwargs)
+
+    monkeypatch.setattr(cli, "_run_fixture", interrupt_individual)
+    capsys.readouterr()
+    code, validation = _replay_validation(tmp_path, artifact)
+    assert code == 1
+    assert validation.has_incomplete
+    assert validation.rollup.accepted == 0
+    assert "Replay result: FAIL" in capsys.readouterr().out
+
+
+def test_incomplete_sibling_is_distinguished_from_overblocking(tmp_path, monkeypatch):
+    artifact = _bundle_artifact(tmp_path)
+    sibling_path = FIXTURES_DIR / "tasks" / "refund_policy_valid_cash.json"
+    _edit_json(
+        artifact,
+        lambda a: a.update(
+            positive_sibling_tests=[
+                {
+                    "test_name": "valid_cash_refund",
+                    "task_fixture": str(sibling_path),
+                }
+            ]
+        ),
+    )
+    real_run = cli._run_fixture
+
+    def interrupt_sibling(args, store, **kwargs):
+        if args.task_path == str(sibling_path):
+            args.max_steps = 1
+        return real_run(args, store, **kwargs)
+
+    monkeypatch.setattr(cli, "_run_fixture", interrupt_sibling)
+    code, validation = _replay_validation(tmp_path, artifact)
+    assert code == 1
+    control = validation.controls[0]
+    assert control.verdict is ControlVerdict.SKIPPED
+    assert "validation_incomplete" in control.reason
+    assert control.originating_rerun.verdict == "PASS"
+    assert control.sibling_reruns[0].verdict == "INCOMPLETE"
+
+
+def test_incomplete_plain_replay_cannot_confirm_regression(tmp_path, capsys):
+    artifact = _bundle_artifact(tmp_path)
+    _edit_json(artifact, lambda a: a.update(pinned_agent_actions=a["pinned_agent_actions"][:-1]))
+    capsys.readouterr()
+    assert main(["--runs-dir", str(tmp_path / "replay"), "replay", str(artifact)]) == 1
+    assert "Replay result: FAIL" in capsys.readouterr().out
+
+
+def test_inspect_validation_in_separate_output_directory(tmp_path, capsys):
+    _, validation = _validation_for(tmp_path)
+    capsys.readouterr()
+    code = main(["--runs-dir", str(tmp_path / "runs_replay"), "inspect", validation.run_id])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "accepted" in captured.out
+    assert (
+        "deterministic_pre_call_refund_guardrail [advisory, replay_mode live_required, "
+        "predicted until #159 measures it]"
+    ) in captured.out
+    assert "1 accepted (0 gating, 1 advisory)" in captured.out
+    assert not captured.err
+
+
+def test_ineffective_control_is_rejected_with_real_evidence(tmp_path, monkeypatch):
+    artifact = _bundle_artifact(tmp_path)
+    _replace_refund_guardrail(monkeypatch, lambda call, state: None)
+    code, validation = _replay_validation(tmp_path, artifact, ("--fail-on-rejected",))
+    assert code == 1
+    control = validation.controls[0]
+    assert control.verdict is ControlVerdict.REJECTED_FAILURE_PERSISTS
+    assert control.originating_rerun.failed_checks == ["unauthorized_cash_refund"]
+    assert control.originating_rerun.cleared_checks == []
+
+
+def test_overbroad_control_is_rejected_by_real_sibling(tmp_path, monkeypatch):
+    artifact = _bundle_artifact(tmp_path)
+    _edit_json(
+        artifact,
+        lambda a: a.update(
+            positive_sibling_tests=[
+                {
+                    "test_name": "valid_cash_refund",
+                    "task_fixture": str(FIXTURES_DIR / "tasks" / "refund_policy_valid_cash.json"),
+                }
+            ]
+        ),
+    )
+
+    def block_refunds(call, state):
+        if call.tool_name == "issue_refund":
+            return ToolResult(tool_name=call.tool_name, status="error", error="blocked")
+        return None
+
+    _replace_refund_guardrail(monkeypatch, block_refunds)
+    code, validation = _replay_validation(tmp_path, artifact, ("--fail-on-rejected",))
+    assert code == 1
+    control = validation.controls[0]
+    assert control.verdict is ControlVerdict.REJECTED_OVERBLOCKS
+    assert control.originating_rerun.verdict == "PASS"
+    assert "valid_cash_refund" in control.reason
+    sibling = control.sibling_reruns[0]
+    assert sibling.verdict == "FAIL"
+    assert "expected_refund_missing" in sibling.failed_checks
+    store = ArtifactStore(tmp_path / "runs_replay")
+    assert {e.run_id for e in store.read_index().entries if e.batch_id == validation.batch_id} == {
+        control.originating_rerun.run_id,
+        sibling.run_id,
+    }
+
+
+# --- the accepted path, end to end ---
+
+
+@pytest.mark.parametrize("with_sibling", [False, True])
+def test_refund_guardrail_is_accepted_with_rerun_evidence(tmp_path, with_sibling) -> None:
+    artifact = _bundle_artifact(tmp_path)
+    if with_sibling:
+        _edit_json(
+            artifact,
+            lambda a: a.update(
+                positive_sibling_tests=[
+                    {
+                        "test_name": "valid_cash_refund",
+                        "task_fixture": str(
+                            FIXTURES_DIR / "tasks" / "refund_policy_valid_cash.json"
+                        ),
+                    }
+                ]
+            ),
+        )
+    code, validation = _replay_validation(tmp_path, artifact)
+
+    assert code == 0
+    assert validation.schema_version == REPAIR_VALIDATION_SCHEMA_VERSION
+    accepted = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
+    assert [c.control for c in accepted] == ["deterministic_pre_call_refund_guardrail"]
+
+    (control,) = accepted
+    assert control.control_id == REFUND_WINDOW_CONTROL_ID
+    assert control.guardrail_ref == "unauthorized_cash_refund_guardrail"
+    assert control.originating_rerun is not None
+    assert control.originating_rerun.cleared_checks == ["unauthorized_cash_refund"]
+    assert len(control.sibling_reruns) == int(with_sibling)
+    assert (
+        control.originating_rerun.task_fixture == json.loads(artifact.read_text())["task_fixture"]
+    )
+    blocking = validation.rollup.over_blocking
+    if with_sibling:
+        assert control.sibling_reruns[0].task_fixture == str(
+            FIXTURES_DIR / "tasks" / "refund_policy_valid_cash.json"
+        )
+        assert (blocking.independent_families, blocking.families_failed) == (1, 0)
+        assert blocking.upper_bound_95 == 0.95
+    else:
+        assert (blocking.independent_families, blocking.upper_bound_95) == (0, None)
+    store = ArtifactStore(tmp_path / "runs_replay")
+    for rerun in [control.originating_rerun, *control.sibling_reruns]:
+        evidence = store.read_json(rerun.run_id, names.VERIFIER_RESULT)
+        assert rerun.verdict == "PASS"
+        assert evidence["verdict"] == "pass"
+        assert evidence["failed_checks"] == rerun.failed_checks == []
+
+
+def test_every_prescribed_control_gets_a_verdict(tmp_path) -> None:
+    _, validation = _validation_for(tmp_path)
+
+    assert validation.controls, "a repair package with no controls would prove nothing"
+    assert all(c.verdict in set(ControlVerdict) for c in validation.controls)
+    assert validation.rollup.accepted + validation.rollup.rejected + validation.rollup.skipped == (
+        len(validation.controls)
+    )
+
+
+def test_unmaterializable_controls_are_skipped_not_pretended(tmp_path) -> None:
+    """A prescribed control with no guardrail is reported, never counted as working."""
+    _, validation = _validation_for(tmp_path)
+
+    skipped = [c for c in validation.controls if c.verdict is ControlVerdict.SKIPPED]
+    assert skipped, "the demo package prescribes controls nothing implements yet"
+    for control in skipped:
+        assert control.reason is not None
+        assert "not_materializable" in control.reason
+        assert control.originating_rerun is None  # nothing was run, nothing is claimed
+
+
+def test_validation_reruns_are_grouped_into_one_batch(tmp_path) -> None:
+    _, validation = _validation_for(tmp_path)
+    assert validation.batch_id is not None
+
+    replay_dir = tmp_path / "runs_replay"
+    store = ArtifactStore(replay_dir)
+    tagged = [e for e in store.read_index().entries if e.batch_id == validation.batch_id]
+    assert tagged, "re-runs must be discoverable as one validation session"
+
+
+# --- the rejection paths, decided directly ---
+
+
+def test_failure_persists_when_pinned_checks_still_fire() -> None:
+    verdict, reason = decide_verdict(
+        expected_checks={"unauthorized_cash_refund"},
+        pinned_failed_checks={"unauthorized_cash_refund"},
+        pinned_introduced_blocking=set(),
+        failing_siblings=[],
+    )
+    assert verdict is ControlVerdict.REJECTED_FAILURE_PERSISTS
+    assert "still fired" in reason
+
+
+def test_overblocks_when_a_positive_sibling_fails() -> None:
+    verdict, reason = decide_verdict(
+        expected_checks={"unauthorized_cash_refund"},
+        pinned_failed_checks=set(),
+        pinned_introduced_blocking=set(),
+        failing_siblings=["valid_cash_refund_within_window"],
+    )
+    assert verdict is ControlVerdict.REJECTED_OVERBLOCKS
+    assert "valid_cash_refund_within_window" in reason
+
+
+def test_overblocks_when_the_control_introduces_a_new_blocking_check() -> None:
+    """Trading one blocking failure for another is not a fix."""
+    verdict, reason = decide_verdict(
+        expected_checks={"unauthorized_cash_refund"},
+        pinned_failed_checks={"required_escalation_missing"},
+        pinned_introduced_blocking={"required_escalation_missing"},
+        failing_siblings=[],
+    )
+    assert verdict is ControlVerdict.REJECTED_OVERBLOCKS
+    assert "never pinned" in reason
+
+
+def test_persisting_failure_outranks_overblocking() -> None:
+    """A control that did not fix its own failure is rejected on that ground."""
+    verdict, _ = decide_verdict(
+        expected_checks={"unauthorized_cash_refund"},
+        pinned_failed_checks={"unauthorized_cash_refund"},
+        pinned_introduced_blocking=set(),
+        failing_siblings=["valid_cash_refund_within_window"],
+    )
+    assert verdict is ControlVerdict.REJECTED_FAILURE_PERSISTS
+
+
+# --- rollup and the CI gate ---
+
+
+def test_rollup_is_recounted_from_the_controls() -> None:
+    validation = RepairValidation(
+        run_id="run_x",
+        test_name="t",
+        controls=[
+            ControlValidation(control="a", verdict=ControlVerdict.ACCEPTED),
+            ControlValidation(control="b", verdict=ControlVerdict.REJECTED_OVERBLOCKS),
+            ControlValidation(control="c", verdict=ControlVerdict.REJECTED_FAILURE_PERSISTS),
+            skipped_control("d"),
+        ],
+    ).rebuild_rollup()
+
+    assert (validation.rollup.accepted, validation.rollup.rejected, validation.rollup.skipped) == (
+        1,
+        2,
+        1,
+    )
+    assert validation.has_rejection
+
+
+def test_reading_validation_recounts_stale_rollup():
+    validation = RepairValidation.model_validate(
+        {
+            "run_id": "run_x",
+            "test_name": "t",
+            "controls": [{"control": "a", "verdict": "rejected_overblocks"}],
+            "rollup": {"accepted": 1, "rejected": 0, "skipped": 0},
+        }
+    )
+    assert validation.rollup.accepted == 0
+    assert validation.rollup.rejected == 1
+    assert validation.has_rejection
+
+
+def test_a_clean_validation_has_no_rejection() -> None:
+    validation = RepairValidation(
+        run_id="run_x",
+        test_name="t",
+        controls=[
+            ControlValidation(control="a", verdict=ControlVerdict.ACCEPTED),
+            skipped_control("b"),
+        ],
+    ).rebuild_rollup()
+    assert not validation.has_rejection  # skipped is not a rejection
+
+
+def test_fail_on_rejected_requires_apply_control(tmp_path, capsys) -> None:
+    artifact = _bundle_artifact(tmp_path)
+    capsys.readouterr()
+    code = main(["--runs-dir", str(tmp_path / "r"), "replay", str(artifact), "--fail-on-rejected"])
+    assert code == 2
+    assert "requires --apply-control" in capsys.readouterr().err
+
+
+def test_fail_on_rejected_passes_when_nothing_is_rejected(tmp_path) -> None:
+    code, validation = _validation_for(tmp_path, extra_args=("--fail-on-rejected",))
+    assert validation.rollup.rejected == 0
+    assert code == 0
+
+
+# --- replay_mode standing (ADR-0002, decision 2) ---
+
+
+@pytest.mark.parametrize("replay_mode", ["static_ok", "live_required", None])
+def test_every_verdict_records_the_artifact_replay_mode(tmp_path, capsys, replay_mode):
+    """The demo's basis classifies as live_required, so no label on it can gate.
+
+    A static_ok label set by hand is recorded as stated, flagged, and advisory
+    in the written file itself, before the library or the metrics look at it.
+    """
+    artifact = _bundle_artifact(tmp_path)
+    if replay_mode is None:
+        _edit_json(artifact, lambda a: a.pop("replay_mode"))
+    else:
+        _edit_json(artifact, lambda a: a.update(replay_mode=replay_mode))
+    capsys.readouterr()
+
+    code, validation = _replay_validation(tmp_path, artifact)
+
+    assert code == 0
+    expected_mode = replay_mode or "unlabeled"
+    assert {c.replay_mode for c in validation.controls} == {expected_mode}
+    assert {c.predicted_by for c in validation.controls} == {"heuristic_v1"}
+    assert {c.label_supported for c in validation.controls} == {replay_mode == "live_required"}
+    out = capsys.readouterr().out
+    warned = "static_ok is not supported by the artifact's own basis" in out
+    assert warned == (replay_mode == "static_ok")
+    assert "gating labels are predicted until #159 measures them" not in out
+    assert {c.standing for c in validation.controls} == {"advisory"}
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (0, 1)
+    source_run_id = json.loads(artifact.read_text())["source_run_id"]
+    written = json.loads(
+        (tmp_path / "runs_replay" / source_run_id / names.REPAIR_VALIDATION).read_text()
+    )
+    assert {c["standing"] for c in written["controls"]} == {"advisory"}
+    assert written["rollup"]["accepted_gating"] == 0
+
+
+def test_a_classified_static_ok_label_validates_as_gating(tmp_path, capsys, classified_static_ok):
+    artifact = _bundle_artifact(tmp_path)
+    assert json.loads(artifact.read_text())["replay_mode"] == "static_ok"
+    capsys.readouterr()
+
+    code, validation = _replay_validation(tmp_path, artifact)
+
+    assert code == 0
+    (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
+    assert (accepted.replay_mode, accepted.predicted_by) == ("static_ok", "heuristic_v1")
+    assert accepted.label_supported
+    assert accepted.standing == "gating"
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (1, 0)
+    out = capsys.readouterr().out
+    assert "static_ok is not supported" not in out
+    assert "gating labels are predicted until #159 measures them" in out
+
+
+def test_a_static_ok_label_does_not_gate_a_control_it_was_not_predicted_for(
+    tmp_path, capsys, monkeypatch, classified_static_ok
+):
+    """The label is a prediction about the controls its basis names (#194 review).
+
+    The second refund control is the same guardrail under another id, so it is
+    accepted exactly as the first is. Only the first was placed when the label
+    was predicted, so only the first gates.
+    """
+    artifact = _bundle_artifact(tmp_path)
+    original = reference_controls()[0]
+    additional = original.model_copy(deep=True)
+    additional.control_id = "ctl_additional"
+    additional.provenance.repair_control = "additional_refund_control"
+    monkeypatch.setattr(controls_module, "reference_controls", lambda: [original, additional])
+    _edit_json(
+        artifact.with_name(names.REPAIR_PACKAGE),
+        lambda p: p["controls"].append({**p["controls"][0], "name": "additional_refund_control"}),
+    )
+    capsys.readouterr()
+
+    code, validation = _replay_validation(
+        tmp_path,
+        artifact,
+        ("--control", REFUND_WINDOW_CONTROL_ID, "--control", additional.control_id),
+    )
+
+    assert code == 0
+    accepted = {
+        c.control_id: c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED
+    }
+    assert set(accepted) == {REFUND_WINDOW_CONTROL_ID, additional.control_id}
+    assert accepted[REFUND_WINDOW_CONTROL_ID].standing == "gating"
+    assert not accepted[additional.control_id].label_supported
+    assert accepted[additional.control_id].standing == "advisory"
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (1, 1)
+    out = capsys.readouterr().out
+    assert (
+        "static_ok was predicted for ctl_refund_window_v1 only; "
+        "verdicts for ctl_additional are recorded as advisory." in out
+    )
+
+
+def test_rollup_splits_accepted_verdicts_by_standing() -> None:
+    validation = RepairValidation(
+        run_id="run_x",
+        test_name="t",
+        controls=[
+            ControlValidation(
+                control="a",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="static_ok",
+                predicted_by="heuristic_v1",
+                label_supported=True,
+            ),
+            # A static_ok label its own basis does not support cannot gate.
+            ControlValidation(
+                control="f",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="static_ok",
+                predicted_by="heuristic_v1",
+            ),
+            ControlValidation(control="b", verdict=ControlVerdict.ACCEPTED),
+            ControlValidation(
+                control="c",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="live_required",
+                predicted_by="heuristic_v1",
+            ),
+            # A static_ok label with no basis behind it cannot gate.
+            ControlValidation(
+                control="e",
+                verdict=ControlVerdict.ACCEPTED,
+                replay_mode="static_ok",
+                label_supported=True,
+            ),
+            ControlValidation(
+                control="d",
+                verdict=ControlVerdict.REJECTED_OVERBLOCKS,
+                replay_mode="static_ok",
+                predicted_by="heuristic_v1",
+            ),
+        ],
+    )
+    rollup = validation.rollup
+    assert (rollup.accepted, rollup.accepted_gating, rollup.accepted_advisory) == (5, 1, 4)
+
+
+def test_a_written_standing_is_derived_again_on_read() -> None:
+    """An edited file must not promote an advisory verdict to gating."""
+    control = ControlValidation.model_validate(
+        {
+            "control": "a",
+            "verdict": "accepted",
+            "replay_mode": "live_required",
+            "standing": "gating",
+        }
+    )
+    assert control.standing == "advisory"
+    assert control.model_dump(mode="json")["standing"] == "advisory"
+
+
+def test_pinned_validation_evidence_reads_as_advisory_and_unchanged() -> None:
+    """The evidence behind ctl_refund_window_v1 predates the label and stays pinned."""
+    raw = PINNED_VALIDATION.read_bytes()
+    validation = RepairValidation.model_validate_json(raw)
+    assert validation.schema_version == "0.1.0"
+    # Not recorded: 0.1.0 carries no label, so none is inferred.
+    assert {c.replay_mode for c in validation.controls} == {None}
+    (accepted,) = [c for c in validation.controls if c.verdict is ControlVerdict.ACCEPTED]
+    assert accepted.control_id == REFUND_WINDOW_CONTROL_ID
+    assert accepted.standing == "advisory"
+    assert (validation.rollup.accepted_gating, validation.rollup.accepted_advisory) == (0, 1)
+    assert PINNED_VALIDATION.read_bytes() == raw
+
+
+# --- over-blocking by task family ---
+
+FAMILIES = "fixtures/tasks/refund_task_families"
+
+
+def _sibling(verdict: str, fixture: str | None, task_id: str = "t", run_id: str = "r") -> ReRun:
+    return ReRun(run_id=run_id, task_id=task_id, task_fixture=fixture, verdict=verdict)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "task_id", "family"),
+    [
+        (f"{FAMILIES}/purchase_age/day_30/a.json", "a", "refund_task_families/purchase_age"),
+        (
+            f"/abs/checkout/{FAMILIES}/purchase_age/day_61_violation/b.json",
+            "b",
+            "refund_task_families/purchase_age",
+        ),
+        (
+            "fixtures\\tasks\\refund_task_families\\escalation\\escalation_missing\\c.json",
+            "c",
+            "refund_task_families/escalation",
+        ),
+        ("fixtures/tasks/refund_policy_valid_cash.json", "valid", "valid"),
+        (f"{FAMILIES}/stray.json", "stray", "stray"),
+        (None, "recorded_before_0_3_0", "recorded_before_0_3_0"),
+    ],
+)
+def test_a_sibling_family_is_its_directory_or_the_task_itself(fixture, task_id, family) -> None:
+    assert sibling_family(_sibling("PASS", fixture, task_id)) == family
+
+
+def test_every_task_fixture_maps_to_a_family() -> None:
+    """The 29 family tasks fall in their 9 directories; the 9 others stand alone."""
+    tasks_dir = FIXTURES_DIR / "tasks"
+    fixtures = sorted(tasks_dir.rglob("*.json"))
+    assert len(fixtures) == 38
+    families = {}
+    for path in fixtures:
+        relative = path.relative_to(FIXTURES_DIR.parent).as_posix()
+        task_id = load_task(path).task_id
+        family = sibling_family(_sibling("PASS", relative, task_id))
+        if "refund_task_families" in path.parts:
+            directory = path.relative_to(tasks_dir / "refund_task_families").parts[0]
+            assert family == f"refund_task_families/{directory}"
+        else:
+            assert family == task_id
+        families.setdefault(family, []).append(task_id)
+    assert len(families) == 18
+    assert len(families["refund_task_families/purchase_age"]) == 8
+
+
+def test_over_blocking_counts_each_family_once() -> None:
+    """Siblings of one family are one trial, which fails if any of them failed.
+
+    The failing sibling comes first in purchase_age and last in escalation, so
+    the family verdict cannot depend on which sibling was read last or first.
+    """
+    controls = [
+        ControlValidation(
+            control="a",
+            verdict=ControlVerdict.REJECTED_OVERBLOCKS,
+            sibling_reruns=[
+                _sibling("FAIL", f"{FAMILIES}/purchase_age/day_30/x.json", "x"),
+                _sibling("PASS", f"{FAMILIES}/purchase_age/day_60_approved/y.json", "y"),
+                _sibling("PASS", f"{FAMILIES}/escalation/escalation_missing/z.json", "z"),
+                _sibling("INCOMPLETE", f"{FAMILIES}/customer_wording/eligible_neutral/w.json"),
+            ],
+        ),
+        ControlValidation(
+            control="b",
+            verdict=ControlVerdict.REJECTED_OVERBLOCKS,
+            sibling_reruns=[
+                _sibling("PASS", "fixtures/tasks/refund_policy_valid_cash.json", "valid"),
+                _sibling("FAIL", f"{FAMILIES}/escalation/escalation_duplicate/v.json", "v"),
+            ],
+        ),
+    ]
+    summary = over_blocking_summary(controls)
+    assert (summary.siblings_run, summary.siblings_failed) == (6, 2)
+    # purchase_age, escalation, valid; the incomplete customer_wording sibling
+    # shows nothing and is left out.
+    assert (summary.independent_families, summary.families_failed) == (3, 2)
+    assert summary.upper_bound_95 == 0.9831  # 0.98305, rounded up
+    validation = RepairValidation(run_id="r", test_name="t", controls=controls)
+    assert validation.rollup.over_blocking == summary
+
+
+@pytest.mark.parametrize(
+    ("trials", "stored", "printed"), [(59, 0.0496, "4.96%"), (58, 0.0504, "5.04%")]
+)
+def test_a_clean_family_bound_is_stored_rounded_up_and_printed_apart(
+    trials, stored, printed
+) -> None:
+    """0 of 59 sits just under 5% and 0 of 58 just over; both used to print 5.0%."""
+    summary = over_blocking_summary(
+        [
+            ControlValidation(
+                control="a",
+                verdict=ControlVerdict.ACCEPTED,
+                sibling_reruns=[_sibling("PASS", None, f"t{i}", f"r{i}") for i in range(trials)],
+            )
+        ]
+    )
+    assert (summary.independent_families, summary.families_failed) == (trials, 0)
+    assert summary.upper_bound_95 == stored
+    assert summary.upper_bound_95 >= clopper_pearson_upper(0, trials)
+    text = cli._over_blocking_text(0, trials, summary.upper_bound_95)
+    assert text == f"0 of {trials} families failed, true rate could be up to {printed}"
+
+
+def test_over_blocking_with_no_completed_sibling_is_not_measured() -> None:
+    summary = over_blocking_summary(
+        [
+            ControlValidation(
+                control="a",
+                verdict=ControlVerdict.SKIPPED,
+                sibling_reruns=[_sibling("INCOMPLETE", None)],
+            )
+        ]
+    )
+    assert (summary.siblings_run, summary.independent_families) == (1, 0)
+    assert summary.upper_bound_95 is None
+
+
+def test_pinned_validation_evidence_bounds_one_family_at_95_percent() -> None:
+    """One clean sibling is one family, and one clean family allows a 95% true rate."""
+    blocking = RepairValidation.model_validate_json(PINNED_VALIDATION.read_bytes()).rollup
+    blocking = blocking.over_blocking
+    assert (blocking.siblings_run, blocking.siblings_failed) == (1, 0)
+    assert (blocking.independent_families, blocking.families_failed) == (1, 0)
+    assert blocking.upper_bound_95 == 0.95
+    text = cli._over_blocking_text(0, 1, blocking.upper_bound_95)
+    assert text == "0 of 1 families failed, true rate could be up to 95.00%"
+
+
+# --- whether a label can back a gating verdict ---
+
+
+@pytest.mark.parametrize(
+    ("replay_mode", "basis", "refusal"),
+    [
+        ("static_ok", "supported", None),
+        ("static_ok", None, "has no recorded basis"),
+        ("static_ok", "unsupported", "classifies as live_required"),
+        ("live_required", "supported", "the artifact is live_required"),
+        ("unlabeled", None, "the artifact is unlabeled"),
+    ],
+)
+def test_only_a_static_ok_label_its_basis_supports_can_gate(replay_mode, basis, refusal) -> None:
+    recorded = {
+        "supported": static_ok_basis(),
+        "unsupported": static_ok_basis().model_copy(update={"rule_kind": "requirement"}),
+        None: None,
+    }[basis]
+    artifact = regression_artifact(replay_mode=replay_mode, basis=recorded)
+    reason = gating_refusal(artifact)
+    if refusal is None:
+        assert reason is None
+    else:
+        assert refusal in reason
+    # What a verdict records about the artifact gives it the same standing.
+    standing = standing_for(
+        artifact.replay_mode, predictor_of(artifact), basis_supports_label(artifact)
+    )
+    assert standing == ("gating" if refusal is None else "advisory")
+
+
+@pytest.mark.parametrize(
+    ("replay_mode", "basis", "supported"),
+    [
+        ("static_ok", static_ok_basis(), True),
+        ("live_required", static_ok_basis(), False),
+        ("live_required", static_ok_basis().model_copy(update={"rule_kind": "requirement"}), True),
+        ("static_ok", None, False),
+        ("unlabeled", None, False),
+    ],
+)
+def test_a_label_is_supported_when_its_basis_classifies_as_it(replay_mode, basis, supported):
+    artifact = regression_artifact(replay_mode=replay_mode, basis=basis)
+    assert basis_supports_label(artifact) is supported
+
+
+def test_a_static_ok_label_backs_only_the_controls_its_basis_names() -> None:
+    artifact = regression_artifact(replay_mode="static_ok", basis=static_ok_basis())
+    assert basis_supports_label(artifact, REFUND_WINDOW_CONTROL_ID)
+    assert gating_refusal(artifact, REFUND_WINDOW_CONTROL_ID) is None
+    assert not basis_supports_label(artifact, "ctl_other")
+    assert gating_refusal(artifact, "ctl_other") == (
+        "the artifact's static_ok label was predicted for ctl_refund_window_v1 only"
+    )
+    # A verdict for another control that recorded the artifact-wide answer
+    # claims gating, and the artifact does not back it.
+    borrowed = ControlValidation(
+        control="other",
+        verdict=ControlVerdict.ACCEPTED,
+        control_id="ctl_other",
+        replay_mode="static_ok",
+        predicted_by="heuristic_v1",
+        label_supported=True,
+    )
+    assert borrowed.standing == "gating"
+    assert not verdict_gates(borrowed, artifact)
+    # live_required claims nothing about any control, so it holds for every one.
+    live = regression_artifact(
+        replay_mode="live_required",
+        basis=static_ok_basis().model_copy(update={"rule_kind": "requirement"}),
+    )
+    assert basis_supports_label(live, "ctl_other")
+
+
+def test_a_verdict_gates_only_against_an_artifact_that_backs_it() -> None:
+    verdict = ControlValidation(
+        control="a",
+        verdict=ControlVerdict.ACCEPTED,
+        control_id=REFUND_WINDOW_CONTROL_ID,
+        replay_mode="static_ok",
+        predicted_by="heuristic_v1",
+        label_supported=True,
+    )
+    backing = regression_artifact(replay_mode="static_ok", basis=static_ok_basis())
+    assert verdict.standing == "gating"
+    assert verdict_gates(verdict, backing)
+    # Recorded without its basis supporting the label, it is advisory as written.
+    unsupported_verdict = verdict.model_copy(update={"label_supported": False})
+    assert unsupported_verdict.standing == "advisory"
+    assert not verdict_gates(unsupported_verdict, backing)
+    assert not verdict_gates(verdict, None)
+    # A label is predicted for named controls, so a verdict naming none never gates.
+    assert not verdict_gates(verdict.model_copy(update={"control_id": None}), backing)
+    assert not verdict_gates(verdict, regression_artifact(replay_mode="unlabeled"))
+    unsupported = static_ok_basis().model_copy(update={"rule_kind": "requirement"})
+    assert not verdict_gates(
+        verdict, regression_artifact(replay_mode="static_ok", basis=unsupported)
+    )
+    measured = static_ok_basis().model_copy(update={"predicted_by": "measured"})
+    assert not verdict_gates(verdict, regression_artifact(replay_mode="static_ok", basis=measured))

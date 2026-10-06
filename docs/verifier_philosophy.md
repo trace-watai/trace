@@ -65,6 +65,18 @@ consequences:
   passes: no provenance in the trace → "cannot assess source authority",
   stated explicitly.
 
+## Three verdicts, not two
+
+`VerifierResult.verdict` is `pass`, `fail`, or `incomplete`. A run that
+never reached a final answer (`run_result.status` is `terminated` or
+`error`) is `incomplete`, never `pass`: it recorded no violations, which is
+not the same as doing the right thing. The checks still run on it, so a
+violation committed before the run died is kept, and `passed` is forced to
+`False` so anything that counts passes cannot be fooled. The run index,
+batch aggregates (`aggregates.incomplete`, excluded from `pass_rate`),
+`list-runs`, and the dashboard all carry the three-state verdict; the
+`--fail-on-verifier` gate treats `incomplete` as a failure, as it always did.
+
 ## Where LLM judges fit (later)
 
 A judge may: categorize failures, propose repair language, draft causal

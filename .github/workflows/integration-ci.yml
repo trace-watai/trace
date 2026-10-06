@@ -26,6 +26,137 @@ jobs:
       - name: Run integrated offline demo
         run: TRACE_RUNS_DIR="${RUNNER_TEMP}/trace-demo" ./scripts/demo.sh
 
+  metrics-history:
+    name: Append metrics history
+    # Only on main, and only once the gates that produce the artifacts it reads
+    # have passed. A snapshot taken from a tree that failed its own checks would
+    # record numbers nobody stands behind.
+    needs: [backend, dashboard]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # secrets cannot be read in a step-level if, so the token is lifted into env
+    # and every step checks it. with no token the job skips itself and stays
+    # green. falling back to GITHUB_TOKEN could never work, because required
+    # status checks apply to direct pushes and the bot commit's skip marker
+    # means they never report on it, so the fallback only turned main red.
+    env:
+      HISTORY_TOKEN: ${{ secrets.METRICS_HISTORY_TOKEN }}
+    steps:
+      - name: Skip when no token is configured
+        if: env.HISTORY_TOKEN == ''
+        run: echo "METRICS_HISTORY_TOKEN is not set, history not recorded for ${GITHUB_SHA}. see docs/team_ownership.md"
+
+      - uses: actions/checkout@v7
+        if: env.HISTORY_TOKEN != ''
+        with:
+          token: ${{ env.HISTORY_TOKEN }}
+
+      - uses: actions/setup-python@v7
+        if: env.HISTORY_TOKEN != ''
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend
+        if: env.HISTORY_TOKEN != ''
+        run: python -m pip install -e ".[dev]"
+
+      - name: Append the snapshot
+        if: env.HISTORY_TOKEN != ''
+        run: |
+          TRACE_RUNS_DIR="${RUNNER_TEMP}/trace-history" \
+            python -m trace_harness.cli collect-regressions docs/acceptance/runs \
+              --append-history docs/acceptance/metrics_history.jsonl \
+              --commit "${GITHUB_SHA}" \
+              --history-root .
+
+      - name: Commit the snapshot
+        if: env.HISTORY_TOKEN != ''
+        run: |
+          if git diff --quiet -- docs/acceptance/metrics_history.jsonl; then
+            echo "already recorded for ${GITHUB_SHA}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/acceptance/metrics_history.jsonl
+          git commit -m "metrics history for ${GITHUB_SHA} [skip ci]"
+          git push origin HEAD:main
+
+  publish-results:
+    name: Publish public results
+    # The hosted tables mirror the retained evidence on main (#205), so this
+    # runs only on a push to main and only once both gates have passed.
+    needs: [backend, dashboard]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # One upload at a time. A later push waits for an earlier one to finish,
+    # so two prunes never race.
+    concurrency:
+      group: publish-results
+      cancel-in-progress: false
+    # Secrets cannot be read in a step-level if, so whether both are set is
+    # lifted into PUBLISH and every step checks it, the way metrics-history
+    # checks its token. With either secret missing the job skips itself, stays
+    # green and publishes nothing. PUBLISH holds only true or false. The
+    # secrets themselves reach the upload step alone, so checkout, pip and
+    # the key scan never run with the service key in their environment. See
+    # docs/public_results.md for the secrets.
+    env:
+      PUBLISH: ${{ secrets.TRACE_SUPABASE_URL != '' && secrets.TRACE_SUPABASE_SERVICE_KEY != '' }}
+    steps:
+      - name: Skip when the Supabase secrets are not configured
+        if: env.PUBLISH != 'true'
+        run: echo "TRACE_SUPABASE_URL or TRACE_SUPABASE_SERVICE_KEY is not set, nothing published for ${GITHUB_SHA}. See docs/public_results.md"
+
+      - uses: actions/checkout@v7
+        if: env.PUBLISH == 'true'
+
+      # Gates for two pushes can finish out of order. An older commit must not
+      # overwrite or prune what a newer one retained, so this run steps aside
+      # when main has moved on with a different retained tree. A later commit
+      # that only appends metrics history does not count.
+      - name: Skip when a newer push changed the retained tree
+        id: current
+        if: env.PUBLISH == 'true'
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          if git diff --quiet "${GITHUB_SHA}" FETCH_HEAD -- docs/acceptance \
+              ':(exclude)docs/acceptance/metrics_history.jsonl'; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "main moved past ${GITHUB_SHA} with retained changes, the newer run publishes them"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v7
+        if: env.PUBLISH == 'true' && steps.current.outputs.stale == 'false'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend
+        if: env.PUBLISH == 'true' && steps.current.outputs.stale == 'false'
+        run: python -m pip install -e .
+
+      # Fails on any secret under docs/acceptance/ or in a cassettes folder,
+      # and names only the file, line and kind of a hit because this log is
+      # public.
+      - name: Scan the retained tree and cassettes for keys
+        if: env.PUBLISH == 'true' && steps.current.outputs.stale == 'false'
+        run: python -m trace_harness.public_results.secret_scan
+
+      - name: Upload the retained results
+        if: env.PUBLISH == 'true' && steps.current.outputs.stale == 'false'
+        env:
+          TRACE_SUPABASE_URL: ${{ secrets.TRACE_SUPABASE_URL }}
+          TRACE_SUPABASE_SERVICE_KEY: ${{ secrets.TRACE_SUPABASE_SERVICE_KEY }}
+        run: python -m trace_harness.public_results.upload docs/acceptance --prune
+
   dashboard:
     name: Dashboard gate
     runs-on: ubuntu-latest

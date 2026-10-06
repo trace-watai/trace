@@ -7,14 +7,16 @@ repo's ``runs/`` directory is never touched by CI.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from trace_harness.environment.controls import GUARDRAIL_REGISTRY, ControlInstance
 from trace_harness.environment.support_env import SupportEnvironment
 from trace_harness.models.fixture import FixtureModelAdapter
+from trace_harness.regression.schemas import RegressionArtifact, ReplayModeBasis
 from trace_harness.runner.agent_runner import AgentRunner
 from trace_harness.runner.config import RunConfig
 from trace_harness.runner.result import RunResult
@@ -47,12 +49,75 @@ class FixtureRun:
     final_state: dict[str, Any]
 
 
-def run_task_fixture(task_path: Path, runs_dir: Path) -> FixtureRun:
-    """Execute one repo task fixture exactly the way the CLI does."""
+def static_ok_basis() -> ReplayModeBasis:
+    """A replay basis that meets every static_ok condition, so a label on it is supported."""
+    checks = ["unauthorized_cash_refund", "unauthorized_store_credit"]
+    return ReplayModeBasis(
+        control_ids=["ctl_refund_window_v1"],
+        control_step=2,
+        first_irreversible_action_step=2,
+        steps_remaining_after_control=1,
+        gated_tool="issue_refund",
+        checks_reachable_via_gated_tool=checks,
+        checks_covered_by_control=checks,
+        rule_kind="prohibition",
+    )
+
+
+def regression_artifact(
+    *,
+    run_id: str = "run_x",
+    test_name: str = "t",
+    replay_mode: str = "unlabeled",
+    basis: ReplayModeBasis | None = None,
+) -> RegressionArtifact:
+    """The smallest regression artifact that carries a replay label."""
+    return RegressionArtifact(
+        test_name=test_name,
+        source_run_id=run_id,
+        task_fixture="fixtures/tasks/refund_policy_control_demo.json",
+        initial_state={},
+        severity="critical",
+        blocks_release=True,
+        replay_command="trace-harness run-pipeline fixtures/tasks/refund_policy_control_demo.json",
+        replay_mode=replay_mode,
+        replay_mode_basis=basis,
+    )
+
+
+@pytest.fixture
+def classified_static_ok(monkeypatch):
+    """Widen the refund guardrail's declared coverage so the classifier itself says static_ok.
+
+    The shipped guardrail covers only unauthorized_cash_refund while issue_refund
+    can also reach unauthorized_store_credit, which is why every real artifact
+    is live_required. Covering both satisfies all four rules honestly.
+    """
+    ref = "unauthorized_cash_refund_guardrail"
+    monkeypatch.setitem(
+        GUARDRAIL_REGISTRY,
+        ref,
+        replace(
+            GUARDRAIL_REGISTRY[ref],
+            checks_covered=frozenset({"unauthorized_cash_refund", "unauthorized_store_credit"}),
+        ),
+    )
+
+
+def run_task_fixture(
+    task_path: Path, runs_dir: Path, controls: list[ControlInstance] | None = None
+) -> FixtureRun:
+    """Execute one repo task fixture exactly the way the CLI does.
+
+    ``controls`` are installed on the environment first, the way
+    ``replay --apply-control`` installs them.
+    """
     task = load_task(task_path)
     docs = load_docs_for_task(task, task_path)
     script_path = (task_path.parent / task.metadata["fixture_script"]).resolve()
     environment = SupportEnvironment.from_task(task, docs=docs)
+    for control in controls or []:
+        environment.install_control(control)
     adapter = FixtureModelAdapter.from_file(script_path)
     store = ArtifactStore(runs_dir)
     config = RunConfig(
@@ -91,3 +156,16 @@ def missing_info_run(tmp_path: Path) -> FixtureRun:
 @pytest.fixture
 def no_refund_run(tmp_path: Path) -> FixtureRun:
     return run_task_fixture(NO_REFUND_TASK_PATH, tmp_path / "runs")
+
+
+@pytest.fixture(autouse=True)
+def _no_hosted_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test on the filesystem reader and away from any Supabase project.
+
+    The CLI loads ``.env`` without overriding variables that are already set,
+    so pinning the backend here also beats a developer's ``.env``. Tests of the
+    Supabase backend pass their own environment mapping and transport.
+    """
+    monkeypatch.setenv("TRACE_RUN_READER", "filesystem")
+    for name in ("TRACE_SUPABASE_URL", "TRACE_SUPABASE_ANON_KEY", "TRACE_SUPABASE_SERVICE_KEY"):
+        monkeypatch.setenv(name, "")

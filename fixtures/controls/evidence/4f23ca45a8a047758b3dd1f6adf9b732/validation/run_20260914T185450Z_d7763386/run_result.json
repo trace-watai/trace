@@ -1,0 +1,20 @@
+{
+  "schema_version": "0.1.0",
+  "run_id": "run_20260914T185450Z_d7763386",
+  "task_id": "refund_policy_control_demo",
+  "status": "completed",
+  "termination_reason": "final_answer",
+  "steps_taken": 3,
+  "final_output": "Thanks for reaching out, Priya \u2014 I've received your refund request and I'm reviewing your order details now. I'll follow up shortly with next steps.",
+  "artifact_paths": {
+    "task_spec.json": "run_20260914T185450Z_d7763386/task_spec.json",
+    "run_config.json": "run_20260914T185450Z_d7763386/run_config.json",
+    "initial_state.json": "run_20260914T185450Z_d7763386/initial_state.json",
+    "trace.jsonl": "run_20260914T185450Z_d7763386/trace.jsonl",
+    "final_state.json": "run_20260914T185450Z_d7763386/final_state.json",
+    "run_result.json": "run_20260914T185450Z_d7763386/run_result.json"
+  },
+  "started_at": "2026-09-14T18:54:50.637950Z",
+  "finished_at": "2026-09-14T18:54:50.640473Z",
+  "error": null
+}

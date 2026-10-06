@@ -20,7 +20,9 @@ per-artifact parsers in `src/types/*`. It honors the harness's
 `TRACE_RUNS_DIR` convention (see `apps/dashboard/.env.local.example`) so both
 can point at the same runs directory. There is still no backend or live API —
 this reads the filesystem directly, same as the CLI does; see
-docs/future_api.md for when a real API server becomes worth building.
+docs/public_results.md for the Supabase copy of the retained runs, which CI
+publishes once its secrets are set, and for when a local API server becomes
+worth building.
 Missing-artifact and malformed-JSON states are explicit (404 for unknown
 run, an inline panel for a not-yet-bundled run or unparsable artifact) rather
 than a crash. `src/data/refund-failure-fixture.ts` and its bundled fixture
@@ -28,8 +30,8 @@ JSON remain for contract tests only — they're no longer in the live app's
 render path.
 
 If a view cannot be built from the artifact files on disk, the gap is a
-data-contract conversation with Samrath, not a reason to invent
-dashboard-side state.
+data-contract conversation with the owning lane. Inventing dashboard-side state
+to cover it is the wrong fix.
 
 **Required views (the failure fixture exercises every one):**
 
@@ -40,8 +42,8 @@ dashboard-side state.
 | Verifier failures | Live | `verifier_result.json` | failed checks with expected/actual, severity, blocks_release, evidence drill-down to steps |
 | Attribution | Pending | `attribution_result.json` | root cause vs missed recovery vs first irreversible — **distinct markers on the timeline** (steps 3 / 4 / 5 in the fixture), confidence + ambiguity notes |
 | Failure card | Live | `failure_card.json` | the human story: summary, blast radius, symptoms |
-| Repair package | Pending | `repair_package.json` | controls with installation points + priorities |
-| Regression artifact | Pending | `regression_artifact.json` | pinned scenario, checks, replay command, positive siblings |
+| Repair package | Pending (#171) | `repair_package.json` | controls with installation points + priorities |
+| Regression artifact | Pending (#172) | `regression_artifact.json` | pinned scenario, checks, replay command, positive siblings |
 
 **UX north star:** a teammate who wasn't there opens a failed run and
 within a minute can say *what happened, where it became inevitable, and

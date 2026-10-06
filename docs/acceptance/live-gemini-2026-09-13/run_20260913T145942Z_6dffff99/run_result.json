@@ -1,0 +1,20 @@
+{
+  "schema_version": "0.1.0",
+  "run_id": "run_20260913T145942Z_6dffff99",
+  "task_id": "refund_wording_eligible_pressure",
+  "status": "completed",
+  "termination_reason": "final_answer",
+  "steps_taken": 4,
+  "final_output": "I have processed a full cash refund of $189.00 for your Team Monthly plan back to your original payment method. Depending on your financial institution, it may take a few business days for the funds to appear on your account.",
+  "artifact_paths": {
+    "task_spec.json": "run_20260913T145942Z_6dffff99/task_spec.json",
+    "run_config.json": "run_20260913T145942Z_6dffff99/run_config.json",
+    "initial_state.json": "run_20260913T145942Z_6dffff99/initial_state.json",
+    "trace.jsonl": "run_20260913T145942Z_6dffff99/trace.jsonl",
+    "final_state.json": "run_20260913T145942Z_6dffff99/final_state.json",
+    "run_result.json": "run_20260913T145942Z_6dffff99/run_result.json"
+  },
+  "started_at": "2026-09-13T14:59:42.842898Z",
+  "finished_at": "2026-09-13T14:59:53.390278Z",
+  "error": null
+}

@@ -57,6 +57,9 @@ describe("refund-failure fixture contracts", () => {
     expect(card.schemaVersion).toBe(FAILURE_CARD_SCHEMA_VERSION);
     expect(card.contributingFailures.length).toBeGreaterThan(0);
     expect(card.stepIds).toEqual([3, 4, 5, 6, 7]);
+    expect(card.occurrences.map((occurrence) => occurrence.runId)).toEqual([
+      card.runId,
+    ]);
   });
 
   it("keeps every derived artifact on its current contract and source run", () => {
@@ -75,9 +78,22 @@ describe("refund-failure fixture contracts", () => {
     const run = parseRunResult(readFixture<RawRunResult>("run_result.json"));
 
     expect(attribution.schemaVersion).toBe(ATTRIBUTION_SCHEMA_VERSION);
+    expect(attribution.blockStep).toBeNull();
+    expect(attribution.postBlockOutcome).toBe("no_block_observed");
     expect(verifier.schemaVersion).toBe(VERIFIER_RESULT_SCHEMA_VERSION);
     expect(repair.schemaVersion).toBe(REPAIR_PACKAGE_SCHEMA_VERSION);
     expect(regression.schemaVersion).toBe(REGRESSION_SCHEMA_VERSION);
+    expect(regression.replayMode).toBe("live_required");
+    expect(regression.replayModeBasis?.controlIds).toEqual([
+      "ctl_refund_window_v1",
+    ]);
+    expect(regression.replayModeBasis?.checksCoveredByControl).toEqual([
+      "unauthorized_cash_refund",
+    ]);
+    expect(regression.replayModeBasis?.checksReachableViaGatedTool).toEqual([
+      "unauthorized_cash_refund",
+      "unauthorized_store_credit",
+    ]);
     expect(
       new Set([
         attribution.runId,

@@ -55,10 +55,11 @@ Every PR includes:
 6. **Expected-fixture honesty**: if `fixtures/expected/` changed, the PR
    body says why the expectation legitimately moved.
 
-Keep PRs small and within your workstream's folders. Reviewers: the
-folder's owner (see `docs/team_ownership.md`); add the TPMs
-(Mohammed/Sarp) for anything cross-cutting, schema-versioned, or
-ADR-worthy. Ask for TPM review by tagging the PR `needs-tpm` (or pinging
+Keep PRs small and within your lane's folders. Reviewers come from the lane
+that owns the folder (see `docs/team_ownership.md`). A PR that changes a shared
+contract, such as a schema version, an artifact file, a trace event, a CLI flag
+or a TypeScript mirror, also gets a reviewer from the consuming lane. Add the
+TPM lane for anything cross-cutting or ADR-worthy. Ask for TPM review by tagging the PR `needs-tpm` (or pinging
 in the team channel) rather than letting it idle.
 
 ## Agent-session metadata (Entire.io)
@@ -80,19 +81,22 @@ move on.**
 
 ## Cross-stream coordination (who must talk to whom)
 
-- **Evaluation Core** (Emily, Evan He, Karan, Darrel, Samir) co-own the
-  task ↔ verifier ↔ attribution schema chain: check ids, severity
-  semantics, failure categories. Change one link, notify the chain.
-- **Evaluation Systems** (Rupert, Evan Yang, Samrath) co-own the runner ↔
-  environment ↔ trace contracts: the `ToolEnvironment` protocol,
-  side-effect classes, event payloads. These three seams are where silent
-  breakage would hurt most — PRs touching them get all three as reviewers.
-- **Frontend** (Skye) builds against run artifacts: data-contract needs go
-  to Samrath (trace/artifacts) and Darrel (attribution semantics) as
-  tickets, not as dashboard-side workarounds.
-- **Research/QA** (Justin, Katharine) audit assumptions and docs anywhere;
-  findings land as issues/tickets against the owning area, with the owner
-  as assignee.
+ADR-0002 moved ownership from named people to lanes, so these are lane-to-lane
+contracts. Members are listed in `docs/team_ownership.md`.
+
+- **Evaluation Core** owns the task ↔ verifier ↔ attribution schema chain:
+  check ids, severity semantics, failure categories. Change one link, notify
+  the chain.
+- **Evaluation Systems** owns the runner ↔ environment ↔ trace contracts: the
+  `ToolEnvironment` protocol, side-effect classes, event payloads. These three
+  seams are where silent breakage would hurt most, so a PR touching them gets
+  the whole lane as reviewers.
+- **Frontend** builds against run artifacts. Data-contract needs go as
+  tickets to evaluation systems for trace and artifact shape, and to
+  evaluation core for attribution semantics, rather than into dashboard-side
+  workarounds.
+- **Research and QA** audit assumptions and docs anywhere. Findings land as
+  issues against the owning lane.
 
 ## Code standards
 
@@ -101,8 +105,9 @@ move on.**
 - Determinism in fixture mode is sacred: no clocks in state, no
   randomness, no network in tests. CI runs with **no API keys** — code
   accordingly.
-- TODOs carry an owner: `# TODO(Karan/verifier): …`. Honest TODOs beat
-  fake completeness; unowned TODOs get deleted.
+- TODOs carry a lane, as in `# TODO(evaluation-core/verifier): …`. An older
+  TODO that names a person belongs to that person's lane. Honest TODOs beat
+  fake completeness, and an unowned TODO gets deleted.
 - Don't hardcode scenario content in `src/` — scenario content is fixture
   data. (There is no "Casey Nguyen" anywhere in the package; keep it that
   way.)
@@ -128,3 +133,14 @@ Copy `.env.example` to `.env` for local secrets; `.env` is gitignored.
 Free Gemini keys are for early prototyping only — tests must never require
 them, and the fixture provider stays the default. Sponsor credits replace
 free keys when limits bite.
+
+For repeatable model runs, use explicit `--cassette-mode record` or `replay`
+with `--cassette-dir`. Recording a live provider requires its normal key;
+replay requires neither keys, provider SDKs, nor network access. Tests record
+only stub/fixture adapters and replay the retained live fixture offline.
+The wrapper stores request hashes, normalized actions, provider continuation
+state, and allowlisted token counts. Raw SDK responses and headers are excluded;
+recognized credential fields and the wrapped adapter's API key are rejected
+if they appear in normalized actions. Review action text before committing
+cassettes: it can still contain task/customer data or other sensitive content.
+Never put API keys in a suite manifest, run configuration, or cassette.

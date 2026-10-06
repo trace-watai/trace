@@ -56,6 +56,16 @@ class ToolResult(BaseModel):
     ``result`` is what the agent observes. ``retrieval`` is a structured
     side channel for retrieval tools so the runner can emit a dedicated
     ``retrieval_result`` trace event without parsing tool output.
+
+    ``blocked_by`` is the ``control_id`` of the installed control whose
+    guardrail stopped this call before its handler ran. It is ``None`` for
+    every call that reached its handler, and for blocks by raw pre-execute
+    hooks, which have no control id. A block keeps ``status="error"``, so
+    consumers that only check status see no change.
+
+    Raw pre-execute hooks are for tests, not production: their blocks are
+    indistinguishable from a handler error in the trace. Real guardrails go
+    through ``SupportEnvironment.install_control`` so every block is labeled.
     """
 
     tool_name: str
@@ -63,6 +73,7 @@ class ToolResult(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     retrieval: list[RetrievedChunk] | None = None
+    blocked_by: str | None = None
 
 
 # --- Argument models (extra="forbid" so misspelled arguments fail validation) ---
@@ -109,13 +120,27 @@ class EscalateCaseArgs(BaseModel):
 
 @dataclass(frozen=True)
 class ToolDefinition:
-    """A tool the environment can offer: contract + side-effect class + handler."""
+    """A tool the environment can offer: contract + side-effect class + handler.
+
+    ``free_text_arguments`` names the string arguments the agent words for
+    itself, such as a refund reason or ticket notes. Every other argument is
+    structured: it picks the customer, the refund type or a filter. Two calls
+    that differ only in free text make the same call, which is how the branch
+    stage compares a run with its recording (#159, docs/branch_stage.md). The
+    declaration never reaches the schema the model sees.
+    """
 
     name: str
     description: str
     args_model: type[BaseModel]
     side_effect: ToolSideEffect
     handler: Callable[[SupportState, BaseModel, int | None], ToolResult]
+    free_text_arguments: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        unknown = sorted(self.free_text_arguments - set(self.args_model.model_fields))
+        if unknown:
+            raise ValueError(f"free_text_arguments {unknown} names no argument of {self.name}")
 
     def spec(self) -> ToolSpec:
         return ToolSpec(
@@ -261,6 +286,7 @@ def support_tool_definitions() -> list[ToolDefinition]:
             args_model=SearchDocsArgs,
             side_effect=ToolSideEffect.READ_ONLY,
             handler=_search_docs_handler,
+            free_text_arguments=frozenset({"query"}),
         ),
         ToolDefinition(
             name="get_order",
@@ -282,6 +308,7 @@ def support_tool_definitions() -> list[ToolDefinition]:
             args_model=IssueRefundArgs,
             side_effect=ToolSideEffect.EXTERNAL_IRREVERSIBLE,
             handler=_issue_refund_handler,
+            free_text_arguments=frozenset({"reason"}),
         ),
         ToolDefinition(
             name="create_ticket",
@@ -292,6 +319,7 @@ def support_tool_definitions() -> list[ToolDefinition]:
             args_model=CreateTicketArgs,
             side_effect=ToolSideEffect.EXTERNAL_DURABLE,
             handler=_create_ticket_handler,
+            free_text_arguments=frozenset({"title", "notes"}),
         ),
         ToolDefinition(
             name="escalate_case",
@@ -303,5 +331,6 @@ def support_tool_definitions() -> list[ToolDefinition]:
             args_model=EscalateCaseArgs,
             side_effect=ToolSideEffect.EXTERNAL_DURABLE,
             handler=_escalate_case_handler,
+            free_text_arguments=frozenset({"reason"}),
         ),
     ]

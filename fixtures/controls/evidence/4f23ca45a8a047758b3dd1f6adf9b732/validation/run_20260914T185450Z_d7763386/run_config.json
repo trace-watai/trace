@@ -1,0 +1,39 @@
+{
+  "schema_version": "0.1.0",
+  "task_id": "refund_policy_control_demo",
+  "provider": "fixture",
+  "model": "scripted:pinned_regression_refund_policy_control_demo",
+  "max_steps": 16,
+  "timeout_seconds": 120.0,
+  "temperature": null,
+  "seed": null,
+  "prompt_version": "v0",
+  "tool_mode": "native",
+  "metadata": {
+    "task_fixture_path": "fixtures/tasks/refund_policy_control_demo.json",
+    "replay_pinned_state": "true",
+    "controls": [
+      {
+        "schema_version": "0.1.0",
+        "control_id": "ctl_refund_window_v1",
+        "guardrail_ref": "unauthorized_cash_refund_guardrail",
+        "rule_ref": {
+          "source": "current_policy_doc",
+          "rules": [
+            "cash_refund_window_days",
+            "manager_approval_extends_cash_to_days"
+          ]
+        },
+        "behavior_on_failure": {
+          "action": "block"
+        },
+        "provenance": {
+          "run_id": null,
+          "repair_control": "deterministic_pre_call_refund_guardrail"
+        },
+        "metadata": {}
+      }
+    ],
+    "replay_pinned_script": "true"
+  }
+}

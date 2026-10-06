@@ -1,0 +1,918 @@
+"""The branch stage: continue a recorded run from a chosen step (#159).
+
+Replay can only re-run what was recorded. The branch stage rebuilds the world
+a regression artifact pinned, exactly as ``replay`` does, replays the
+recorded actions through a condition's start step, and hands every later step
+to the condition's agent with the condition's controls installed. Each run is
+verified, attributed and bundled on failure the way ``run_task_pipeline``
+does it, labelled with its post-block outcome (#157), and compared with the
+recording after the fork.
+
+One batch per condition lands under ``runs/batches/``, tagged with the
+experiment id and condition name, which is what ``experiment record`` reads.
+``static_replay`` conditions reuse the ``replay --apply-control`` path in the
+CLI, and :func:`replay_batch` records that verdict as a batch of one.
+
+The plan's ``budget.max_cost_usd`` caps what the experiment spends on live
+calls, across every condition and seed, through the #196
+:class:`~trace_harness.runner.batch.BudgetGuard`. :func:`experiment_guard`
+starts the guard from :func:`recorded_budget`, what earlier runs of the same
+experiment in the same runs dir already spent and whether an earlier stop left
+the cap unenforceable, so branching one condition at a time, or again after an
+interruption, cannot multiply the cap. :func:`admit_before_any_run` asks it
+once per live condition before anything runs, and :func:`run_branch` asks it
+before each live seed and charges it after. A seed that calls no provider (the
+fixture provider, or a cassette replay) costs nothing and is never refused.
+Each batch's ``budget`` block records what that condition spent and, when the
+guard stopped it, why.
+
+A condition may name an outside agent (provider ``external``, #210) that
+declares ``supports_fork``. It takes over after the start step through the
+bridge, which gives it the recorded steps as ``TaskPrompt.history``. Its model
+calls are its own, so every seed of it is live to the guard: a config billed
+per call is refused before any run as ``budget_unenforceable``, and one that
+declares ``billing: "subscription"`` is admitted without a charge.
+
+A plan may list ``replacement_seeds`` in its metadata. A live seed whose run
+exists and ends incomplete is then replaced by the next unused seed from that
+list, decided on run status alone, which is pre-registration 001's rule for
+seeds 5 to 9. A seed the budget refused is not replaced, and neither is a
+``setup_error``, since that failure is the harness's own.
+Recording never overwrites a cassette, so :func:`check_cassette_paths` refuses,
+before anything runs, two conditions whose seeds would share a cassette while
+one records, and a recording condition whose cassettes already exist for any
+seed it could run, declared or replacement.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from pydantic import ValidationError
+
+from trace_harness.attribution.post_block import classify_post_block_outcome
+from trace_harness.environment.controls import select_controls
+from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.tools import support_tool_definitions
+from trace_harness.models import (
+    create_model_adapter,
+    makes_live_calls,
+    resolve_call_policy,
+    resolve_model_name,
+    unsent_seed_metadata,
+)
+from trace_harness.models.base import ActionKind, ModelAdapter
+from trace_harness.models.cassette import (
+    CassetteRequestConfig,
+    RecordingModelAdapter,
+    cassette_path,
+)
+from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
+from trace_harness.models.fork import ForkAdapter
+from trace_harness.models.policy import CallPolicy
+from trace_harness.regression.repair_validation import RepairValidation
+from trace_harness.regression.replay import pinned_initial_state, pinned_script
+from trace_harness.regression.report import ReplayReport
+from trace_harness.regression.schemas import RegressionArtifact
+from trace_harness.runner.agent_runner import AgentRunner
+from trace_harness.runner.batch import (
+    BUDGET_UNENFORCEABLE,
+    BatchBudget,
+    BatchRunEntry,
+    BatchSummary,
+    BudgetGuard,
+    BudgetStopReason,
+    NotRunCell,
+    aggregate_entries,
+    attach_started_run,
+    entry_from_pipeline,
+    new_batch_id,
+    run_cost_usd,
+)
+from trace_harness.runner.config import PROMPT_VERSION, RunConfig
+from trace_harness.runner.experiment import ConditionKind, ConditionSpec, ExperimentSpec
+from trace_harness.runner.frozen_set import FrozenFileChange
+from trace_harness.runner.pipeline import (
+    PipelineProgress,
+    PipelineResult,
+    attribute_and_bundle,
+    verify_run,
+)
+from trace_harness.runner.result import RunResult, RunStatus
+from trace_harness.runner.target_agent import (
+    EXTERNAL_PROVIDER,
+    TargetAgentBridge,
+    load_target_agent,
+    supports_fork,
+)
+from trace_harness.tasks.loader import load_task
+from trace_harness.tasks.schemas import TaskSpec
+from trace_harness.tracing import artifact_store as names
+from trace_harness.tracing.artifact_store import ArtifactStore
+from trace_harness.tracing.events import TraceEventType, utc_now
+from trace_harness.verifiers.base import VerifierResult
+
+logger = logging.getLogger(__name__)
+
+LIVE_KINDS = frozenset(
+    {ConditionKind.LIVE, ConditionKind.LIVE_NO_CONTROL, ConditionKind.LIVE_SWAPPED}
+)
+# Where a replay-only batch keeps the per-control #146 verdicts its replay
+# earned, which validate-control reads (#203).
+CONTROL_VALIDATIONS_KEY = "control_validations"
+#: Plan metadata key listing the seeds that replace a run ending incomplete.
+REPLACEMENT_SEEDS = "replacement_seeds"
+#: The statuses of a run that exists and ended incomplete, the ones replaced.
+INCOMPLETE_RUN_STATUSES = frozenset({RunStatus.TERMINATED.value, RunStatus.ERROR.value})
+# The environment's tools by name, for the divergence rule's free-text list.
+_TOOLS = {tool.name: tool for tool in support_tool_definitions()}
+
+
+@dataclass
+class BranchResult:
+    """One condition's batch, or why the condition was skipped."""
+
+    condition: str
+    summary: BatchSummary | None = None
+    skipped: str | None = None
+
+
+@dataclass
+class RecordedBudget:
+    """What earlier runs of one experiment in a runs dir spent, and whether the cap still holds."""
+
+    spent_usd: float = 0.0
+    stop_reason: BudgetStopReason | None = None
+    detail: str | None = None
+
+
+def load_artifact(path: Path | str) -> RegressionArtifact:
+    return RegressionArtifact.model_validate_json(Path(path).read_text(encoding="utf-8"))
+
+
+def validate_condition(artifact: RegressionArtifact, condition: ConditionSpec) -> int:
+    """Check a condition against the artifact before anything runs; return its fork step.
+
+    The fork step is the last step the recording answers, 0 when the condition
+    declares no start. Unknown control ids fail here, before a sweep spends
+    anything, and so does a start the agent would never act after: the
+    recording's final answer, or a ``max_steps`` that ends the run by then. An
+    outside agent (provider ``external``) that cannot be loaded, or that does
+    not declare ``supports_fork``, fails here too.
+    """
+    select_controls(condition.control_ids)
+    if condition.kind is not ConditionKind.STATIC_REPLAY and not artifact.pinned_agent_actions:
+        raise ValueError("the artifact pins no agent actions, so there is nothing to fork")
+    agent = condition.agent_config
+    if agent.provider == EXTERNAL_PROVIDER:
+        assert agent.agent_ref is not None  # AgentConfig enforces this
+        try:
+            outside = load_target_agent(agent.agent_ref)
+        except ValueError as exc:
+            raise ValueError(f"condition {condition.name!r}: {exc}") from None
+        # An outside agent runs its own loop, so it can take over a recorded
+        # run only when it says it can start from the recorded steps (#210).
+        if not supports_fork(outside):
+            raise ValueError(
+                f"condition {condition.name!r}: outside agent {agent.agent_ref!r} does not "
+                "declare supports_fork, so it cannot continue a recorded run"
+            )
+    if agent.provider == "fixture" and agent.cassette is not None:
+        raise ValueError(f"condition {condition.name!r}: a fixture continuation takes no cassette")
+    script = condition.continuation_script
+    if script and not Path(script).is_file():
+        raise ValueError(f"condition {condition.name!r}: continuation script not found: {script}")
+    if condition.start is None:
+        return 0
+    if condition.start.source_run_id != artifact.source_run_id:
+        raise ValueError(
+            f"condition {condition.name!r} starts from run {condition.start.source_run_id}, "
+            f"but the artifact pins run {artifact.source_run_id}"
+        )
+    if condition.kind is ConditionKind.STATIC_REPLAY:
+        return 0  # replay re-runs the whole recording
+    recorded = len(artifact.pinned_agent_actions)
+    fork_step = condition.start.step_id
+    if fork_step > recorded:
+        raise ValueError(
+            f"condition {condition.name!r} starts at step {fork_step}, "
+            f"but the recording has {recorded} step(s)"
+        )
+    if agent.provider == "fixture" and not script and fork_step == recorded:
+        raise ValueError(
+            f"condition {condition.name!r}: the recording has nothing after step {fork_step} "
+            "to continue with"
+        )
+    # A run that ends at or before the fork gives the agent no action to
+    # compare, and the divergence rate would drop it from its denominator. A
+    # recording can hold an answer a control blocked before the fork (#193).
+    # Replayed with nothing installed that answer stands and ends the run.
+    answered = [
+        step
+        for step, action in enumerate(artifact.pinned_agent_actions[:fork_step], start=1)
+        if action.get("kind") == ActionKind.FINAL_ANSWER.value
+    ]
+    if answered and answered[0] == fork_step:
+        raise ValueError(
+            f"condition {condition.name!r} starts at step {fork_step}, where the recording "
+            "gives its final answer, so the run ends before the agent acts"
+        )
+    if answered:
+        raise ValueError(
+            f"condition {condition.name!r} starts at step {fork_step}, but the recording "
+            f"gives a final answer at step {answered[0]}, so the run can end there before "
+            "the agent acts"
+        )
+    if agent.max_steps <= fork_step:
+        raise ValueError(
+            f"condition {condition.name!r}: max_steps {agent.max_steps} ends the run by step "
+            f"{fork_step}, so the agent never acts"
+        )
+    return fork_step
+
+
+def compared_action(action: dict[str, Any]) -> dict[str, Any]:
+    """The part of one ``model_action`` payload the divergence rule compares.
+
+    A tool call compares by tool name and structured arguments. Arguments are
+    parsed through the tool's argument model, as the environment parses them
+    before it executes, so an argument left at its default equals the same
+    value spelled out. The arguments the tool declares free text (a refund
+    ``reason``, ticket ``title`` and ``notes``, a search ``query``) are left
+    out. A call the environment would refuse matches only the same refused
+    call, and a tool the environment does not offer compares every argument.
+    A final answer
+    compares by kind alone, so two answers worded differently are the same
+    action. Reasoning and provider state never count.
+
+    Replay's drift notes keep comparing every field through
+    :func:`~trace_harness.regression.replay.material_action`.
+    """
+    kind = action.get("kind")
+    call = action.get("tool_call")
+    if kind != ActionKind.TOOL_CALL.value or not isinstance(call, dict):
+        return {"kind": kind}
+    name = call.get("tool_name")
+    arguments = call.get("arguments") or {}
+    tool = _TOOLS.get(name) if isinstance(name, str) else None
+    if tool is None:
+        return {"kind": kind, "tool_name": name, "arguments": arguments}
+    try:
+        parsed = tool.args_model.model_validate(arguments).model_dump(mode="json")
+    except ValidationError:
+        # The environment refuses this call before its handler runs, so it
+        # matches only the same refused call, free text included.
+        return {"kind": kind, "tool_name": name, "refused_arguments": arguments}
+    structured = {k: v for k, v in parsed.items() if k not in tool.free_text_arguments}
+    return {"kind": kind, "tool_name": name, "arguments": structured}
+
+
+def post_fork_divergence(
+    recorded: list[dict[str, Any]], actual: list[dict[str, Any]], fork_step: int
+) -> tuple[int | None, bool | None]:
+    """Where a run first left the recording after ``fork_step``, and whether its first action did.
+
+    Both lists hold ``model_action`` payloads in step order, compared through
+    :func:`compared_action`. A step only one side reached counts as a
+    difference. Both values are None when the run took no action after the
+    fork, since there was nothing to compare.
+    """
+    if len(actual) <= fork_step:
+        return None, None
+    first_step: int | None = None
+    for index in range(fork_step, max(len(recorded), len(actual))):
+        before = compared_action(recorded[index]) if index < len(recorded) else None
+        after = compared_action(actual[index]) if index < len(actual) else None
+        if before != after:
+            first_step = index + 1
+            break
+    return first_step, first_step == fork_step + 1
+
+
+def replacement_seeds(experiment: ExperimentSpec) -> list[int]:
+    """The plan's replacement seeds, in order; empty when it lists none."""
+    seeds = experiment.metadata.get(REPLACEMENT_SEEDS) or []
+    if not isinstance(seeds, list) or not all(
+        isinstance(s, int) and not isinstance(s, bool) for s in seeds
+    ):
+        raise ValueError(
+            f"plan metadata {REPLACEMENT_SEEDS} must list integer seeds, got {seeds!r}"
+        )
+    return seeds
+
+
+def recorded_budget(store: ArtifactStore, experiment_id: str) -> RecordedBudget:
+    """What the experiment's earlier runs in this runs dir spent, and whether the cap still holds.
+
+    Each branch batch's ``budget.spent_usd`` counts that batch's live runs. A
+    live run the branch stage tagged with the experiment that no batch lists,
+    because its invocation was interrupted or failed after the run, is priced
+    by :func:`~trace_harness.runner.batch.run_cost_usd`, the function that
+    prices every batch entry, so its spend still counts. When an earlier batch
+    stopped as ``budget_unenforceable``, or such a run has no known cost (its
+    model is unpriced, or its trace is gone or unreadable), what the experiment
+    spent is unknown, and the result carries that stop so the next invocation
+    starts stopped.
+    """
+    spent, listed, stop = 0.0, set(), None
+    for path in sorted((store.runs_dir / names.BATCHES_DIR).glob(f"*/{names.BATCH_SUMMARY}")):
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        if (summary.get("metadata") or {}).get("experiment_id") != experiment_id:
+            continue
+        budget = summary.get("budget") or {}
+        spent += budget.get("spent_usd") or 0.0
+        listed.update(e.get("run_id") for e in summary.get("entries") or [])
+        if budget.get("stop_reason") == BUDGET_UNENFORCEABLE and stop is None:
+            stop = (
+                f"batch {summary.get('batch_id')} of {experiment_id} stopped as "
+                f"{BUDGET_UNENFORCEABLE}: {budget.get('detail')}"
+            )
+    for run_id in store.list_runs():
+        if run_id in listed or not store.exists(run_id, names.RUN_CONFIG):
+            continue
+        raw = store.read_json(run_id, names.RUN_CONFIG)
+        if ((raw.get("metadata") or {}).get("branch") or {}).get("experiment_id") != experiment_id:
+            continue
+        config = RunConfig.model_validate(raw)
+        if not makes_live_calls(config.provider, config.cassette):
+            continue
+        cost = run_cost_usd(config, store.runs_dir, run_id)
+        if cost is None:
+            stop = stop or (
+                f"live run {run_id} of {experiment_id} is in no batch and has no recorded cost"
+            )
+            continue
+        spent += cost
+    return RecordedBudget(round(spent, 6), BUDGET_UNENFORCEABLE if stop else None, stop)
+
+
+def experiment_guard(
+    store: ArtifactStore, experiment: ExperimentSpec
+) -> tuple[BudgetGuard, RecordedBudget]:
+    """The guard for one ``branch`` invocation, started from the experiment's earlier runs."""
+    guard = BudgetGuard(experiment.budget.max_cost_usd)
+    earlier = recorded_budget(store, experiment.experiment_id)
+    guard.spent_usd = earlier.spent_usd
+    if guard.max_cost_usd is not None and earlier.stop_reason is not None:
+        guard.stop_reason, guard.detail = earlier.stop_reason, earlier.detail
+    return guard, earlier
+
+
+def check_cassette_paths(
+    artifact: RegressionArtifact,
+    conditions: list[ConditionSpec],
+    replacement: Sequence[int] = (),
+) -> None:
+    """Refuse cassette recordings that would collide or already exist, before any run.
+
+    A cassette lives at ``<directory>/<task_id>/<model>/<seed>.jsonl``, with no
+    condition in the path, and recording never overwrites a file. Every seed a
+    live condition could run is checked: its declared seeds, and the plan's
+    ``replacement`` seeds that a run ending incomplete would draw on (#200).
+
+    Two cells (a condition and a seed) that share a path while at least one of
+    them records would fail only after earlier cells had spent, so they raise
+    here. So does a recording condition with any of its cassettes already on
+    disk, which means the condition was branched into that folder before, with
+    every such cassette listed. Its seeds would otherwise end as setup errors
+    and spend its replacement seeds live. Replaying one recording from several
+    conditions stays allowed.
+    """
+    cells: dict[Path, list[tuple[ConditionSpec, int | None]]] = {}
+    recording: list[tuple[ConditionSpec, list[Path]]] = []
+    task_id: str | None = None
+    for condition in conditions:
+        if condition.kind not in LIVE_KINDS or condition.agent_config.cassette is None:
+            continue
+        task_id = task_id or _load_task(artifact).task_id
+        seeds = _seeds(condition)
+        seeds += [seed for seed in replacement if seed not in seeds]
+        paths = [_cassette_file(condition, task_id, seed) for seed in seeds]
+        for seed, path in zip(seeds, paths, strict=True):
+            cells.setdefault(path, []).append((condition, seed))
+        if _records(condition):
+            recording.append((condition, paths))
+    for path, sharing in cells.items():
+        if len(sharing) > 1 and any(_records(condition) for condition, _ in sharing):
+            named = [
+                f"condition {c.name!r} seed {'default' if seed is None else seed}"
+                for c, seed in sharing
+            ]
+            raise ValueError(
+                f"{', '.join(named[:-1])} and {named[-1]} share the cassette {path}, and "
+                "recording never overwrites one; give each condition its own cassette directory"
+            )
+    for condition, paths in recording:
+        existing = [str(path) for path in paths if path.exists()]
+        if existing:
+            raise ValueError(_already_recorded(condition, existing))
+
+
+def _records(condition: ConditionSpec) -> bool:
+    cassette = condition.agent_config.cassette
+    return cassette is not None and cassette.mode == "record"
+
+
+def calls_a_provider(condition: ConditionSpec) -> bool:
+    """Whether a condition's runs call a live model, and so can cost money.
+
+    An outside agent makes its own model calls, which the harness never sees,
+    so it counts as live, and the guard decides on its billing.
+    """
+    agent = condition.agent_config
+    if condition.kind not in LIVE_KINDS:
+        return False
+    return agent.provider == EXTERNAL_PROVIDER or makes_live_calls(agent.provider, agent.cassette)
+
+
+def admit_before_any_run(guard: BudgetGuard, conditions: list[ConditionSpec]) -> None:
+    """Ask the guard about every live condition once, before any condition runs.
+
+    A live model with no price, or a cap of zero, stops the guard here, so no
+    live run of the invocation starts and nothing is spent on a plan whose cap
+    cannot hold. Conditions that call no provider still run afterwards.
+    """
+    for condition in conditions:
+        if calls_a_provider(condition):
+            agent = condition.agent_config
+            guard.admit(
+                agent.provider, _live_model(condition), agent.cassette, billing=agent.billing
+            )
+
+
+def run_branch(
+    artifact_path: Path | str,
+    experiment: ExperimentSpec,
+    condition: ConditionSpec,
+    store: ArtifactStore,
+    guard: BudgetGuard | None = None,
+    frozen_set_drift: list[FrozenFileChange] | None = None,
+) -> BranchResult:
+    """Run every seed of one live condition and write its batch.
+
+    A condition that replays model calls from cassettes is skipped as a whole
+    when any of its seeds has no recording, so a partial set of seeds never
+    stands in for the planned sample.
+
+    ``guard`` is shared by every condition of one ``branch`` invocation; a
+    caller that passes none gets one built from the plan's ``max_cost_usd``.
+    ``frozen_set_drift`` is what ``branch --allow-drift`` ran under, written
+    into the batch so ``record`` reads it even after the files are restored.
+    """
+    if condition.kind not in LIVE_KINDS:
+        raise ValueError(f"{condition.kind.value} conditions run through replay, see replay_batch")
+    artifact = load_artifact(artifact_path)
+    fork_step = validate_condition(artifact, condition)
+    check_cassette_paths(artifact, [condition], replacement_seeds(experiment))
+    task = _load_task(artifact)
+    task = task.model_copy(update={"initial_state": pinned_initial_state(artifact)})
+    seeds = _seeds(condition)
+
+    missing = _missing_cassettes(condition, task.task_id, seeds)
+    if missing:
+        return BranchResult(condition.name, skipped=f"no cassette recorded at {', '.join(missing)}")
+
+    if guard is None:
+        guard = BudgetGuard(experiment.budget.max_cost_usd)
+    agent = condition.agent_config
+    live = calls_a_provider(condition)
+    model = _live_model(condition) if live else None
+    spent_before, stopped_before = guard.spent_usd, guard.stop_reason is not None
+    spare = [s for s in replacement_seeds(experiment) if s not in seeds]
+
+    started_at = utc_now()
+    entries: list[BatchRunEntry] = []
+    not_run: list[NotRunCell] = []
+    queue = list(seeds)
+    # One condition's runs share cards, never another condition's (#211).
+    condition_runs: list[str] = []
+    while queue:
+        seed = queue.pop(0)
+        if live and not guard.admit(agent.provider, model, agent.cassette, billing=agent.billing):
+            not_run.append(
+                NotRunCell(agent_label=agent.label, task_path=artifact.task_fixture, seed=seed)
+            )
+            continue
+        progress = PipelineProgress()
+        try:
+            entry = _run_seed(
+                artifact,
+                task,
+                experiment,
+                condition,
+                fork_step,
+                seed,
+                store,
+                progress,
+                condition_runs,
+            )
+        except Exception as exc:  # noqa: BLE001 (isolate the seed so the batch goes on)
+            logger.warning("branch seed %s of %s failed: %s", seed, condition.name, exc)
+            # A seed that failed after its run started is priced from its
+            # trace, as a run-suite cell is, so the guard still charges it.
+            entry = attach_started_run(
+                _setup_error(artifact, condition, seed, exc), progress, store.runs_dir
+            )
+        entries.append(entry)
+        guard.charge(entry.cost_usd, agent.provider, agent.cassette, run_id=entry.run_id)
+        # Only a run that exists and ended incomplete is replaced. A setup_error
+        # is a harness problem, and replacing it would spend a live seed on the
+        # same failure.
+        if entry.run_id is not None and entry.status in INCOMPLETE_RUN_STATUSES and spare:
+            queue.append(spare.pop(0))
+
+    budget = _budget_block(guard, spent_before, stopped_before, not_run)
+    summary = _write_batch(
+        store,
+        experiment,
+        condition,
+        artifact,
+        entries,
+        started_at,
+        budget=budget,
+        **_drift_metadata(frozen_set_drift),
+    )
+    return BranchResult(condition.name, summary=summary)
+
+
+def replay_batch(
+    report: ReplayReport,
+    experiment: ExperimentSpec,
+    condition: ConditionSpec,
+    artifact_path: Path | str,
+    store: ArtifactStore,
+    started_at: datetime,
+    validation: RepairValidation | None = None,
+    frozen_set_drift: list[FrozenFileChange] | None = None,
+) -> BatchSummary:
+    """Record a ``static_replay`` condition's replay as a batch of one.
+
+    The entry is the replayed scenario run. The replay's own verdict, the exit
+    code ``replay --apply-control`` would return, goes in the batch metadata,
+    and so do the positive siblings it ran, by run id, which is what
+    ``sibling_failure_rate`` counts (A4 in docs/methodology_metrics.md). So
+    does ``validation``, the per-control verdicts (#146) the replay earned
+    when it validated controls one at a time, cut to the controls the
+    condition installed.
+    """
+    artifact = load_artifact(artifact_path)
+    run_id = report.scenario.run_id
+    run = RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT))
+    verdict = VerifierResult.model_validate(store.read_json(run_id, names.VERIFIER_RESULT))
+    config = RunConfig.model_validate(store.read_json(run_id, names.RUN_CONFIG))
+    task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
+    block = classify_post_block_outcome(store.read_trace(run_id), verdict, run)
+    entry = entry_from_pipeline(
+        PipelineResult(task, config, run, verdict),
+        condition.agent_config,
+        artifact.task_fixture,
+        store.runs_dir,
+    ).model_copy(update={"condition": condition.name, "post_block_outcome": block.outcome})
+    verdicts: dict[str, Any] = {}
+    if validation is not None:
+        verdicts[CONTROL_VALIDATIONS_KEY] = [
+            c.model_dump(mode="json")
+            for c in validation.controls
+            if c.control_id in condition.control_ids
+        ]
+    # A replay calls no provider, so it spends nothing and is never refused.
+    return _write_batch(
+        store,
+        experiment,
+        condition,
+        artifact,
+        [entry],
+        started_at,
+        budget=BatchBudget(max_cost_usd=experiment.budget.max_cost_usd, spent_usd=0.0),
+        **_drift_metadata(frozen_set_drift),
+        replay_exit_code=report.exit_code,
+        **verdicts,
+        siblings=[{"test_name": s.test_name, "run_id": s.run_id} for s in report.siblings],
+    )
+
+
+def _run_seed(
+    artifact: RegressionArtifact,
+    task: TaskSpec,
+    experiment: ExperimentSpec,
+    condition: ConditionSpec,
+    fork_step: int,
+    seed: int | None,
+    store: ArtifactStore,
+    progress: PipelineProgress,
+    scope: list[str],
+) -> BatchRunEntry:
+    """Run one seed and score it.
+
+    ``progress`` gets the run's configuration before the run and its id as
+    soon as the runner made one, so a failure anywhere after that, in the
+    runner or in scoring, still names the run for pricing. ``scope`` names
+    the runs whose failure cards this run may join (#211), and the run joins
+    it once scored.
+    """
+    environment = SupportEnvironment.from_task(task, docs=None)
+    # Controls enter only as installed controls, so every block carries blocked_by.
+    for control in select_controls(condition.control_ids):
+        environment.install_control(control)
+    agent = condition.agent_config
+    # The live continuation calls through the #196 retry and pacing policy, and
+    # run_config.json records it, exactly as run_task_pipeline does.
+    call_policy = resolve_call_policy(agent.provider, agent.call_policy, agent.cassette)
+    continuation, model = _continuation(
+        artifact, condition, task.task_id, fork_step, seed, call_policy
+    )
+    prefix = FixtureModelAdapter(pinned_script(artifact, task.task_id))
+    adapter = ForkAdapter(prefix, continuation, switch_at_step=fork_step)
+    external = agent.provider == EXTERNAL_PROVIDER
+
+    metadata: dict[str, Any] = {
+        "task_fixture_path": artifact.task_fixture,
+        "agent_label": agent.label,
+        "replay_pinned_state": "true",
+        "branch": {
+            "experiment_id": experiment.experiment_id,
+            "condition": condition.name,
+            "source_run_id": artifact.source_run_id,
+            "switch_at_step": fork_step,
+        },
+    }
+    if environment.installed_controls:
+        metadata["controls"] = [c.model_dump(mode="json") for c in environment.installed_controls]
+    if isinstance(continuation, RecordingModelAdapter):
+        metadata["cassette_path"] = str(continuation.path)
+    # A seed the provider has no parameter for is recorded and marked unsent,
+    # as run_task_pipeline does (#160). The harness has no way to send one to
+    # an outside agent, so its seeds only number the repeated runs.
+    metadata.update(unsent_seed_metadata(agent.provider, seed))
+    if external and seed is not None:
+        metadata["seed_sent"] = False
+    config = RunConfig(
+        task_id=task.task_id,
+        provider=agent.provider,
+        model=model,
+        max_steps=agent.max_steps,
+        timeout_seconds=agent.timeout_seconds,
+        temperature=agent.temperature,
+        seed=seed,
+        prompt_version=agent.prompt_version or PROMPT_VERSION,
+        cassette=agent.cassette,
+        call_policy=call_policy,
+        agent_ref=agent.agent_ref,
+        metadata=metadata,
+    )
+    runner = AgentRunner(adapter, environment, store)
+    progress.run_config = config
+    try:
+        run = runner.run(task, config)
+    finally:
+        progress.run_id = runner.run_id
+        if isinstance(continuation, TargetAgentBridge):
+            # Releases an outside agent still waiting on a tool result.
+            continuation.close()
+    entry = _scored_entry(artifact, task, condition, config, fork_step, seed, run, store, scope)
+    scope.append(run.run_id)
+    return entry
+
+
+def _scored_entry(
+    artifact: RegressionArtifact,
+    task: TaskSpec,
+    condition: ConditionSpec,
+    config: RunConfig,
+    fork_step: int,
+    seed: int | None,
+    run: RunResult,
+    store: ArtifactStore,
+    scope: list[str] | None = None,
+) -> BatchRunEntry:
+    """Verify, attribute and label a finished run, and compare it with the recording.
+
+    ``scope`` is the runs of this condition bundled so far, so the run joins
+    only their cards and never a card from another condition or the source run.
+    """
+    verdict = verify_run(store, run, task)
+    if verdict is not None and verdict.has_violations:
+        attribute_and_bundle(store, run.run_id, task, run, scope=scope or [])
+
+    trace = store.read_trace(run.run_id)
+    actions = [e.payload for e in trace if e.event_type is TraceEventType.MODEL_ACTION]
+    step, diverged = post_fork_divergence(artifact.pinned_agent_actions, actions, fork_step)
+    block = classify_post_block_outcome(trace, verdict, run) if verdict is not None else None
+    return entry_from_pipeline(
+        PipelineResult(task, config, run, verdict),
+        condition.agent_config,
+        artifact.task_fixture,
+        store.runs_dir,
+    ).model_copy(
+        update={
+            "condition": condition.name,
+            "seed": seed,
+            "first_post_fork_divergence_step": step,
+            "diverged": diverged,
+            "post_block_outcome": block.outcome if block else None,
+        }
+    )
+
+
+def _continuation(
+    artifact: RegressionArtifact,
+    condition: ConditionSpec,
+    task_id: str,
+    fork_step: int,
+    seed: int | None,
+    call_policy: CallPolicy | None = None,
+) -> tuple[ModelAdapter, str]:
+    """The adapter that answers after the fork, and the model name to record.
+
+    An outside agent answers through a fresh bridge, whose first move comes
+    after the recorded steps. Its model label is the config's ``model`` or the
+    agent's own name, as ``run_task_pipeline`` records it.
+    """
+    agent = condition.agent_config
+    if agent.provider == EXTERNAL_PROVIDER:
+        assert agent.agent_ref is not None  # AgentConfig enforces this
+        outside = load_target_agent(agent.agent_ref)
+        bridge = TargetAgentBridge(
+            outside,
+            task_id=task_id,
+            max_steps=agent.max_steps,
+            timeout_seconds=agent.timeout_seconds,
+        )
+        return bridge, agent.model or outside.name
+    if agent.provider == "fixture":
+        if condition.continuation_script:
+            script_path = Path(condition.continuation_script)
+            return FixtureModelAdapter.from_file(script_path), f"scripted:{script_path.stem}"
+        script = FixtureScript(
+            script_id=f"recorded_after_step_{fork_step}",
+            task_id=task_id,
+            description=f"Actions run {artifact.source_run_id} recorded after step {fork_step}.",
+            actions=artifact.pinned_agent_actions[fork_step:],
+        )
+        return FixtureModelAdapter(script), f"scripted:{script.script_id}"
+    model = resolve_model_name(agent.provider, agent.model, None)
+    adapter = create_model_adapter(
+        agent.provider,
+        model=model,
+        temperature=agent.temperature,
+        seed=seed,
+        timeout_seconds=agent.timeout_seconds,
+        cassette=agent.cassette,
+        task_id=task_id,
+        prompt_version=agent.prompt_version or PROMPT_VERSION,
+        call_policy=call_policy,
+    )
+    return adapter, model
+
+
+def _budget_block(
+    guard: BudgetGuard, spent_before: float, stopped_before: bool, not_run: list[NotRunCell]
+) -> BatchBudget | None:
+    """This condition's budget block, cut from a guard that spans the invocation.
+
+    ``spent_usd`` is what this batch's live runs cost, so the blocks of one
+    invocation add up to what it spent. The stop is recorded only when the guard
+    refused a seed here or stopped during this condition.
+    """
+    if guard.max_cost_usd is None:
+        return None
+    stopped_here = guard.stop_reason is not None and (bool(not_run) or not stopped_before)
+    return BatchBudget(
+        max_cost_usd=guard.max_cost_usd,
+        spent_usd=round(guard.spent_usd - spent_before, 6),
+        stop_reason=guard.stop_reason if stopped_here else None,
+        detail=guard.detail if stopped_here else None,
+        not_run=not_run,
+    )
+
+
+def _live_model(condition: ConditionSpec) -> str | None:
+    """The model a live condition runs, resolved as the adapter resolves it.
+
+    An outside agent owns its model, and the guard never prices one, so its
+    config's own label stands in.
+    """
+    agent = condition.agent_config
+    if agent.provider == EXTERNAL_PROVIDER:
+        return agent.model
+    return resolve_model_name(agent.provider, agent.model, None)
+
+
+def _load_task(artifact: RegressionArtifact) -> TaskSpec:
+    return load_task(Path(artifact.task_fixture.replace("\\", "/")).resolve())
+
+
+def _seeds(condition: ConditionSpec) -> list[int | None]:
+    """The seeds a live condition runs, its agent's own seed when it lists none."""
+    return list(condition.seeds) or [condition.agent_config.seed]
+
+
+def _cassette_file(condition: ConditionSpec, task_id: str, seed: int | None) -> Path:
+    """Where the adapter factory reads or writes this seed's cassette."""
+    agent = condition.agent_config
+    assert agent.cassette is not None
+    return cassette_path(
+        agent.cassette.directory,
+        CassetteRequestConfig(
+            task_id=task_id,
+            provider=agent.provider,
+            model=resolve_model_name(agent.provider, agent.model, None),
+            temperature=agent.temperature,
+            seed=seed,
+            timeout_seconds=agent.timeout_seconds,
+            prompt_version=agent.prompt_version or PROMPT_VERSION,
+        ),
+    )
+
+
+def _already_recorded(condition: ConditionSpec, existing: list[str]) -> str:
+    """Why a condition with recorded cassettes is refused, with every cassette listed."""
+    listed = "\n".join(f"  {path}" for path in existing)
+    return (
+        f"{len(existing)} cassette(s) of condition {condition.name!r} already exist in "
+        f"{condition.agent_config.cassette.directory}, and recording never overwrites one, "
+        f"so branching it is refused before any run:\n{listed}\n"
+        "A condition is branched into its cassette folder once, and its first batch is the "
+        "one to record."
+    )
+
+
+def _missing_cassettes(
+    condition: ConditionSpec, task_id: str, seeds: list[int | None]
+) -> list[str]:
+    agent = condition.agent_config
+    if agent.cassette is None or agent.cassette.mode != "replay":
+        return []
+    paths = [_cassette_file(condition, task_id, seed) for seed in seeds]
+    return [str(path) for path in paths if not path.is_file()]
+
+
+def _setup_error(
+    artifact: RegressionArtifact, condition: ConditionSpec, seed: int | None, exc: Exception
+) -> BatchRunEntry:
+    agent = condition.agent_config
+    return BatchRunEntry(
+        run_id=None,
+        task_id=Path(artifact.task_fixture).stem,
+        task_path=artifact.task_fixture,
+        agent_label=agent.label,
+        provider=agent.provider,
+        model=agent.model,
+        prompt_version=agent.prompt_version,
+        status="setup_error",
+        error=f"{type(exc).__name__}: {exc}",
+        condition=condition.name,
+        seed=seed,
+    )
+
+
+def _drift_metadata(drift: list[FrozenFileChange] | None) -> dict[str, Any]:
+    """The batch metadata that says a batch ran under drift, or nothing."""
+    if not drift:
+        return {}
+    return {"frozen_set_drift": [change.model_dump(mode="json") for change in drift]}
+
+
+def _write_batch(
+    store: ArtifactStore,
+    experiment: ExperimentSpec,
+    condition: ConditionSpec,
+    artifact: RegressionArtifact,
+    entries: list[BatchRunEntry],
+    started_at: datetime,
+    budget: BatchBudget | None = None,
+    **extra: Any,
+) -> BatchSummary:
+    summary = BatchSummary(
+        batch_id=new_batch_id(),
+        suite_id=experiment.frozen_manifest.suite_id,
+        started_at=started_at,
+        finished_at=utc_now(),
+        agent_configs=[condition.agent_config],
+        entries=entries,
+        aggregates=aggregate_entries(entries),
+        budget=budget,
+        metadata={
+            "experiment_id": experiment.experiment_id,
+            "condition": condition.name,
+            "condition_kind": condition.kind.value,
+            "source_run_id": artifact.source_run_id,
+            "start": condition.start.model_dump(mode="json") if condition.start else None,
+            **extra,
+        },
+    )
+    store.write_batch_summary(summary.batch_id, summary)
+    for entry in entries:
+        if entry.run_id is None:
+            continue
+        try:
+            store.enrich_index_entry_with_batch(entry.run_id, summary.batch_id)
+        except Exception:  # noqa: BLE001 (the summary is the source of truth)
+            logger.warning("batch index enrich failed for %s", entry.run_id)
+    return summary

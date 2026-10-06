@@ -11,16 +11,38 @@ Design notes
     - ``AgentConfig`` is the "agent configuration model" — the knobs that
       define one agent setup to sweep. It maps onto the per-run ``RunConfig``;
       the suite records the config so a batch is reproducible.
+    - ``max_cost_usd`` caps what the batch may spend on live calls (#196).
+      ``BatchRunner`` checks it before each run through ``BudgetGuard``. A
+      suite without it runs uncapped, as before.
+    - ``billing: "subscription"`` on an outside agent's config says its model
+      calls count against a subscription plan with no per-run charge, so a
+      capped batch admits it without a charge (see ``runner/batch.py``).
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
-SUITE_SCHEMA_VERSION = "0.1.0"
+from trace_harness.models.cassette import CassetteConfig
+from trace_harness.models.policy import CallPolicy
+
+# 0.5.0: billing "subscription" for provider "external"
+# 0.4.0: provider "external" with agent_ref
+# 0.3.0: optional max_cost_usd and per-agent call_policy
+# 0.2.0: optional cassette configuration per agent
+SUITE_SCHEMA_VERSION = "0.5.0"
+#: The one billing an agent config can declare (0.5.0).
+SUBSCRIPTION_BILLING = "subscription"
 
 
 class AgentConfig(BaseModel):
@@ -29,6 +51,22 @@ class AgentConfig(BaseModel):
     ``label`` is the human-facing identifier used in batch summaries and must be
     unique within a suite so results can be attributed to the config that
     produced them.
+
+    With ``provider: external`` the run drives an outside agent, and
+    ``agent_ref`` names it as ``package.module:factory`` (see
+    ``runner/target_agent.py``), and ``model`` optionally overrides the label
+    the agent reports for itself. The outside agent owns its model, so such a
+    config refuses ``cassette``, ``call_policy``, ``temperature`` and ``seed``,
+    as the CLI refuses the matching flags with ``--agent``.
+
+    ``billing`` is only for provider ``external``. ``subscription`` declares
+    that the outside agent's model calls count against a subscription plan
+    with no per-run charge, such as the Claude Code agent on a Claude login.
+    A capped batch then admits the config without charging it, and the cost
+    the agent's own runtime reports is recorded as ``notional_cost_usd``,
+    which no cap counts. Absent, the calls are taken as billed per call at a
+    cost the harness cannot see, and the config is refused under a cap. The
+    key is written only when set, so configs without it serialize as before.
     """
 
     label: str
@@ -39,6 +77,56 @@ class AgentConfig(BaseModel):
     seed: int | None = None
     max_steps: int = Field(default=16, ge=1)
     timeout_seconds: float = Field(default=120.0, gt=0)
+    cassette: CassetteConfig | None = None
+    # Overrides the provider's default retry and rate-limit policy, for example
+    # a higher requests_per_minute on a paid tier. Fields it leaves out keep the
+    # provider's default. Ignored by runs that make no live call, and refused
+    # for provider external, which makes none.
+    call_policy: CallPolicy | None = None
+    agent_ref: str | None = None
+    billing: Literal["subscription"] | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_billing(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # A config without billing writes exactly the bytes it always did.
+        data = handler(self)
+        if self.billing is None:
+            data.pop("billing", None)
+        return data
+
+    @model_validator(mode="after")
+    def _external_needs_agent_ref(self) -> AgentConfig:
+        if self.provider == "external":
+            if not self.agent_ref:
+                raise ValueError("provider 'external' needs agent_ref (package.module:factory)")
+            if self.cassette is not None:
+                raise ValueError(
+                    "provider 'external' cannot use a harness cassette; the outside agent "
+                    "owns its model calls"
+                )
+            if self.call_policy is not None:
+                raise ValueError(
+                    "provider 'external' cannot use a call_policy; the outside agent owns its "
+                    "model calls, so the harness has no request to retry or pace"
+                )
+            # The CLI refuses --temperature and --seed with --agent for the same
+            # reason: run_config.json would record settings nothing applied.
+            model_settings = [
+                name for name in ("temperature", "seed") if getattr(self, name) is not None
+            ]
+            if model_settings:
+                raise ValueError(
+                    f"provider 'external' cannot set {' or '.join(model_settings)}; "
+                    "the outside agent owns its model"
+                )
+        elif self.agent_ref is not None:
+            raise ValueError("agent_ref is only valid with provider 'external'")
+        if self.billing is not None and self.provider != "external":
+            raise ValueError(
+                "billing is only valid with provider 'external'; a live provider's runs are "
+                "priced from the usage their traces record"
+            )
+        return self
 
 
 class SuiteSpec(BaseModel):
@@ -51,6 +139,8 @@ class SuiteSpec(BaseModel):
     agent_configs: list[AgentConfig] = Field(
         default_factory=lambda: [AgentConfig(label="fixture-baseline")], min_length=1
     )
+    # Spend cap in USD across the batch's live runs. None runs uncapped.
+    max_cost_usd: float | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _labels_unique(self) -> SuiteSpec:

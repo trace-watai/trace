@@ -24,7 +24,7 @@ def test_create_run_dir_and_json_round_trip(tmp_path):
     loaded = store.read_json("run_x", names.RUN_CONFIG)
     assert loaded["task_id"] == "t1"
     assert loaded["max_steps"] == 3
-    assert loaded["schema_version"] == "0.1.0"
+    assert loaded["schema_version"] == "0.4.0"
 
     store.write_json("run_x", names.FINAL_STATE, {"orders": [], "refunds": []})
     assert store.read_json("run_x", names.FINAL_STATE) == {"orders": [], "refunds": []}
@@ -40,6 +40,29 @@ def test_missing_artifact_raises_with_guidance(tmp_path):
     store.create_run_dir("run_x")
     with pytest.raises(FileNotFoundError, match="verifier_result.json"):
         store.read_json("run_x", names.VERIFIER_RESULT)
+
+
+def test_batch_summary_and_suite_report_round_trip(tmp_path):
+    store = ArtifactStore(tmp_path / "runs")
+
+    store.write_batch_summary("batch_1", {"batch_id": "batch_1", "entries": []})
+    assert store.read_batch_summary("batch_1")["batch_id"] == "batch_1"
+
+    report = {"schema_version": "0.1.0", "batch_id": "batch_1", "rows": []}
+    path = store.write_suite_report("batch_1", report, markdown="# report\n")
+    assert path == store.suite_report_path("batch_1")
+    assert store.read_suite_report("batch_1") == report
+    assert store.suite_report_md_path("batch_1").read_text(encoding="utf-8") == "# report\n"
+    # Both files are newline-terminated JSON/markdown on disk.
+    assert path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_missing_batch_summary_and_suite_report_raise_with_guidance(tmp_path):
+    store = ArtifactStore(tmp_path / "runs")
+    with pytest.raises(FileNotFoundError, match="batch summary not found"):
+        store.read_batch_summary("nope")
+    with pytest.raises(FileNotFoundError, match="report-suite"):
+        store.read_suite_report("nope")
 
 
 def test_trace_jsonl_round_trip(tmp_path):

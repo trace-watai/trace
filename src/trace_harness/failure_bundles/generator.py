@@ -13,20 +13,36 @@ Repair controls
     actually happened. A regression CI gate is always included — turning
     failures into permanent tests is the point of TRACE.
 
+One card per root cause (#211)
+    Every card carries a ``bundle_key`` formed by :func:`bundle_key`.
+    :func:`record_bundle` writes a run's bundle only when no finished bundle
+    with that key exists in the runs directory. Otherwise it appends the run
+    to that card's ``occurrences`` and leaves a ``bundle_ref.json`` pointer in
+    the run's directory, so a sweep that hits one failure a hundred times
+    yields one card, one repair package and one regression artifact, pinned to
+    the first occurrence.
+
 # TODO(Samir/failure_bundles): markdown rendering of the failure card for
 # humans (the JSON is the contract; a .md view is a nice-to-have for PRs).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel
 
 from trace_harness.attribution.schemas import AttributionResult
 from trace_harness.environment.state import SupportState
+from trace_harness.environment.tools import ToolSideEffect
 from trace_harness.failure_bundles.schemas import (
     BlastRadius,
+    BundleOccurrence,
+    BundleRef,
     ControlPriority,
     FailureCard,
     RepairControl,
@@ -36,6 +52,8 @@ from trace_harness.regression.materializer import materialize_regression_artifac
 from trace_harness.regression.schemas import RegressionArtifact
 from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import Severity, TaskSpec
+from trace_harness.tracing import artifact_store as names
+from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import VerifierResult
 
@@ -264,6 +282,110 @@ def _control_answer_grounding(checks: list[str]) -> RepairControl:
 # check_id -> control builder. Only failed checks contribute controls. Every
 # blocks_release-capable check id should have an entry here — a blocking
 # failure with no preventive control is a silent gap in the repair package.
+def _control_expected_action_contract(checks: list[str]) -> RepairControl:
+    """The remedy the task asked for was omitted, swapped, or issued unasked.
+
+    Deliberately not a blocking guardrail. An expected-action failure is a
+    task-completion failure, and a pre-dispatch block can only stop an action,
+    never cause one. Blocking would make an omitted refund look fixed while
+    leaving the customer with nothing, so this prescribes detection instead.
+    """
+    return RepairControl(
+        name="expected_action_contract_check",
+        installation_point=(
+            "trace_harness.verifiers.refund_policy — post-run, against the "
+            "task's expected_action contract"
+        ),
+        check=(
+            "compare the refund actually issued and the escalation actually "
+            "recorded against the task's declared expected_action"
+        ),
+        behavior_on_failure=(
+            "fail the run and name the mismatch; do not attempt to synthesize "
+            "the missing action, because a control cannot decide on the "
+            "customer's behalf"
+        ),
+        expected_impact=(
+            "an omitted or swapped remedy stops passing as 'no policy violation detected'"
+        ),
+        why_it_prevents_recurrence=(
+            "the suite's positive rows assert the expected action happened "
+            "rather than only that nothing forbidden did"
+        ),
+        risk_or_tradeoff=(
+            "detection only; a task with no expected_action declared is "
+            "unaffected, so coverage grows only as tasks declare one"
+        ),
+        priority=ControlPriority.P1,
+        linked_verifier_checks=sorted(checks),
+    )
+
+
+def _control_escalation_discipline(checks: list[str]) -> RepairControl:
+    """Escalations that were not warranted, or were raised twice."""
+    return RepairControl(
+        name="escalation_discipline_check",
+        installation_point=(
+            "trace_harness.environment.support_env.SupportEnvironment.execute — "
+            "pre-dispatch for escalate_case"
+        ),
+        check=(
+            "reject an escalation when the policy permits the requested remedy "
+            "outright, and reject a second escalation for a case already "
+            "escalated in this run"
+        ),
+        behavior_on_failure=(
+            "refuse the escalate_case call with an observation naming which "
+            "condition failed, so the agent either proceeds or explains"
+        ),
+        expected_impact=(
+            "removes unnecessary_escalation and duplicate_escalation without "
+            "touching the cases where escalation is required"
+        ),
+        why_it_prevents_recurrence=(
+            "the check reads the same policy rules the verifier reads, so an "
+            "escalation is refused for the same reason it would be failed"
+        ),
+        risk_or_tradeoff=(
+            "an over-strict rule here would suppress a warranted escalation, "
+            "which is a worse failure than the one it prevents; the positive "
+            "siblings are what keep it honest"
+        ),
+        priority=ControlPriority.P2,
+        linked_verifier_checks=sorted(checks),
+    )
+
+
+def _control_retrieval_completeness(checks: list[str]) -> RepairControl:
+    """Acting before reading the policy, or reading only part of it."""
+    return RepairControl(
+        name="retrieval_before_action_check",
+        installation_point=(
+            "trace_harness.environment.support_env.SupportEnvironment.execute — "
+            "pre-dispatch for any external_durable or external_irreversible tool"
+        ),
+        check=(
+            "require that the current-status policy doc was retrieved earlier "
+            "in this run before a side-effecting call is allowed"
+        ),
+        behavior_on_failure=(
+            "refuse the call with an observation naming the doc that has not "
+            "been read, so the agent retrieves it and re-decides"
+        ),
+        expected_impact=("an agent can no longer issue a refund on a policy it never read"),
+        why_it_prevents_recurrence=(
+            "the ordering requirement is enforced by the environment rather "
+            "than left to the agent's discipline"
+        ),
+        risk_or_tradeoff=(
+            "adds a retrieval round trip to runs that would have been correct "
+            "anyway, which costs latency rather than correctness"
+        ),
+        priority=ControlPriority.P1,
+        linked_verifier_checks=sorted(checks),
+    )
+
+
 _CONTROL_BUILDERS = {
     "unauthorized_cash_refund": _control_refund_guardrail,
     "unauthorized_store_credit": _control_refund_guardrail,
@@ -271,7 +393,116 @@ _CONTROL_BUILDERS = {
     "ticket_outage_claim_unsupported": _control_ticket_grounding,
     "final_answer_inconsistent_with_state": _control_answer_grounding,
     "required_escalation_missing": _control_escalation_check,
+    "unnecessary_escalation": _control_escalation_discipline,
+    "duplicate_escalation": _control_escalation_discipline,
+    "unexpected_escalation": _control_escalation_discipline,
+    "expected_refund_missing": _control_expected_action_contract,
+    "unexpected_refund_issued": _control_expected_action_contract,
+    "policy_not_retrieved_before_action": _control_retrieval_completeness,
+    "incomplete_retrieval_coverage": _control_retrieval_completeness,
 }
+
+
+# Tool-level reachability includes alternative arguments, not just the recorded call.
+CHECKS_REACHABLE_BY_TOOL = {
+    "issue_refund": ["unauthorized_cash_refund", "unauthorized_store_credit"],
+    "create_ticket": ["ticket_outage_claim_unsupported"],
+    "final_answer": ["final_answer_inconsistent_with_state"],
+    "escalate_case": [
+        "required_escalation_missing",
+        "unnecessary_escalation",
+        "duplicate_escalation",
+    ],
+}
+
+
+# --- root-cause identity (#211) ---
+
+BUNDLE_KEY_VERSION = "v2"
+# Stands in for the tool in a key's readable prefix when the run took no
+# irreversible action. The digest input records JSON null instead, so a tool
+# that happened to be named "none" could not collide with it.
+NO_IRREVERSIBLE_TOOL = "none"
+
+
+def first_irreversible_tool(trace: list[TraceEvent], attribution: AttributionResult) -> str | None:
+    """The tool the run called at its first irreversible step, or None when it had none.
+
+    The step is ``AttributionResult.first_irreversible_action_step``, the same
+    field the regression materializer pins. The attributor sets it from the
+    first ``tool_call_executed`` event whose ``side_effect`` is
+    ``external_irreversible`` and whose status is ok, and the tool is read off
+    the event at that step with the same test, so the key and the attribution
+    always mean the same step.
+    """
+    step = attribution.first_irreversible_action_step
+    if step is None:
+        return None
+    for event in trace:
+        if (
+            event.event_type is TraceEventType.TOOL_CALL_EXECUTED
+            and event.step_id == step
+            and event.payload.get("side_effect") == ToolSideEffect.EXTERNAL_IRREVERSIBLE.value
+            and event.payload.get("status") == "ok"
+        ):
+            tool = event.payload.get("tool_name")
+            return tool if isinstance(tool, str) else None
+    return None
+
+
+def bundle_key(
+    verifier_result: VerifierResult,
+    attribution: AttributionResult,
+    trace: list[TraceEvent],
+    task_id: str,
+) -> str:
+    """The root-cause identity a failure card is deduplicated on.
+
+    Four facts form it and nothing else does. They are the task id, the failed
+    verifier check ids as a sorted set, the primary failure category from
+    attribution, and the tool at the first irreversible step (see
+    :func:`first_irreversible_tool`). Run ids, step numbers, messages and
+    evidence stay out, so runs of one task that failed the same way share a key
+    across providers, seeds and days. Two tasks never share one, so each keeps
+    its own regression artifact to replay or branch from.
+
+    The key reads ``v2:<category>:<tool or none>:<digest>``. The digest is the
+    first 16 hex characters of sha256 over the canonical JSON of the four
+    facts and the version, with sorted keys and no whitespace. The prefix is
+    there for people reading an index or a card. The digest is what separates
+    two failures with the same category and tool but different checks, and
+    keys are only ever compared whole.
+    """
+    checks = sorted({check.check_id for check in verifier_result.failed_checks})
+    category = attribution.primary_failure_category.value
+    tool = first_irreversible_tool(trace, attribution)
+    canonical = json.dumps(
+        {
+            "version": BUNDLE_KEY_VERSION,
+            "task": task_id,
+            "checks": checks,
+            "category": category,
+            "tool": tool,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return f"{BUNDLE_KEY_VERSION}:{category}:{tool or NO_IRREVERSIBLE_TOOL}:{digest}"
+
+
+def _occurrence(
+    run_result: RunResult, task: TaskSpec, run_config: Mapping[str, Any] | None
+) -> BundleOccurrence:
+    config = run_config or {}
+    provider, model, seed = config.get("provider"), config.get("model"), config.get("seed")
+    return BundleOccurrence(
+        run_id=run_result.run_id,
+        task_id=task.task_id,
+        provider=provider if isinstance(provider, str) else None,
+        model=model if isinstance(model, str) else None,
+        seed=seed if isinstance(seed, int) and not isinstance(seed, bool) else None,
+    )
 
 
 class FailureBundleGenerator:
@@ -288,12 +519,27 @@ class FailureBundleGenerator:
         final_state: dict[str, Any],
         initial_state: dict[str, Any],
         task_fixture_path: str | None = None,
+        agent_ref: str | None = None,
+        run_config: Mapping[str, Any] | None = None,
     ) -> FailureBundle:
+        """Build the run's three artifacts. Nothing is written here.
+
+        The card carries the run's bundle key and lists the run as its only
+        occurrence. :func:`record_bundle` decides whether the bundle is
+        written or the run joins an existing card. ``run_config`` is the run's
+        ``run_config.json``, read for the provider, model and seed the
+        occurrence records.
+        """
         if verifier_result.passed:
             raise ValueError("cannot generate a failure bundle from a passing run")
 
         failure_card = self._build_card(
             task, run_result, trace, verifier_result, attribution, final_state
+        ).model_copy(
+            update={
+                "bundle_key": bundle_key(verifier_result, attribution, trace, task.task_id),
+                "occurrences": [_occurrence(run_result, task, run_config)],
+            }
         )
         repair_package = self._build_repair_package(task, run_result, verifier_result)
         regression_artifact = materialize_regression_artifact(
@@ -303,6 +549,9 @@ class FailureBundleGenerator:
             initial_state=initial_state,
             run_id=run_result.run_id,
             task_fixture_path=task_fixture_path,
+            agent_ref=agent_ref,
+            attribution=attribution,
+            checks_reachable_by_tool=CHECKS_REACHABLE_BY_TOOL,
         )
         return FailureBundle(
             failure_card=failure_card,
@@ -439,3 +688,156 @@ class FailureBundleGenerator:
             controls=controls,
             metadata={"generated_from_checks": failed_ids},
         )
+
+
+# --- one card per root cause (#211) ---
+
+
+class BundleKeyConflictError(ValueError):
+    """A re-bundled run holds a card other runs point to, and its key has changed.
+
+    Moving that card would leave every pointer to it naming the wrong failure,
+    so the bundle is refused. Re-bundling a card's reproductions first, or
+    removing the run directory, clears it.
+    """
+
+
+@dataclass(frozen=True)
+class RecordedBundle:
+    """Where :func:`record_bundle` put one run's failure."""
+
+    run_id: str
+    bundle_key: str
+    # The run whose directory holds the card, repair package and regression
+    # artifact, which is this run or the first occurrence it reproduced.
+    canonical_run_id: str
+    occurrence_count: int
+
+    @property
+    def reproduction(self) -> bool:
+        return self.canonical_run_id != self.run_id
+
+
+def _read_card(store: ArtifactStore, run_id: str) -> FailureCard:
+    return FailureCard.model_validate(store.read_json(run_id, names.FAILURE_CARD))
+
+
+def _refuse_moving_a_shared_card(store: ArtifactStore, run_id: str, key: str) -> None:
+    """Refuse a new key for a run whose card other runs point to.
+
+    A card covering this run alone, including one written before 0.5.0, is
+    simply replaced by the new bundle or pointer.
+    """
+    if store.exists(run_id, names.BUNDLE_REF) or not store.exists(run_id, names.FAILURE_CARD):
+        return
+    prior = _read_card(store, run_id)
+    others = [o.run_id for o in prior.occurrences if o.run_id != run_id]
+    if prior.bundle_key != key and others:
+        raise BundleKeyConflictError(
+            f"run '{run_id}' holds the card for {prior.bundle_key} with "
+            f"{len(others)} reproduction(s), and now bundles as {key}"
+        )
+
+
+def _leave_previous_card(store: ArtifactStore, run_id: str, home: str) -> None:
+    """Take a run that pointed to another card off it, when its bundle now lives elsewhere."""
+    if not store.exists(run_id, names.BUNDLE_REF):
+        return
+    ref = BundleRef.model_validate(store.read_json(run_id, names.BUNDLE_REF))
+    previous = ref.canonical_run_id
+    if previous == home or not store.exists(previous, names.FAILURE_CARD):
+        return
+    card = _read_card(store, previous)
+    kept = [o for o in card.occurrences if o.run_id != run_id]
+    if len(kept) != len(card.occurrences):
+        store.write_json(
+            previous, names.FAILURE_CARD, card.model_copy(update={"occurrences": kept})
+        )
+
+
+def record_bundle(
+    store: ArtifactStore, bundle: FailureBundle, *, scope: Collection[str] | None = None
+) -> RecordedBundle:
+    """Write a run's bundle, or add the run to the card that already has its key.
+
+    The key is looked up with :meth:`ArtifactStore.find_bundle_card` under the
+    runs directory's bundle lock, so concurrent bundle stages see each other's
+    cards. Only a finished bundle is joined, a card with its repair package and
+    regression artifact beside it.
+
+    ``scope`` limits which runs' cards may be joined, as described on
+    :meth:`ArtifactStore.find_bundle_card`, and always includes the run being
+    bundled. None joins a card anywhere in the runs directory.
+
+    With no finished bundle for the key, the three artifacts are written to the
+    run's own directory with the run as the first occurrence, exactly as before
+    0.5.0 apart from the two new card fields. The card is written last, so a
+    crash part way leaves a directory holding no card, which no lookup joins
+    and ``RunReader.get_bundle`` reports as not bundled.
+
+    With a finished bundle for the key in another run's directory, the run is
+    appended to that card's ``occurrences``, and the run's directory gets
+    ``bundle_ref.json`` naming the card's run in place of its own card, repair
+    package and regression artifact.
+
+    Bundling a run again never adds it twice. The run's own occurrence is
+    refreshed in place, a card it already holds keeps its occurrences, and a
+    run whose bundle moves to another card leaves the card it pointed to.
+    """
+    card = bundle.failure_card
+    run_id, key = card.run_id, card.bundle_key
+    if key is None or not card.occurrences:
+        raise ValueError("a failure card needs its bundle key and first occurrence to be recorded")
+    occurrence = card.occurrences[0]
+    lookup_scope = None if scope is None else {*scope, run_id}
+    with store.bundle_lock():
+        _refuse_moving_a_shared_card(store, run_id, key)
+        store.set_index_bundle_key(run_id, key)
+        canonical = store.find_bundle_card(key, scope=lookup_scope)
+        _leave_previous_card(store, run_id, canonical or run_id)
+        if canonical is None or canonical == run_id:
+            # A card this run already holds keeps the runs listed on it, even
+            # when an older writer left it without the rest of its bundle.
+            held = store.exists(run_id, names.FAILURE_CARD) and not store.exists(
+                run_id, names.BUNDLE_REF
+            )
+            prior = _read_card(store, run_id).occurrences if held else []
+            occurrences = [occurrence, *(o for o in prior if o.run_id != run_id)]
+            store.artifact_path(run_id, names.BUNDLE_REF).unlink(missing_ok=True)
+            store.write_json(run_id, names.REPAIR_PACKAGE, bundle.repair_package)
+            store.write_json(run_id, names.REGRESSION_ARTIFACT, bundle.regression_artifact)
+            store.write_json(
+                run_id, names.FAILURE_CARD, card.model_copy(update={"occurrences": occurrences})
+            )
+            return RecordedBundle(run_id, key, run_id, len(occurrences))
+
+        if store.exists(run_id, names.FAILURE_CARD):
+            own = [o.run_id for o in _read_card(store, run_id).occurrences if o.run_id != run_id]
+            if own:
+                raise BundleKeyConflictError(
+                    f"runs '{canonical}' and '{run_id}' both hold a card for {key}, and "
+                    f"{len(own)} run(s) point to the one in '{run_id}'"
+                )
+        home = _read_card(store, canonical)
+        known = [o.run_id for o in home.occurrences]
+        if run_id in known:
+            occurrences = [occurrence if o.run_id == run_id else o for o in home.occurrences]
+        else:
+            occurrences = [*home.occurrences, occurrence]
+        if occurrences != home.occurrences:
+            store.write_json(
+                canonical, names.FAILURE_CARD, home.model_copy(update={"occurrences": occurrences})
+            )
+        # A run that held its own bundle before it matched this key (a card
+        # written before 0.5.0, or under a key it no longer has) gives it up,
+        # card first so the directory stops reading as a finished bundle.
+        for name in (names.FAILURE_CARD, names.REPAIR_PACKAGE, names.REGRESSION_ARTIFACT):
+            store.artifact_path(run_id, name).unlink(missing_ok=True)
+        store.write_json(
+            run_id,
+            names.BUNDLE_REF,
+            BundleRef(
+                run_id=run_id, task_id=card.task_id, bundle_key=key, canonical_run_id=canonical
+            ),
+        )
+        return RecordedBundle(run_id, key, canonical, len(occurrences))

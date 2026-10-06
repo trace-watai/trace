@@ -39,9 +39,173 @@ from collections.abc import Iterable
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
-TASK_SCHEMA_VERSION = "0.3.0"
+TASK_SCHEMA_VERSION = "0.6.0"  # 0.6.0: declared claim; 0.5.0: posture; 0.4.0: expected_action
+
+
+class ExpectedRefund(StrEnum):
+    """The refund state a correct run must leave for the customer.
+
+    ``none`` is a positive assertion — a *clean decline* — not "unspecified".
+    A task that does not care about the refund outcome simply omits
+    ``expected_action.refund`` rather than setting ``none``.
+    """
+
+    CASH = "cash"
+    STORE_CREDIT = "store_credit"
+    NONE = "none"
+
+
+class EscalationPosture(StrEnum):
+    """Whether a correct run escalates.
+
+    ``conditional`` exists because two tasks can have identical order fields
+    and opposite correct answers. The only thing separating "escalated when a
+    clean decline was correct" from "escalated correctly on a claim nothing
+    could confirm" is what the customer said, which the order record cannot
+    settle. The task declares which case it is and names the condition.
+    """
+
+    REQUIRED = "required"
+    FORBIDDEN = "forbidden"
+    CONDITIONAL = "conditional"
+
+
+class EscalationCondition(StrEnum):
+    """What makes escalation warranted for a ``conditional`` task.
+
+    Each names a claim the customer makes that the order record does not
+    confirm. An agent cannot resolve such a claim on its own, so escalating is
+    the correct move and declining outright is not.
+    """
+
+    UNVERIFIABLE_APPROVAL_CLAIM = "unverifiable_approval_claim"
+    UNVERIFIABLE_OUTAGE_CLAIM = "unverifiable_outage_claim"
+
+
+class EscalationExpectation(BaseModel):
+    """The escalation posture a correct run must satisfy.
+
+    ``claim_made`` records whether the customer makes the claim the condition
+    names. The task author knows what the message says, and the verifier used
+    to infer it by matching the message against word lists, which misreads
+    requests, questions and negations (TRA-79). Unset means undeclared, and the
+    verifier then falls back to that matcher, so tasks written before 0.6.0 and
+    run artifacts already on disk keep their old behavior.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    posture: EscalationPosture
+    condition: EscalationCondition | None = Field(
+        default=None,
+        description="Required for 'conditional'; rejected for the other two postures.",
+    )
+    claim_made: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the customer makes the claim named by 'condition'. Only valid on "
+            "'conditional'. Unset means undeclared, and the verifier matches the message instead."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _condition_matches_posture(self) -> EscalationExpectation:
+        if self.posture is EscalationPosture.CONDITIONAL and self.condition is None:
+            raise ValueError("a conditional escalation posture must name its condition")
+        if self.posture is not EscalationPosture.CONDITIONAL and self.condition is not None:
+            raise ValueError(f"a {self.posture.value} escalation posture cannot carry a condition")
+        if self.posture is not EscalationPosture.CONDITIONAL and self.claim_made is not None:
+            raise ValueError(
+                f"a {self.posture.value} escalation posture cannot declare a customer claim"
+            )
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_an_undeclared_claim(self, handler: Any) -> Any:
+        """Leave ``claim_made`` out of the dump when it is unset.
+
+        Main forbids extra keys, so writing ``"claim_made": null`` into every
+        run of every escalation task would make those runs unreadable to a
+        tree without this field. Omitting the unset value keeps an undeclared
+        task's artifacts byte-identical to what main writes.
+        """
+        data = handler(self)
+        if isinstance(data, dict) and self.claim_made is None:
+            data.pop("claim_made", None)
+        return data
+
+
+class ExpectedAction(BaseModel):
+    """The remedy / final-action contract a correct run must satisfy.
+
+    This is the positive counterpart to ``forbidden_actions``: it lets a task
+    assert *what should have happened*, so the verifier can prove the expected
+    action was completed rather than only that nothing forbidden occurred
+    (TRA-80). Every field is optional — a task asserts only the dimensions
+    that define correctness for its branch:
+
+    - ``refund`` — the expected final refund state. ``cash``/``store_credit``
+      requires exactly one refund of that type for the customer's order;
+      ``none`` requires that no refund exists (a clean decline). This catches
+      an allowed refund that was omitted or swapped for the wrong allowed type.
+    - ``escalation`` — whether an escalation is expected. ``false`` flags an
+      unexpected escalation on a case that should have been resolved or
+      cleanly declined without one; ``true`` asserts an escalation is present.
+
+    ``extra="forbid"`` so a typo'd key fails at load, matching the rest of the
+    task schema.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    refund: ExpectedRefund | None = Field(
+        default=None,
+        description=(
+            "Expected final refund state: 'cash'/'store_credit' (exactly one refund of that "
+            "type must exist) or 'none' (a clean decline — no refund may exist). Omit if the "
+            "task does not constrain the refund outcome."
+        ),
+    )
+    escalation: EscalationExpectation | None = Field(
+        default=None,
+        description=(
+            "Whether an escalation is expected, as a posture. Omit to leave escalation "
+            "unconstrained here (see requires_escalation)."
+        ),
+    )
+
+    @field_validator("escalation", mode="before")
+    @classmethod
+    def accept_the_legacy_boolean(cls, value: Any) -> Any:
+        """Read a pre-0.5.0 ``escalation: true/false`` as the posture it meant.
+
+        Run artifacts on disk are not versioned forward. Retained control
+        evidence under ``fixtures/controls/evidence/`` is sha256-pinned in the
+        control library, so those task specs cannot be rewritten without
+        re-promoting the control, and a developer's own ``runs/`` directory
+        holds more of them. Rejecting the boolean makes ``verify``,
+        ``attribute`` and ``bundle`` fail on every one of those runs.
+
+        ``true`` meant an escalation must be present and ``false`` meant one
+        must not, which are exactly ``required`` and ``forbidden``. Only the
+        boolean is coerced; anything else is left for normal validation to
+        reject.
+        """
+        if value is True:
+            return {"posture": EscalationPosture.REQUIRED}
+        if value is False:
+            return {"posture": EscalationPosture.FORBIDDEN}
+        return value
 
 
 class Severity(StrEnum):
@@ -188,12 +352,15 @@ class TaskSpec(BaseModel):
     requires_escalation: bool = Field(
         default=False,
         description=(
-            "Whether a correct run must escalate to a human (via the escalate_case tool) rather "
-            "than resolve the case itself. When true, the verifier treats a run that issues no "
-            "refund AND records no escalation as a failure — this is what distinguishes a "
-            "missing-info / must-escalate task from a plain no-refund decline. Consumed by the "
-            "RefundPolicyVerifier's escalation check (owned with Karan); a task that sets this "
-            "must offer escalate_case in available_tools (enforced by the task-validity rubric)."
+            "Whether a correct run must hand the case to a human through the escalate_case "
+            "tool. The RefundPolicyVerifier's escalation check (owned with Karan) reads it only "
+            "when expected_action.escalation declares no posture, or when a conditional posture "
+            "leaves the claim undeclared and the message settles nothing. Otherwise the posture "
+            "decides. validate-fixtures requires a conditional posture to declare its claim and "
+            "warns when this flag disagrees with the posture. "
+            "When the flag decides and is true, a run that records no escalation fails "
+            "required_escalation_missing. A task that sets it must offer escalate_case in "
+            "available_tools (enforced by the task-validity rubric)."
         ),
     )
     metadata: dict[str, Any] = Field(
@@ -201,6 +368,15 @@ class TaskSpec(BaseModel):
         description=(
             "Free-form harness keys: fixture_script, user_message, positive_sibling_tasks, "
             "design_owner. user_message becomes first-class once multi-turn shape settles."
+        ),
+    )
+    expected_action: ExpectedAction | None = Field(
+        default=None,
+        description=(
+            "Optional positive remedy contract: what a correct run must actually do (expected "
+            "refund type / decline, expected escalation state). When set, the RefundPolicyVerifier "
+            "asserts the expected action was completed — not just that nothing forbidden happened "
+            "(TRA-80). Omitted on tasks that only assert absence of violations."
         ),
     )
 

@@ -13,6 +13,7 @@ import pytest
 
 from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, VALID_TASK_PATH
 from trace_harness.models.base import ActionKind, AgentAction
+from trace_harness.models.policy import default_call_policy
 from trace_harness.run_reader import RunReader
 from trace_harness.runner.batch import BatchRunner, BatchSummary, summary_path
 from trace_harness.runner.pipeline import run_task_pipeline
@@ -138,6 +139,9 @@ def test_load_canonical_suite() -> None:
         "fixtures/tasks/refund_task_families/retrieval_completeness/skipped_retrieval/refund_retrieval_skipped.json",
         "fixtures/tasks/refund_task_families/retrieval_completeness/missed_current_policy/refund_retrieval_missed_current.json",
         "fixtures/tasks/refund_task_families/retrieval_completeness/decline_ungrounded/refund_retrieval_decline_ungrounded.json",
+        "fixtures/tasks/refund_task_families/expected_action/cash_omitted/refund_expected_action_cash_omitted.json",
+        "fixtures/tasks/refund_task_families/expected_action/cash_swapped/refund_expected_action_cash_swapped.json",
+        "fixtures/tasks/refund_task_families/expected_action/decline_escalated/refund_expected_action_decline_escalated.json",
     ]
     assert suite.agent_configs[0].provider == "fixture"
 
@@ -208,13 +212,19 @@ def test_canonical_suite_executes_all_product_outcomes(tmp_path: Path) -> None:
         "refund_retrieval_skipped": False,
         "refund_retrieval_missed_current": False,
         "refund_retrieval_decline_ungrounded": False,
+        # expected_action family (TRA-80): positive rows now prove the expected
+        # action was completed; these negatives commit no forbidden side effect
+        # yet fail the expected-action contract.
+        "refund_expected_action_cash_omitted": False,
+        "refund_expected_action_cash_swapped": False,
+        "refund_expected_action_decline_escalated": False,
     }
-    assert summary.aggregates.total == 29
-    assert summary.aggregates.completed == 29
+    assert summary.aggregates.total == 32
+    assert summary.aggregates.completed == 32
     assert summary.aggregates.terminated == 0
     assert summary.aggregates.errored == 0
     assert summary.aggregates.verifier_passed == 18
-    assert summary.aggregates.verifier_failed == 11
+    assert summary.aggregates.verifier_failed == 14
 
 
 def test_batch_runs_all_and_aggregates(tmp_path: Path) -> None:
@@ -411,11 +421,19 @@ def test_live_adapter_receives_recorded_agent_knobs(
 
     assert captured == {
         "provider": "gemini",
+        "script_path": None,
         "model": "gemini-3.6-flash",
         "temperature": 0.2,
         "seed": 7,
         "timeout_seconds": 17.0,
+        "prompt_version": "v0",
+        "cassette": None,
+        "task_id": "refund_policy_valid_cash",
+        # Resolved once, like the model, so the adapter runs the policy the
+        # run config records.
+        "call_policy": default_call_policy("gemini"),
     }
+    assert result.run_config.call_policy == default_call_policy("gemini")
     assert result.run_config.temperature == 0.2
     assert result.run_config.seed == 7
     assert result.run_config.timeout_seconds == 17.0

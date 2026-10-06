@@ -54,6 +54,10 @@ class ModelPromptPayload(_IgnoreExtra):
 
 class ModelResponsePayload(_IgnoreExtra):
     raw: dict[str, Any] | None = None
+    # The live call policy's record of how this response was obtained: attempts,
+    # failures, delays, rate-limit wait (models/policy.py CallRecord). Absent
+    # in traces written before #196 and in cassette replays of older recordings.
+    call_record: dict[str, Any] | None = None
 
 
 class ModelActionPayload(_IgnoreExtra):
@@ -80,6 +84,7 @@ class ToolCallExecutedPayload(_IgnoreExtra):
     status: str
     side_effect: str | None = None
     error: str | None = None
+    blocked_by: str | None = None  # control_id of the control that blocked the call (0.4.0+)
 
 
 class RetrievalResultItem(_IgnoreExtra):
@@ -101,10 +106,14 @@ class ToolObservationPayload(_IgnoreExtra):
     status: str
     result: Any = None
     error: str | None = None
+    blocked_by: str | None = None  # control_id of the control that blocked the call (0.4.0+)
 
 
 class FinalAnswerPayload(_IgnoreExtra):
     final_answer: str
+    # control_id of the control that blocked this answer (0.5.0+); None when
+    # the answer stood.
+    blocked_by: str | None = None
 
 
 class RunFinishedPayload(_IgnoreExtra):
@@ -117,6 +126,11 @@ class ErrorPayload(_IgnoreExtra):
     error: str
     kind: str
     traceback: str | None = None
+    # From a live call: on a model_error, the attempts made before the policy
+    # gave up; on a model_timeout, the attempts made before the runner
+    # abandoned the call (outcome "abandoned"). A model_error whose answer
+    # arrived and was rejected keeps it on the model_response before it.
+    call_record: dict[str, Any] | None = None
 
 
 TracePayload = (

@@ -15,6 +15,13 @@ endpoint map in docs/future_api.md is mirrored 1:1 by the methods here:
     GET /runs/{id}/verifier         -> get_verifier(id)   -> VerifierResult | None
     GET /runs/{id}/attribution      -> get_attribution(id)-> AttributionResult | None
     GET /runs/{id}/bundle           -> get_bundle(id)     -> FailureBundle | None
+    GET /batches/{id}               -> get_batch_summary(id) -> BatchSummary
+    GET /batches/{id}/report        -> get_suite_report(id)  -> SuiteReport
+
+Two bundle readers have no endpoint yet. ``get_bundle_ref`` returns the
+pointer a reproduction holds (#211) and ``get_occurrences`` the runs its card
+covers, for callers that copy runs elsewhere and have to keep each
+reproduction with the run holding its card.
 
 Missing-artifact states are explicit:
   * unknown run id (no directory)              -> raise RunNotFound
@@ -36,8 +43,16 @@ from pydantic import BaseModel
 
 from trace_harness.attribution.schemas import AttributionResult
 from trace_harness.failure_bundles.generator import FailureBundle
-from trace_harness.failure_bundles.schemas import FailureCard, RepairPackage
+from trace_harness.failure_bundles.schemas import (
+    BundleOccurrence,
+    BundleRef,
+    FailureCard,
+    RepairPackage,
+)
 from trace_harness.regression.schemas import RegressionArtifact
+from trace_harness.runner.batch import BatchSummary
+from trace_harness.runner.experiment import ExperimentResult, ExperimentSpec, load_plan
+from trace_harness.runner.report import SuiteReport, build_suite_report
 from trace_harness.runner.result import RunResult
 from trace_harness.tasks.schemas import TaskSpec
 from trace_harness.tracing import artifact_store as names
@@ -74,7 +89,14 @@ class RunSummary(BaseModel):
     error: str | None = None
     verifier_passed: bool | None = None
     failed_check_count: int | None = None
+    # "pass" | "fail" | "incomplete"; None until verified.
+    verdict: str | None = None
+    # Which model produced the run; None for pre-0.5.0 index files.
+    provider: str | None = None
+    model: str | None = None
     batch_id: str | None = None
+    # The failure card this run belongs to (#211); None until bundled.
+    bundle_key: str | None = None
 
     @classmethod
     def from_result(cls, result: RunResult) -> RunSummary:
@@ -102,7 +124,11 @@ class RunSummary(BaseModel):
             error=entry.error,
             verifier_passed=entry.verifier_passed,
             failed_check_count=entry.failed_check_count,
+            verdict=entry.verdict,
+            provider=entry.provider,
+            model=entry.model,
             batch_id=entry.batch_id,
+            bundle_key=entry.bundle_key,
         )
 
 
@@ -140,6 +166,74 @@ class RunReader:
         """All runs tagged with ``batch_id``, oldest-first (chronological)."""
         return [s for s in self.list_runs() if s.batch_id == batch_id]
 
+    # --- batches ---
+
+    def get_batch_summary(self, batch_id: str) -> BatchSummary:
+        """The authoritative summary for one batch (raises if the batch is unknown)."""
+        return BatchSummary.model_validate(self.store.read_batch_summary(batch_id))
+
+    def get_suite_report(self, batch_id: str) -> SuiteReport:
+        """The persisted suite report for one batch.
+
+        Reads ``suite_report.json`` unchanged, exactly like the other getters.
+        If it has not been generated yet, falls back to building it in memory
+        from the batch summary + run artifacts (no write) so a caller never has
+        to sequence a ``report-suite`` first.
+        """
+        try:
+            return SuiteReport.model_validate(self.store.read_suite_report(batch_id))
+        except FileNotFoundError:
+            return build_suite_report(self.get_batch_summary(batch_id), self.store)
+
+    # --- experiments (#155) ---
+
+    def list_experiments(self) -> list[ExperimentSpec]:
+        """Every experiment whose files load, in id order.
+
+        An experiment whose plan or result does not load is left out here and
+        named by :meth:`unreadable_experiments`, so one bad file cannot hide
+        every other experiment.
+        """
+        specs = []
+        for experiment_id in self.store.list_experiments():
+            try:
+                spec, _ = self.get_experiment(experiment_id)
+            except (OSError, ValueError):
+                continue
+            specs.append(spec)
+        return specs
+
+    def unreadable_experiments(self) -> dict[str, str]:
+        """Experiment id to the reason its plan or result does not load."""
+        unreadable = {}
+        for experiment_id in self.store.list_experiments():
+            try:
+                self.get_experiment(experiment_id)
+            except (OSError, ValueError) as exc:
+                unreadable[experiment_id] = str(exc)
+        return unreadable
+
+    def get_experiment(self, experiment_id: str) -> tuple[ExperimentSpec, ExperimentResult | None]:
+        """The plan and, when a result has been recorded, what came back.
+
+        Both files must name the experiment whose directory holds them, so a
+        copied directory cannot pass as a second experiment.
+        """
+        spec = load_plan(self.store.read_experiment_spec(experiment_id), check_controls=False)
+        try:
+            result = ExperimentResult.model_validate(
+                self.store.read_experiment_result(experiment_id)
+            )
+        except FileNotFoundError:
+            result = None
+        named = {spec.experiment_id, experiment_id} | ({result.experiment_id} if result else set())
+        if len(named) != 1:
+            raise ValueError(
+                f"{self.store.experiment_dir(experiment_id)} is {experiment_id!r} but its "
+                f"files name {sorted(named - {experiment_id})}"
+            )
+        return spec, result
+
     # --- single run ---
 
     def get_run(self, run_id: str) -> RunResult:
@@ -161,28 +255,75 @@ class RunReader:
         return self._read_optional(run_id, names.ATTRIBUTION_RESULT, AttributionResult)
 
     def get_bundle(self, run_id: str) -> FailureBundle | None:
-        """The three bundle artifacts, or None if the run hasn't been bundled.
+        """The three bundle artifacts covering this run, or None if it hasn't been bundled.
 
-        The ``bundle`` stage writes all three together, so they are present or
-        absent as a set; a partial bundle (crash mid-stage) surfaces as a
-        FileNotFoundError rather than a silently half-built bundle.
+        The ``bundle`` stage writes the card after the other two, so a bundle
+        cut short leaves no card and reads as not bundled. A card whose repair
+        package or regression artifact is missing all the same, by hand or
+        from an older writer, surfaces as a FileNotFoundError rather than a
+        silently half-built bundle.
+
+        A run that reproduced an earlier card (#211) holds ``bundle_ref.json``
+        instead, and gets the bundle from the run it names. That card's
+        ``run_id`` is the first occurrence and its ``occurrences`` include this
+        run. A pointer to a run missing from this runs directory, as in a copy
+        that left the first occurrence behind, raises FileNotFoundError naming
+        both runs.
         """
-        self._require_run(run_id)
-        if not self.store.exists(run_id, names.FAILURE_CARD):
+        home = self._bundle_home(run_id)
+        if home is None:
             return None
         return FailureBundle(
-            failure_card=FailureCard.model_validate(
-                self.store.read_json(run_id, names.FAILURE_CARD)
-            ),
+            failure_card=FailureCard.model_validate(self.store.read_json(home, names.FAILURE_CARD)),
             repair_package=RepairPackage.model_validate(
-                self.store.read_json(run_id, names.REPAIR_PACKAGE)
+                self.store.read_json(home, names.REPAIR_PACKAGE)
             ),
             regression_artifact=RegressionArtifact.model_validate(
-                self.store.read_json(run_id, names.REGRESSION_ARTIFACT)
+                self.store.read_json(home, names.REGRESSION_ARTIFACT)
             ),
         )
 
+    def get_bundle_ref(self, run_id: str) -> BundleRef | None:
+        """The pointer a reproduction holds in place of its own bundle (#211).
+
+        None when the run holds its own bundle or was never bundled. The
+        pointer's ``canonical_run_id`` names the run holding the card, as
+        :meth:`ArtifactStore.bundle_home` resolves it. A run that holds a card
+        of its own is its own home, so a pointer left beside that card is
+        ignored here as it is there.
+        """
+        self._require_run(run_id)
+        if self.store.exists(run_id, names.FAILURE_CARD):
+            return None
+        ref = self._read_optional(run_id, names.BUNDLE_REF, BundleRef)
+        return ref if isinstance(ref, BundleRef) else None
+
+    def get_occurrences(self, run_id: str) -> list[BundleOccurrence] | None:
+        """Every run the card covering this run lists, the first occurrence first.
+
+        Works from any run on the card, its own run or a reproduction, and
+        reads only the card. None when the run was never bundled. An empty
+        list is a card written before failure card 0.5.0, which covers its own
+        run alone.
+        """
+        home = self._bundle_home(run_id)
+        if home is None:
+            return None
+        return FailureCard.model_validate(
+            self.store.read_json(home, names.FAILURE_CARD)
+        ).occurrences
+
     # --- internals ---
+
+    def _bundle_home(self, run_id: str) -> str | None:
+        self._require_run(run_id)
+        home = self.store.bundle_home(run_id)
+        if home is not None and not self.store.run_dir(home).is_dir():
+            raise FileNotFoundError(
+                f"run '{run_id}' reproduces the card in run '{home}', which is not in "
+                f"{self.store.runs_dir}"
+            )
+        return home
 
     def _require_run(self, run_id: str) -> None:
         if not self.store.run_dir(run_id).is_dir():

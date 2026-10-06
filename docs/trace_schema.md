@@ -5,13 +5,13 @@ The trace is the evidence record of a run: an append-only sequence of
 `runs/{run_id}/trace.jsonl`. Everything downstream — verifiers,
 attribution, failure bundles, the dashboard — consumes traces. Owner:
 Samrath. Schema: `trace_harness/tracing/events.py`
-(`TRACE_SCHEMA_VERSION = 0.3.0`).
+(`TRACE_SCHEMA_VERSION = 0.5.0`).
 
 ## Event envelope
 
 ```json
 {
-  "schema_version": "0.3.0",
+  "schema_version": "0.5.0",
   "event_id": "evt_000007",        // unique within the run, ordered
   "run_id": "run_20260611T025555Z_99032a0d",
   "step_id": 3,                    // decision step; null for run-level events
@@ -45,18 +45,46 @@ that caused a child.
 | `model_action` | step | kind, reasoning?, tool_call?, final_answer? (normalized `AgentAction` minus `raw`) |
 | `tool_call_requested` | step | tool_name, arguments |
 | `tool_call_validated` | step | tool_name, valid, error? |
-| `tool_call_executed` | step | tool_name, arguments, status, **side_effect**, error? — only emitted for valid calls |
-| `tool_observation` | step | tool_name, status, result (full, incl. doc content), error? — what the agent saw |
+| `tool_call_executed` | step | tool_name, arguments, status, **side_effect**, error?, **blocked_by**? — only emitted for valid calls |
+| `tool_observation` | step | tool_name, status, result (full, incl. doc content), error?, blocked_by? — what the agent saw |
 | `retrieval_result` | step | query, result_count, results: `list[RetrievalResultItem]` = [{doc_id, **status**, title?, score?, source?}] (content lives in the observation) |
-| `final_answer` | step | final_answer |
+| `final_answer` | step | final_answer, **blocked_by**? |
 | `run_finished` | null | status, termination_reason, steps_taken |
 | `error` | step? | error, kind (model_timeout \| script_exhausted \| model_error \| internal_error), traceback? |
-| `model_response` | step | **reserved** — raw provider response when a real adapter's output differs from the normalized action |
+| `model_response` | step | raw provider response when a real adapter's output differs from the normalized action; for provider `external`, the raw response(s) the outside agent forwarded before that step's move (a list under `responses` when there was more than one). When the adapter fails after receiving a response instead of acting on it (an outside agent that forwarded responses and then raised), the response is recorded at the failing step, ahead of its `error` event |
 
 Two payload fields are load-bearing downstream: `side_effect` on
 `tool_call_executed` (attribution finds the first irreversible action by
 it) and `status` on retrieval results (verifier provenance and the
 dashboard's status badges).
+
+**Control blocks (0.4.0):** when an installed control's guardrail stops a
+call before its handler runs, `tool_call_executed` and `tool_observation`
+carry `blocked_by` set to that control's `control_id` (e.g.
+`ctl_refund_window_v1`). Every other call carries `blocked_by: null`, as do
+blocks by raw pre-execute hooks, which have no control id. A block keeps
+`status: "error"`, so status-based consumers see no change, and attribution
+never counts a blocked irreversible call as the first irreversible action
+(it requires `status == "ok"`).
+
+**Final answer blocks (0.5.0):** a final answer never reaches the
+environment, so the runner asks the installed controls before accepting it
+(#193). `final_answer` carries `blocked_by` with the blocking control's
+`control_id`, or `null` when the answer stood. A blocked answer was never
+given, and the runner handles it as it handles a blocked tool call. The
+block message goes back to the agent as a `user` message, which the next
+step's `model_prompt` records, and the run goes on under the same step and
+time limits. A trace can therefore hold several `final_answer` events. Each
+one a control blocked carries `blocked_by`, and a run completes only on one
+that carries `null`, which is then the last in the trace. An agent that
+never gives an accepted answer ends the run at the step or time limit, or as
+`script_exhausted` when a script or an outside agent has no turn left, and
+the run has no answer. A raw `register_final_answer_hook` block that sets no
+`blocked_by` reads as an answer that stood, so controls enter through
+`install_control`, which always sets it. The payload did not change, so
+`TRACE_SCHEMA_VERSION` stays `0.5.0`. A run written before the runner went
+on after a block ends at its blocked answer as `terminated` with
+`final_answer_blocked`, and still reads that way.
 
 Each event type has a Pydantic payload model in
 `trace_harness.tracing.payloads`. `TraceEvent.payload` remains the lossless raw
@@ -76,6 +104,9 @@ from newer runners without discarding the raw data.
   (`TraceRecorder.read_jsonl` round-trips, tested).
 - **Backward-readable envelope:** traces written before 0.2.0 remain readable;
   `parent_event_id` defaults to `null`.
+- **Backward-readable payloads:** traces written before 0.4.0 have no
+  `blocked_by` on tool events, and traces written before 0.5.0 have none on
+  `final_answer`. The typed payloads default it to `null` in both cases.
 
 ## Intended evolution
 

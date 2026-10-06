@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "task_id": "refund_policy_failure",
   "provider": "fixture",
   "model": "scripted:refund_policy_failure_script",
@@ -9,6 +9,7 @@
   "seed": null,
   "prompt_version": "v0",
   "tool_mode": "native",
+  "cassette": null,
   "metadata": {
     "task_fixture_path": "fixtures/tasks/refund_policy_failure.json",
     "fixture_script_path": "fixtures/scripts/refund_policy_failure_script.json"

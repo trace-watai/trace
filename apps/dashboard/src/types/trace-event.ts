@@ -2,7 +2,7 @@
  * Trace-event data contract.
  *
  * Mirrors `TraceEvent` in `src/trace_harness/tracing/events.py`
- * (TRACE_SCHEMA_VERSION 0.3.0), serialized as `runs/{run_id}/trace.jsonl`
+ * (TRACE_SCHEMA_VERSION 0.5.0), serialized as `runs/{run_id}/trace.jsonl`
  * (one JSON object per line).
  *
  * The structured log of what happened during a run. Every `stepId` referenced
@@ -13,13 +13,14 @@
 
 import { camelizeKeys, type Camelize } from "@/lib/casing";
 
-export const TRACE_SCHEMA_VERSION = "0.3.0";
+export const TRACE_SCHEMA_VERSION = "0.5.0";
 
 /**
  * Every kind of event a run may emit (mirrors the backend `TraceEventType`
- * StrEnum). MVP runs emit a subset: the fixture adapter produces no separate
- * `model_response`, which is reserved for real provider adapters whose raw
- * response differs from the normalized action.
+ * StrEnum). MVP runs emit a subset. The fixture adapter produces no separate
+ * `model_response`. That type is for real provider adapters, whose raw
+ * response differs from the normalized action, and for outside agents
+ * (provider `external`), whose forwarded responses it records (#210).
  */
 export const TRACE_EVENT_TYPES = [
   "run_started",
@@ -63,8 +64,37 @@ export interface RawModelPromptPayload {
   new_messages: Record<string, unknown>[];
 }
 
+/** One provider request that raised, and the backoff slept after it. */
+export interface RawFailedAttempt {
+  attempt: number;
+  error_class: string;
+  status_code?: number | null;
+  transient: boolean;
+  retry_after_seconds?: number | null;
+  delay_seconds?: number | null;
+}
+
+/**
+ * How the live call policy obtained a response or gave up (#196), mirroring
+ * `CallRecord` in `src/trace_harness/models/policy.py`. `abandoned` means the
+ * runner's timeout ended the call with an attempt still in flight.
+ */
+export interface RawCallRecord {
+  attempts: number;
+  outcome:
+    | "ok"
+    | "permanent_error"
+    | "retries_exhausted"
+    | "deadline"
+    | "abandoned";
+  rate_limit_wait_seconds: number;
+  failures: RawFailedAttempt[];
+}
+
 export interface RawModelResponsePayload {
   raw?: Record<string, unknown> | null;
+  /** Absent in traces written before #196 and in fixture runs. */
+  call_record?: RawCallRecord | null;
 }
 
 export interface RawModelActionPayload {
@@ -91,6 +121,13 @@ export interface RawToolCallExecutedPayload {
   status: string;
   side_effect?: string | null;
   error?: string | null;
+  /**
+   * control_id of the installed control that blocked this call before its
+   * handler ran (0.4.0+); absent in traces written before 0.4.0. null does
+   * not prove the call wasn't blocked: a block by a raw pre-execute hook
+   * (tests only) also has null and looks like an ordinary tool error.
+   */
+  blocked_by?: string | null;
 }
 
 export interface RawToolObservationPayload {
@@ -98,6 +135,8 @@ export interface RawToolObservationPayload {
   status: string;
   result?: unknown;
   error?: string | null;
+  /** Same as `RawToolCallExecutedPayload.blocked_by`. */
+  blocked_by?: string | null;
 }
 
 export interface RawRetrievalResultItem {
@@ -116,6 +155,11 @@ export interface RawRetrievalResultPayload {
 
 export interface RawFinalAnswerPayload {
   final_answer: string;
+  /**
+   * control_id of the control that blocked this answer (0.5.0+). A blocked
+   * answer was never given, so the run terminates rather than completing.
+   */
+  blocked_by?: string | null;
 }
 
 export interface RawRunFinishedPayload {
@@ -128,6 +172,12 @@ export interface RawErrorPayload {
   error: string;
   kind: string;
   traceback?: string | null;
+  /**
+   * From a live call: on a `model_error`, the attempts made before the policy
+   * gave up; on a `model_timeout`, the attempts made before the runner
+   * abandoned the call.
+   */
+  call_record?: RawCallRecord | null;
 }
 
 /** Keeps event_type and payload correlated as a discriminated union. */

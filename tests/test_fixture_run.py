@@ -402,3 +402,63 @@ def test_run_result_written_even_if_final_snapshot_fails(tmp_path):
     assert "snapshot failed" in (result.error or "")
     assert store.exists(result.run_id, names.RUN_RESULT)
     assert store.read_json(result.run_id, names.FINAL_STATE)["snapshot_error"]
+
+
+def test_a_script_with_no_turn_after_its_blocked_answer_runs_out(tmp_path):
+    """A blocked answer goes back to the agent, and a script has nothing left to say.
+
+    The runner asks the agent for its next move after a block (#193), so the
+    run never ends on the blocked answer itself. A fixture script's last action
+    is its final answer, so it runs out, and the run ends as terminated with
+    script_exhausted and no answer.
+    """
+    from conftest import FAILURE_TASK_PATH
+    from trace_harness.environment.support_env import SupportEnvironment
+    from trace_harness.environment.tools import ToolResult
+    from trace_harness.models.fixture import FixtureModelAdapter
+    from trace_harness.runner.agent_runner import AgentRunner
+    from trace_harness.runner.config import RunConfig
+    from trace_harness.runner.result import RunStatus, TerminationReason
+    from trace_harness.tasks.loader import load_docs_for_task, load_task
+    from trace_harness.tracing.artifact_store import ArtifactStore
+    from trace_harness.tracing.events import TraceEventType
+
+    task = load_task(FAILURE_TASK_PATH)
+    docs = load_docs_for_task(task, FAILURE_TASK_PATH)
+    env = SupportEnvironment.from_task(task, docs=docs)
+    env.register_final_answer_hook(
+        lambda answer, state: ToolResult(
+            tool_name="final_answer",
+            status="error",
+            error="the answer claims a refund the state does not support",
+            blocked_by="ctl_answer_grounding",
+        )
+    )
+
+    script = (FAILURE_TASK_PATH.parent / task.metadata["fixture_script"]).resolve()
+    store = ArtifactStore(tmp_path / "runs")
+    result = AgentRunner(FixtureModelAdapter.from_file(script), env, store).run(
+        task, RunConfig(task_id=task.task_id)
+    )
+
+    assert result.status is RunStatus.TERMINATED
+    assert result.termination_reason is TerminationReason.SCRIPT_EXHAUSTED
+    assert result.final_output is None
+    assert result.error is not None and "a control blocked its final answer" in result.error
+
+    trace = store.read_trace(result.run_id)
+    (answer,) = [e for e in trace if e.event_type is TraceEventType.FINAL_ANSWER]
+    assert answer.payload["blocked_by"] == "ctl_answer_grounding"
+    assert result.steps_taken == answer.step_id
+    # The block reached the transcript the agent was asked from next.
+    (prompt,) = [
+        e
+        for e in trace
+        if e.event_type is TraceEventType.MODEL_PROMPT and e.step_id == answer.step_id + 1
+    ]
+    observed = prompt.payload["new_messages"][-1]
+    assert observed["role"] == "user"
+    assert observed["content"] == "the answer claims a refund the state does not support"
+    assert observed["metadata"]["blocked_by"] == "ctl_answer_grounding"
+    (error,) = [e for e in trace if e.event_type is TraceEventType.ERROR]
+    assert (error.step_id, error.payload["kind"]) == (answer.step_id + 1, "script_exhausted")

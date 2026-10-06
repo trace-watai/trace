@@ -20,6 +20,9 @@ ruff check .
 echo "==> ruff format --check"
 ruff format --check .
 
+echo "==> fixture validity"
+python -m trace_harness.cli validate-fixtures fixtures/tasks
+
 echo "==> pytest"
 pytest
 
@@ -30,5 +33,10 @@ python -m trace_harness.cli --runs-dir "$SMOKE_DIR" \
   run-pipeline fixtures/tasks/refund_policy_failure.json >/dev/null
 python -m trace_harness.cli --runs-dir "$SMOKE_DIR" \
   run-pipeline fixtures/tasks/refund_policy_valid_cash.json --fail-on-verifier >/dev/null
+
+echo "==> regression gate"
+python -m trace_harness.cli --runs-dir "$SMOKE_DIR" \
+  collect-regressions docs/acceptance/runs --suite fixtures/suites/refund_bundles_v0.json \
+  --experiments docs/acceptance/experiments
 
 echo "==> all checks passed"

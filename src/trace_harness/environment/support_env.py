@@ -45,15 +45,31 @@ Edge cases for verifier inspection
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
+from trace_harness.environment.control_library import load_library
+from trace_harness.environment.controls import (
+    ControlConflictError,
+    ControlInstance,
+    find_conflict,
+    resolve_control,
+    resolve_guardrail,
+)
 from trace_harness.environment.registry import ToolRegistry, default_support_registry
 from trace_harness.environment.state import Doc, SupportState
 from trace_harness.environment.tools import ToolResult, ToolSideEffect
 from trace_harness.models.base import ToolCall, ToolSpec
 from trace_harness.tasks.schemas import TaskSpec
+
+PreExecuteHook = Callable[[ToolCall, SupportState], ToolResult | None]
+# Sees the result the handler produced; returning a replacement changes what
+# the agent observes. The side effect has already happened.
+PostExecuteHook = Callable[[ToolCall, SupportState, ToolResult], ToolResult | None]
+# Sees the answer the agent is about to give; returning a result blocks it.
+FinalAnswerHook = Callable[[str, SupportState], ToolResult | None]
 
 
 class SupportEnvironment:
@@ -64,10 +80,23 @@ class SupportEnvironment:
         state: SupportState,
         registry: ToolRegistry | None = None,
         available_tools: list[str] | None = None,
+        control_library: Path | str | None = None,
+        task: TaskSpec | None = None,
     ):
         self.state = state
+        # Final-answer controls read the task (the escalation rule needs its
+        # posture and message). None when the environment was built without one.
+        self.task = task
         self._registry = registry or default_support_registry()
         self._pre_execute_hooks: list[Callable[[ToolCall, SupportState], ToolResult | None]] = []
+        self._post_execute_hooks: list[PostExecuteHook] = []
+        self._final_answer_hooks: list[FinalAnswerHook] = []
+        # control_id -> (instance, the hook we registered for it). Installed
+        # controls are explicit, inspectable state (TRA-87); raw hooks added
+        # through register_pre_execute_hook are not tracked here.
+        self._installed_controls: dict[
+            str, tuple[ControlInstance, PreExecuteHook | FinalAnswerHook]
+        ] = {}
         if available_tools is None:
             self._available = self._registry.names()
         else:
@@ -78,6 +107,9 @@ class SupportEnvironment:
                     f"registry has {self._registry.names()}"
                 )
             self._available = list(available_tools)
+        if control_library is not None:
+            for control in load_library(control_library).active_controls():
+                self.install_control(control)
 
     @classmethod
     def from_task(
@@ -85,10 +117,17 @@ class SupportEnvironment:
         task: TaskSpec,
         docs: list[Doc] | None = None,
         registry: ToolRegistry | None = None,
+        control_library: Path | str | None = None,
     ) -> SupportEnvironment:
         """Build the environment a task describes: initial state + tool subset."""
         state = SupportState.from_task(task, docs=docs)
-        return cls(state, registry=registry, available_tools=task.available_tools)
+        return cls(
+            state,
+            registry=registry,
+            available_tools=task.available_tools,
+            control_library=control_library,
+            task=task,
+        )
 
     def register_pre_execute_hook(
         self, hook: Callable[[ToolCall, SupportState], ToolResult | None]
@@ -100,6 +139,106 @@ class SupportEnvironment:
         Hooks run in registration order; first non-``None`` return wins.
         """
         self._pre_execute_hooks.append(hook)
+
+    def register_final_answer_hook(self, hook: FinalAnswerHook) -> None:
+        """Attach a check that runs on the answer before the run accepts it.
+
+        A final answer never reaches the environment on its own, so without
+        this seam no control can act on what the agent claims. Returning a
+        result blocks the answer. The runner then hands the result's message
+        back to the agent, as it does for a blocked tool call, and the run goes
+        on to the agent's next step, completing only on an answer no hook
+        blocks. Set ``blocked_by`` on the result, as ``install_control`` does,
+        so the trace can tell the blocked answer from one that stood.
+        """
+        self._final_answer_hooks.append(hook)
+
+    def check_final_answer(self, answer: str) -> ToolResult | None:
+        """The first block a final answer hook raises, or None to allow it."""
+        for hook in self._final_answer_hooks:
+            blocked = hook(answer, self.state)
+            if blocked is not None:
+                return blocked
+        return None
+
+    def register_post_execute_hook(self, hook: PostExecuteHook) -> None:
+        """Attach a check that runs after a tool handler, seeing its result.
+
+        Mirrors the pre-execute seam, but the side effect has already occurred
+        by the time these run, so returning a replacement result changes what
+        the agent observes rather than preventing anything.
+        """
+        self._post_execute_hooks.append(hook)
+
+    # --- controls as data (TRA-87) ---
+
+    def install_control(self, instance: ControlInstance) -> None:
+        """Install a data-defined control on the seam its guardrail names.
+
+        A pre-call guardrail becomes a pre-execute hook and a final-answer
+        guardrail becomes a final-answer hook, which also receives the task
+        this environment was built from. Resolves ``instance.guardrail_ref``
+        through the guardrail registry and
+        checks ``instance.rule_ref`` against the rules that guardrail reads
+        *now*, so an unknown ref or a mismatched ``rule_ref`` fails here, at
+        install time, never later at dispatch. Installing the same
+        ``control_id`` twice is an error: the installed set must stay explicit.
+        """
+        if instance.control_id in self._installed_controls:
+            raise ValueError(f"control {instance.control_id!r} is already installed")
+        conflicting = find_conflict(instance, [i for i, _ in self._installed_controls.values()])
+        if conflicting is not None:
+            raise ControlConflictError(
+                f"control {instance.control_id!r} conflicts with installed control "
+                f"{conflicting.control_id!r}: both read "
+                f"{instance.rule_ref.source}:{sorted(instance.rule_ref.rules)} through "
+                f"{instance.guardrail_ref!r} but disagree on behavior_on_failure "
+                f"({conflicting.behavior_on_failure.action} vs "
+                f"{instance.behavior_on_failure.action})"
+            )
+        guardrail = resolve_control(instance)
+        seam = resolve_guardrail(instance.guardrail_ref).seam
+        control_id = instance.control_id
+
+        # One closure per control, even when two controls share a guardrail,
+        # so uninstall_control removes exactly this one. It also stamps each
+        # block with the control that caused it.
+        if seam == "final_answer":
+
+            def answer_hook(answer: str, state: SupportState) -> ToolResult | None:
+                result = guardrail(answer, state, self.task)  # type: ignore[call-arg]
+                if result is None:
+                    return None
+                return result.model_copy(update={"blocked_by": control_id})
+
+            self._installed_controls[instance.control_id] = (instance, answer_hook)
+            self.register_final_answer_hook(answer_hook)
+            return
+
+        def hook(call: ToolCall, state: SupportState) -> ToolResult | None:
+            result = guardrail(call, state)  # type: ignore[call-arg]
+            if result is None:
+                return None
+            return result.model_copy(update={"blocked_by": control_id})
+
+        self._installed_controls[instance.control_id] = (instance, hook)
+        self.register_pre_execute_hook(hook)
+
+    def uninstall_control(self, control_id: str) -> None:
+        """Remove an installed control; its hook no longer runs."""
+        try:
+            _, hook = self._installed_controls.pop(control_id)
+        except KeyError:
+            raise ValueError(f"control {control_id!r} is not installed") from None
+        if hook in self._final_answer_hooks:
+            self._final_answer_hooks.remove(hook)  # type: ignore[arg-type]
+        else:
+            self._pre_execute_hooks.remove(hook)  # type: ignore[arg-type]
+
+    @property
+    def installed_controls(self) -> list[ControlInstance]:
+        """Installed controls in installation order."""
+        return [instance for instance, _ in self._installed_controls.values()]
 
     # --- ToolEnvironment protocol ---
 
@@ -140,7 +279,16 @@ class SupportEnvironment:
             early = hook(call, self.state)
             if early is not None:
                 return early
-        return definition.handler(self.state, args, step_id)
+        result = definition.handler(self.state, args, step_id)
+        # Post-execute hooks see what the handler produced. The side effect has
+        # already happened, so these cannot prevent it; they exist to catch a
+        # result that should not stand, such as a durable record written with a
+        # claim the state does not support.
+        for hook in self._post_execute_hooks:
+            replacement = hook(call, self.state, result)
+            if replacement is not None:
+                return replacement
+        return result
 
     def side_effect_for(self, tool_name: str) -> ToolSideEffect | None:
         definition = self._registry.get(tool_name)

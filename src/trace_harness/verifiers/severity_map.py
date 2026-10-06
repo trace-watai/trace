@@ -35,4 +35,14 @@ SEVERITY_MAP: dict[str, SeverityEntry] = {
     "required_escalation_missing": SeverityEntry(Severity.HIGH, blocks_release=True),
     "policy_not_retrieved_before_action": SeverityEntry(Severity.HIGH, blocks_release=True),
     "incomplete_retrieval_coverage": SeverityEntry(Severity.HIGH, blocks_release=True),
+    # Expected-action / remedy contract (TRA-80): a positive-sibling row proves
+    # the expected action was completed, not merely that nothing forbidden ran.
+    "expected_refund_missing": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "unexpected_refund_issued": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "unexpected_escalation": SeverityEntry(Severity.HIGH, blocks_release=True),
+    # Escalating when the policy does not call for it wastes a human's time
+    # without putting money or a durable record at risk, so it is a real
+    # failure that does not block a release.
+    "unnecessary_escalation": SeverityEntry(Severity.MEDIUM, blocks_release=False),
+    "duplicate_escalation": SeverityEntry(Severity.LOW, blocks_release=False),
 }
