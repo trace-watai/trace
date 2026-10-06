@@ -1,21 +1,18 @@
 # Future: dashboard (trace replay & failure UX)
 
-**Status: the run list, with each run's status and verdict, the failure card
-and the trace timeline read retained runs, and the timeline marks attribution
-steps and shows each step's
-failed checks. The dedicated verifier failures (#169) and attribution (#170)
-views and the repair package (#171) and regression artifact (#172) views
-remain.** Owned by the frontend lane. Data contracts are cross-lane contracts
-with evaluation systems for trace and artifact shape and with evaluation core
-for attribution semantics, per [team_ownership.md](team_ownership.md).
+**Status: live run reads landed for run summary, failure card, and trace
+timeline; other views pending.** Owner: Skye Haik. Data contracts: coordinate
+with Samrath (trace/artifact schemas) and Darrel (attribution semantics).
 
 **Current stack:** Next.js + TypeScript + Tailwind + shadcn/ui in
 `apps/dashboard/`.
 
-**Live data:** `/runs` lists stored runs with each one's status and verdict,
-`/runs/{run_id}` renders the failure card and `/runs/{run_id}/trace` the trace
-timeline for a real `runs/{run_id}/` directory, read directly
-off disk by `src/data/run-loader.ts` — a TypeScript mirror of
+**Live data:** `/runs` lists stored runs, `/runs/{run_id}` renders the run
+summary and failure card, and `/runs/{run_id}/trace` renders a step-by-step
+stepper over the trace (reasoning, action, observation, retrieval results,
+attribution markers, and failed checks pinned to the step they happened on)
+for a real `runs/{run_id}/` directory, read directly off disk by
+`src/data/run-loader.ts` — a TypeScript mirror of
 `trace_harness.run_reader.RunReader`'s method surface (`list_runs`, `get_run`,
 `get_task`, `get_trace`, `get_verifier`, `get_attribution`, `get_bundle`),
 built on `src/data/run-store.ts` (the filesystem layer) and the existing
@@ -40,10 +37,10 @@ to cover it is the wrong fix.
 
 | View | Status | Primary source | What it must show |
 |---|---|---|---|
-| Run summary | Partial, on the run list | `index.json` | status vs verdict distinction is visible; steps taken, timing and task goal remain |
-| Trace timeline | Live (#150) | `trace.jsonl` | step-grouped events; prompts/actions/observations; retrieval results with doc **status badges** |
-| Verifier failures | Partial (#150), view in #169 | `verifier_result.json` | failed checks with expected/actual, severity, blocks_release, evidence drill-down to steps. The timeline already shows each step's failed checks with severity and expected/actual. |
-| Attribution | Partial (#150), view in #170 | `attribution_result.json` | root cause vs missed recovery vs first irreversible as **distinct markers on the timeline** (steps 3 / 4 / 5 in the fixture), confidence + ambiguity notes. The markers are live; confidence, ambiguity notes and categories wait for #170. |
+| Run summary | Live | `run_result.json` + `task_spec.json` | status vs verdict distinction and steps are visible; timing and task goal remain |
+| Trace timeline | Live | `trace.jsonl` | step-grouped events; prompts/actions/observations; retrieval results with doc **status badges** |
+| Verifier failures | Live | `verifier_result.json` | failed checks with expected/actual, severity, blocks_release, evidence drill-down to steps |
+| Attribution | Pending | `attribution_result.json` | root cause vs missed recovery vs first irreversible — **distinct markers on the timeline** (steps 3 / 4 / 5 in the fixture), confidence + ambiguity notes |
 | Failure card | Live | `failure_card.json` | the human story: summary, blast radius, symptoms |
 | Repair package | Pending (#171) | `repair_package.json` | controls with installation points + priorities |
 | Regression artifact | Pending (#172) | `regression_artifact.json` | pinned scenario, checks, replay command, positive siblings |
@@ -54,7 +51,7 @@ what would prevent it*. Step ids are the cross-linking currency — every
 evidence item carries them.
 
 **Still out of scope:** auth, live polling, run comparison, and editing. The
-next integration step is #169, which adds a tabs shell under `/runs/[runId]`,
-links step ids to the timeline, and builds the verifier failures view. #170,
-#171 and #172 build on it, all on the same `run-loader.ts` seam the run
-summary, failure card and trace timeline already use.
+next integration step is building the remaining pending views (verifier
+failures, attribution, repair package, regression artifact) on the same
+`run-loader.ts` seam the run summary, failure card, and trace timeline
+already use (tracked in #154).
