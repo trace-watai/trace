@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "4239d39ec076",
+  "strategy": "manual-commit",
+  "branch": "trace-harness/tra-39-coding-agent-task-format",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/README.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/42/39d39ec076/0/metadata.json",
+      "transcript": "/42/39d39ec076/0/full.jsonl",
+      "content_hash": "/42/39d39ec076/0/content_hash.txt",
+      "prompt": "/42/39d39ec076/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 44,
+    "cache_creation_tokens": 86185,
+    "cache_read_tokens": 1796094,
+    "output_tokens": 24103,
+    "api_call_count": 22
+  }
+}
