@@ -5,13 +5,13 @@ The trace is the evidence record of a run: an append-only sequence of
 `runs/{run_id}/trace.jsonl`. Everything downstream — verifiers,
 attribution, failure bundles, the dashboard — consumes traces. Owner:
 Samrath. Schema: `trace_harness/tracing/events.py`
-(`TRACE_SCHEMA_VERSION = 0.5.0`).
+(`TRACE_SCHEMA_VERSION = 0.6.0`).
 
 ## Event envelope
 
 ```json
 {
-  "schema_version": "0.5.0",
+  "schema_version": "0.6.0",
   "event_id": "evt_000007",        // unique within the run, ordered
   "run_id": "run_20260611T025555Z_99032a0d",
   "step_id": 3,                    // decision step; null for run-level events
@@ -47,7 +47,7 @@ that caused a child.
 | `tool_call_validated` | step | tool_name, valid, error? |
 | `tool_call_executed` | step | tool_name, arguments, status, **side_effect**, error?, **blocked_by**? — only emitted for valid calls |
 | `tool_observation` | step | tool_name, status, result (full, incl. doc content), error?, blocked_by? — what the agent saw |
-| `retrieval_result` | step | query, result_count, results: `list[RetrievalResultItem]` = [{doc_id, **status**, title?, score?, source?}] (content lives in the observation) |
+| `retrieval_result` | step | query, result_count, results: `list[RetrievalResultItem]` = [{doc_id, **status**, title?, score?, source?, section_id?, span_start?, span_end?}] (content lives in the observation) |
 | `final_answer` | step | final_answer, **blocked_by**? |
 | `run_finished` | null | status, termination_reason, steps_taken |
 | `error` | step? | error, kind (model_timeout \| script_exhausted \| model_error \| internal_error), traceback? |
@@ -57,6 +57,21 @@ Two payload fields are load-bearing downstream: `side_effect` on
 `tool_call_executed` (attribution finds the first irreversible action by
 it) and `status` on retrieval results (verifier provenance and the
 dashboard's status badges).
+
+**Section retrieval (0.6.0):** `retrieval.answer` uses stable `section_id`
+values and zero-based, half-open character offsets (`span_start`, `span_end`)
+into the parent document's full `content`. Both `search_docs` and
+`read_section` emit this provenance. Section text is returned untruncated in
+the observation. For example:
+
+```json
+{"doc_id":"retention_policy_v2","status":"current","section_id":"retention","span_start":0,"span_end":33}
+```
+
+Whole-document support retrieval keeps its previous serialized shape, without
+null section fields, so retained cassette transcript hashes remain valid.
+Older traces load with the typed section/span fields unset. The dashboard
+mirror carries the same optional fields.
 
 **Control blocks (0.4.0):** when an installed control's guardrail stops a
 call before its handler runs, `tool_call_executed` and `tool_observation`

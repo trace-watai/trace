@@ -12,9 +12,11 @@ from __future__ import annotations
 
 from trace_harness.verifiers.base import Verifier
 from trace_harness.verifiers.refund_policy import RefundPolicyVerifier
+from trace_harness.verifiers.retrieval_answer import RetrievalAnswerVerifier
 
 VERIFIER_REGISTRY: dict[str, type[Verifier]] = {
     RefundPolicyVerifier.verifier_id: RefundPolicyVerifier,
+    RetrievalAnswerVerifier.verifier_id: RetrievalAnswerVerifier,
 }
 
 

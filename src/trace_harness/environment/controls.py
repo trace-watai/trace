@@ -47,6 +47,7 @@ from trace_harness.environment.guardrails import (
     unauthorized_cash_refund_guardrail,
     unauthorized_refund_guardrail,
 )
+from trace_harness.environment.retrieval_guardrails import stale_section_guardrail
 from trace_harness.environment.state import SupportState
 from trace_harness.environment.tools import ToolResult
 from trace_harness.models.base import ToolCall
@@ -80,11 +81,21 @@ class RegisteredGuardrail:
     # the blocked answer, so it runs out and the verdict is still skipped as
     # validation_incomplete.
     seam: Literal["pre_call", "final_answer"] = "pre_call"
+    workflow_type: str = "support.refund"
 
 
 # guardrail_ref -> implementation. New guardrails register here; nothing else
 # imports them by name.
 GUARDRAIL_REGISTRY: dict[str, RegisteredGuardrail] = {
+    "retrieval_stale_section_guardrail": RegisteredGuardrail(
+        fn=stale_section_guardrail,
+        rule_source="retrieved_corpus",
+        rule_keys=frozenset({"doc_status", "claim_id", "seen_sections"}),
+        checks_covered=frozenset({"retrieval_stale_document"}),
+        rule_kind="prohibition",
+        seam="final_answer",
+        workflow_type="retrieval.answer",
+    ),
     "unauthorized_cash_refund_guardrail": RegisteredGuardrail(
         fn=unauthorized_cash_refund_guardrail,
         rule_source="current_policy_doc",
@@ -282,7 +293,7 @@ def _control(control_id: str, guardrail_ref: str, repair_control: str) -> Contro
 def control_catalogue() -> list[ControlInstance]:
     """Every control the repository can install: the reference set plus #194's.
 
-    The reference set is what ``replay --apply-control`` installs by default
+    The workflow's reference set is what ``replay --apply-control`` installs by default
     and what the materializer installs to predict an artifact's replay mode.
     It stays one control on purpose, since widening it changes the replay
     label of every artifact and every pinned expectation built on one. The
@@ -291,6 +302,11 @@ def control_catalogue() -> list[ControlInstance]:
     """
     return [
         *reference_controls(),
+        _control(
+            "ctl_retrieval_current_section_v1",
+            "retrieval_stale_section_guardrail",
+            "retrieval_current_section_precedence",
+        ),
         _control(
             "ctl_refund_policy_v2",
             "unauthorized_refund_guardrail",
@@ -319,14 +335,31 @@ def control_catalogue() -> list[ControlInstance]:
     ]
 
 
-def select_controls(control_ids: list[str] | None) -> list[ControlInstance]:
+def reference_controls_for_workflow(workflow_type: str) -> list[ControlInstance]:
+    """Keep default controls and replay-mode prediction in the same domain."""
+    if workflow_type == "support.refund":
+        return reference_controls()
+    if workflow_type == "retrieval.answer":
+        return [
+            _control(
+                "ctl_retrieval_current_section_v1",
+                "retrieval_stale_section_guardrail",
+                "retrieval_current_section_precedence",
+            )
+        ]
+    raise ValueError(f"unknown workflow_type: {workflow_type!r}")
+
+
+def select_controls(
+    control_ids: list[str] | None, *, workflow_type: str = "support.refund"
+) -> list[ControlInstance]:
     """Controls from the catalogue by id, or the reference set when ``None``.
 
     Raises ``ValueError`` for an id that is not in the catalogue, so a typo
     fails before any run starts.
     """
     if control_ids is None:
-        return reference_controls()
+        return reference_controls_for_workflow(workflow_type)
     available = control_catalogue()
     by_id = {c.control_id: c for c in available}
     unknown = [cid for cid in control_ids if cid not in by_id]
@@ -341,6 +374,8 @@ def select_controls(control_ids: list[str] | None) -> list[ControlInstance]:
 # install it yet; per-control validation (TRA-92) reports those as
 # ``skipped: not_materializable`` rather than pretending.
 MATERIALIZABLE_REPAIR_CONTROLS: dict[str, str | None] = {
+    "retrieval_current_section_precedence": "retrieval_stale_section_guardrail",
+    "retrieval_evidence_contract": None,
     "deterministic_pre_call_refund_guardrail": "unauthorized_cash_refund_guardrail",
     "current_policy_source_precedence": "deprecated_policy_citation_guardrail",
     "ticket_claim_grounding_check": "ticket_outage_claim_guardrail",

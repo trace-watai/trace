@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from trace_harness.environment.controls import ControlInstance
-from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.factory import create_environment
 from trace_harness.models import (
     create_model_adapter,
     resolve_call_policy,
@@ -124,7 +124,7 @@ def run_task_pipeline(
     docs = load_docs_for_task(task, task_path)
     if control_library is not None and controls is not None:
         raise ValueError("choose either a control library or explicit controls")
-    environment = SupportEnvironment.from_task(task, docs=docs, control_library=control_library)
+    environment = create_environment(task, docs=docs, control_library=control_library)
     for control in sorted(controls or [], key=lambda c: c.control_id):
         environment.install_control(control)
 
@@ -219,9 +219,20 @@ def verify_run(
     run_id = run_result.run_id
     trace = store.read_trace(run_id)
     final_state = store.read_json(run_id, names.FINAL_STATE)
+    initial_state = (
+        store.read_json(run_id, names.INITIAL_STATE)
+        if store.exists(run_id, names.INITIAL_STATE)
+        else None
+    )
     results = [
         get_verifier(verifier_id).verify(
-            VerifierInput.from_parts(task=task, trace=trace, final_state=final_state, run_id=run_id)
+            VerifierInput.from_parts(
+                task=task,
+                trace=trace,
+                initial_state=initial_state,
+                final_state=final_state,
+                run_id=run_id,
+            )
         )
         for verifier_id in task.verifier_ids
     ]

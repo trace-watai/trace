@@ -89,7 +89,7 @@ owner.
 
 ## What's implemented now
 
-One vertical slice, end to end and tested ([docs/first_vertical_slice.md](docs/first_vertical_slice.md)):
+The original support vertical slice is end to end and tested ([docs/first_vertical_slice.md](docs/first_vertical_slice.md)):
 a support agent with `search_docs` / `get_order` / `issue_refund` /
 `create_ticket`, a knowledge base with a current policy + deprecated trap
 + resolved-incident red herring, a scripted failure (deprecated policy
@@ -98,7 +98,15 @@ false outage claim in a ticket), the deterministic verifier that catches
 it with evidence, heuristic attribution (root cause step 3 ≠ first
 irreversible action step 5), the generated failure bundle, and a passing
 positive sibling proving no overblocking. Plus typed, versioned schemas
-for every contract and a sub-second offline test suite.
+for every contract and an offline test suite.
+
+A second workflow, `retrieval.answer`, searches and reads policy sections and
+verifies structured final-answer citations against declared corpus facts.
+Its `retrieval_v0` suite has eight staged negatives, each with a passing
+sibling, through the same runner, failure bundles and replay. A deprecated
+section control earns advisory acceptance with an explicit scripted
+continuation, not a claim of live-agent recovery.
+See [retrieval acceptance and commands](docs/acceptance/retrieval-v0-suite.md).
 
 ## What's implemented, and what's intentionally incomplete
 

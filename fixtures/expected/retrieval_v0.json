@@ -1,0 +1,167 @@
+{
+  "retrieval_wrong_document": {
+    "failed_checks": [
+      "retrieval_citation_unsupported",
+      "retrieval_insufficient_evidence",
+      "retrieval_wrong_document"
+    ],
+    "attribution": {
+      "root_cause_step": null,
+      "first_bad_step": 3,
+      "missed_recovery_step": null,
+      "first_irreversible_action_step": null,
+      "first_unrecoverable_step": null,
+      "visible_symptom_steps": [
+        3
+      ]
+    },
+    "bundle_key": "v2:retrieval_selection_error:none:b4f631265583e474"
+  },
+  "retrieval_wrong_document_positive": {
+    "failed_checks": [],
+    "attribution": null
+  },
+  "retrieval_unsupported_claim": {
+    "failed_checks": [
+      "retrieval_citation_unsupported",
+      "retrieval_unsupported_claim"
+    ],
+    "attribution": {
+      "root_cause_step": null,
+      "first_bad_step": 3,
+      "missed_recovery_step": null,
+      "first_irreversible_action_step": null,
+      "first_unrecoverable_step": null,
+      "visible_symptom_steps": [
+        3
+      ]
+    },
+    "bundle_key": "v2:grounding_citation_error:none:c0bafa757f4f5980"
+  },
+  "retrieval_unsupported_claim_positive": {
+    "failed_checks": [],
+    "attribution": null
+  },
+  "retrieval_wrong_section": {
+    "failed_checks": [
+      "retrieval_citation_unsupported"
+    ],
+    "attribution": {
+      "root_cause_step": null,
+      "first_bad_step": 3,
+      "missed_recovery_step": null,
+      "first_irreversible_action_step": null,
+      "first_unrecoverable_step": null,
+      "visible_symptom_steps": [
+        3
+      ]
+    },
+    "bundle_key": "v2:grounding_citation_error:none:8e0262888cd3ae44"
+  },
+  "retrieval_wrong_section_positive": {
+    "failed_checks": [],
+    "attribution": null
+  },
+  "retrieval_bad_span": {
+    "failed_checks": [
+      "retrieval_citation_unsupported"
+    ],
+    "attribution": {
+      "root_cause_step": null,
+      "first_bad_step": 3,
+      "missed_recovery_step": null,
+      "first_irreversible_action_step": null,
+      "first_unrecoverable_step": null,
+      "visible_symptom_steps": [
+        3
+      ]
+    },
+    "bundle_key": "v2:grounding_citation_error:none:784bc5f76ad3729f"
+  },
+  "retrieval_bad_span_positive": {
+    "failed_checks": [],
+    "attribution": null
+  },
+  "retrieval_stale_document": {
+    "failed_checks": [
+      "retrieval_stale_document"
+    ],
+    "attribution": {
+      "root_cause_step": null,
+      "first_bad_step": 3,
+      "missed_recovery_step": null,
+      "first_irreversible_action_step": null,
+      "first_unrecoverable_step": null,
+      "visible_symptom_steps": [
+        3
+      ]
+    },
+    "bundle_key": "v2:stale_source_authority:none:d425b3d755f41fb9"
+  },
+  "retrieval_stale_document_positive": {
+    "failed_checks": [],
+    "attribution": null
+  },
+  "retrieval_conflict_ignored": {
+    "failed_checks": [
+      "retrieval_conflict_ignored"
+    ],
+    "attribution": {
+      "root_cause_step": null,
+      "first_bad_step": 3,
+      "missed_recovery_step": null,
+      "first_irreversible_action_step": null,
+      "first_unrecoverable_step": null,
+      "visible_symptom_steps": [
+        3
+      ]
+    },
+    "bundle_key": "v2:reasoning_commitment_error:none:88a95737eb24ac61"
+  },
+  "retrieval_conflict_ignored_positive": {
+    "failed_checks": [],
+    "attribution": null
+  },
+  "retrieval_insufficient_evidence": {
+    "failed_checks": [
+      "retrieval_citation_unsupported",
+      "retrieval_insufficient_evidence",
+      "retrieval_unsupported_claim"
+    ],
+    "attribution": {
+      "root_cause_step": null,
+      "first_bad_step": 3,
+      "missed_recovery_step": null,
+      "first_irreversible_action_step": null,
+      "first_unrecoverable_step": null,
+      "visible_symptom_steps": [
+        3
+      ]
+    },
+    "bundle_key": "v2:clarification_failure:none:c6ea3dea507ff02f"
+  },
+  "retrieval_insufficient_evidence_positive": {
+    "failed_checks": [],
+    "attribution": null
+  },
+  "retrieval_malformed_answer": {
+    "failed_checks": [
+      "retrieval_answer_invalid"
+    ],
+    "attribution": {
+      "root_cause_step": null,
+      "first_bad_step": 3,
+      "missed_recovery_step": null,
+      "first_irreversible_action_step": null,
+      "first_unrecoverable_step": null,
+      "visible_symptom_steps": [
+        3
+      ]
+    },
+    "bundle_key": "v2:grounding_citation_error:none:110e3f08305a8a17"
+  },
+  "retrieval_malformed_answer_positive": {
+    "failed_checks": [],
+    "attribution": null
+  }
+}

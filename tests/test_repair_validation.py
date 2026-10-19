@@ -777,10 +777,10 @@ def test_a_sibling_family_is_its_directory_or_the_task_itself(fixture, task_id, 
 
 
 def test_every_task_fixture_maps_to_a_family() -> None:
-    """The 29 family tasks fall in their 9 directories; the 9 others stand alone."""
+    """Refund family tasks share directories; other workflow tasks stand alone."""
     tasks_dir = FIXTURES_DIR / "tasks"
     fixtures = sorted(tasks_dir.rglob("*.json"))
-    assert len(fixtures) == 38
+    assert len(fixtures) == 54
     families = {}
     for path in fixtures:
         relative = path.relative_to(FIXTURES_DIR.parent).as_posix()
@@ -792,7 +792,7 @@ def test_every_task_fixture_maps_to_a_family() -> None:
         else:
             assert family == task_id
         families.setdefault(family, []).append(task_id)
-    assert len(families) == 18
+    assert len(families) == 34
     assert len(families["refund_task_families/purchase_age"]) == 8
 
 

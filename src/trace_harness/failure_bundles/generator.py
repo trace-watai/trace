@@ -39,6 +39,10 @@ from pydantic import BaseModel
 from trace_harness.attribution.schemas import AttributionResult
 from trace_harness.environment.state import SupportState
 from trace_harness.environment.tools import ToolSideEffect
+from trace_harness.failure_bundles.retrieval import (
+    retrieval_evidence_control,
+    retrieval_stale_control,
+)
 from trace_harness.failure_bundles.schemas import (
     BlastRadius,
     BundleOccurrence,
@@ -56,6 +60,7 @@ from trace_harness.tracing import artifact_store as names
 from trace_harness.tracing.artifact_store import ArtifactStore
 from trace_harness.tracing.events import TraceEvent, TraceEventType
 from trace_harness.verifiers.base import VerifierResult
+from trace_harness.verifiers.retrieval_answer import RetrievalAnswerVerifier
 
 
 class FailureBundle(BaseModel):
@@ -403,6 +408,11 @@ _CONTROL_BUILDERS = {
 }
 
 
+_CONTROL_BUILDERS.update(
+    {check: retrieval_evidence_control for check in RetrievalAnswerVerifier.CHECK_IDS}
+)
+_CONTROL_BUILDERS["retrieval_stale_document"] = retrieval_stale_control
+
 # Tool-level reachability includes alternative arguments, not just the recorded call.
 CHECKS_REACHABLE_BY_TOOL = {
     "issue_refund": ["unauthorized_cash_refund", "unauthorized_store_credit"],
@@ -551,7 +561,11 @@ class FailureBundleGenerator:
             task_fixture_path=task_fixture_path,
             agent_ref=agent_ref,
             attribution=attribution,
-            checks_reachable_by_tool=CHECKS_REACHABLE_BY_TOOL,
+            checks_reachable_by_tool=(
+                {"final_answer": list(RetrievalAnswerVerifier.CHECK_IDS)}
+                if task.workflow_type == "retrieval.answer"
+                else CHECKS_REACHABLE_BY_TOOL
+            ),
         )
         return FailureBundle(
             failure_card=failure_card,
@@ -600,7 +614,7 @@ class FailureBundleGenerator:
             evidence=[item for check in checks for item in check.evidence]
             + verifier_result.evidence,
             causal_explanation=attribution.causal_explanation,
-            blast_radius=self._blast_radius(final_state),
+            blast_radius=self._blast_radius(final_state, task.workflow_type),
             metadata={
                 "primary_failure_category": attribution.primary_failure_category.value,
                 "attribution_confidence": attribution.confidence,
@@ -628,8 +642,12 @@ class FailureBundleGenerator:
             f"({attribution.primary_failure_category.value}).{quote}"
         )
 
-    def _blast_radius(self, final_state: dict[str, Any]) -> BlastRadius:
+    def _blast_radius(
+        self, final_state: dict[str, Any], workflow_type: str = "support.refund"
+    ) -> BlastRadius:
         """Scope of external impact, computed from actual side effects."""
+        if workflow_type == "retrieval.answer":
+            return BlastRadius(summary="Read-only retrieval workflow; no external side effects.")
         try:
             state = SupportState.model_validate(final_state)
         except Exception:  # noqa: BLE001 — blast radius is best-effort on unparseable state

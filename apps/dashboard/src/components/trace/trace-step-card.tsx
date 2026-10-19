@@ -118,7 +118,7 @@ export const TraceStepCard = ({ step }: TraceStepCardProps) => {
                   <div className="flex flex-wrap gap-1.5">
                     {step.retrievalResults.map((doc) => (
                       <LabeledBadge
-                        key={doc.docId}
+                        key={`${doc.docId}:${doc.sectionId ?? ""}:${doc.spanStart ?? ""}:${doc.spanEnd ?? ""}`}
                         label={doc.docId}
                         value={docStatusLabel(doc.status)}
                         valueClassName={docStatusBadgeClasses(doc.status)}

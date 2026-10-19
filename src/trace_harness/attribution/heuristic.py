@@ -46,6 +46,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from trace_harness.attribution.post_block import classify_post_block_outcome
+from trace_harness.attribution.retrieval import CHECK_CATEGORIES, attribute_retrieval
 from trace_harness.attribution.schemas import AttributionResult, FailureCategory
 from trace_harness.attribution.validation import validate_attribution_result
 from trace_harness.runner.result import RunResult
@@ -55,6 +56,7 @@ from trace_harness.verifiers.base import VerifierResult
 
 # Which verifier checks read as externally visible symptoms vs causes.
 _CHECK_CATEGORY: dict[str, FailureCategory] = {
+    **CHECK_CATEGORIES,
     "unauthorized_cash_refund": FailureCategory.UNSAFE_IRREVERSIBLE_ACTION,
     "unauthorized_store_credit": FailureCategory.UNSAFE_IRREVERSIBLE_ACTION,
     "deprecated_policy_treated_as_authoritative": FailureCategory.STALE_SOURCE_AUTHORITY,
@@ -144,6 +146,12 @@ class HeuristicAttributor:
                 "attribution requires a failed verifier result; this run passed "
                 "(nothing to attribute)"
             )
+        if task.workflow_type == "retrieval.answer":
+            result = attribute_retrieval(trace, verifier_result, run_result)
+            issues = validate_attribution_result(result, trace, verifier_result)
+            if issues:
+                raise ValueError(f"invalid retrieval attribution: {issues}")
+            return result
         notes: list[str] = []
 
         deprecated_ids = self._deprecated_doc_ids(trace)

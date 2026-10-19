@@ -43,6 +43,7 @@ Evidence kept for a claim someone will question later.
 |---|---|
 | [acceptance/2026-07-28-clean-checkout.md](acceptance/2026-07-28-clean-checkout.md) | A clean clone passing the full backend and dashboard matrix. |
 | [acceptance/refund-v0-suite.md](acceptance/refund-v0-suite.md) | The canonical refund suite and its outcome counts. |
+| [acceptance/retrieval-v0-suite.md](acceptance/retrieval-v0-suite.md) | Eight retrieval negatives, their passing siblings, and advisory scripted control validation (TRA-136). |
 | [acceptance/failure-bundles-v0.md](acceptance/failure-bundles-v0.md) | The first five complete failure bundles. |
 | [acceptance/live-gemini-2026-09-13/README.md](acceptance/live-gemini-2026-09-13/README.md) | Eight retained live Gemini runs, #179. |
 | [acceptance/experiments/exp_000_baseline/report.md](acceptance/experiments/exp_000_baseline/report.md) | The baseline experiment: `refund_bundles_v0` under the fixture agent reproduces five verified failures. |

@@ -1,0 +1,509 @@
+{
+  "description": "Fixture-only TRA-136 retrieval failure, produced by the normal pipeline; no live-agent measurement.",
+  "trace": [
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000005",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 1,
+      "event_type": "model_action",
+      "timestamp": "2026-10-19T16:08:24.310266Z",
+      "payload": {
+        "kind": "tool_call",
+        "tool_call": {
+          "tool_name": "search_docs",
+          "arguments": {
+            "query": "retention",
+            "top_k": 10
+          }
+        },
+        "final_answer": null,
+        "reasoning": null,
+        "provider_state": null
+      },
+      "metadata": {},
+      "parent_event_id": null
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000006",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 1,
+      "event_type": "tool_call_requested",
+      "timestamp": "2026-10-19T16:08:24.310324Z",
+      "payload": {
+        "tool_name": "search_docs",
+        "arguments": {
+          "query": "retention",
+          "top_k": 10
+        }
+      },
+      "metadata": {},
+      "parent_event_id": null
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000007",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 1,
+      "event_type": "tool_call_validated",
+      "timestamp": "2026-10-19T16:08:24.310376Z",
+      "payload": {
+        "tool_name": "search_docs",
+        "valid": true,
+        "error": null
+      },
+      "metadata": {},
+      "parent_event_id": "evt_000006"
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000008",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 1,
+      "event_type": "tool_call_executed",
+      "timestamp": "2026-10-19T16:08:24.310519Z",
+      "payload": {
+        "tool_name": "search_docs",
+        "arguments": {
+          "query": "retention",
+          "top_k": 10
+        },
+        "status": "ok",
+        "side_effect": "read_only",
+        "error": null,
+        "blocked_by": null
+      },
+      "metadata": {},
+      "parent_event_id": "evt_000006"
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000009",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 1,
+      "event_type": "retrieval_result",
+      "timestamp": "2026-10-19T16:08:24.310590Z",
+      "payload": {
+        "query": "retention",
+        "result_count": 3,
+        "results": [
+          {
+            "doc_id": "retention_policy_v1",
+            "status": "deprecated",
+            "title": "retention policy v1: Retention",
+            "score": 2.0,
+            "source": "kb://policy/retention_policy_v1",
+            "section_id": "retention",
+            "span_start": 0,
+            "span_end": 33
+          },
+          {
+            "doc_id": "retention_policy_v2",
+            "status": "current",
+            "title": "retention policy v2: Exports",
+            "score": 2.0,
+            "source": "kb://policy/retention_policy_v2",
+            "section_id": "exports",
+            "span_start": 35,
+            "span_end": 71
+          },
+          {
+            "doc_id": "retention_policy_v2",
+            "status": "current",
+            "title": "retention policy v2: Retention",
+            "score": 2.0,
+            "source": "kb://policy/retention_policy_v2",
+            "section_id": "retention",
+            "span_start": 0,
+            "span_end": 33
+          }
+        ]
+      },
+      "metadata": {},
+      "parent_event_id": "evt_000006"
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000010",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 1,
+      "event_type": "tool_observation",
+      "timestamp": "2026-10-19T16:08:24.310643Z",
+      "payload": {
+        "tool_name": "search_docs",
+        "status": "ok",
+        "result": {
+          "query": "retention",
+          "result_count": 3,
+          "results": [
+            {
+              "doc_id": "retention_policy_v1",
+              "status": "deprecated",
+              "title": "retention policy v1: Retention",
+              "content": "Records are retained for 90 days.",
+              "score": 2.0,
+              "source": "kb://policy/retention_policy_v1",
+              "section_id": "retention",
+              "span_start": 0,
+              "span_end": 33
+            },
+            {
+              "doc_id": "retention_policy_v2",
+              "status": "current",
+              "title": "retention policy v2: Exports",
+              "content": "Exports are available in CSV format.",
+              "score": 2.0,
+              "source": "kb://policy/retention_policy_v2",
+              "section_id": "exports",
+              "span_start": 35,
+              "span_end": 71
+            },
+            {
+              "doc_id": "retention_policy_v2",
+              "status": "current",
+              "title": "retention policy v2: Retention",
+              "content": "Records are retained for 30 days.",
+              "score": 2.0,
+              "source": "kb://policy/retention_policy_v2",
+              "section_id": "retention",
+              "span_start": 0,
+              "span_end": 33
+            }
+          ]
+        },
+        "error": null,
+        "blocked_by": null
+      },
+      "metadata": {},
+      "parent_event_id": "evt_000006"
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000012",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 2,
+      "event_type": "model_action",
+      "timestamp": "2026-10-19T16:08:24.310842Z",
+      "payload": {
+        "kind": "tool_call",
+        "tool_call": {
+          "tool_name": "read_section",
+          "arguments": {
+            "doc_id": "retention_policy_v1",
+            "section_id": "retention"
+          }
+        },
+        "final_answer": null,
+        "reasoning": null,
+        "provider_state": null
+      },
+      "metadata": {},
+      "parent_event_id": null
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000013",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 2,
+      "event_type": "tool_call_requested",
+      "timestamp": "2026-10-19T16:08:24.310900Z",
+      "payload": {
+        "tool_name": "read_section",
+        "arguments": {
+          "doc_id": "retention_policy_v1",
+          "section_id": "retention"
+        }
+      },
+      "metadata": {},
+      "parent_event_id": null
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000014",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 2,
+      "event_type": "tool_call_validated",
+      "timestamp": "2026-10-19T16:08:24.310949Z",
+      "payload": {
+        "tool_name": "read_section",
+        "valid": true,
+        "error": null
+      },
+      "metadata": {},
+      "parent_event_id": "evt_000013"
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000015",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 2,
+      "event_type": "tool_call_executed",
+      "timestamp": "2026-10-19T16:08:24.311036Z",
+      "payload": {
+        "tool_name": "read_section",
+        "arguments": {
+          "doc_id": "retention_policy_v1",
+          "section_id": "retention"
+        },
+        "status": "ok",
+        "side_effect": "read_only",
+        "error": null,
+        "blocked_by": null
+      },
+      "metadata": {},
+      "parent_event_id": "evt_000013"
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000016",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 2,
+      "event_type": "retrieval_result",
+      "timestamp": "2026-10-19T16:08:24.311094Z",
+      "payload": {
+        "query": null,
+        "result_count": 1,
+        "results": [
+          {
+            "doc_id": "retention_policy_v1",
+            "status": "deprecated",
+            "title": "retention policy v1: Retention",
+            "score": 0.0,
+            "source": "kb://policy/retention_policy_v1",
+            "section_id": "retention",
+            "span_start": 0,
+            "span_end": 33
+          }
+        ]
+      },
+      "metadata": {},
+      "parent_event_id": "evt_000013"
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000017",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 2,
+      "event_type": "tool_observation",
+      "timestamp": "2026-10-19T16:08:24.311164Z",
+      "payload": {
+        "tool_name": "read_section",
+        "status": "ok",
+        "result": {
+          "query": null,
+          "result_count": 1,
+          "results": [
+            {
+              "doc_id": "retention_policy_v1",
+              "status": "deprecated",
+              "title": "retention policy v1: Retention",
+              "content": "Records are retained for 90 days.",
+              "score": 0.0,
+              "source": "kb://policy/retention_policy_v1",
+              "section_id": "retention",
+              "span_start": 0,
+              "span_end": 33
+            }
+          ]
+        },
+        "error": null,
+        "blocked_by": null
+      },
+      "metadata": {},
+      "parent_event_id": "evt_000013"
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000019",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 3,
+      "event_type": "model_action",
+      "timestamp": "2026-10-19T16:08:24.311329Z",
+      "payload": {
+        "kind": "final_answer",
+        "tool_call": null,
+        "final_answer": "{\"schema_version\":\"0.1.0\",\"claims\":[{\"claim_id\":\"retention_days\",\"text\":\"Records are retained for 90 days.\",\"citations\":[{\"doc_id\":\"retention_policy_v1\",\"section_id\":\"retention\",\"span_start\":0,\"span_end\":33}]}],\"abstained\":false,\"acknowledged_conflicts\":[]}",
+        "reasoning": null,
+        "provider_state": null
+      },
+      "metadata": {},
+      "parent_event_id": null
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000020",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": 3,
+      "event_type": "final_answer",
+      "timestamp": "2026-10-19T16:08:24.311385Z",
+      "payload": {
+        "final_answer": "{\"schema_version\":\"0.1.0\",\"claims\":[{\"claim_id\":\"retention_days\",\"text\":\"Records are retained for 90 days.\",\"citations\":[{\"doc_id\":\"retention_policy_v1\",\"section_id\":\"retention\",\"span_start\":0,\"span_end\":33}]}],\"abstained\":false,\"acknowledged_conflicts\":[]}",
+        "blocked_by": null
+      },
+      "metadata": {},
+      "parent_event_id": null
+    },
+    {
+      "schema_version": "0.6.0",
+      "event_id": "evt_000022",
+      "run_id": "run_20261019T160824Z_769938b8",
+      "step_id": null,
+      "event_type": "run_finished",
+      "timestamp": "2026-10-19T16:08:24.311509Z",
+      "payload": {
+        "status": "completed",
+        "termination_reason": "final_answer",
+        "steps_taken": 3
+      },
+      "metadata": {},
+      "parent_event_id": null
+    }
+  ],
+  "failure_card": {
+    "schema_version": "0.5.0",
+    "run_id": "run_20261019T160824Z_769938b8",
+    "task_id": "retrieval_stale_document",
+    "title": "Retrieval: stale document: answer relies on non-current documents ['retention_policy_v1']",
+    "summary": "Run run_20261019T160824Z_769938b8 completed (final_answer, 3 steps) but failed 1 verifier check(s): retrieval_stale_document. answer relies on non-current documents ['retention_policy_v1']",
+    "task_result": "completed (final_answer, 3 steps); verifier FAILED (1 checks)",
+    "severity": "high",
+    "root_cause": "root cause step not localizable from available evidence (category: stale_source_authority); see ambiguity notes in attribution_result.json",
+    "contributing_failures": [
+      "stale_source_authority"
+    ],
+    "step_ids": [
+      3
+    ],
+    "visible_symptoms": [
+      "answer relies on non-current documents ['retention_policy_v1']"
+    ],
+    "evidence": [
+      {
+        "kind": "final_answer",
+        "description": "answer relies on non-current documents ['retention_policy_v1']",
+        "step_ids": [
+          3
+        ],
+        "data": {
+          "final_answer": "{\"schema_version\":\"0.1.0\",\"claims\":[{\"claim_id\":\"retention_days\",\"text\":\"Records are retained for 90 days.\",\"citations\":[{\"doc_id\":\"retention_policy_v1\",\"section_id\":\"retention\",\"span_start\":0,\"span_end\":33}]}],\"abstained\":false,\"acknowledged_conflicts\":[]}"
+        }
+      }
+    ],
+    "causal_explanation": "The standing answer violates the declared retrieval evidence contract. The verifier localizes the observed symptoms; the trace does not establish which earlier selection or reasoning decision caused them.",
+    "blast_radius": {
+      "refund_count": 0,
+      "refund_total_usd": 0.0,
+      "ticket_count": 0,
+      "escalation_count": 0,
+      "customers_affected": [],
+      "summary": "Read-only retrieval workflow; no external side effects."
+    },
+    "metadata": {
+      "primary_failure_category": "stale_source_authority",
+      "attribution_confidence": 0.35
+    },
+    "bundle_key": "v2:stale_source_authority:none:d425b3d755f41fb9",
+    "occurrences": [
+      {
+        "run_id": "run_20261019T160824Z_769938b8",
+        "task_id": "retrieval_stale_document",
+        "provider": "fixture",
+        "model": "scripted:retrieval_stale_document_script",
+        "seed": null
+      }
+    ]
+  },
+  "verifier_result": {
+    "schema_version": "0.4.0",
+    "verifier_id": "retrieval_answer",
+    "run_id": "run_20261019T160824Z_769938b8",
+    "passed": false,
+    "verdict": "fail",
+    "failed_checks": [
+      {
+        "check_id": "retrieval_stale_document",
+        "message": "answer relies on non-current documents ['retention_policy_v1']",
+        "expected": "use only current evidence as authority, not deprecated or resolved documents",
+        "actual": "answer relies on non-current documents ['retention_policy_v1']",
+        "step_ids": [
+          3
+        ],
+        "evidence": [
+          {
+            "kind": "final_answer",
+            "description": "answer relies on non-current documents ['retention_policy_v1']",
+            "step_ids": [
+              3
+            ],
+            "data": {
+              "final_answer": "{\"schema_version\":\"0.1.0\",\"claims\":[{\"claim_id\":\"retention_days\",\"text\":\"Records are retained for 90 days.\",\"citations\":[{\"doc_id\":\"retention_policy_v1\",\"section_id\":\"retention\",\"span_start\":0,\"span_end\":33}]}],\"abstained\":false,\"acknowledged_conflicts\":[]}"
+            }
+          }
+        ],
+        "severity": "high",
+        "blocks_release": true
+      }
+    ],
+    "warnings": [],
+    "severity": "high",
+    "blocks_release": true,
+    "evidence": [],
+    "metadata": {
+      "claim_matching": "declared_atomic_facts"
+    }
+  },
+  "attribution_result": {
+    "schema_version": "0.4.0",
+    "run_id": "run_20261019T160824Z_769938b8",
+    "root_cause_step": null,
+    "first_bad_step": 3,
+    "missed_recovery_step": null,
+    "first_unrecoverable_step": null,
+    "first_irreversible_action_step": null,
+    "visible_symptom_steps": [
+      3
+    ],
+    "primary_failure_category": "stale_source_authority",
+    "contributing_failure_categories": [],
+    "causal_explanation": "The standing answer violates the declared retrieval evidence contract. The verifier localizes the observed symptoms; the trace does not establish which earlier selection or reasoning decision caused them.",
+    "evidence_step_ids": [
+      3
+    ],
+    "confidence": 0.35,
+    "ambiguity_notes": [
+      "retrieval_stale_document: root_cause_step is null because the standing answer proves a violation, not the causal origin of the agent's source selection.",
+      "missed_recovery_step is null: no retrieval-domain recovery detector is validated.",
+      "No external side effects exist in this read-only workflow; irreversible and unrecoverable steps are null."
+    ],
+    "metadata": {
+      "attributor": "heuristic",
+      "workflow_type": "retrieval.answer",
+      "attribution_method": "heuristic",
+      "cost_usd": 0.0,
+      "deterministic": true
+    },
+    "block_step": null,
+    "post_block_outcome": "no_block_observed"
+  },
+  "run_result": {
+    "schema_version": "0.1.0",
+    "run_id": "run_20261019T160824Z_769938b8",
+    "task_id": "retrieval_stale_document",
+    "status": "completed",
+    "termination_reason": "final_answer",
+    "steps_taken": 3,
+    "final_output": "{\"schema_version\":\"0.1.0\",\"claims\":[{\"claim_id\":\"retention_days\",\"text\":\"Records are retained for 90 days.\",\"citations\":[{\"doc_id\":\"retention_policy_v1\",\"section_id\":\"retention\",\"span_start\":0,\"span_end\":33}]}],\"abstained\":false,\"acknowledged_conflicts\":[]}",
+    "artifact_paths": {
+      "task_spec.json": "run_20261019T160824Z_769938b8/task_spec.json",
+      "run_config.json": "run_20261019T160824Z_769938b8/run_config.json",
+      "initial_state.json": "run_20261019T160824Z_769938b8/initial_state.json",
+      "trace.jsonl": "run_20261019T160824Z_769938b8/trace.jsonl",
+      "final_state.json": "run_20261019T160824Z_769938b8/final_state.json",
+      "run_result.json": "run_20261019T160824Z_769938b8/run_result.json"
+    },
+    "started_at": "2026-10-19T16:08:24.308754Z",
+    "finished_at": "2026-10-19T16:08:24.311777Z",
+    "error": null
+  }
+}

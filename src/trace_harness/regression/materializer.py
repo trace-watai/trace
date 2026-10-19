@@ -44,9 +44,8 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from trace_harness.attribution.schemas import AttributionResult
-from trace_harness.environment.controls import reference_controls, resolve_guardrail
-from trace_harness.environment.state import SupportState
-from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.controls import reference_controls_for_workflow, resolve_guardrail
+from trace_harness.environment.factory import create_environment
 from trace_harness.environment.tools import ToolSideEffect
 from trace_harness.models.base import ToolCall
 from trace_harness.regression.schemas import (
@@ -91,13 +90,12 @@ def _replay_mode_basis(
 ) -> ReplayModeBasis:
     """Find the first reference-control block in an isolated copy of the pinned world.
 
-    Only recorded, executed tool calls advance the sandbox. No model is run.
+    Recorded tool calls advance the sandbox; final answers exercise answer hooks.
+    No model is run.
     Stop at the block: a recording cannot predict the agent's next decision.
     """
-    env = SupportEnvironment(
-        SupportState.model_validate(initial_state), available_tools=task.available_tools
-    )
-    controls = reference_controls()
+    env = create_environment(task.model_copy(update={"initial_state": initial_state}))
+    controls = reference_controls_for_workflow(task.workflow_type)
     for control in controls:
         env.install_control(control)
     basis = ReplayModeBasis(
@@ -105,19 +103,26 @@ def _replay_mode_basis(
         first_irreversible_action_step=attribution.first_irreversible_action_step,
     )
     for event in trace:
-        if event.event_type is not TraceEventType.TOOL_CALL_EXECUTED:
+        if event.event_type is TraceEventType.FINAL_ANSWER:
+            if event.payload.get("blocked_by"):
+                continue
+            result = env.check_final_answer(event.payload.get("final_answer", ""))
+            gated_tool = "final_answer"
+        elif event.event_type is TraceEventType.TOOL_CALL_EXECUTED:
+            call = ToolCall.model_validate(event.payload)
+            # Existing blocks/errors did not mutate the recorded world.
+            if event.payload.get("status") != "ok":
+                continue
+            result = env.execute(call, step_id=event.step_id)
+            gated_tool = call.tool_name
+        else:
             continue
-        call = ToolCall.model_validate(event.payload)
-        # Existing blocks/errors did not mutate the recorded world.
-        if event.payload.get("status") != "ok":
-            continue
-        result = env.execute(call, step_id=event.step_id)
-        if result.blocked_by:
+        if result is not None and result.blocked_by:
             control = next(c for c in controls if c.control_id == result.blocked_by)
             registered = resolve_guardrail(control.guardrail_ref)
             basis.control_step = event.step_id
-            basis.gated_tool = call.tool_name
-            basis.checks_reachable_via_gated_tool = checks_reachable_by_tool.get(call.tool_name, [])
+            basis.gated_tool = gated_tool
+            basis.checks_reachable_via_gated_tool = checks_reachable_by_tool.get(gated_tool, [])
             basis.checks_covered_by_control = sorted(registered.checks_covered)
             basis.rule_kind = registered.rule_kind
             basis.steps_remaining_after_control = sum(

@@ -30,8 +30,8 @@ TASKS_DIR = FIXTURES_DIR / "tasks"
 # The key of every failing task fixture, pinned. The key is the identity that
 # decides which runs share a card, so a change to how it is formed has to show
 # up here as a deliberate edit rather than as cards that silently stop
-# merging. The task is part of the key, so the nineteen failing fixtures form
-# nineteen keys and no two tasks ever share a card, which
+# merging. The task is part of the key, so the twenty-seven failing fixtures
+# form twenty-seven keys and no two tasks ever share a card, which
 # test_no_two_tasks_share_a_key asserts. Runs of one task that fail the same
 # way still share one, across providers, seeds and days.
 PINNED_KEYS = {
@@ -63,6 +63,15 @@ PINNED_KEYS = {
     "refund_expected_action_cash_omitted": "v2:unknown:none:0c82c9ba84bdf58a",
     "refund_escalation_duplicate": "v2:unknown:none:a9e387569862b78c",
 }
+PINNED_KEYS.update(
+    {
+        task_id: pin["bundle_key"]
+        for task_id, pin in json.loads(
+            (FIXTURES_DIR / "expected" / "retrieval_v0.json").read_text(encoding="utf-8")
+        ).items()
+        if pin["failed_checks"]
+    }
+)
 
 
 def _task_path(task_id: str) -> Path:
@@ -108,7 +117,7 @@ def test_the_pinned_keys_cover_every_failing_fixture(tmp_path):
         if result.verifier_result is not None and result.verifier_result.has_violations:
             failing.add(result.task.task_id)
     assert failing == set(PINNED_KEYS)
-    assert len(set(PINNED_KEYS.values())) == len(PINNED_KEYS) == 19
+    assert len(set(PINNED_KEYS.values())) == len(PINNED_KEYS) == 27
 
 
 def test_no_two_tasks_share_a_key():

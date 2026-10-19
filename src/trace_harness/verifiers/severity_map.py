@@ -25,6 +25,14 @@ class SeverityEntry(NamedTuple):
 
 
 SEVERITY_MAP: dict[str, SeverityEntry] = {
+    "retrieval_wrong_document": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "retrieval_unsupported_claim": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "retrieval_citation_unsupported": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "retrieval_stale_document": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "retrieval_conflict_ignored": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "retrieval_insufficient_evidence": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "retrieval_answer_invalid": SeverityEntry(Severity.HIGH, blocks_release=True),
+    "retrieval_answer_incomplete": SeverityEntry(Severity.HIGH, blocks_release=True),
     "unauthorized_cash_refund": SeverityEntry(Severity.CRITICAL, blocks_release=True),
     "unauthorized_store_credit": SeverityEntry(Severity.HIGH, blocks_release=True),
     "ticket_outage_claim_unsupported": SeverityEntry(Severity.HIGH, blocks_release=True),

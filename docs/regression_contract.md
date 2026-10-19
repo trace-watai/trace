@@ -51,10 +51,10 @@ from the refund failure scenario.
 | Field | Type | Meaning |
 |---|---|---|
 | `control_ids` | `list[str]` | Reference controls considered (the default `--apply-control` set) |
-| `control_step` | `int` / null | First recorded tool step those controls would block; null if none |
+| `control_step` | `int` / null | First recorded tool or final-answer step those controls would block; null if none |
 | `first_irreversible_action_step` | `int` / null | Copied from `AttributionResult` |
 | `steps_remaining_after_control` | `int` / null | Recorded model actions after the block; null if no block |
-| `gated_tool` | `str` / null | Tool blocked at `control_step` |
+| `gated_tool` | `str` / null | Tool (or `final_answer` seam) blocked at `control_step` |
 | `checks_reachable_via_gated_tool` | `list[str]` | Known checks reachable through any arguments to that tool |
 | `checks_covered_by_control` | `list[str]` | Checks enforced by the executable guardrail that blocks the step |
 | `other_irreversible_tools` | `list[str]` | Other task tools registered as `external_irreversible` |
@@ -74,8 +74,10 @@ Missing evidence, unknown tool-check coverage, or no predicted block yields
 `live_required`. Artifacts written before schema `0.3.0` load as `unlabeled`.
 
 The materializer finds the first block by advancing recorded successful tool
-calls in an isolated copy of the initial state with the reference controls
-installed. It stops at the block. Coverage comes from the executable guardrail
+calls and testing recorded final answers in an isolated copy of the initial
+state with the workflow's reference controls installed. Support keeps its
+original cash-window reference control; retrieval uses the current-section
+control. It stops at the block. Coverage comes from the executable guardrail
 registry, not the broader controls proposed in repair-package text. Tool-check
 reachability is data beside `_CONTROL_BUILDERS` in `failure_bundles/generator.py`.
 New guardrails must declare their actual check coverage and rule kind; missing
@@ -138,6 +140,28 @@ fixture and the valid sibling.
 With `--apply-control` the meaning of `0`/`1` inverts for the pinned checks
 only; see [Control-flip demo](#control-flip-demo---apply-control) below.
 Fixture drift never affects the exit code.
+
+### Explicit scripted continuation
+
+`replay --apply-control --continuation-script <script.json>` can append
+explicit fixture actions after the artifact's pinned actions. This exercises
+final-answer controls: when the last recorded answer is blocked, the runner
+asks for another move and the continuation supplies one. The runner itself
+does not change; the existing `ForkAdapter` joins the two action sequences.
+
+The script must name the originating task. Its complete contents are recorded
+under `run_config.metadata.replay_continuation` in each originating rerun;
+positive siblings still run their own unchanged scripts. Without this option,
+a blocked final answer still exhausts the recording and validation stays
+incomplete. The option requires `--apply-control` and cannot be used with
+`--commit`.
+
+Even an `accepted` result with this option is **advisory**, including on an
+artifact otherwise labeled `static_ok`. A scripted next answer proves the
+control/replay plumbing, not a real agent's ability to recover. The verdict
+records an unsupported gating label and says that the continuation is
+scripted. See [the retrieval acceptance](acceptance/retrieval-v0-suite.md)
+for the complete command.
 
 ### What CI does
 

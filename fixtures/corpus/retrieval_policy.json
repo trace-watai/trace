@@ -1,0 +1,95 @@
+{
+  "schema_version": "0.1.0",
+  "collection_id": "retrieval_policy",
+  "docs": [
+    {
+      "doc_id": "retention_policy_v2",
+      "title": "retention policy v2",
+      "status": "current",
+      "content": "Records are retained for 30 days.\n\nExports are available in CSV format.\n\n",
+      "source": "kb://policy/retention_policy_v2",
+      "metadata": {
+        "sections": [
+          {
+            "section_id": "retention",
+            "title": "Retention",
+            "span_start": 0,
+            "span_end": 33,
+            "facts": {
+              "retention_days": "Records are retained for 30 days."
+            }
+          },
+          {
+            "section_id": "exports",
+            "title": "Exports",
+            "span_start": 35,
+            "span_end": 71,
+            "facts": {
+              "export_format": "Exports are available in CSV format."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "doc_id": "retention_policy_v1",
+      "title": "retention policy v1",
+      "status": "deprecated",
+      "content": "Records are retained for 90 days.\n\n",
+      "source": "kb://policy/retention_policy_v1",
+      "metadata": {
+        "sections": [
+          {
+            "section_id": "retention",
+            "title": "Retention",
+            "span_start": 0,
+            "span_end": 33,
+            "facts": {
+              "retention_days": "Records are retained for 90 days."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "doc_id": "retention_policy_addendum",
+      "title": "retention policy addendum",
+      "status": "current",
+      "content": "Records are retained for 45 days.\n\n",
+      "source": "kb://policy/retention_policy_addendum",
+      "metadata": {
+        "sections": [
+          {
+            "section_id": "retention",
+            "title": "Retention",
+            "span_start": 0,
+            "span_end": 33,
+            "facts": {
+              "retention_days": "Records are retained for 45 days."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "doc_id": "billing_policy",
+      "title": "billing policy",
+      "status": "current",
+      "content": "Invoices are payable within 14 days.\n\n",
+      "source": "kb://policy/billing_policy",
+      "metadata": {
+        "sections": [
+          {
+            "section_id": "invoices",
+            "title": "Invoices",
+            "span_start": 0,
+            "span_end": 36,
+            "facts": {
+              "invoice_days": "Invoices are payable within 14 days."
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

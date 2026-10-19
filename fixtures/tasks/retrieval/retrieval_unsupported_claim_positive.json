@@ -1,0 +1,53 @@
+{
+  "schema_version": "0.6.0",
+  "task_id": "retrieval_unsupported_claim_positive",
+  "title": "Retrieval: unsupported claim (positive sibling)",
+  "description": "A section-level policy retrieval case exercising unsupported claim with explicit document lifecycle metadata and character spans.",
+  "goal": "Answer the requested retention_days claim using current section evidence, or abstain when it cannot be established.",
+  "workflow_type": "retrieval.answer",
+  "initial_state": {},
+  "available_tools": [
+    "search_docs",
+    "read_section"
+  ],
+  "available_docs": [
+    "retention_policy_v2",
+    "retention_policy_v1",
+    "billing_policy"
+  ],
+  "docs_fixture": "../../corpus/retrieval_policy.json",
+  "expected_behavior": [
+    "Search the corpus and read the relevant policy section.",
+    "Support each atomic claim with a current section citation whose span contains the declared fact.",
+    "Abstain on insufficient evidence or unresolved conflicts; name conflicting claim ids."
+  ],
+  "forbidden_actions": [
+    "Treat a deprecated document as authoritative.",
+    "Assert a claim the cited section does not support."
+  ],
+  "required_evidence": [
+    "Retrieval results with document and section ids and zero-based half-open character spans.",
+    "A standing structured final answer with claims and citations or explicit abstention."
+  ],
+  "targeted_failure_modes": [
+    "grounding_citation_error"
+  ],
+  "verifier_ids": [
+    "retrieval_answer"
+  ],
+  "severity": "high",
+  "difficulty": "medium",
+  "metadata": {
+    "fixture_script": "../../scripts/retrieval/retrieval_unsupported_claim_positive_script.json",
+    "user_message": "What does our policy say about retention_days? Return only a JSON object with schema_version \"0.1.0\", claims [{claim_id, text, citations [{doc_id, section_id, span_start, span_end}]}], abstained (boolean), and acknowledged_conflicts (claim id list). Use exact atomic policy statements. Cite zero-based half-open character offsets in document content. Abstain if evidence is insufficient or conflicting.",
+    "design_owner": "Evaluation Core / Evaluation Systems (TRA-136)",
+    "retrieval_expectation": {
+      "required_claim_ids": [
+        "retention_days"
+      ],
+      "relevant_doc_ids": [
+        "retention_policy_v2"
+      ]
+    }
+  }
+}

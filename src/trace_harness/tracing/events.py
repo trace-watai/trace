@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from trace_harness.tracing.payloads import TracePayload
 
-TRACE_SCHEMA_VERSION = "0.5.0"  # 0.5.0: blocked_by on final_answer; 0.4.0: on tool events
+TRACE_SCHEMA_VERSION = "0.6.0"  # 0.6.0: section and character spans on retrieval results
 
 
 class TraceEventType(StrEnum):

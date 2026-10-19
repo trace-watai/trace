@@ -31,14 +31,14 @@ TaskSpec (fixtures/tasks/*.json, loaded by tasks/loader.py)
    ▼
 AgentRunner (runner/agent_runner.py)
    │  asks ModelAdapter for actions        (models/base.py — fixture | gemini)
-   │  drives ToolEnvironment               (environment/support_env.py)
+   │  drives ToolEnvironment               (environment/factory.py selects the workflow)
    │     └─ tools + typed state + retrieval (environment/{tools,state,retrieval}.py)
    │  records through TraceRecorder        (tracing/recorder.py)
    ▼
 ArtifactStore — runs/{run_id}/             (tracing/artifact_store.py)
    │  task_spec / run_config / initial_state / trace.jsonl / final_state / run_result
    ▼
-Verifier (verifiers/refund_policy.py via verifiers/registry.py)
+Verifier (refund_policy.py or retrieval_answer.py via verifiers/registry.py)
    │  → verifier_result.json  (pass/fail + failed checks + evidence)
    ▼
 Attribution (attribution/heuristic.py)
@@ -97,6 +97,12 @@ change, listed in [team_ownership.md](team_ownership.md).
 
 Every schema carries `schema_version`. Changing a contract = bump the
 version + update consumers + tests + the matching doc, in one PR.
+
+`support.refund` and `retrieval.answer` share dispatch and control seams in
+`SandboxEnvironment`, not domain state. The retrieval workflow uses stable
+sections and citation spans, a closed-corpus deterministic answer verifier,
+and the same run artifacts. Its [acceptance record](acceptance/retrieval-v0-suite.md)
+documents the bounded claim matcher and opt-in scripted replay continuation.
 
 ## Determinism doctrine
 
