@@ -1,0 +1,32 @@
+{
+  "schema_version": "0.1.0",
+  "script_id": "retrieval_insufficient_evidence_script",
+  "task_id": "retrieval_insufficient_evidence",
+  "description": "Staged negative for insufficient_evidence; no live-model claim.",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "tool_call": {
+        "tool_name": "search_docs",
+        "arguments": {
+          "query": "retention",
+          "top_k": 10
+        }
+      }
+    },
+    {
+      "kind": "tool_call",
+      "tool_call": {
+        "tool_name": "read_section",
+        "arguments": {
+          "doc_id": "retention_policy_v2",
+          "section_id": "retention"
+        }
+      }
+    },
+    {
+      "kind": "final_answer",
+      "final_answer": "{\"schema_version\":\"0.1.0\",\"claims\":[{\"claim_id\":\"backup_region\",\"text\":\"Backups remain in Canada.\",\"citations\":[{\"doc_id\":\"retention_policy_v2\",\"section_id\":\"retention\",\"span_start\":0,\"span_end\":33}]}],\"abstained\":false,\"acknowledged_conflicts\":[]}"
+    }
+  ]
+}

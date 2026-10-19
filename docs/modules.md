@@ -185,14 +185,24 @@ Retrieval never truncates content and always carries doc `status`.
 Everything stays deterministic: no clocks, no randomness, no network.
 `issue_refund` intentionally permits unsafe refunds today so the verifier
 has something real to catch; guardrails run as pre-execute hooks in
-`support_env.execute` — install them as controls (`install_control`), not
+`SandboxEnvironment.execute` — install them as controls (`install_control`), not
 inside handlers. No
 pass/fail judgment here (verifiers), no prompt text (runner), no vector DB
 until keyword retrieval demonstrably fails a real task.
 
-**Build next:** post-execute hooks; doc chunking and
-pluggable scorers behind the same `search_docs` signature; a second
-workflow environment to force the generic/support split.
+**Second workflow (TRA-136):** `factory.create_environment` selects
+`support.refund` or `retrieval.answer` by `workflow_type` and rejects unknown
+workflows. `SandboxEnvironment` owns shared dispatch and control seams;
+`SupportEnvironment` and `RetrievalEnvironment` supply independent typed
+states and tool registries. The CLI, batch pipeline, branching, outside-agent
+turn replay, and regression materializer use the factory.
+`retrieval_state.py` defines validated corpus sections and the structured
+answer contract. `retrieval_env.py` provides section-level `search_docs` and
+`read_section`; both return untruncated text and document-relative character
+spans. Controls declare their workflow and cannot install across domains.
+
+**Build next:** pluggable scorers behind the same tool signatures once
+keyword scoring demonstrably fails a real task.
 
 ## runner/ — the execution engine *(Rupert Maiti)*
 
@@ -389,11 +399,16 @@ legitimate behavior passes (boundary days, manager approval, store-credit
 paths, deprecated-doc *mention* vs *reliance*). Checks that cannot run
 become warnings, not crashes or silent passes.
 
-**Build next:** structured citations in traces to replace substring
-provenance matching; claim-matching beyond regex for ticket grounding
-(with a labeled set of tricky texts); a second domain verifier to
-pressure-test the base contract; real multi-verifier semantics (today: a
-simple merge).
+`RetrievalAnswerVerifier` is the second registered domain verifier. It checks
+declared atomic claims, observed citation spans, lifecycle status, conflicting
+current facts, evidence sufficiency, answer structure and completeness.
+It is a closed-corpus oracle, not an open-ended entailment model. Each check
+has a severity and repair template, enforced across every registered verifier.
+The suite and limits are in [acceptance/retrieval-v0-suite.md](acceptance/retrieval-v0-suite.md).
+
+**Build next:** structured support-domain citations to replace substring
+provenance matching; claim-matching beyond regex for ticket grounding;
+real multi-verifier semantics (today: a simple merge).
 
 ## attribution/ — failure explanation *(Darrel Wihandi)*
 
@@ -427,6 +442,11 @@ heuristic and LLM judges are comparable; a human-labeled agreement set
 (with Justin/Katharine) before trusting either; a per-workflow strategy
 interface for the disconfirming-evidence detector (the current one is
 refund-domain-specific).
+
+Retrieval attribution deliberately leaves causal and recovery steps null,
+with an `ambiguity_notes` reason for every failed check. It localizes the
+standing-answer symptoms, maps the check categories, and pins the nulls and
+symptom steps per task rather than inventing causal reasoning.
 
 ## failure_bundles/ — cards and repair packages *(Samir Mohammed)*
 

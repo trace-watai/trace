@@ -47,6 +47,22 @@ A check blocks release when the failure represents **direct, observable harm** t
 | `ticket_outage_claim_unsupported` | HIGH | **Yes** | A false claim is now permanently recorded in a durable system. |
 | `final_answer_inconsistent_with_state` | HIGH | **Yes** | The customer was told something factually wrong about their account. |
 | `required_escalation_missing` | HIGH | **Yes** | Task required escalation (`requires_escalation`) but the agent did not escalate. |
+| `retrieval_wrong_document` | HIGH | **Yes** | The retrieval answer did not consult an available relevant policy document. |
+| `retrieval_unsupported_claim` | HIGH | **Yes** | The delivered answer asserts a fact not declared by the corpus. |
+| `retrieval_citation_unsupported` | HIGH | **Yes** | A delivered citation does not identify observed evidence supporting its claim. |
+| `retrieval_stale_document` | HIGH | **Yes** | The answer relies on deprecated or resolved evidence as authority. |
+| `retrieval_conflict_ignored` | HIGH | **Yes** | The answer conceals an unresolved conflict between retrieved current sources. |
+| `retrieval_insufficient_evidence` | HIGH | **Yes** | The answer asserts claims without the required current evidence instead of abstaining. |
+| `retrieval_answer_invalid` | HIGH | **Yes** | The delivered answer violates the structured answer contract. |
+| `retrieval_answer_incomplete` | HIGH | **Yes** | Available, unambiguous current evidence supports a requested claim, but the answer omits it. |
+
+In `retrieval.answer`, the cited final answer is the deliverable, so these
+checks assess its outcome contract rather than explain an independent refund
+action. Each can reject an invalid deliverable on its own. They are not the
+support workflow's diagnosis-only deprecated-policy check. The closed-corpus
+limits and passing siblings are recorded in
+[retrieval acceptance](acceptance/retrieval-v0-suite.md). A failed task still
+counts once, regardless of how many independent answer requirements it violates.
 
 ### When `blocks_release = False`
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,6 +42,8 @@ from trace_harness.environment.state import (
     Ticket,
 )
 from trace_harness.models.base import ToolSpec
+
+StateT = TypeVar("StateT")
 
 
 class ToolSideEffect(StrEnum):
@@ -119,7 +121,7 @@ class EscalateCaseArgs(BaseModel):
 
 
 @dataclass(frozen=True)
-class ToolDefinition:
+class ToolDefinition(Generic[StateT]):
     """A tool the environment can offer: contract + side-effect class + handler.
 
     ``free_text_arguments`` names the string arguments the agent words for
@@ -134,7 +136,7 @@ class ToolDefinition:
     description: str
     args_model: type[BaseModel]
     side_effect: ToolSideEffect
-    handler: Callable[[SupportState, BaseModel, int | None], ToolResult]
+    handler: Callable[[StateT, BaseModel, int | None], ToolResult]
     free_text_arguments: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
@@ -273,7 +275,7 @@ def _escalate_case_handler(state: SupportState, args: BaseModel, step_id: int | 
     )
 
 
-def support_tool_definitions() -> list[ToolDefinition]:
+def support_tool_definitions() -> list[ToolDefinition[SupportState]]:
     """The five tools of the support/refund vertical slice."""
     return [
         ToolDefinition(

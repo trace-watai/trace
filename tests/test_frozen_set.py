@@ -40,7 +40,7 @@ ACCEPTANCE = REPO_ROOT / "docs" / "acceptance"
 BASELINE = ACCEPTANCE / "experiments" / "exp_000_baseline"
 BATCH = "batch_20260917T191429Z_87bfa2c7"
 VERIFIER = "src/trace_harness/verifiers/refund_policy.py"
-ENVIRONMENT = "src/trace_harness/environment/support_env.py"
+ENVIRONMENT = "src/trace_harness/environment/sandbox.py"
 ONE_LINE_EDITS = {
     VERIFIER: ("cash_refund_window_days: int = 30", "cash_refund_window_days: int = 31"),
     ENVIRONMENT: ("        return True, None", "        return True, 'edited'"),

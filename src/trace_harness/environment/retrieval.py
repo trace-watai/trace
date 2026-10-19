@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
 
 from trace_harness.environment.state import Doc, DocStatus
 
@@ -57,6 +57,20 @@ class RetrievedChunk(BaseModel):
     content: str
     score: float
     source: str
+    # Present on section retrieval; absent on the original whole-doc workflow.
+    section_id: str | None = None
+    span_start: int | None = None
+    span_end: int | None = None
+
+    @model_serializer(mode="wrap")
+    def omit_whole_document_section_fields(self, handler: SerializerFunctionWrapHandler) -> dict:
+        # Whole-document tool output is part of retained cassette request
+        # hashes. Do not add null section fields to the original workflow.
+        data = handler(self)
+        if self.section_id is None:
+            for key in ("section_id", "span_start", "span_end"):
+                data.pop(key, None)
+        return data
 
 
 def search_docs(

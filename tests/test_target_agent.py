@@ -20,7 +20,7 @@ from conftest import FAILURE_TASK_PATH, FIXTURES_DIR, REPO_ROOT, VALID_TASK_PATH
 from trace_harness.attribution.heuristic import HeuristicAttributor
 from trace_harness.cli import main
 from trace_harness.environment.controls import REFUND_WINDOW_CONTROL_ID, reference_controls
-from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.factory import create_environment
 from trace_harness.environment.tools import ToolResult
 from trace_harness.models.base import Message, MessageRole, ScriptExhaustedError
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
@@ -82,9 +82,10 @@ class ScriptAgent:
 
     def run(self, prompt, tools, call_tool, on_model_response=None) -> str:
         self.prompt = prompt
-        script = FixtureScript.model_validate_json(
-            (SCRIPTS_DIR / f"{prompt.task_id}_script.json").read_text(encoding="utf-8")
-        )
+        (task_path,) = [p for p in TASK_PATHS if p.stem == prompt.task_id]
+        task = load_task(task_path)
+        script_path = task_path.parent / task.metadata["fixture_script"]
+        script = FixtureScript.model_validate_json(script_path.read_text(encoding="utf-8"))
         for turn, action in enumerate(script.actions, start=1):
             if self.forward and on_model_response is not None:
                 on_model_response({"turn": turn}, reasoning=action.reasoning)
@@ -117,7 +118,7 @@ def _run(
     final_answer_hook=None,
 ):
     task = load_task(task_path)
-    environment = SupportEnvironment.from_task(task, docs=load_docs_for_task(task, task_path))
+    environment = create_environment(task, docs=load_docs_for_task(task, task_path))
     for control in controls:
         environment.install_control(control)
     if final_answer_hook is not None:
@@ -1133,9 +1134,7 @@ class ForkingAgent:
 
 def _fork(agent: TargetAgent, tmp_path: Path, switch_at_step: int = 5):
     task = load_task(FAILURE_TASK_PATH)
-    environment = SupportEnvironment.from_task(
-        task, docs=load_docs_for_task(task, FAILURE_TASK_PATH)
-    )
+    environment = create_environment(task, docs=load_docs_for_task(task, FAILURE_TASK_PATH))
     for control in reference_controls():
         environment.install_control(control)
     prefix = FixtureModelAdapter.from_file(SCRIPTS_DIR / "refund_policy_failure_script.json")

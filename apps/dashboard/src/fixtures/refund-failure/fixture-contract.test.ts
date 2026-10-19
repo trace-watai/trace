@@ -21,11 +21,7 @@ import {
   type RawRepairPackage,
 } from "@/types/repair-package";
 import { parseRunResult, type RawRunResult } from "@/types/run-result";
-import {
-  TRACE_SCHEMA_VERSION,
-  parseTrace,
-  type RawTraceEvent,
-} from "@/types/trace-event";
+import { parseTrace, type RawTraceEvent } from "@/types/trace-event";
 import {
   VERIFIER_RESULT_SCHEMA_VERSION,
   parseVerifierResult,
@@ -107,7 +103,7 @@ describe("refund-failure fixture contracts", () => {
     expect(verifier.blocksRelease).toBe(true);
   });
 
-  it("parses the complete trace on the current event contract", () => {
+  it("parses the retained trace without rewriting its original event version", () => {
     const events = readFileSync(fixtureUrl("trace.jsonl"), "utf8")
       .trim()
       .split("\n")
@@ -115,9 +111,9 @@ describe("refund-failure fixture contracts", () => {
     const trace = parseTrace(events);
 
     expect(trace.length).toBeGreaterThan(0);
-    expect(
-      trace.every((event) => event.schemaVersion === TRACE_SCHEMA_VERSION),
-    ).toBe(true);
+    expect(new Set(trace.map((event) => event.schemaVersion))).toEqual(
+      new Set(["0.5.0"]),
+    );
     expect(trace.at(0)?.eventType).toBe("run_started");
     expect(trace.at(-1)?.eventType).toBe("run_finished");
   });

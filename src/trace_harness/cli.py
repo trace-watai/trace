@@ -65,8 +65,7 @@ from trace_harness.environment.controls import (
     control_catalogue,
     select_controls,
 )
-from trace_harness.environment.state import SupportState
-from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.factory import create_environment
 from trace_harness.failure_bundles.schemas import RepairPackage
 from trace_harness.metrics.history import HISTORY_PATH as DEFAULT_HISTORY_PATH
 from trace_harness.models import (
@@ -79,6 +78,7 @@ from trace_harness.models import (
 from trace_harness.models.base import ProviderNotConfiguredError
 from trace_harness.models.cassette import CassetteConfig, RecordingModelAdapter
 from trace_harness.models.fixture import FixtureModelAdapter, FixtureScript
+from trace_harness.models.fork import ForkAdapter
 from trace_harness.public_results.postgrest import PostgrestError
 from trace_harness.regression.promotion import LibraryGateError, commit_controls
 from trace_harness.regression.repair_validation import (
@@ -218,6 +218,7 @@ def _run_fixture(
     pinned_initial_state: dict[str, Any] | None = None,
     pinned_script: FixtureScript | None = None,
     controls: list[ControlInstance] | None = None,
+    continuation_script: FixtureScript | None = None,
 ) -> RunResult:
     task_path = Path(args.task_path).resolve()
     task = load_task(task_path)
@@ -232,7 +233,7 @@ def _run_fixture(
         docs = None
         metadata["replay_pinned_state"] = "true"
 
-    environment = SupportEnvironment.from_task(
+    environment = create_environment(
         task, docs=docs, control_library=getattr(args, "control_library", None)
     )
     # Guardrails enter only as installed controls, never raw hooks, so every
@@ -274,6 +275,13 @@ def _run_fixture(
         adapter = FixtureModelAdapter(pinned_script)
         model = f"scripted:{pinned_script.script_id}"
         metadata["replay_pinned_script"] = "true"
+        if continuation_script is not None:
+            if continuation_script.task_id != task.task_id:
+                raise CliInputError("continuation script task_id does not match the replay task")
+            adapter = ForkAdapter(
+                adapter, FixtureModelAdapter(continuation_script), len(pinned_script.actions)
+            )
+            metadata["replay_continuation"] = continuation_script.model_dump(mode="json")
     else:
         script_path = None
         if args.provider == "fixture":
@@ -374,6 +382,11 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
     task = TaskSpec.model_validate(store.read_json(run_id, names.TASK_SPEC))
     trace = store.read_trace(run_id)
     final_state = store.read_json(run_id, names.FINAL_STATE)
+    initial_state = (
+        store.read_json(run_id, names.INITIAL_STATE)
+        if store.exists(run_id, names.INITIAL_STATE)
+        else None
+    )
     run_result = RunResult.model_validate(store.read_json(run_id, names.RUN_RESULT))
     run_completed = run_result.status is RunStatus.COMPLETED
 
@@ -384,6 +397,7 @@ def _verify(run_dir: Path) -> tuple[VerifierResult, bool]:
             VerifierInput.from_parts(
                 task=task,
                 trace=trace,
+                initial_state=initial_state,
                 final_state=final_state,
                 run_id=run_id,
             )
@@ -538,8 +552,8 @@ def _replay_drift_notes(
     """
     notes: list[str] = []
     try:
-        live_state = SupportState.from_task(task, docs=load_docs_for_task(task, task_path))
-        notes += describe_state_drift(pinned_state, live_state.snapshot())
+        live_env = create_environment(task, docs=load_docs_for_task(task, task_path))
+        notes += describe_state_drift(pinned_state, live_env.snapshot_state())
     except (FileNotFoundError, KeyError, ValueError) as exc:
         notes.append(f"could not rebuild the fixture's world to compare: {exc}")
 
@@ -637,6 +651,7 @@ def _validate_controls(
     pinned_state: dict[str, Any] | None,
     script,
     explicit_selection: bool = False,
+    continuation_script: FixtureScript | None = None,
 ) -> RepairValidation:
     """Validate each prescribed control in isolation and return the artifact.
 
@@ -658,7 +673,10 @@ def _validate_controls(
         return {
             "replay_mode": artifact.replay_mode,
             "predicted_by": predictor_of(artifact),
-            "label_supported": basis_supports_label(artifact, control_id),
+            # A hand-authored continuation changes the recorded trajectory.
+            # Never let its acceptance inherit a gating static replay label.
+            "label_supported": continuation_script is None
+            and basis_supports_label(artifact, control_id),
         }
 
     validations: list[ControlValidation] = []
@@ -693,6 +711,7 @@ def _validate_controls(
             controls=[instance],
             pinned_initial_state=pinned_state,
             pinned_script=script,
+            continuation_script=continuation_script,
         )
         pinned_merged, pinned_completed = _verify(store.run_dir(pinned.run_id))
         _tag_batch(store, pinned.run_id, batch_id)
@@ -741,6 +760,8 @@ def _validate_controls(
             pinned_completed=pinned_completed,
             incomplete_siblings=incomplete_siblings,
         )
+        if verdict is ControlVerdict.ACCEPTED and continuation_script is not None:
+            reason = "scripted continuation completed; advisory, not measured live-agent recovery"
         result = ControlValidation(
             control=name,
             verdict=verdict,
@@ -798,7 +819,17 @@ def _replay(
     fail_on_rejected: bool = False,
     control_library: Path | None = None,
     commit: bool = False,
+    continuation_script_path: Path | None = None,
 ) -> int:
+    if continuation_script_path is not None and not apply_control:
+        raise CliInputError("--continuation-script requires --apply-control")
+    if continuation_script_path is not None and commit:
+        raise CliInputError("scripted continuation evidence cannot be committed as a control")
+    continuation_script = (
+        FixtureModelAdapter.from_file(continuation_script_path).script
+        if continuation_script_path is not None
+        else None
+    )
     if commit and not apply_control:
         raise CliInputError("--commit requires --apply-control")
     if control_ids and not apply_control:
@@ -811,7 +842,14 @@ def _replay(
             raise CliInputError(
                 "--commit requires the originating repair package beside the artifact"
             )
-    candidates = select_controls(control_ids) if apply_control else []
+    candidates = []
+    if apply_control:
+        if control_ids is None:
+            source = RegressionArtifact.model_validate_json(artifact_path.read_bytes())
+            task = load_task(Path(source.task_fixture.replace("\\", "/")).resolve())
+            candidates = select_controls(None, workflow_type=task.workflow_type)
+        else:
+            candidates = select_controls(control_ids)
     active = []
     if control_library is not None and (control_library.exists() or not commit):
         active = load_library(control_library).active_controls()
@@ -836,6 +874,7 @@ def _replay(
         installed_controls=sorted(combined.values(), key=lambda c: c.control_id),
         validate_individually=apply_control,
         validation_controls=candidates,
+        continuation_script=continuation_script,
     )
     if code or not commit:
         return code
@@ -919,6 +958,7 @@ def _replay_result(
     validate_individually: bool = True,
     validation_controls: list[ControlInstance] | None = None,
     replayed_run_dirs: list[Path] | None = None,
+    continuation_script: FixtureScript | None = None,
 ) -> int:
     """Keep the public replay command's exit contract unchanged."""
     return _replay_with_report(
@@ -931,6 +971,7 @@ def _replay_result(
         validate_individually=validate_individually,
         validation_controls=validation_controls,
         replayed_run_dirs=replayed_run_dirs,
+        continuation_script=continuation_script,
     ).exit_code
 
 
@@ -946,6 +987,7 @@ def _replay_with_report(
     validation_controls: list[ControlInstance] | None = None,
     replayed_run_dirs: list[Path] | None = None,
     validations: list[RepairValidation] | None = None,
+    continuation_script: FixtureScript | None = None,
 ) -> ReplayReport:
     """Replay a regression artifact and assert the gate conditions hold.
 
@@ -986,7 +1028,8 @@ def _replay_with_report(
     isn't a problem. When a final-answer guardrail blocks, the runner hands
     the block back and asks the agent for another move (#193). A replayed
     recording has none after its final answer, so the replay ends as
-    ``script_exhausted`` and never completes.
+    ``script_exhausted`` and never completes unless an explicit advisory
+    ``continuation_script`` supplies the next moves.
 
     Returns structured evidence and the existing command's 0/1 exit status.
     When ``validations`` is given, the per-control validation is appended to
@@ -997,15 +1040,8 @@ def _replay_with_report(
         raise CliInputError("--control requires --apply-control")
     if fail_on_rejected and not apply_control:
         raise CliInputError("--fail-on-rejected requires --apply-control")
-    controls = (
-        installed_controls
-        if installed_controls is not None
-        else select_controls(control_ids)
-        if apply_control
-        else []
-    )
-    individual_controls = controls if validation_controls is None else validation_controls
-
+    if continuation_script is not None and not apply_control:
+        raise CliInputError("scripted continuation requires apply_control")
     data = json.loads(artifact_path.read_text(encoding="utf-8"))
     artifact = RegressionArtifact.model_validate(data)
     pinned_state = pinned_initial_state(artifact)
@@ -1015,7 +1051,20 @@ def _replay_with_report(
     # portable repository paths, regardless of the machine doing the replay.
     task_path = Path(artifact.task_fixture.replace("\\", "/")).resolve()
     task = load_task(task_path)
+    controls = (
+        installed_controls
+        if installed_controls is not None
+        else select_controls(control_ids, workflow_type=task.workflow_type)
+        if apply_control
+        else []
+    )
+    individual_controls = controls if validation_controls is None else validation_controls
     script = build_pinned_script(artifact, task.task_id)
+    if continuation_script is not None:
+        if script is None:
+            raise CliInputError("scripted continuation requires pinned agent actions")
+        if continuation_script.task_id != task.task_id:
+            raise CliInputError("continuation script task_id does not match the replay task")
     prescribed, controls_source = (
         _prescribed_controls(artifact_path, artifact, task.task_id, individual_controls)
         if apply_control and validate_individually
@@ -1047,6 +1096,8 @@ def _replay_with_report(
     if apply_control and artifact.replay_mode == "live_required":
         print("  ⚠ static replay is insufficient; a live agent must continue from the block point.")
     _print("pinned inputs:", "state + docs" + (" + agent actions" if script else " (no actions)"))
+    if continuation_script is not None:
+        _print("continuation:", "explicit script; acceptance is advisory, not live-agent evidence")
 
     for note in _replay_drift_notes(artifact, task, task_path, pinned_state):
         print(f"  ⚠ fixture drift — {note}")
@@ -1061,7 +1112,12 @@ def _replay_with_report(
             script=None,
             provider="fixture",
             model=None,
-            max_steps=16,
+            max_steps=max(
+                16,
+                len(script.actions) + len(continuation_script.actions)
+                if script is not None and continuation_script is not None
+                else 0,
+            ),
             timeout=120.0,
         )
 
@@ -1074,6 +1130,7 @@ def _replay_with_report(
         controls=controls,
         pinned_initial_state=pinned_state,
         pinned_script=script,
+        continuation_script=continuation_script,
     )
     run_dir = store.run_dir(result.run_id)
     if replayed_run_dirs is not None:
@@ -1171,6 +1228,7 @@ def _replay_with_report(
             pinned_state=pinned_state,
             script=script,
             explicit_selection=bool(control_ids),
+            continuation_script=continuation_script,
         )
         rollup = validation.rollup
         _print(
@@ -2659,6 +2717,13 @@ def main(argv: list[str] | None = None) -> int:
         help="exit 1 if any control is rejected (CI gate mode; requires --apply-control)",
     )
     p_replay.add_argument(
+        "--continuation-script",
+        help=(
+            "explicit fixture actions after the pinned recording; requires --apply-control, "
+            "records advisory scripted evidence only and cannot be used with --commit"
+        ),
+    )
+    p_replay.add_argument(
         "--control",
         action="append",
         dest="control_ids",
@@ -2928,6 +2993,9 @@ def _dispatch(args: argparse.Namespace, store: ArtifactStore) -> int:
             fail_on_rejected=args.fail_on_rejected,
             control_library=Path(args.control_library) if args.control_library else None,
             commit=args.commit,
+            continuation_script_path=(
+                Path(args.continuation_script) if args.continuation_script else None
+            ),
         )
     if args.command == "controls" and args.control_command == "list":
         return _list_controls(Path(args.control_library))

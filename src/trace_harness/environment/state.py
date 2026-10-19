@@ -18,9 +18,8 @@ What does NOT belong here
     Policy *judgment* (that is verifier territory) and retrieval scoring
     (``retrieval.py``). State is dumb data plus lookups.
 
-# TODO(Evan Yang/environment): when a second workflow (non-refund) lands,
-# extract the generic parts (docs, snapshotting) from the support-specific
-# parts instead of growing this file sideways.
+The retrieval workflow reuses Doc but owns its independent RetrievalState;
+shared execution and control seams live in sandbox.py.
 """
 
 from __future__ import annotations

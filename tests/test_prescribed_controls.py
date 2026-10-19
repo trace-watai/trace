@@ -26,6 +26,7 @@ from trace_harness.environment.controls import (
     reference_controls,
     select_controls,
 )
+from trace_harness.environment.factory import create_environment
 from trace_harness.environment.guardrails import (
     deprecated_policy_citation_guardrail,
     final_answer_state_grounding_guardrail,
@@ -95,16 +96,25 @@ def test_the_default_set_is_unchanged() -> None:
 
 
 def test_every_catalogue_control_installs() -> None:
-    env = SupportEnvironment(_state(_order(10)))
+    retrieval_path = FIXTURES_DIR / "tasks/retrieval/retrieval_stale_document.json"
+    task = load_task(retrieval_path)
+    environments = {
+        "support.refund": SupportEnvironment(_state(_order(10))),
+        "retrieval.answer": create_environment(task, docs=load_docs_for_task(task, retrieval_path)),
+    }
     for control in control_catalogue():
-        env.install_control(control)
-    assert len(env.installed_controls) == len(control_catalogue())
+        workflow = GUARDRAIL_REGISTRY[control.guardrail_ref].workflow_type
+        environments[workflow].install_control(control)
+    assert sum(len(env.installed_controls) for env in environments.values()) == len(
+        control_catalogue()
+    )
 
 
 def test_final_answer_controls_attach_to_the_final_answer_seam() -> None:
     env = SupportEnvironment(_state(_order(10)))
     for control in control_catalogue():
-        env.install_control(control)
+        if GUARDRAIL_REGISTRY[control.guardrail_ref].workflow_type == env.workflow_type:
+            env.install_control(control)
     # A refund claim with no refund in state is blocked when the agent answers.
     blocked = env.check_final_answer("Your refund has been issued.")
     assert blocked is not None

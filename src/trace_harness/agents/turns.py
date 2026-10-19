@@ -32,7 +32,7 @@ from typing import Literal
 
 from pydantic import ValidationError
 
-from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.factory import create_environment
 from trace_harness.environment.tools import ToolResult
 from trace_harness.models.base import AgentAction, Message, MessageRole, ModelAdapter
 from trace_harness.models.cassette import (
@@ -204,6 +204,6 @@ def record_cassette(
     script = (task_path.parent / task.metadata["fixture_script"]).resolve()
     turns = CassetteTurns(namespace, root=root, mode="record", inner=ScriptedTurns(script=script))
     agent = make_agent(turns)
-    environment = SupportEnvironment.from_task(task, docs=load_docs_for_task(task, task_path))
+    environment = create_environment(task, docs=load_docs_for_task(task, task_path))
     config = RunConfig(task_id=task.task_id, provider=EXTERNAL_PROVIDER, model=agent.name)
     return run_target_agent(agent, environment, ArtifactStore(runs_dir), task, config)

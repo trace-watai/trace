@@ -93,6 +93,9 @@ class RetrievalResultItem(_IgnoreExtra):
     title: str | None = None
     score: float | None = None
     source: str | None = None
+    section_id: str | None = None
+    span_start: int | None = None
+    span_end: int | None = None
 
 
 class RetrievalResultPayload(_IgnoreExtra):

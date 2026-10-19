@@ -1,0 +1,29 @@
+{
+  "schema_version": "0.5.0",
+  "suite_id": "retrieval_v0",
+  "description": "Eight deterministic retrieval negatives, each paired with a passing positive sibling. No live-agent measurement.",
+  "tasks": [
+    "fixtures/tasks/retrieval/retrieval_wrong_document.json",
+    "fixtures/tasks/retrieval/retrieval_wrong_document_positive.json",
+    "fixtures/tasks/retrieval/retrieval_unsupported_claim.json",
+    "fixtures/tasks/retrieval/retrieval_unsupported_claim_positive.json",
+    "fixtures/tasks/retrieval/retrieval_wrong_section.json",
+    "fixtures/tasks/retrieval/retrieval_wrong_section_positive.json",
+    "fixtures/tasks/retrieval/retrieval_bad_span.json",
+    "fixtures/tasks/retrieval/retrieval_bad_span_positive.json",
+    "fixtures/tasks/retrieval/retrieval_stale_document.json",
+    "fixtures/tasks/retrieval/retrieval_stale_document_positive.json",
+    "fixtures/tasks/retrieval/retrieval_conflict_ignored.json",
+    "fixtures/tasks/retrieval/retrieval_conflict_ignored_positive.json",
+    "fixtures/tasks/retrieval/retrieval_insufficient_evidence.json",
+    "fixtures/tasks/retrieval/retrieval_insufficient_evidence_positive.json",
+    "fixtures/tasks/retrieval/retrieval_malformed_answer.json",
+    "fixtures/tasks/retrieval/retrieval_malformed_answer_positive.json"
+  ],
+  "agent_configs": [
+    {
+      "label": "fixture-baseline",
+      "provider": "fixture"
+    }
+  ]
+}

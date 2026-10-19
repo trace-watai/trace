@@ -15,10 +15,10 @@ from __future__ import annotations
 
 from trace_harness.environment.controls import MATERIALIZABLE_REPAIR_CONTROLS
 from trace_harness.failure_bundles.generator import _CONTROL_BUILDERS
-from trace_harness.verifiers.refund_policy import RefundPolicyVerifier
+from trace_harness.verifiers.registry import VERIFIER_REGISTRY
 from trace_harness.verifiers.severity_map import SEVERITY_MAP
 
-CHECK_IDS = RefundPolicyVerifier.CHECK_IDS
+CHECK_IDS = tuple(check for verifier in VERIFIER_REGISTRY.values() for check in verifier.CHECK_IDS)
 
 
 def test_declared_check_ids_are_unique() -> None:

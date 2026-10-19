@@ -58,7 +58,7 @@ from pydantic import ValidationError
 
 from trace_harness.attribution.post_block import classify_post_block_outcome
 from trace_harness.environment.controls import select_controls
-from trace_harness.environment.support_env import SupportEnvironment
+from trace_harness.environment.factory import create_environment
 from trace_harness.environment.tools import support_tool_definitions
 from trace_harness.models import (
     create_model_adapter,
@@ -616,7 +616,7 @@ def _run_seed(
     the runs whose failure cards this run may join (#211), and the run joins
     it once scored.
     """
-    environment = SupportEnvironment.from_task(task, docs=None)
+    environment = create_environment(task, docs=None)
     # Controls enter only as installed controls, so every block carries blocked_by.
     for control in select_controls(condition.control_ids):
         environment.install_control(control)
