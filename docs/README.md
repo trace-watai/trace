@@ -25,6 +25,7 @@ you change X" column.
 | [public_results.md](public_results.md) | What is hosted in Supabase for public reads, how it is published and regenerated, its free tier sizing, and the local API plan. |
 | [future_api.md](future_api.md) | Following an old link. The API plan moved to public_results.md, and this file points there. |
 | [future_dashboard.md](future_dashboard.md) | Picking up the dashboard. Contracts and start conditions are pinned there. |
+| [future_coding_agent_tasks.md](future_coding_agent_tasks.md) | **Non-MVP parking lot (Linear TRA-39).** Picking up coding-agent tasks with hidden PyTest tests after the MVP. |
 | [AGENTRX_TRACE_SUMMARY.md](AGENTRX_TRACE_SUMMARY.md) | Competitive context: why TRACE's differentiation is the reliability loop, not localization accuracy (Linear TRA-34). |
 | [failure_taxonomy.md](failure_taxonomy.md) | Before adding a failure category or mapping a check to one. |
 | [severity_policy.md](severity_policy.md) | Before setting or changing a check's severity, or deciding what blocks a release. |
